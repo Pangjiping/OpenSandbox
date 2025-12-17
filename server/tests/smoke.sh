@@ -259,4 +259,4 @@ echo "Sandbox state: ${state_short}"
 step "Wait for sandbox ${SANDBOX_ID} to auto-expire (expect 404)"
 wait_for_expired "${SANDBOX_ID}"
 
-step "Lifecycle API smoke test completed successfully"
+step "server Lifecycle API smoke test completed successfully"

@@ -1,0 +1,88 @@
+name: Server Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'server/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install uv
+        run: |
+          pip install uv
+
+      - name: Run tests
+        run: |
+          cd server
+          uv sync --all-groups
+          uv run ruff check
+          uv run pytest
+
+  docker-smoke:
+    strategy:
+      matrix:
+        network: [host, bridge]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install uv
+        run: |
+          pip install uv
+
+      - name: Set up Docker
+        run: |
+          docker --version
+
+      - name: Run smoke test
+        run: |
+          set -e
+          cd server
+          uv sync --all-groups
+
+          # Create config file
+          cat <<EOF > ~/.sandbox.toml
+          [server]
+          host = "127.0.0.1"
+          port = 32888
+          log_level = "INFO"
+          api_key = ""
+          [runtime]
+          type = "docker"
+          execd_image = "opensandbox/execd:latest"
+          [docker]
+          network_mode = "${{ matrix.network }}"
+          EOF
+
+          # Start server in background
+          uv run python -m src.main > app.log 2>&1 &
+
+          # Wait for server to start
+          sleep 10
+          
+          # Show server logs for debugging
+          cat app.log
+          
+          # Run smoke test
+          chmod +x tests/smoke.sh
+          ./tests/smoke.sh
+          
+          # Show final logs
+          cat app.log
