@@ -35,7 +35,7 @@ uv sync
 uv run python -m src.main
 ```
 
-## Create and Accessing the Playwright Sandbox
+## Create and Access the Playwright Sandbox
 
 ```shell
 # Install OpenSandbox package

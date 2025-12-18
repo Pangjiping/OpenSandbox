@@ -23,7 +23,7 @@ uv sync
 uv run python -m src.main
 ```
 
-## Create and Accessing the Codex Sandbox
+## Create and Access the Codex Sandbox
 
 ```shell
 # Install OpenSandbox package

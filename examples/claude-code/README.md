@@ -23,7 +23,7 @@ uv sync
 uv run python -m src.main
 ```
 
-## Create and Accessing the Claude Sandbox
+## Create and Access the Claude Sandbox
 
 ```shell
 # Install OpenSandbox package

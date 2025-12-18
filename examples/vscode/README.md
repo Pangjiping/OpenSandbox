@@ -34,7 +34,7 @@ uv sync
 uv run python -m src.main
 ```
 
-## Create and Accessing the VS Code Sandbox
+## Create and Access the VS Code Sandbox
 
 ```shell
 # Install OpenSandbox package

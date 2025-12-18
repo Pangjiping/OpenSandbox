@@ -23,7 +23,7 @@ uv sync
 uv run python -m src.main
 ```
 
-## Create and Accessing the iFlow Sandbox
+## Create and Access the iFlow Sandbox
 
 ```shell
 # Install OpenSandbox package

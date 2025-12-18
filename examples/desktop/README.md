@@ -35,7 +35,7 @@ uv sync
 uv run python -m src.main
 ```
 
-## Create and Accessing the Desktop Sandbox
+## Create and Access the Desktop Sandbox
 
 ```shell
 # Install OpenSandbox package

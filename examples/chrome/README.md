@@ -14,7 +14,7 @@ You can build the image from source or pull it from Docker Hub.
 docker build -t opensandbox/chrome .
 ```
 
-### Pull an existed image
+### Pull an existing image
 
 ```shell
 docker pull opensandbox/chrome:latest
