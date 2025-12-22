@@ -164,10 +164,6 @@ class DockerConfig(BaseModel):
         ge=1,
         description="Maximum number of processes allowed per sandbox container. Set to null to disable the limit.",
     )
-    read_only_rootfs: bool = Field(
-        default=False,
-        description="Mount the container root filesystem as read-only. Disable if images need write access to /.",
-    )
 
 
 class AppConfig(BaseModel):

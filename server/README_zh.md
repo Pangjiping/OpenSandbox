@@ -108,7 +108,6 @@ apparmor_profile = ""
 # 限制进程数量，可选的 seccomp/只读根文件系统
 pids_limit = 512             # 设为 null 可关闭
 seccomp_profile = ""        # 配置文件路径或名称；为空使用 Docker 默认
-read_only_rootfs = false     # 如果镜像允许写 /，可开启以进一步隔离
 ```
 更多 Docker 安全参考：https://docs.docker.com/engine/security/
 

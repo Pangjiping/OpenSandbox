@@ -799,8 +799,6 @@ class DockerSandboxService(SandboxService):
             host_config_kwargs["cap_drop"] = docker_cfg.drop_capabilities
         if docker_cfg.pids_limit is not None:
             host_config_kwargs["pids_limit"] = docker_cfg.pids_limit
-        if docker_cfg.read_only_rootfs:
-            host_config_kwargs["read_only"] = True
         if mem_limit:
             host_config_kwargs["mem_limit"] = mem_limit
         if nano_cpus:

@@ -48,8 +48,6 @@ apparmor_profile = ""
 pids_limit = 512
 # Seccomp profile: empty string uses Docker default; set to an absolute path for a custom profile
 seccomp_profile = ""
-# Make root filesystem read-only to avoid host writes via mounted volumes; disable if your image needs write access to /
-read_only_rootfs = true
 
 
 # -----------------------------------------------------------------
