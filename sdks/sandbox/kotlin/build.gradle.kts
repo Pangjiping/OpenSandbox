@@ -118,7 +118,9 @@ subprojects {
     configure<com.vanniktech.maven.publish.MavenPublishBaseExtension> {
         coordinates(project.group.toString(), project.name, project.version.toString())
         publishToMavenCentral()
-        signAllPublications()
+        if (!gradle.startParameter.taskNames.any { it.contains("publishToMavenLocal") }) {
+            signAllPublications()
+        }
         pom {
             name.set(project.name)
             description.set("Alibaba Open Sandbox SDK")

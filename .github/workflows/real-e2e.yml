@@ -14,7 +14,8 @@ on:
     branches: [ main ]
 
 jobs:
-  docker-bridge:
+  python-e2e:
+    name: Python E2E (docker bridge)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -51,5 +52,61 @@ jobs:
 
       - name: Eval logs
         if: ${{ always() }}
+        run: cat server/server.log
+
+  java-e2e:
+    name: Java E2E (docker bridge)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+          cache: gradle
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Run tests
+        env:
+          TAG: latest
+          GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-user-home
         run: |
-          cat server/server.log
+          set -e
+
+          # Create config file
+          cat <<EOF > ~/.sandbox.toml
+          [server]
+          host = "127.0.0.1"
+          port = 8080
+          log_level = "INFO"
+          api_key = ""
+          [runtime]
+          type = "docker"
+          execd_image = "opensandbox/execd:${TAG}"
+          [docker]
+          network_mode = "bridge"
+          EOF
+
+          bash ./scripts/java-e2e.sh
+
+      - name: Eval logs
+        if: ${{ always() }}
+        run: cat server/server.log
+
+      - name: Upload Test Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-test-report
+          path: tests/java/build/reports/tests/test/
+          retention-days: 5
