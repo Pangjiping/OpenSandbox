@@ -11,6 +11,9 @@
 /components/execd/ @Pangjiping @hittyt
 /sandboxes/ @Pangjiping @ninan-nn @jwx0925 @hittyt @hellomypastor
 
+# Kubernetes controller
+/kubernetes/ @Spground @Generalwin
+
 # SDKs
 /sdks/ @ninan-nn @jwx0925 @hittyt @hellomypastor
 
