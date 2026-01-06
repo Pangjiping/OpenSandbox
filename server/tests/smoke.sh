@@ -50,6 +50,7 @@ error() {
 }
 
 BASE_URL="${BASE_URL:-http://localhost:32888}"
+BASE_API_URL="${BASE_URL}/v1"
 API_KEY_HEADER=()
 if [[ -n "${OPEN_SANDBOX_API_KEY:-}" ]]; then
   API_KEY_HEADER=(-H "OPEN-SANDBOX-API-KEY: ${OPEN_SANDBOX_API_KEY}")
@@ -68,7 +69,7 @@ wait_for_running() {
   local deadline=$((SECONDS + 10))
   while true; do
     local resp
-    resp=$(curl_json "${BASE_URL}/sandboxes/${SANDBOX_ID}")
+    resp=$(curl_json "${BASE_API_URL}/sandboxes/${SANDBOX_ID}")
     local state
     state=$(python - <<'PY' "${resp}"
 import json,sys
@@ -97,7 +98,7 @@ wait_for_expired() {
   local deadline=$((SECONDS + 90))
   while true; do
     local resp body status
-    resp=$(curl_json_status "${BASE_URL}/sandboxes/${sandbox_id}")
+    resp=$(curl_json_status "${BASE_API_URL}/sandboxes/${sandbox_id}")
     status="${resp##*$'\n'}"
     body="${resp%$'\n'*}"
     if [[ "${status}" == "404" ]]; then
@@ -128,7 +129,7 @@ step "Create sandbox (60s TTL)"
 create_resp=$(curl_json \
   -H 'Content-Type: application/json' \
   -d "${create_payload}" \
-  "${BASE_URL}/sandboxes")
+  "${BASE_API_URL}/sandboxes")
 
 SANDBOX_ID=$(python - <<'PY' "${create_resp}"
 import json,sys
@@ -166,7 +167,7 @@ list_resp=$(curl_json \
   --data-urlencode "metadata=hello=world" \
   --data-urlencode "page=1" \
   --data-urlencode "pageSize=10" \
-  "${BASE_URL}/sandboxes")
+  "${BASE_API_URL}/sandboxes")
 
 python - <<'PY' "${list_resp}" "${SANDBOX_ID}"
 import json,sys
@@ -196,7 +197,7 @@ renew_resp=$(curl_json \
   -X POST \
   -H 'Content-Type: application/json' \
   -d "${renew_payload}" \
-  "${BASE_URL}/sandboxes/${SANDBOX_ID}/renew-expiration")
+  "${BASE_API_URL}/sandboxes/${SANDBOX_ID}/renew-expiration")
 renewed=$(python - <<'PY' "${renew_resp}"
 import json,sys
 body=json.loads(sys.argv[1])
@@ -206,7 +207,7 @@ PY
 echo "Expiration renewed to: ${renewed}"
 
 step "Request endpoint on port 8080"
-endpoint_resp=$(curl_json "${BASE_URL}/sandboxes/${SANDBOX_ID}/endpoints/8080")
+endpoint_resp=$(curl_json "${BASE_API_URL}/sandboxes/${SANDBOX_ID}/endpoints/8080")
 endpoint=$(python - <<'PY' "${endpoint_resp}"
 import json,sys
 body=json.loads(sys.argv[1])
@@ -216,7 +217,7 @@ PY
 echo "Endpoint: ${endpoint}"
 
 step "Delete sandbox"
-curl_json -X DELETE "${BASE_URL}/sandboxes/${SANDBOX_ID}"
+curl_json -X DELETE "${BASE_API_URL}/sandboxes/${SANDBOX_ID}"
 echo "Sandbox ${SANDBOX_ID} deleted."
 
 step "Create short-lived sandbox (60s TTL) for auto-expiration"
@@ -232,7 +233,7 @@ create_payload_short='{
 create_resp_short=$(curl_json \
   -H 'Content-Type: application/json' \
   -d "${create_payload_short}" \
-  "${BASE_URL}/sandboxes")
+  "${BASE_API_URL}/sandboxes")
 
 SANDBOX_ID=$(python - <<'PY' "${create_resp_short}"
 import json,sys

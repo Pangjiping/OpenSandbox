@@ -50,6 +50,14 @@ class TestAuthentication:
         assert response.status_code == 401
         assert "MISSING_API_KEY" in response.json()["code"]
 
+    def test_missing_api_key_v1_prefix(self, client: TestClient):
+        """
+        Test request without API key on versioned route returns 401.
+        """
+        response = client.get("/v1/sandboxes/123e4567-e89b-12d3-a456-426614174000")
+        assert response.status_code == 401
+        assert "MISSING_API_KEY" in response.json()["code"]
+
     def test_invalid_api_key(self, client: TestClient):
         """
         Test request with invalid API key returns 401.

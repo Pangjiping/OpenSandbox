@@ -149,7 +149,7 @@ Authentication is enforced only when `server.api_key` is set. If the value is em
 All API endpoints (except `/health`, `/docs`, `/redoc`) require authentication via the `OPEN-SANDBOX-API-KEY` header when authentication is enabled:
 
 ```bash
-curl http://localhost:8080/sandboxes
+curl http://localhost:8080/v1/sandboxes
 ```
 
 ### Example usage
@@ -157,7 +157,7 @@ curl http://localhost:8080/sandboxes
 **Create a Sandbox**
 
 ```bash
-curl -X POST "http://localhost:8080/sandboxes" \
+curl -X POST "http://localhost:8080/v1/sandboxes" \
   -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -209,18 +209,18 @@ Response:
 
 ```bash
 curl -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
-  http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab
+  http://localhost:8080/v1/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab
 ```
 
 **Get Service Endpoint**
 
 ```bash
 curl -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
-  http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/endpoints/8000
+  http://localhost:8080/v1/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/endpoints/8000
 
 # execd (agent) endpoint
 curl -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
-  http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/endpoints/44772
+  http://localhost:8080/v1/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/endpoints/44772
 ```
 
 Response:
@@ -233,7 +233,7 @@ Response:
 **Renew Expiration**
 
 ```bash
-curl -X POST "http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/renew-expiration" \
+curl -X POST "http://localhost:8080/v1/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/renew-expiration" \
   -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -246,7 +246,7 @@ curl -X POST "http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890
 ```bash
 curl -X DELETE \
   -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
-  http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab
+  http://localhost:8080/v1/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab
 ```
 
 ## Architecture

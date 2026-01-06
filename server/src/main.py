@@ -88,8 +88,9 @@ app.state.config = app_config
 # Add authentication middleware
 app.add_middleware(AuthMiddleware, config=app_config)
 
-# Include API routes at root
+# Include API routes at root and versioned prefix
 app.include_router(router)
+app.include_router(router, prefix="/v1")
 
 DEFAULT_ERROR_CODE = "GENERAL::UNKNOWN_ERROR"
 DEFAULT_ERROR_MESSAGE = "An unexpected error occurred."

@@ -152,7 +152,7 @@ curl http://localhost:8080/health
 当鉴权开启时，除 `/health`、`/docs`、`/redoc` 外的 API 端点均需要通过 `OPEN-SANDBOX-API-KEY` 请求头进行认证：
 
 ```bash
-curl http://localhost:8080/sandboxes
+curl http://localhost:8080/v1/sandboxes
 ```
 
 ### 使用示例
@@ -160,7 +160,7 @@ curl http://localhost:8080/sandboxes
 **创建沙箱**
 
 ```bash
-curl -X POST "http://localhost:8080/sandboxes" \
+curl -X POST "http://localhost:8080/v1/sandboxes" \
   -H "Content-Type: application/json" \
   -d '{
     "image": {
@@ -210,17 +210,17 @@ curl -X POST "http://localhost:8080/sandboxes" \
 **获取沙箱详情**
 
 ```bash
-curl http://localhost:8080/sandboxes/<sandbox-id>
+curl http://localhost:8080/v1/sandboxes/<sandbox-id>
 ```
 
 **获取服务端点**
 
 ```bash
 # 获取自定义服务端点
-curl http://localhost:8080/sandboxes/<sandbox-id>/endpoints/8000
+curl http://localhost:8080/v1/sandboxes/<sandbox-id>/endpoints/8000
 
 # 获取OpenSandbox守护进程（execd）端点
-curl http://localhost:8080/sandboxes/<sandbox-id>/endpoints/44772
+curl http://localhost:8080/v1/sandboxes/<sandbox-id>/endpoints/44772
 ```
 
 响应：
@@ -233,7 +233,7 @@ curl http://localhost:8080/sandboxes/<sandbox-id>/endpoints/44772
 **续期沙箱**
 
 ```bash
-curl -X POST "http://localhost:8080/sandboxes/<sandbox-id>/renew-expiration" \
+curl -X POST "http://localhost:8080/v1/sandboxes/<sandbox-id>/renew-expiration" \
   -H "Content-Type: application/json" \
   -d '{
     "expiresAt": "2024-01-15T12:30:00Z"
@@ -243,7 +243,7 @@ curl -X POST "http://localhost:8080/sandboxes/<sandbox-id>/renew-expiration" \
 **删除沙箱**
 
 ```bash
-curl -X DELETE http://localhost:8080/sandboxes/<sandbox-id>
+curl -X DELETE http://localhost:8080/v1/sandboxes/<sandbox-id>
 ```
 
 ## 系统架构
