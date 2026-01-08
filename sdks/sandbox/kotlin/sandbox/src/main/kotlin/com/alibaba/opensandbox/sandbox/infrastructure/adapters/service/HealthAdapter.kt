@@ -21,7 +21,6 @@ import com.alibaba.opensandbox.sandbox.api.execd.HealthApi
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
 import com.alibaba.opensandbox.sandbox.domain.services.Health
 import org.slf4j.LoggerFactory
-import java.util.UUID
 
 /**
  * Implementation of [Health] that adapts OpenAPI-generated [HealthApi].
@@ -33,7 +32,7 @@ internal class HealthAdapter(
     private val logger = LoggerFactory.getLogger(HealthAdapter::class.java)
     private val api = HealthApi("${httpClientProvider.config.protocol}://${execdEndpoint.endpoint}", httpClientProvider.httpClient)
 
-    override fun ping(sandboxId: UUID): Boolean {
+    override fun ping(sandboxId: String): Boolean {
         logger.debug("Checking health for sandbox: {}", sandboxId)
 
         return try {

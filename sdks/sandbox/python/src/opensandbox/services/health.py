@@ -20,7 +20,6 @@ Protocol for sandbox health monitoring operations.
 """
 
 from typing import Protocol
-from uuid import UUID
 
 
 class Health(Protocol):
@@ -31,7 +30,7 @@ class Health(Protocol):
     for sandbox instances.
     """
 
-    async def ping(self, sandbox_id: UUID) -> bool:
+    async def ping(self, sandbox_id: str) -> bool:
         """
         Check if a sandbox is alive and responsive.
 

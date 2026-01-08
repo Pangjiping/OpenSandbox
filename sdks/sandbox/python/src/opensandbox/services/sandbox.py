@@ -21,7 +21,6 @@ Protocol for sandbox lifecycle management operations.
 
 from datetime import datetime, timedelta
 from typing import Protocol
-from uuid import UUID
 
 from opensandbox.models.sandboxes import (
     PagedSandboxInfos,
@@ -30,6 +29,7 @@ from opensandbox.models.sandboxes import (
     SandboxFilter,
     SandboxImageSpec,
     SandboxInfo,
+    SandboxRenewResponse,
 )
 
 
@@ -72,7 +72,7 @@ class Sandboxes(Protocol):
         """
         ...
 
-    async def get_sandbox_info(self, sandbox_id: UUID) -> SandboxInfo:
+    async def get_sandbox_info(self, sandbox_id: str) -> SandboxInfo:
         """
         Retrieve information about an existing sandbox.
 
@@ -103,7 +103,7 @@ class Sandboxes(Protocol):
         ...
 
     async def get_sandbox_endpoint(
-        self, sandbox_id: UUID, port: int
+        self, sandbox_id: str, port: int
     ) -> SandboxEndpoint:
         """
         Get sandbox endpoint.
@@ -120,7 +120,7 @@ class Sandboxes(Protocol):
         """
         ...
 
-    async def pause_sandbox(self, sandbox_id: UUID) -> None:
+    async def pause_sandbox(self, sandbox_id: str) -> None:
         """
         Pause a running sandbox, preserving its state.
 
@@ -132,7 +132,7 @@ class Sandboxes(Protocol):
         """
         ...
 
-    async def resume_sandbox(self, sandbox_id: UUID) -> None:
+    async def resume_sandbox(self, sandbox_id: str) -> None:
         """
         Resume a paused sandbox.
 
@@ -145,8 +145,8 @@ class Sandboxes(Protocol):
         ...
 
     async def renew_sandbox_expiration(
-        self, sandbox_id: UUID, new_expiration_time: datetime
-    ) -> None:
+        self, sandbox_id: str, new_expiration_time: datetime
+    ) -> SandboxRenewResponse:
         """
         Renew the expiration time of a sandbox.
 
@@ -154,12 +154,15 @@ class Sandboxes(Protocol):
             sandbox_id: Unique identifier of the sandbox
             new_expiration_time: New expiration timestamp
 
+        Returns:
+            Renew response including the new expiration time.
+
         Raises:
             SandboxException: if the operation fails
         """
         ...
 
-    async def kill_sandbox(self, sandbox_id: UUID) -> None:
+    async def kill_sandbox(self, sandbox_id: str) -> None:
         """
         Terminate a sandbox and release all associated resources.
 

@@ -101,6 +101,10 @@ setup_bash() {
 
 # export go bin path
 export PATH="$(go env GOPATH)/bin:$PATH"
+if [ -n "${EXECD_ENVS:-}" ]; then
+	mkdir -p "$(dirname "$EXECD_ENVS")" 2>/dev/null || true
+	printf 'PATH=%s\n' "$PATH" >>"$EXECD_ENVS" 2>/dev/null || true
+fi
 
 setup_python &
 pids+=($!)

@@ -143,7 +143,7 @@ public class SandboxManagerE2ETest extends BaseE2ETest {
                         .pageSize(50)
                         .build();
         PagedSandboxInfos infos = sandboxManager.listSandboxInfos(filter);
-        Set<UUID> ids = new HashSet<>();
+        Set<String> ids = new HashSet<>();
         for (SandboxInfo info : infos.getSandboxInfos()) {
             ids.add(info.getId());
         }
@@ -156,7 +156,7 @@ public class SandboxManagerE2ETest extends BaseE2ETest {
                                 .metadata(Map.of("tag", tag))
                                 .pageSize(50)
                                 .build());
-        Set<UUID> pausedIds = new HashSet<>();
+        Set<String> pausedIds = new HashSet<>();
         for (SandboxInfo info : pausedOnly.getSandboxInfos()) {
             pausedIds.add(info.getId());
         }
@@ -171,7 +171,7 @@ public class SandboxManagerE2ETest extends BaseE2ETest {
                                 .metadata(Map.of("tag", tag))
                                 .pageSize(50)
                                 .build());
-        Set<UUID> runningIds = new HashSet<>();
+        Set<String> runningIds = new HashSet<>();
         for (SandboxInfo info : runningOnly.getSandboxInfos()) {
             runningIds.add(info.getId());
         }
@@ -191,7 +191,7 @@ public class SandboxManagerE2ETest extends BaseE2ETest {
                                 .metadata(Map.of("tag", tag, "team", "t1"))
                                 .pageSize(50)
                                 .build());
-        Set<UUID> ids = new HashSet<>();
+        Set<String> ids = new HashSet<>();
         for (SandboxInfo info : tagAndTeam.getSandboxInfos()) {
             ids.add(info.getId());
         }
@@ -205,7 +205,7 @@ public class SandboxManagerE2ETest extends BaseE2ETest {
                                 .metadata(Map.of("tag", tag, "team", "t1", "env", "prod"))
                                 .pageSize(50)
                                 .build());
-        Set<UUID> ids2 = new HashSet<>();
+        Set<String> ids2 = new HashSet<>();
         for (SandboxInfo info : tagTeamEnv.getSandboxInfos()) {
             ids2.add(info.getId());
         }
@@ -219,7 +219,7 @@ public class SandboxManagerE2ETest extends BaseE2ETest {
                                 .metadata(Map.of("tag", tag, "env", "prod"))
                                 .pageSize(50)
                                 .build());
-        Set<UUID> ids3 = new HashSet<>();
+        Set<String> ids3 = new HashSet<>();
         for (SandboxInfo info : tagEnv.getSandboxInfos()) {
             ids3.add(info.getId());
         }
@@ -243,7 +243,7 @@ public class SandboxManagerE2ETest extends BaseE2ETest {
     @DisplayName("invalid operations raise SandboxException")
     @Timeout(value = 1, unit = TimeUnit.MINUTES)
     void testInvalidOperations() {
-        UUID nonExistentId = UUID.randomUUID();
+        String nonExistentId = "non-existent-" + System.nanoTime();
         assertThrows(SandboxException.class, () -> sandboxManager.getSandboxInfo(nonExistentId));
         assertThrows(SandboxException.class, () -> sandboxManager.pauseSandbox(nonExistentId));
         assertThrows(SandboxException.class, () -> sandboxManager.resumeSandbox(nonExistentId));

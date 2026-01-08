@@ -20,13 +20,13 @@ Synchronous SandboxManager implementation.
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from uuid import UUID
 
 from opensandbox.config.connection_sync import ConnectionConfigSync
 from opensandbox.models.sandboxes import (
     PagedSandboxInfos,
     SandboxFilter,
     SandboxInfo,
+    SandboxRenewResponse,
 )
 from opensandbox.sync.adapters.factory import AdapterFactorySync
 from opensandbox.sync.services.sandbox import SandboxesSync
@@ -109,7 +109,7 @@ class SandboxManagerSync:
         """
         return self._sandbox_service.list_sandboxes(filter)
 
-    def get_sandbox_info(self, sandbox_id: UUID) -> SandboxInfo:
+    def get_sandbox_info(self, sandbox_id: str) -> SandboxInfo:
         """
         Get information for a single sandbox by its ID.
 
@@ -125,7 +125,7 @@ class SandboxManagerSync:
         logger.debug("Getting info for sandbox: %s", sandbox_id)
         return self._sandbox_service.get_sandbox_info(sandbox_id)
 
-    def kill_sandbox(self, sandbox_id: UUID) -> None:
+    def kill_sandbox(self, sandbox_id: str) -> None:
         """
         Terminate a single sandbox.
 
@@ -139,7 +139,7 @@ class SandboxManagerSync:
         self._sandbox_service.kill_sandbox(sandbox_id)
         logger.info("Successfully terminated sandbox: %s", sandbox_id)
 
-    def renew_sandbox(self, sandbox_id: UUID, timeout: timedelta) -> None:
+    def renew_sandbox(self, sandbox_id: str, timeout: timedelta) -> SandboxRenewResponse:
         """
         Renew expiration time for a single sandbox.
 
@@ -155,9 +155,9 @@ class SandboxManagerSync:
         # Use timezone-aware UTC datetime to avoid cross-timezone ambiguity.
         new_expiration = datetime.now(timezone.utc) + timeout
         logger.info("Renew expiration for sandbox %s to %s", sandbox_id, new_expiration)
-        self._sandbox_service.renew_sandbox_expiration(sandbox_id, new_expiration)
+        return self._sandbox_service.renew_sandbox_expiration(sandbox_id, new_expiration)
 
-    def pause_sandbox(self, sandbox_id: UUID) -> None:
+    def pause_sandbox(self, sandbox_id: str) -> None:
         """
         Pause a single sandbox while preserving its state.
 
@@ -170,7 +170,7 @@ class SandboxManagerSync:
         logger.info("Pausing sandbox: %s", sandbox_id)
         self._sandbox_service.pause_sandbox(sandbox_id)
 
-    def resume_sandbox(self, sandbox_id: UUID) -> None:
+    def resume_sandbox(self, sandbox_id: str) -> None:
         """
         Resume a previously paused sandbox.
 

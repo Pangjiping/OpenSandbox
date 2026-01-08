@@ -39,5 +39,3 @@ cd ../../../
 # run Java e2e
 cd tests/java
 ./gradlew test
-
-

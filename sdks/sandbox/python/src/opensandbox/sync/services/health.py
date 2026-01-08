@@ -21,7 +21,6 @@ This is the sync counterpart of :mod:`opensandbox.services.health`.
 """
 
 from typing import Protocol
-from uuid import UUID
 
 
 class HealthSync(Protocol):
@@ -32,7 +31,7 @@ class HealthSync(Protocol):
     is reachable and responsive.
     """
 
-    def ping(self, sandbox_id: UUID) -> bool:
+    def ping(self, sandbox_id: str) -> bool:
         """
         Ping the sandbox execd service to verify liveness.
 

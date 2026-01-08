@@ -57,7 +57,7 @@ def test_sandbox_filter_validations() -> None:
 def test_sandbox_status_and_info_alias_dump_is_stable() -> None:
     status = SandboxStatus(state="RUNNING", last_transition_at=datetime(2025, 1, 1, tzinfo=timezone.utc))
     info = SandboxInfo(
-        id=__import__("uuid").uuid4(),
+        id=str(__import__("uuid").uuid4()),
         status=status,
         entrypoint=["/bin/sh"],
         expires_at=datetime(2025, 1, 2, tzinfo=timezone.utc),

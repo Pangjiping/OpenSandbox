@@ -22,7 +22,6 @@ enabling administrative operations and sandbox discovery following the Kotlin SD
 
 import logging
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
 
 from opensandbox.adapters.factory import AdapterFactory
 from opensandbox.config import ConnectionConfig
@@ -30,6 +29,7 @@ from opensandbox.models.sandboxes import (
     PagedSandboxInfos,
     SandboxFilter,
     SandboxInfo,
+    SandboxRenewResponse,
 )
 from opensandbox.services.sandbox import Sandboxes
 
@@ -62,7 +62,7 @@ class SandboxManager:
     )
 
     # Individual operations
-    sandbox_id = UUID("sandbox-id")
+    sandbox_id = "sandbox-id"
     await manager.get_sandbox_info(sandbox_id)
     await manager.pause_sandbox(sandbox_id)
     await manager.resume_sandbox(sandbox_id)
@@ -132,7 +132,7 @@ class SandboxManager:
         """
         return await self._sandbox_service.list_sandboxes(filter)
 
-    async def get_sandbox_info(self, sandbox_id: UUID) -> SandboxInfo:
+    async def get_sandbox_info(self, sandbox_id: str) -> SandboxInfo:
         """
         Get information for a single sandbox by its ID.
 
@@ -148,7 +148,7 @@ class SandboxManager:
         logger.debug(f"Getting info for sandbox: {sandbox_id}")
         return await self._sandbox_service.get_sandbox_info(sandbox_id)
 
-    async def kill_sandbox(self, sandbox_id: UUID) -> None:
+    async def kill_sandbox(self, sandbox_id: str) -> None:
         """
         Terminate a single sandbox.
 
@@ -162,7 +162,7 @@ class SandboxManager:
         await self._sandbox_service.kill_sandbox(sandbox_id)
         logger.info(f"Successfully terminated sandbox: {sandbox_id}")
 
-    async def renew_sandbox(self, sandbox_id: UUID, timeout: timedelta) -> None:
+    async def renew_sandbox(self, sandbox_id: str, timeout: timedelta) -> SandboxRenewResponse:
         """
         Renew expiration time for a single sandbox.
 
@@ -178,9 +178,11 @@ class SandboxManager:
         # Use timezone-aware UTC datetime to avoid cross-timezone ambiguity.
         new_expiration = datetime.now(timezone.utc) + timeout
         logger.info(f"Renew expiration for sandbox {sandbox_id} to {new_expiration}")
-        await self._sandbox_service.renew_sandbox_expiration(sandbox_id, new_expiration)
+        return await self._sandbox_service.renew_sandbox_expiration(
+            sandbox_id, new_expiration
+        )
 
-    async def pause_sandbox(self, sandbox_id: UUID) -> None:
+    async def pause_sandbox(self, sandbox_id: str) -> None:
         """
         Pause a single sandbox while preserving its state.
 
@@ -193,7 +195,7 @@ class SandboxManager:
         logger.info(f"Pausing sandbox: {sandbox_id}")
         await self._sandbox_service.pause_sandbox(sandbox_id)
 
-    async def resume_sandbox(self, sandbox_id: UUID) -> None:
+    async def resume_sandbox(self, sandbox_id: str) -> None:
         """
         Resume a previously paused sandbox.
 

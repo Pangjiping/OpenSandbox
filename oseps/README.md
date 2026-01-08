@@ -78,4 +78,3 @@ metadata (status, authors, dates) visible at the top of the document.
 | `implemented` | Feature has reached GA status with complete documentation. |
 | `withdrawn` | Author has withdrawn the proposal. |
 | `rejected` | Maintainers have declined the proposal. |
-

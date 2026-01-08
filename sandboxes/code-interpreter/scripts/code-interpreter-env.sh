@@ -31,6 +31,17 @@ DEFAULT_JAVA_VERSION=${DEFAULT_JAVA_VERSION:-21}
 DEFAULT_NODE_VERSION=${DEFAULT_NODE_VERSION:-22}
 DEFAULT_GO_VERSION=${DEFAULT_GO_VERSION:-1.25}
 
+append_env_if_needed() {
+	local key=$1
+	local value=$2
+	if [ -z "${EXECD_ENVS:-}" ]; then
+		return
+	}
+	# Best-effort: ensure parent dir exists, ignore errors.
+	mkdir -p "$(dirname "$EXECD_ENVS")" 2>/dev/null || true
+	printf '%s=%s\n' "$key" "$value" >>"$EXECD_ENVS" 2>/dev/null || true
+}
+
 function switch_python() {
 	local version=$1
 	if [ -z "$version" ]; then
@@ -44,6 +55,7 @@ function switch_python() {
 
 	if [ -d "$target_dir" ]; then
 		export PATH="$target_dir/bin:$PATH"
+		append_env_if_needed PATH "$PATH"
 		echo "Switched to Python $(python3 --version)"
 	else
 		echo "Python version $version not found."
@@ -69,6 +81,8 @@ function switch_java() {
 	if [ -n "$java_home" ]; then
 		export JAVA_HOME="$java_home"
 		export PATH="$JAVA_HOME/bin:$PATH"
+		append_env_if_needed JAVA_HOME "$JAVA_HOME"
+		append_env_if_needed PATH "$PATH"
 		echo "Switched to Java $version ($JAVA_HOME)"
 	else
 		echo "Java version $version not found."
@@ -88,6 +102,7 @@ function switch_node() {
 
 	if [ -d "$target_dir" ]; then
 		export PATH="$target_dir/bin:$PATH"
+		append_env_if_needed PATH "$PATH"
 		echo "Switched to Node $(node --version)"
 	else
 		echo "Node version $version not found."
@@ -108,6 +123,8 @@ function switch_go() {
 	if [ -d "$target_dir" ]; then
 		export GOROOT="$target_dir"
 		export PATH="$GOROOT/bin:$PATH"
+		append_env_if_needed GOROOT "$GOROOT"
+		append_env_if_needed PATH "$PATH"
 		echo "Switched to Go $(go version)"
 	else
 		echo "Go version $version not found."

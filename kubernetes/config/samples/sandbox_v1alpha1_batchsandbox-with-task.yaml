@@ -1,0 +1,47 @@
+apiVersion: sandbox.opensandbox.io/v1alpha1
+kind: BatchSandbox
+metadata:
+  labels:
+    app.kubernetes.io/name: sandbox-k8s
+    app.kubernetes.io/managed-by: kustomize
+  name: batchsandbox-sample
+  namespace: sandbox-k8s
+spec:
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: example
+    spec:
+      containers:
+      - name: main
+        image: registry.k8s.io/e2e-test-images/httpd:2.4.38-4
+        command:
+        - tail
+        - -f
+        - /dev/null
+  expireTime: "2025-12-03T12:55:41Z"
+  taskTemplate:
+    metadata:
+      labels:
+        app.task: task
+    spec:
+      container: # container mode
+        image: example.com/agent-task:latest
+        command:
+        - /usr/bin/sleep
+        args:
+        - "1"
+  shardTaskPatches: # patch list for container tasks
+  - spec:
+      container:
+        command: # patch command and args, the final command is `python -m http.server 8080`
+        - python
+        args:
+        - -m
+        - http.server
+        - "8080"
+  - spec:
+      container:
+        args: # patch args only, the final command is `/usr/bin/sleep 456`
+        - "456"

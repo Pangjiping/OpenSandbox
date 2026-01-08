@@ -20,7 +20,6 @@ Implementation of MetricsService that adapts openapi-python-client generated Met
 """
 
 import logging
-from uuid import UUID
 
 import httpx
 
@@ -94,7 +93,7 @@ class MetricsAdapter(Metrics):
         """Return the client for execd API (no auth required)."""
         return self._client
 
-    async def get_metrics(self, sandbox_id: UUID) -> SandboxMetrics:
+    async def get_metrics(self, sandbox_id: str) -> SandboxMetrics:
         """Retrieve current resource usage metrics for a sandbox.
 
         Args:

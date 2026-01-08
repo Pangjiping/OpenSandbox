@@ -18,7 +18,6 @@ Synchronous metrics service adapter implementation.
 """
 
 import logging
-from uuid import UUID
 
 import httpx
 
@@ -58,7 +57,7 @@ class MetricsAdapterSync(MetricsSync):
         )
         self._client.set_httpx_client(self._httpx_client)
 
-    def get_metrics(self, sandbox_id: UUID) -> SandboxMetrics:
+    def get_metrics(self, sandbox_id: str) -> SandboxMetrics:
         try:
             from opensandbox.api.execd.api.metric import get_metrics
             from opensandbox.api.execd.models import Metrics

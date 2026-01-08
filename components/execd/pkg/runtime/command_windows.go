@@ -49,7 +49,7 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.Dir = request.Cwd
-	cmd.Env = os.Environ()
+	cmd.Env = mergeEnvs(os.Environ(), loadExtraEnvFromFile())
 
 	done := make(chan struct{}, 1)
 	safego.Go(func() {
@@ -111,6 +111,7 @@ func (c *Controller) runBackgroundCommand(_ context.Context, request *ExecuteCod
 	cmd := exec.CommandContext(context.Background(), "cmd", "/C", request.Code)
 
 	cmd.Dir = request.Cwd
+	cmd.Env = mergeEnvs(os.Environ(), loadExtraEnvFromFile())
 
 	devNull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0) // best-effort, ignore error
 	cmd.Stdin = devNull

@@ -7,10 +7,10 @@ Complete demonstration of running Python code using the Code Interpreter SDK.
 Pull the prebuilt image from a registry:
 
 ```shell
-docker pull opensandbox/code-interpreter:latest
+docker pull sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest
 
-# use acr from China
-# docker pull sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest
+# use docker hub
+# docker pull opensandbox/code-interpreter:latest
 ```
 
 ## Start OpenSandbox server [local]
@@ -41,7 +41,7 @@ The script creates a Sandbox + CodeInterpreter, runs a Python code snippet and p
 
 - `SANDBOX_DOMAIN`: Sandbox service address (default: `localhost:8080`)
 - `SANDBOX_API_KEY`: API key if your server requires authentication
-- `SANDBOX_IMAGE`: Sandbox image to use (default: `opensandbox/code-interpreter:latest`)
+- `SANDBOX_IMAGE`: Sandbox image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest`)
 
 ## Example output
 

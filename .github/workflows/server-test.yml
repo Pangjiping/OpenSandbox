@@ -6,6 +6,10 @@ on:
     paths:
       - 'server/**'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -76,13 +80,13 @@ jobs:
 
           # Wait for server to start
           sleep 10
-          
+
           # Show server logs for debugging
           cat app.log
-          
+
           # Run smoke test
           chmod +x tests/smoke.sh
           ./tests/smoke.sh
-          
+
           # Show final logs
           cat app.log

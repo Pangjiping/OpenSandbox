@@ -19,7 +19,6 @@ Synchronous sandbox service adapter implementation.
 
 import logging
 from datetime import datetime, timedelta
-from uuid import UUID
 
 import httpx
 
@@ -42,6 +41,7 @@ from opensandbox.models.sandboxes import (
     SandboxFilter,
     SandboxImageSpec,
     SandboxInfo,
+    SandboxRenewResponse,
 )
 from opensandbox.sync.services.sandbox import SandboxesSync
 
@@ -118,7 +118,7 @@ class SandboxesAdapterSync(SandboxesSync):
             logger.error("Failed to create sandbox with image: %s", spec.image, exc_info=e)
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
-    def get_sandbox_info(self, sandbox_id: UUID) -> SandboxInfo:
+    def get_sandbox_info(self, sandbox_id: str) -> SandboxInfo:
         try:
             from opensandbox.api.lifecycle.api.sandboxes import get_sandboxes_sandbox_id
             from opensandbox.api.lifecycle.models import Sandbox as ApiSandbox
@@ -170,7 +170,7 @@ class SandboxesAdapterSync(SandboxesSync):
             logger.error("Failed to list sandboxes", exc_info=e)
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
-    def get_sandbox_endpoint(self, sandbox_id: UUID, port: int) -> SandboxEndpoint:
+    def get_sandbox_endpoint(self, sandbox_id: str, port: int) -> SandboxEndpoint:
         try:
             from opensandbox.api.lifecycle.api.sandboxes import (
                 get_sandboxes_sandbox_id_endpoints_port,
@@ -189,7 +189,7 @@ class SandboxesAdapterSync(SandboxesSync):
             logger.error("Failed to retrieve sandbox endpoint for sandbox %s", sandbox_id, exc_info=e)
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
-    def pause_sandbox(self, sandbox_id: UUID) -> None:
+    def pause_sandbox(self, sandbox_id: str) -> None:
         try:
             from opensandbox.api.lifecycle.api.sandboxes import (
                 post_sandboxes_sandbox_id_pause,
@@ -203,7 +203,7 @@ class SandboxesAdapterSync(SandboxesSync):
             logger.error("Failed to pause sandbox: %s", sandbox_id, exc_info=e)
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
-    def resume_sandbox(self, sandbox_id: UUID) -> None:
+    def resume_sandbox(self, sandbox_id: str) -> None:
         try:
             from opensandbox.api.lifecycle.api.sandboxes import (
                 post_sandboxes_sandbox_id_resume,
@@ -217,10 +217,15 @@ class SandboxesAdapterSync(SandboxesSync):
             logger.error("Failed to resume sandbox: %s", sandbox_id, exc_info=e)
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
-    def renew_sandbox_expiration(self, sandbox_id: UUID, new_expiration_time: datetime) -> None:
+    def renew_sandbox_expiration(
+        self, sandbox_id: str, new_expiration_time: datetime
+    ) -> SandboxRenewResponse:
         try:
             from opensandbox.api.lifecycle.api.sandboxes import (
                 post_sandboxes_sandbox_id_renew_expiration,
+            )
+            from opensandbox.api.lifecycle.models.renew_sandbox_expiration_response import (
+                RenewSandboxExpirationResponse,
             )
 
             renew_request = SandboxModelConverter.to_api_renew_request(new_expiration_time)
@@ -230,11 +235,17 @@ class SandboxesAdapterSync(SandboxesSync):
                 body=renew_request,
             )
             handle_api_error(response_obj, f"Renew sandbox {sandbox_id} expiration")
+            parsed = require_parsed(
+                response_obj,
+                RenewSandboxExpirationResponse,
+                f"Renew sandbox {sandbox_id} expiration",
+            )
+            return SandboxModelConverter.to_sandbox_renew_response(parsed)
         except Exception as e:
             logger.error("Failed to renew sandbox %s expiration", sandbox_id, exc_info=e)
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
-    def kill_sandbox(self, sandbox_id: UUID) -> None:
+    def kill_sandbox(self, sandbox_id: str) -> None:
         try:
             from opensandbox.api.lifecycle.api.sandboxes import (
                 delete_sandboxes_sandbox_id,

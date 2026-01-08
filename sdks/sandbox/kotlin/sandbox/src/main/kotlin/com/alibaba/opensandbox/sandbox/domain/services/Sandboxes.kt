@@ -22,9 +22,9 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
 import java.time.Duration
 import java.time.OffsetDateTime
-import java.util.UUID
 
 /**
  * Core sandbox lifecycle management service.
@@ -61,7 +61,7 @@ interface Sandboxes {
      * @param sandboxId Unique identifier of the sandbox
      * @return Current sandbox information
      */
-    fun getSandboxInfo(sandboxId: UUID): SandboxInfo
+    fun getSandboxInfo(sandboxId: String): SandboxInfo
 
     /**
      * Lists sandboxes with optional filtering.
@@ -79,7 +79,7 @@ interface Sandboxes {
      * @return Target sandbox endpoint
      */
     fun getSandboxEndpoint(
-        sandboxId: UUID,
+        sandboxId: String,
         port: Int,
     ): SandboxEndpoint
 
@@ -88,30 +88,32 @@ interface Sandboxes {
      *
      * @param sandboxId Unique identifier of the sandbox
      */
-    fun pauseSandbox(sandboxId: UUID)
+    fun pauseSandbox(sandboxId: String)
 
     /**
      * Resumes a paused sandbox.
      *
      * @param sandboxId Unique identifier of the sandbox
      */
-    fun resumeSandbox(sandboxId: UUID)
+    fun resumeSandbox(sandboxId: String)
 
     /**
      * Renew the expiration time of a sandbox.
      *
      * @param sandboxId Unique identifier of the sandbox
      * @param newExpirationTime New expiration timestamp
+     *
+     * @return Sandbox renew response with new expire info
      */
     fun renewSandboxExpiration(
-        sandboxId: UUID,
+        sandboxId: String,
         newExpirationTime: OffsetDateTime,
-    )
+    ): SandboxRenewResponse
 
     /**
      * Terminates a sandbox and releases all associated resources.
      *
      * @param sandboxId Unique identifier of the sandbox
      */
-    fun killSandbox(sandboxId: UUID)
+    fun killSandbox(sandboxId: String)
 }

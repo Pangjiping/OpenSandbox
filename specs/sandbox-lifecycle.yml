@@ -356,7 +356,6 @@ components:
       description: Unique sandbox identifier
       schema:
         type: string
-        format: uuid
   headers:
     XRequestId:
       description: Unique request identifier for tracing
@@ -475,7 +474,6 @@ components:
       properties:
         id:
           type: string
-          format: uuid
           description: Unique sandbox identifier
 
         status:
@@ -517,7 +515,6 @@ components:
       properties:
         id:
           type: string
-          format: uuid
           description: Unique sandbox identifier
 
         image:

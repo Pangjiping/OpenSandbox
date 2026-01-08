@@ -73,12 +73,15 @@ async def main() -> None:
             context=context,
         )
 
+        # 或者：直接传入 language（推荐使用 SupportedLanguage.*），使用该语言默认上下文执行（可跨次保持状态）
+        # result = await interpreter.codes.run("print('hi')", language=SupportedLanguage.PYTHON)
+
         # 7. 打印输出
         if result.result:
             print(result.result[0].text)
 
         # 8. 清理远程实例（可选，但推荐）
-        await interpreter.kill()
+        await sandbox.kill()
 
 
 if __name__ == "__main__":
@@ -115,7 +118,7 @@ with sandbox:
     result = interpreter.codes.run("result = 2 + 2\nresult")
     if result.result:
         print(result.result[0].text)
-    interpreter.kill()
+    sandbox.kill()
 ```
 
 ## 运行时配置
@@ -136,6 +139,31 @@ Code Interpreter SDK 依赖于特定的运行环境。请确保你的沙箱服�
 | Go      | `GO_VERSION`     | `1.24` | 镜像默认值         |
 
 ## 核心功能示例
+
+### 0. 直接传 `language`（使用该语言默认上下文）
+
+可以直接传入 `language`（推荐：`SupportedLanguage.*`），跳过 `create_context`。
+当 `context.id` 省略时，**execd 会为该语言创建/复用默认 session**，因此状态可以跨次执行保持：
+
+```python
+from code_interpreter import SupportedLanguage
+
+execution = await interpreter.codes.run(
+    "result = 2 + 2\nresult",
+    language=SupportedLanguage.PYTHON,
+)
+assert execution.result and execution.result[0].text == "4"
+```
+
+状态持久化示例（Python 默认上下文）：
+
+```python
+from code_interpreter import SupportedLanguage
+
+await interpreter.codes.run("x = 42", language=SupportedLanguage.PYTHON)
+execution = await interpreter.codes.run("result = x\nresult", language=SupportedLanguage.PYTHON)
+assert execution.result and execution.result[0].text == "42"
+```
 
 ### 1. Java 代码执行
 

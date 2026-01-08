@@ -27,5 +27,6 @@ RUN CGO_ENABLED=0 go build -o /build/execd ./main.go
 FROM alpine:latest
 
 COPY --from=builder /build/execd .
+COPY bootstrap.sh .
 
 ENTRYPOINT ["./execd"]

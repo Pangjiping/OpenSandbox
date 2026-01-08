@@ -96,6 +96,24 @@ should_ignore_path() {
   return 1
 }
 
+is_k8s_mock_go() {
+  local file="${1-}"
+  [[ -z "$file" ]] && return 1
+  # Skip any Go mocks under kubernetes/internal:
+  # - filenames ending with _mock.go
+  # - any file under a /mock/ directory
+  if [[ "$file" != kubernetes/internal/* ]]; then
+    return 1
+  fi
+  if [[ "$file" == *"_mock.go" ]]; then
+    return 0
+  fi
+  if [[ "$file" == */mock/*.go ]]; then
+    return 0
+  fi
+  return 1
+}
+
 is_generated_go() {
   local file="${1-}"
   [[ -z "$file" ]] && return 1
@@ -146,6 +164,10 @@ process_file() {
   local style
 
   if should_ignore_path "$file"; then
+    return
+  fi
+
+  if is_k8s_mock_go "$file"; then
     return
   fi
 

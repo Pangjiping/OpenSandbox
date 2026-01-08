@@ -77,12 +77,16 @@ async def main() -> None:
             context=context,
         )
 
+        # Alternatively, you can pass a language directly (recommended: SupportedLanguage.*).
+        # This uses the default context for that language (state can persist across runs).
+        # result = await interpreter.codes.run("print('hi')", language=SupportedLanguage.PYTHON)
+
         # 7. Print output
         if result.result:
             print(result.result[0].text)
 
         # 8. Cleanup remote instance (optional but recommended)
-        await interpreter.kill()
+        await sandbox.kill()
 
 
 if __name__ == "__main__":
@@ -119,7 +123,7 @@ with sandbox:
     result = interpreter.codes.run("result = 2 + 2\nresult")
     if result.result:
         print(result.result[0].text)
-    interpreter.kill()
+    sandbox.kill()
 ```
 
 ## Runtime Configuration
@@ -142,6 +146,32 @@ creating the `Sandbox`.
 | Go       | `GO_VERSION`         | `1.24`        | Image default      |
 
 ## Usage Examples
+
+### 0. Run with `language` (default language context)
+
+You can pass `language` directly (recommended: `SupportedLanguage.*`) and skip `create_context`.
+When `context.id` is omitted, **execd will create/reuse a default session for that language**, so
+state can persist across runs:
+
+```python
+from code_interpreter import SupportedLanguage
+
+execution = await interpreter.codes.run(
+    "result = 2 + 2\nresult",
+    language=SupportedLanguage.PYTHON,
+)
+assert execution.result and execution.result[0].text == "4"
+```
+
+State persistence example (default Python context):
+
+```python
+from code_interpreter import SupportedLanguage
+
+await interpreter.codes.run("x = 42", language=SupportedLanguage.PYTHON)
+execution = await interpreter.codes.run("result = x\nresult", language=SupportedLanguage.PYTHON)
+assert execution.result and execution.result[0].text == "42"
+```
 
 ### 1. Java Code Execution
 

@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit
  */
 class HttpClientProvider(
     val config: ConnectionConfig,
-) {
+) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(HttpClientProvider::class.java)
 
     private val baseBuilder: OkHttpClient.Builder
@@ -149,7 +149,7 @@ class HttpClientProvider(
     /**
      * Closes the underlying HTTP client and releases resources.
      */
-    fun close() {
+    override fun close() {
         // Now we can pass the specific backing fields to check initialization
         shutdownClientQuietly(httpClientLazy, "http client")
         shutdownClientQuietly(authenticatedClientLazy, "authenticated client")

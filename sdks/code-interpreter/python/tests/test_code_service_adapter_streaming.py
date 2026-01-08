@@ -43,6 +43,15 @@ class _SseTransport(httpx.AsyncBaseTransport):
             )
             return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=sse, request=request)
 
+        if request.url.path == "/code" and payload.get("code") == "print(2)":
+            assert payload["context"]["language"] == "go"
+            sse = (
+                b'data: {"type":"init","text":"exec-2","timestamp":1}\n\n'
+                b'data: {"type":"stdout","text":"2\\n","timestamp":2}\n\n'
+                b'data: {"type":"execution_complete","timestamp":3,"execution_time":7}\n\n'
+            )
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"}, content=sse, request=request)
+
         return httpx.Response(400, content=b"bad", request=request)
 
 
@@ -66,6 +75,17 @@ async def test_run_code_streaming_happy_path_updates_execution() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_code_can_accept_language_string_without_context() -> None:
+    cfg = ConnectionConfig(protocol="http", transport=_SseTransport())
+    endpoint = SandboxEndpoint(endpoint="localhost:44772", port=44772)
+    adapter = CodesAdapter(endpoint, cfg)
+
+    execution = await adapter.run("print(2)", language=SupportedLanguage.GO)
+    assert execution.id == "exec-2"
+    assert execution.logs.stdout[0].text == "2\n"
+
+
+@pytest.mark.asyncio
 async def test_run_code_rejects_blank_code() -> None:
     cfg = ConnectionConfig(protocol="http")
     endpoint = SandboxEndpoint(endpoint="localhost:44772", port=44772)
@@ -73,6 +93,20 @@ async def test_run_code_rejects_blank_code() -> None:
 
     with pytest.raises(InvalidArgumentException):
         await adapter.run("   ")
+
+
+@pytest.mark.asyncio
+async def test_run_code_rejects_mismatched_language_and_context() -> None:
+    cfg = ConnectionConfig(protocol="http", transport=_SseTransport())
+    endpoint = SandboxEndpoint(endpoint="localhost:44772", port=44772)
+    adapter = CodesAdapter(endpoint, cfg)
+
+    with pytest.raises(InvalidArgumentException):
+        await adapter.run(
+            "print(1)",
+            context=CodeContext(language=SupportedLanguage.PYTHON),
+            language=SupportedLanguage.GO,
+        )
 
 
 @pytest.mark.asyncio

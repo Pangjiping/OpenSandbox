@@ -1,0 +1,71 @@
+apiVersion: sandbox.opensandbox.io/v1alpha1
+kind: Pool
+metadata:
+  labels:
+    app.kubernetes.io/name: sandbox-k8s
+    app.kubernetes.io/managed-by: kustomize
+  name: pool-sample
+  namespace: sandbox-k8s
+spec:
+  template:
+    metadata:
+      labels:
+        app: example
+    spec:
+      shareProcessNamespace: true
+      volumes:
+        - name: sandbox-storage
+          emptyDir: { }
+        - name: opensandbox-bin
+          emptyDir: { }
+      initContainers:
+        - name: execd-installer
+          image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:latest
+          command: [ "/bin/sh", "-c" ]
+          args:
+            - |
+              cp ./execd /opt/opensandbox/execd/execd && 
+              chmod +x /opt/opensandbox/execd/execd
+          volumeMounts:
+            - name: opensandbox-bin
+              mountPath: /opt/opensandbox/execd
+      containers:
+        - name: main
+          image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest
+          command:
+          - "/bin/sh"
+          - "-c"
+          args:
+            - "/opt/opensandbox/execd/execd > /tmp/execd.log 2>&1"
+          env:
+          - name: SANDBOX_MAIN_CONTAINER
+            value: main
+          volumeMounts:
+            - name: sandbox-storage
+              mountPath: /var/lib/sandbox
+            - name: opensandbox-bin
+              mountPath: /opt/opensandbox/execd
+        - command:
+          - /workspace/server
+          - -listen-addr=0.0.0.0:5758
+          - -enable-sidecar-mode=true
+          image: task-executor:dev
+          name: task-executor
+          securityContext:
+            capabilities:
+              add:
+                - SYS_PTRACE
+                - SYS_ADMIN
+                - NET_ADMIN
+          volumeMounts:
+            - name: sandbox-storage
+              mountPath: /var/lib/sandbox
+            - name: opensandbox-bin
+              mountPath: /opt/opensandbox/execd
+      tolerations:
+        - operator: "Exists"
+  capacitySpec:
+    bufferMax: 3
+    bufferMin: 1
+    poolMax: 5
+    poolMin: 0

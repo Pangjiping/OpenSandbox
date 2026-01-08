@@ -13,6 +13,10 @@ on:
   push:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   python-e2e:
     name: Python E2E (docker bridge)
@@ -47,7 +51,7 @@ jobs:
           [docker]
           network_mode = "bridge"
           EOF
-          
+
           ./scripts/python-e2e.sh
 
       - name: Eval logs

@@ -196,7 +196,7 @@ PagedSandboxInfos sandboxes = manager.listSandboxInfos(
 sandboxes.getSandboxInfos().forEach(info -> {
     System.out.println("Found sandbox: " + info.getId());
     // Perform admin actions
-    manager.killSandbox(UUID.fromString(info.getId()));
+    manager.killSandbox(info.getId());
 });
 
 // Try-with-resources will automatically call manager.close()

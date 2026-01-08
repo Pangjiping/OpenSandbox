@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -32,7 +32,7 @@ class _Resp:
         self.parsed = parsed
 
 
-def _api_create_sandbox_response(sandbox_id: UUID):
+def _api_create_sandbox_response(sandbox_id: str):
     from opensandbox.api.lifecycle.models.create_sandbox_response import (
         CreateSandboxResponse,
     )
@@ -57,7 +57,7 @@ def _api_list_sandboxes_response():
     from opensandbox.api.lifecycle.models.sandbox_status import SandboxStatus
 
     sbx = Sandbox(
-        id=uuid4(),
+        id=str(uuid4()),
         image=ImageSpec(uri="python:3.11"),
         status=SandboxStatus(state="Running"),
         entrypoint=["/bin/sh"],
@@ -82,7 +82,7 @@ async def test_create_sandbox_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def _fake_asyncio_detailed(*, client, body):
         called["body"] = body
-        return _Resp(status_code=200, parsed=_api_create_sandbox_response(uuid4()))
+        return _Resp(status_code=200, parsed=_api_create_sandbox_response(str(uuid4())))
 
     monkeypatch.setattr(
         "opensandbox.api.lifecycle.api.sandboxes.post_sandboxes.asyncio_detailed",
@@ -101,7 +101,7 @@ async def test_create_sandbox_success(monkeypatch: pytest.MonkeyPatch) -> None:
         resource={"cpu": "100m"},
         extensions={"storage.id": "abc123", "debug": "true"},
     )
-    assert isinstance(out.id, UUID)
+    assert isinstance(out.id, str)
     assert "image" in called["body"].to_dict()
     assert called["body"].to_dict()["extensions"] == {"storage.id": "abc123", "debug": "true"}
 
@@ -156,8 +156,8 @@ async def test_list_sandboxes_metadata_double_encoded(monkeypatch: pytest.Monkey
 
 @pytest.mark.asyncio
 async def test_pause_resume_kill_call_openapi(monkeypatch: pytest.MonkeyPatch) -> None:
-    sbx_id = uuid4()
-    calls: list[tuple[str, UUID]] = []
+    sbx_id = str(uuid4())
+    calls: list[tuple[str, str]] = []
 
     async def _ok_pause(*, client, sandbox_id):
         calls.append(("pause", sandbox_id))
@@ -197,8 +197,15 @@ async def test_renew_sandbox_expiration_sends_timezone_aware(monkeypatch: pytest
     captured = {}
 
     async def _fake_asyncio_detailed(*, client, sandbox_id, body):
+        from opensandbox.api.lifecycle.models.renew_sandbox_expiration_response import (
+            RenewSandboxExpirationResponse,
+        )
+
         captured["expires_at"] = body.expires_at
-        return _Resp(status_code=204, parsed=None)
+        return _Resp(
+            status_code=200,
+            parsed=RenewSandboxExpirationResponse(expires_at=body.expires_at),
+        )
 
     monkeypatch.setattr(
         "opensandbox.api.lifecycle.api.sandboxes.post_sandboxes_sandbox_id_renew_expiration.asyncio_detailed",
@@ -206,6 +213,6 @@ async def test_renew_sandbox_expiration_sends_timezone_aware(monkeypatch: pytest
     )
 
     adapter = SandboxesAdapter(ConnectionConfig())
-    await adapter.renew_sandbox_expiration(uuid4(), datetime(2025, 1, 1))  # naive
+    await adapter.renew_sandbox_expiration(str(uuid4()), datetime(2025, 1, 1))  # naive
 
     assert captured["expires_at"].tzinfo is timezone.utc

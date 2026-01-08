@@ -17,7 +17,6 @@
 package com.alibaba.opensandbox.sandbox.domain.services
 
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxMetrics
-import java.util.UUID
 
 /**
  * Metrics collection and monitoring operations for sandbox environments.
@@ -29,5 +28,5 @@ interface Metrics {
      * @param sandboxId Unique identifier of the target sandbox
      * @return Current resource utilization snapshot
      */
-    fun getMetrics(sandboxId: UUID): SandboxMetrics
+    fun getMetrics(sandboxId: String): SandboxMetrics
 }

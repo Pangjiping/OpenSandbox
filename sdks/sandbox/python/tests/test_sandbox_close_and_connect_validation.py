@@ -41,7 +41,7 @@ async def test_sandbox_close_does_not_close_user_transport() -> None:
     cfg = ConnectionConfig(transport=t)
 
     sbx = Sandbox(
-        sandbox_id=__import__("uuid").uuid4(),
+        sandbox_id=str(__import__("uuid").uuid4()),
         sandbox_service=_NoopService(),
         filesystem_service=_NoopService(),
         command_service=_NoopService(),

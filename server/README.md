@@ -58,6 +58,12 @@ The server uses a TOML configuration file to select and configure the underlying
 ```bash
 cp example.config.toml ~/.sandbox.toml
 ```
+**[optional] Create K8S configuration file：
+The K8S version of the Sandbox Operator needs to be deployed in the cluster, refer to the Kubernetes directory.
+```bash
+cp example.config.k8s.toml ~/.sandbox.toml
+cp example.batchsandbox-template.yaml ~/batchsandbox-template.yaml
+```
 
 **[optional] Edit `~/.sandbox.toml`** for your environment:
 
@@ -143,7 +149,7 @@ Authentication is enforced only when `server.api_key` is set. If the value is em
 All API endpoints (except `/health`, `/docs`, `/redoc`) require authentication via the `OPEN-SANDBOX-API-KEY` header when authentication is enabled:
 
 ```bash
-curl http://localhost:8080/sandboxes
+curl http://localhost:8080/v1/sandboxes
 ```
 
 ### Example usage
@@ -151,7 +157,7 @@ curl http://localhost:8080/sandboxes
 **Create a Sandbox**
 
 ```bash
-curl -X POST "http://localhost:8080/sandboxes" \
+curl -X POST "http://localhost:8080/v1/sandboxes" \
   -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -203,18 +209,18 @@ Response:
 
 ```bash
 curl -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
-  http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab
+  http://localhost:8080/v1/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab
 ```
 
 **Get Service Endpoint**
 
 ```bash
 curl -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
-  http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/endpoints/8000
+  http://localhost:8080/v1/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/endpoints/8000
 
 # execd (agent) endpoint
 curl -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
-  http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/endpoints/44772
+  http://localhost:8080/v1/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/endpoints/44772
 ```
 
 Response:
@@ -227,7 +233,7 @@ Response:
 **Renew Expiration**
 
 ```bash
-curl -X POST "http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/renew-expiration" \
+curl -X POST "http://localhost:8080/v1/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab/renew-expiration" \
   -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -240,7 +246,7 @@ curl -X POST "http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890
 ```bash
 curl -X DELETE \
   -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
-  http://localhost:8080/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab
+  http://localhost:8080/v1/sandboxes/a1b2c3d4-5678-90ab-cdef-1234567890ab
 ```
 
 ## Architecture

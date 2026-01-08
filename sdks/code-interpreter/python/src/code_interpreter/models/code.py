@@ -35,6 +35,7 @@ class SupportedLanguage:
     GO = "go"
     TYPESCRIPT = "typescript"
     BASH = "bash"
+    JAVASCRIPT = "javascript"
 
 
 class CodeContext(BaseModel):

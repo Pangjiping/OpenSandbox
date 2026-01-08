@@ -16,8 +16,6 @@
 
 package com.alibaba.opensandbox.sandbox.domain.services
 
-import java.util.UUID
-
 /**
  * Health monitoring operations for sandbox environments.
  */
@@ -28,5 +26,5 @@ interface Health {
      * @param sandboxId Unique identifier of the target sandbox
      * @return true if sandbox is healthy and responsive, false otherwise
      */
-    fun ping(sandboxId: UUID): Boolean
+    fun ping(sandboxId: String): Boolean
 }

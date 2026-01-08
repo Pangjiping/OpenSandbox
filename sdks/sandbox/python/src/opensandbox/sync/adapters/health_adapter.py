@@ -18,7 +18,6 @@ Synchronous health service adapter implementation.
 """
 
 import logging
-from uuid import UUID
 
 import httpx
 
@@ -49,7 +48,7 @@ class HealthAdapterSync(HealthSync):
         )
         self._client.set_httpx_client(self._httpx_client)
 
-    def ping(self, sandbox_id: UUID) -> bool:
+    def ping(self, sandbox_id: str) -> bool:
         try:
             from opensandbox.api.execd.api.health import ping
 

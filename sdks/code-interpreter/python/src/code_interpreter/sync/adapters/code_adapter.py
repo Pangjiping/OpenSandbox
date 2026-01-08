@@ -114,7 +114,7 @@ class CodesAdapterSync(CodesSync):
             from opensandbox.api.execd.models.code_context_request import (
                 CodeContextRequest,
             )
-            from opensandbox.api.execd.types import UNSET
+            from opensandbox.api.execd.types import Unset
 
             response_obj = create_code_context.sync_detailed(
                 client=self._client,
@@ -122,16 +122,86 @@ class CodesAdapterSync(CodesSync):
             )
             handle_api_error(response_obj, "Create code context")
             parsed = require_parsed(response_obj, ApiCodeContext, "Create code context")
-            context_id = parsed.id if parsed.id is not UNSET else None
+            context_id = None if isinstance(parsed.id, Unset) else parsed.id
             return CodeContextSync(id=context_id, language=parsed.language)
         except Exception as e:
             logger.error("Failed to create context", exc_info=e)
+            raise ExceptionConverter.to_sandbox_exception(e) from e
+
+    def get_context(self, context_id: str) -> CodeContextSync:
+        try:
+            from opensandbox.api.execd.api.code_interpreting import get_context
+            from opensandbox.api.execd.models.code_context import (
+                CodeContext as ApiCodeContext,
+            )
+            from opensandbox.api.execd.types import Unset
+
+            response_obj = get_context.sync_detailed(
+                client=self._client,
+                context_id=context_id,
+            )
+            handle_api_error(response_obj, "Get code context")
+            parsed = require_parsed(response_obj, ApiCodeContext, "Get code context")
+            context_id_val = None if isinstance(parsed.id, Unset) else parsed.id
+            return CodeContextSync(id=context_id_val, language=parsed.language)
+        except Exception as e:
+            logger.error("Failed to get context", exc_info=e)
+            raise ExceptionConverter.to_sandbox_exception(e) from e
+
+    def list_contexts(self, language: str) -> list[CodeContextSync]:
+        try:
+            from opensandbox.api.execd.api.code_interpreting import list_contexts
+            from opensandbox.api.execd.types import UNSET
+
+            response_obj = list_contexts.sync_detailed(
+                client=self._client,
+                language=language,
+            )
+            handle_api_error(response_obj, "List code contexts")
+            parsed_list = require_parsed(response_obj, list, "List code contexts")
+            result: list[CodeContextSync] = []
+            for c in parsed_list:
+                # c is an API CodeContext model
+                context_id_val = c.id if c.id is not UNSET else None
+                result.append(CodeContextSync(id=context_id_val, language=c.language))
+            return result
+        except Exception as e:
+            logger.error("Failed to list contexts", exc_info=e)
+            raise ExceptionConverter.to_sandbox_exception(e) from e
+
+    def delete_context(self, context_id: str) -> None:
+        try:
+            from opensandbox.api.execd.api.code_interpreting import delete_context
+
+            response_obj = delete_context.sync_detailed(
+                client=self._client,
+                context_id=context_id,
+            )
+            handle_api_error(response_obj, "Delete code context")
+        except Exception as e:
+            logger.error("Failed to delete context", exc_info=e)
+            raise ExceptionConverter.to_sandbox_exception(e) from e
+
+    def delete_contexts(self, language: str) -> None:
+        try:
+            from opensandbox.api.execd.api.code_interpreting import (
+                delete_contexts_by_language,
+            )
+
+            response_obj = delete_contexts_by_language.sync_detailed(
+                client=self._client,
+                language=language,
+            )
+            handle_api_error(response_obj, "Delete code contexts by language")
+        except Exception as e:
+            logger.error("Failed to delete contexts", exc_info=e)
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
     def run(
         self,
         code: str,
         *,
+        language: str | None = None,
         context: CodeContextSync | None = None,
         handlers: ExecutionHandlersSync | None = None,
     ) -> Execution:
@@ -155,7 +225,15 @@ class CodesAdapterSync(CodesSync):
             raise InvalidArgumentException("Code cannot be empty")
 
         try:
-            context = context or CodeContextSync(language=SupportedLanguageSync.PYTHON)
+            if context is not None and language is not None and context.language != language:
+                raise InvalidArgumentException(
+                    f"language '{language}' must match context.language '{context.language}'"
+                )
+
+            if context is None:
+                # Default context: language default context (server-side behavior).
+                # When context.id is omitted, execd will create/reuse a default session per language.
+                context = CodeContextSync(language=language or SupportedLanguageSync.PYTHON)
             api_request = {
                 "code": code,
                 "context": {

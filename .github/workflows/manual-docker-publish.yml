@@ -11,6 +11,7 @@ on:
           - execd
           - code-interpreter
           - ingress
+          - egress
         default: 'execd'
       image_tag:
         description: 'Docker image tag'
@@ -21,6 +22,7 @@ on:
       - 'docker/execd/**'
       - 'docker/code-interpreter/**'
       - 'docker/ingress/**'
+      - 'docker/egress/**'
 
 jobs:
   publish:
@@ -54,10 +56,10 @@ jobs:
           if [[ "${{ github.ref }}" == refs/tags/docker/* ]]; then
             TAG_PATH="${{ github.ref }}"
             TAG_PATH="${TAG_PATH#refs/tags/}"
-          
+
             COMPONENT=$(echo "$TAG_PATH" | cut -d'/' -f2)
             IMAGE_TAG=$(echo "$TAG_PATH" | cut -d'/' -f3)
-          
+
             echo "component=$COMPONENT" >> $GITHUB_OUTPUT
             echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
           else
@@ -76,15 +78,17 @@ jobs:
         run: |
           COMPONENT="${{ steps.parse_tag.outputs.component }}"
           IMAGE_TAG="${{ steps.parse_tag.outputs.image_tag }}"
-          
+
           if [ "$COMPONENT" == "execd" ]; then
             cd components/execd
           elif [ "$COMPONENT" == "ingress" ]; then
             cd components/ingress
+          elif [ "$COMPONENT" == "egress" ]; then
+            cd components/egress
           else
             cd sandboxes/$COMPONENT
           fi
-          
+
           export TAG=$IMAGE_TAG
           chmod +x build.sh
           ./build.sh

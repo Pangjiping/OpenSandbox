@@ -30,6 +30,7 @@ object SupportedLanguage {
     const val GO = "go"
     const val TYPESCRIPT = "typescript"
     const val BASH = "bash"
+    const val JAVASCRIPT = "javascript"
 }
 
 /**

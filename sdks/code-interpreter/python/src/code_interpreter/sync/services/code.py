@@ -22,7 +22,7 @@ session persistence, and real-time execution capabilities (SSE streaming), **in 
 This is the sync counterpart of :mod:`code_interpreter.services.code`.
 """
 
-from typing import Protocol
+from typing import Protocol, overload
 
 from opensandbox.models.execd import Execution
 from opensandbox.models.execd_sync import ExecutionHandlersSync
@@ -73,10 +73,45 @@ class CodesSync(Protocol):
         """
         ...
 
+    def get_context(self, context_id: str) -> CodeContextSync:
+        """Get an existing execution context by id (blocking)."""
+        ...
+
+    def list_contexts(self, language: str) -> list[CodeContextSync]:
+        """List active contexts under a given language/runtime (blocking)."""
+        ...
+
+    def delete_context(self, context_id: str) -> None:
+        """Delete an execution context by id (blocking)."""
+        ...
+
+    def delete_contexts(self, language: str) -> None:
+        """Delete all contexts under a language/runtime (blocking)."""
+        ...
+
+    @overload
     def run(
         self,
         code: str,
         *,
+        context: CodeContextSync,
+        handlers: ExecutionHandlersSync | None = None,
+    ) -> Execution: ...
+
+    @overload
+    def run(
+        self,
+        code: str,
+        *,
+        language: str,
+        handlers: ExecutionHandlersSync | None = None,
+    ) -> Execution: ...
+
+    def run(
+        self,
+        code: str,
+        *,
+        language: str | None = None,
         context: CodeContextSync | None = None,
         handlers: ExecutionHandlersSync | None = None,
     ) -> Execution:
@@ -95,7 +130,11 @@ class CodesSync(Protocol):
 
         Args:
             code: Source code to execute.
-            context: Execution context (language + optional id). If None, a temporary Python context is used.
+            language: Convenience language selector for this run. If provided and ``context`` is None,
+                a **default context for this language** is used (execd will create/reuse a default
+                session when ``context.id`` is omitted). If both ``language`` and ``context`` are
+                provided, they must match.
+            context: Execution context (language + optional id). If None, the default Python context is used.
             handlers: Optional streaming handlers for stdout/stderr/events.
 
         Returns:

@@ -54,7 +54,7 @@ async def test_manager_renew_uses_utc_datetime() -> None:
     svc = _SandboxServiceStub()
     mgr = SandboxManager(svc, ConnectionConfig())
 
-    sid = uuid4()
+    sid = str(uuid4())
     await mgr.renew_sandbox(sid, timedelta(seconds=5))
 
     assert len(svc.renew_calls) == 1

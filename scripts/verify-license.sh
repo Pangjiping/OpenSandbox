@@ -21,6 +21,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CURRENT_YEAR="$(date +%Y)"
+MIN_YEAR="2025"
 LICENSE_OWNER="Alibaba Group Holding Ltd."
 LICENSE_REGEX="Copyright [0-9]{4} ${LICENSE_OWNER// / }"
 
@@ -40,6 +41,24 @@ IGNORED_PATHS=(
   "NOTICE"
   "scripts/spec-doc/index.html" # Generated doc
 )
+
+is_k8s_mock_go() {
+  local file="${1-}"
+  [[ -z "$file" ]] && return 1
+  # Skip any Go mocks under kubernetes/internal:
+  # - filenames ending with _mock.go
+  # - any file under a /mock/ directory
+  if [[ "$file" != kubernetes/internal/* ]]; then
+    return 1
+  fi
+  if [[ "$file" == *"_mock.go" ]]; then
+    return 0
+  fi
+  if [[ "$file" == */mock/*.go ]]; then
+    return 0
+  fi
+  return 1
+}
 
 is_generated_to_skip() {
   local file="$1"
@@ -92,6 +111,10 @@ while IFS= read -r file; do
   if is_ignored "$file"; then
     continue
   fi
+  # Skip kubernetes internal mock go files
+  if is_k8s_mock_go "$file"; then
+    continue
+  fi
   # Skip generated files
   if is_generated_to_skip "$file"; then
     continue
@@ -109,7 +132,7 @@ while IFS= read -r file; do
     continue
   fi
   found_year="$(echo "$header" | grep -Eo "$LICENSE_REGEX" | head -n1 | grep -Eo '[0-9]{4}')"
-  if [[ -z "$found_year" || "$found_year" -lt "$CURRENT_YEAR" ]]; then
+  if [[ -z "$found_year" || "$found_year" -gt "$CURRENT_YEAR" || "$found_year" -lt "$MIN_YEAR" ]]; then
     missing+=("$file")
   fi
 done < <(git -C "$REPO_ROOT" ls-files)

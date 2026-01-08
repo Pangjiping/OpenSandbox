@@ -21,7 +21,6 @@ This is the sync counterpart of :mod:`opensandbox.services.metrics`.
 """
 
 from typing import Protocol
-from uuid import UUID
 
 from opensandbox.models.sandboxes import SandboxMetrics
 
@@ -33,7 +32,7 @@ class MetricsSync(Protocol):
     This service provides resource usage statistics (CPU, memory, etc.) for a running sandbox.
     """
 
-    def get_metrics(self, sandbox_id: UUID) -> SandboxMetrics:
+    def get_metrics(self, sandbox_id: str) -> SandboxMetrics:
         """
         Retrieve current sandbox metrics for the given sandbox id.
 

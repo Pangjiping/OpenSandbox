@@ -17,7 +17,6 @@
 package com.alibaba.opensandbox.sandbox.domain.models.sandboxes
 
 import java.time.OffsetDateTime
-import java.util.UUID
 
 /**
  * High-level lifecycle state of the sandbox.
@@ -108,7 +107,7 @@ class SandboxFilter private constructor(
         }
 
         fun page(page: Int): Builder {
-            require(page >= 0) { "Page must be non-negative" }
+            require(page > 0) { "Page must be positive" }
             this.page = page
             return this
         }
@@ -230,7 +229,7 @@ class SandboxImageAuth private constructor(
  * @property metadata Custom metadata attached to the sandbox
  */
 class SandboxInfo(
-    val id: UUID,
+    val id: String,
     val status: SandboxStatus,
     val entrypoint: List<String>,
     val expiresAt: OffsetDateTime,
@@ -260,7 +259,16 @@ class SandboxStatus(
  * @property id Unique identifier of the newly created sandbox
  */
 class SandboxCreateResponse(
-    val id: UUID,
+    val id: String,
+)
+
+/**
+ * Response returned when a sandbox is renewed
+ *
+ * @property expiresAt new expire time after renewal
+ */
+class SandboxRenewResponse(
+    val expiresAt: java.time.OffsetDateTime,
 )
 
 /**

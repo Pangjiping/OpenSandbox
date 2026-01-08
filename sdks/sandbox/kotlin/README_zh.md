@@ -197,7 +197,7 @@ PagedSandboxInfos sandboxes = manager.listSandboxInfos(
 sandboxes.getSandboxInfos().forEach(info -> {
     System.out.println("Found sandbox: " + info.getId());
     // 执行管理操作
-    manager.killSandbox(UUID.fromString(info.getId()));
+    manager.killSandbox(info.getId());
 });
 
 // Try-with-resources 会自动调用 manager.close()

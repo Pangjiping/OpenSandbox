@@ -51,7 +51,7 @@ class _Noop:
 
 def _make_sandbox(*, health_service, sandbox_service, custom_health_check=None) -> Sandbox:
     return Sandbox(
-        sandbox_id=uuid4(),
+        sandbox_id=str(uuid4()),
         sandbox_service=sandbox_service,
         filesystem_service=_Noop(),
         command_service=_Noop(),

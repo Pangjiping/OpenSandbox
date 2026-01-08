@@ -23,7 +23,7 @@ from code_interpreter import CodeInterpreter
 
 class _FakeSandbox:
     def __init__(self) -> None:
-        self._id = __import__("uuid").uuid4()
+        self._id = str(__import__("uuid").uuid4())
         self.connection_config = ConnectionConfig(protocol="http")
         self.files = object()
         self.commands = object()

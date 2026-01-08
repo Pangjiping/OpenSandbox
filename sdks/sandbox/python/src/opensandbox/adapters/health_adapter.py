@@ -21,7 +21,6 @@ This adapter provides health check functionality for sandboxes.
 """
 
 import logging
-from uuid import UUID
 
 import httpx
 
@@ -85,7 +84,7 @@ class HealthAdapter(Health):
         """Return the client for execd API (no auth required)."""
         return self._client
 
-    async def ping(self, sandbox_id: UUID) -> bool:
+    async def ping(self, sandbox_id: str) -> bool:
         """Check if a sandbox is alive and responsive.
 
         Args:

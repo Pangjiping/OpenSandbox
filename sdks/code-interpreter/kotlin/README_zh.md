@@ -83,7 +83,7 @@ public class QuickStart {
 
             // 7. 清理资源
             // 注意: kill() 会立即终止远程沙箱实例；try-with-resources 会自动调用 close() 清理本地资源
-            interpreter.kill();
+            sandbox.kill();
         } catch (SandboxException e) {
             // 处理 Sandbox 特定异常
             System.err.println("沙箱错误: [" + e.getError().getCode() + "] " + e.getError().getMessage());
@@ -123,6 +123,20 @@ Sandbox sandbox = Sandbox.builder()
 ```
 
 ## 核心功能示例
+
+### 0. 直接传 `language`（使用该语言默认上下文）
+
+如果你不需要显式管理 session id，可以只传 `language` 来执行代码。
+当 `context.id` 省略时，**execd 会为该语言创建/复用默认 session**，因此状态可以跨次执行保持：
+
+```java
+import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.SupportedLanguage;
+
+// Python 默认上下文：状态会在多次 run 之间保持
+interpreter.codes().run("x = 42", SupportedLanguage.PYTHON);
+Execution execution = interpreter.codes().run("result = x\nresult", SupportedLanguage.PYTHON);
+System.out.println(execution.getResult().get(0).getText()); // 42
+```
 
 ### 1. Java 代码执行
 

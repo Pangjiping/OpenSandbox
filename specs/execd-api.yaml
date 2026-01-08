@@ -72,7 +72,7 @@ paths:
       parameters:
         - name: language
           in: query
-          required: false
+          required: true
           description: Filter contexts by execution runtime (python, bash, java, etc.)
           schema:
             type: string
@@ -124,6 +124,33 @@ paths:
           $ref: "#/components/responses/InternalServerError"
 
   /code/contexts/{context_id}:
+    get:
+      summary: Get a code execution context by id
+      description: |
+        Retrieves the details of an existing code execution context (session) by id.
+        Returns the context ID, language, and any associated metadata.
+      operationId: getContext
+      tags:
+        - CodeInterpreting
+      parameters:
+        - name: context_id
+          in: path
+          required: true
+          description: Session/context id to get
+          schema:
+            type: string
+          example: session-abc123
+      responses:
+        "200":
+          description: Context details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CodeContext"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
     delete:
       summary: Delete a code execution context by id
       description: |
@@ -317,6 +344,68 @@ paths:
           description: Command execution successfully interrupted
         "400":
           $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /command/status/{session}:
+    get:
+      summary: Get command status
+      description: |
+        Returns the current status of a command (foreground or background) by session ID.
+        Includes running flag, exit code, error (if any), and start/finish timestamps.
+      operationId: getCommandStatus
+      tags:
+        - Command
+      parameters:
+        - name: session
+          in: path
+          required: true
+          description: Command session ID returned by RunCommand
+          schema:
+            type: string
+          example: cmd-abc123
+      responses:
+        "200":
+          description: Command status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandStatusResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /command/output/{session}:
+    get:
+      summary: Get command output (non-streamed)
+      description: |
+        Returns accumulated stdout and stderr for a command (foreground or background) by session ID,
+        along with its status. Useful for polling background tasks without SSE.
+      operationId: getCommandOutput
+      tags:
+        - Command
+      parameters:
+        - name: session
+          in: path
+          required: true
+          description: Command session ID returned by RunCommand
+          schema:
+            type: string
+          example: cmd-abc123
+      responses:
+        "200":
+          description: Command output and status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandOutputResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -812,6 +901,82 @@ components:
           description: Whether to run command in detached mode
           default: false
           example: false
+
+    CommandStatusResponse:
+      type: object
+      description: Command execution status for a session (foreground or background)
+      properties:
+        session:
+          type: string
+          description: Command session ID
+          example: cmd-abc123
+        running:
+          type: boolean
+          description: Whether the command is still running
+          example: false
+        exit_code:
+          type: integer
+          format: int32
+          nullable: true
+          description: Exit code if the command has finished
+          example: 0
+        error:
+          type: string
+          description: Error message if the command failed
+          example: permission denied
+        started_at:
+          type: string
+          format: date-time
+          description: Start time in RFC3339 format
+          example: "2025-12-22T09:08:05Z"
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Finish time in RFC3339 format (null if still running)
+          example: "2025-12-22T09:08:09Z"
+
+    CommandOutputResponse:
+      type: object
+      description: Non-streamed stdout/stderr plus status for a command session
+      properties:
+        session:
+          type: string
+          description: Command session ID
+          example: cmd-abc123
+        running:
+          type: boolean
+          description: Whether the command is still running
+          example: false
+        exit_code:
+          type: integer
+          format: int32
+          nullable: true
+          description: Exit code if the command has finished
+          example: 0
+        error:
+          type: string
+          description: Error message if the command failed
+          example: permission denied
+        started_at:
+          type: string
+          format: date-time
+          description: Start time in RFC3339 format
+          example: "2025-12-22T09:08:05Z"
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Finish time in RFC3339 format (null if still running)
+          example: "2025-12-22T09:08:09Z"
+        stdout:
+          type: string
+          description: Accumulated standard output
+          example: "line1\nline2\n"
+        stderr:
+          type: string
+          description: Accumulated standard error output
+          example: "warn: something\n"
 
     ServerStreamEvent:
       type: object

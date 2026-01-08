@@ -24,7 +24,6 @@ import com.alibaba.opensandbox.sandbox.domain.services.Metrics
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter.toSandboxMetrics
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.toSandboxException
 import org.slf4j.LoggerFactory
-import java.util.UUID
 
 /**
  * Implementation of [Metrics] that adapts OpenAPI-generated [MetricApi].
@@ -36,7 +35,7 @@ internal class MetricsAdapter(
     private val logger = LoggerFactory.getLogger(MetricsAdapter::class.java)
     private val api = MetricApi("${httpClientProvider.config.protocol}://${execdEndpoint.endpoint}", httpClientProvider.httpClient)
 
-    override fun getMetrics(sandboxId: UUID): SandboxMetrics {
+    override fun getMetrics(sandboxId: String): SandboxMetrics {
         logger.debug("Retrieving sandbox metrics for {}", sandboxId)
         return try {
             api.getMetrics().toSandboxMetrics()

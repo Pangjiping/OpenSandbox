@@ -31,10 +31,8 @@ import asyncio
 import logging
 import time
 from datetime import timedelta
-from uuid import UUID
 
 import pytest
-from tests.base_e2e_test import create_connection_config, get_sandbox_image
 from code_interpreter import CodeInterpreter
 from code_interpreter.models.code import SupportedLanguage
 from opensandbox import Sandbox
@@ -50,6 +48,8 @@ from opensandbox.models.execd import (
     OutputMessage,
 )
 from opensandbox.models.sandboxes import SandboxImageSpec
+
+from tests.base_e2e_test import create_connection_config, get_sandbox_image
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ class TestCodeInterpreterE2E:
         cls.code_interpreter = await CodeInterpreter.create(sandbox=cls.sandbox)
 
         assert cls.code_interpreter is not None
-        assert isinstance(cls.code_interpreter.id, UUID)
+        assert isinstance(cls.code_interpreter.id, str)
         logger.info("✓ CodeInterpreter created: %s", cls.code_interpreter.id)
         logger.info("=" * 100)
 
@@ -189,10 +189,10 @@ class TestCodeInterpreterE2E:
         assert code_interpreter.metrics is not None
         logger.info("✓ All service components are accessible")
 
-        assert await code_interpreter.is_healthy() is True
+        assert await code_interpreter.sandbox.is_healthy() is True
         logger.info("✓ CodeInterpreter is healthy")
 
-        info = await code_interpreter.get_info()
+        info = await code_interpreter.sandbox.get_info()
         assert str(code_interpreter.id) == str(info.id)
         assert info.status.state == "Running"
         logger.info(
@@ -201,13 +201,13 @@ class TestCodeInterpreterE2E:
             info.created_at,
         )
 
-        endpoint = await code_interpreter.get_endpoint(DEFAULT_EXECD_PORT)
+        endpoint = await code_interpreter.sandbox.get_endpoint(DEFAULT_EXECD_PORT)
         assert endpoint is not None
         assert endpoint.endpoint is not None
         _assert_endpoint_has_port(endpoint.endpoint, DEFAULT_EXECD_PORT)
         logger.info("✓ CodeInterpreter endpoint: %s", endpoint.endpoint)
 
-        metrics = await code_interpreter.get_metrics()
+        metrics = await code_interpreter.sandbox.get_metrics()
         assert metrics is not None
         assert metrics.cpu_count > 0
         assert 0.0 <= metrics.cpu_used_percentage <= 100.0
@@ -226,10 +226,12 @@ class TestCodeInterpreterE2E:
         )
 
         # Renewal through CodeInterpreter (extend expiration time)
-        await code_interpreter.renew(timedelta(minutes=5))
-        logger.info("✓ CodeInterpreter expiration renewed")
+        renew_response = await code_interpreter.sandbox.renew(timedelta(minutes=5))
+        assert renew_response is not None
+        logger.info("✓ CodeInterpreter expiration renewed to %s", renew_response.expires_at)
 
-        renewed_info = await code_interpreter.get_info()
+        renewed_info = await code_interpreter.sandbox.get_info()
+        assert abs((renewed_info.expires_at - renew_response.expires_at).total_seconds()) < 10
         now = renewed_info.expires_at.__class__.now(tz=renewed_info.expires_at.tzinfo)
         remaining = renewed_info.expires_at - now
         assert remaining > timedelta(minutes=3)
@@ -379,6 +381,18 @@ class TestCodeInterpreterE2E:
         logger.info("=" * 80)
         logger.info("TEST 3: Python code execution")
         logger.info("=" * 80)
+
+        # New usage: directly pass a language string (ephemeral context).
+        # This validates the `codes.run(..., language=...)` convenience interface.
+        direct_lang_result = await code_interpreter.codes.run(
+            "result = 2 + 2\nresult",
+            language=SupportedLanguage.PYTHON,
+        )
+        assert direct_lang_result is not None
+        assert direct_lang_result.id is not None and direct_lang_result.id.strip()
+        assert direct_lang_result.error is None
+        assert len(direct_lang_result.result) > 0
+        assert direct_lang_result.result[0].text == "4"
 
         stdout_messages: list[OutputMessage] = []
         stderr_messages: list[OutputMessage] = []

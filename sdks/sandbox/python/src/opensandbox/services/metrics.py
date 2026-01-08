@@ -20,7 +20,6 @@ Protocol for sandbox metrics and monitoring operations.
 """
 
 from typing import Protocol
-from uuid import UUID
 
 from opensandbox.models.sandboxes import SandboxMetrics
 
@@ -33,7 +32,7 @@ class Metrics(Protocol):
     metrics for sandbox instances.
     """
 
-    async def get_metrics(self, sandbox_id: UUID) -> SandboxMetrics:
+    async def get_metrics(self, sandbox_id: str) -> SandboxMetrics:
         """
         Retrieve real-time metrics for a sandbox.
 

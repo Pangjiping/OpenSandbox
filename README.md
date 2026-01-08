@@ -3,12 +3,11 @@
 
   <h1>OpenSandbox</h1>
 
-  [![GitHub stars](https://img.shields.io/github/stars/alibaba/OpenSandbox.svg?style=social)](https://github.com/alibaba/OpenSandbox)
-  [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alibaba/OpenSandbox)
-  [![license](https://img.shields.io/github/license/alibaba/OpenSandbox.svg)](https://www.apache.org/licenses/LICENSE-2.0.html)
-  [![PyPI version](https://badge.fury.io/py/opensandbox.svg)](https://badge.fury.io/py/opensandbox)
-  [![E2E Status](https://github.com/alibaba/OpenSandbox/actions/workflows/real-e2e.yml/badge.svg?branch=main)](https://github.com/alibaba/OpenSandbox/actions)
-
+[![GitHub stars](https://img.shields.io/github/stars/alibaba/OpenSandbox.svg?style=social)](https://github.com/alibaba/OpenSandbox)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alibaba/OpenSandbox)
+[![license](https://img.shields.io/github/license/alibaba/OpenSandbox.svg)](https://www.apache.org/licenses/LICENSE-2.0.html)
+[![PyPI version](https://badge.fury.io/py/opensandbox.svg)](https://badge.fury.io/py/opensandbox)
+[![E2E Status](https://github.com/alibaba/OpenSandbox/actions/workflows/real-e2e.yml/badge.svg?branch=main)](https://github.com/alibaba/OpenSandbox/actions)
 
   <hr />
 </div>
@@ -63,7 +62,7 @@ Create a sandbox and execute commands
 import asyncio
 from datetime import timedelta
 
-from code_interpreter import CodeInterpreter, SupportedLanguage, CodeContext
+from code_interpreter import CodeInterpreter, SupportedLanguage
 from opensandbox import Sandbox
 from opensandbox.models import WriteEntry
 
@@ -94,7 +93,7 @@ async def main() -> None:
         # 5. Create a code interpreter
         interpreter = await CodeInterpreter.create(sandbox)
 
-        # 6. Execute Python code
+        # 6. Execute Python code (single-run, pass language directly)
         result = await interpreter.codes.run(
               """
                   import sys
@@ -102,7 +101,7 @@ async def main() -> None:
                   result = 2 + 2
                   result
               """,
-              context=CodeContext(language=SupportedLanguage.PYTHON)
+              language=SupportedLanguage.PYTHON,
         )
 
         print(result.result[0].text) # 4
@@ -122,6 +121,7 @@ OpenSandbox provides rich examples demonstrating sandbox usage in different scen
 #### 🎯 Basic Examples
 
 - **[code-interpreter](examples/code-interpreter/README.md)** - Complete Code Interpreter SDK example
+
   - Run commands and execute Python/Java/Go/TypeScript code inside a sandbox
   - Covers context creation, code execution, and result streaming
   - Supports custom language versions
@@ -168,24 +168,20 @@ For more details, please refer to [examples](examples/README.md) and the README 
 
 ## Project Structure
 
-```bash
-OpenSandbox/
-├── sdks/                     # Multi-language SDKs
-│   ├── code-interpreter/     # Code Interpreter SDK
-│   └── sandbox/              # Sandbox base SDK
-├── specs/                    # OpenAPI specifications
-│   ├── execd-api.yaml        # Command execution and file operations API specification
-│   └── sandbox-lifecycle.yml # Sandbox lifecycle API specification
-├── server/                   # Sandbox server
-├── components/               # Core components
-│   └── execd/                # Command execution and file operations component (Go)
-├── docs/                     # Documentation
-├── examples/                 # Example integrations and use cases
-├── sandboxes/                # Sandbox implementations
-│   └── code-interpreter/     # Code Interpreter sandbox implementation
-├── scripts/                  # Build and utility scripts
-└── tests                     # End-to-end tests
-```
+| Directory | Description |
+|-----------|-------------|
+| [`server/`](server/README.md) | Python FastAPI sandbox lifecycle server |
+| [`components/execd/`](components/execd/README.md) | Go execution daemon for commands and file operations |
+| [`sdks/`](sdks/) | Multi-language SDKs (Python, Kotlin) |
+| [`sandboxes/`](sandboxes/) | Sandbox runtime images (e.g., code-interpreter) |
+| [`kubernetes/`](kubernetes/README.md) | Kubernetes operator and batch sandbox support |
+| [`specs/`](specs/README.md) | OpenAPI specifications |
+| [`examples/`](examples/README.md) | Integration examples and use cases |
+| [`oseps/`](oseps/README.md) | OpenSandbox Enhancement Proposals |
+| [`docs/`](docs/) | Architecture and design documentation |
+| [`tests/`](tests/) | Cross-component E2E tests |
+
+For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 
 ## Documentation
 
@@ -206,14 +202,14 @@ You can use OpenSandbox for personal or commercial projects in compliance with t
 
 ### SDK
 
-- [ ] **TypeScript SDK** - TypeScript/JavaScript client SDK for sandbox lifecycle management and command execution、file operations.
-- [ ] **Go SDK** - Go client SDK for sandbox lifecycle management and command execution、file operations.
+- [ ] **TypeScript SDK** - TypeScript/JavaScript client SDK for sandbox lifecycle management and command execution, file operations.
+- [ ] **Go SDK** - Go client SDK for sandbox lifecycle management and command execution, file operations.
 
 ### Server Runtime
 
-- [ ] **OpenSandbox Kubernetes Runtime** - High-performance sandbox scheduling implementation
+- [x] **OpenSandbox Kubernetes Runtime** - High-performance sandbox scheduling implementation (see [`kubernetes/`](kubernetes/README.md))
 - [ ] **kubernetes-sigs/agent-sandbox Support** - Integration with [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
-- [ ] **Declarative Network Isolation** - Network egress control with allow/deny rules for specific domains
+- [ ] **Declarative Network Isolation** - Network egress control with allow/deny rules for specific domains (see [OSEP-0001](oseps/0001-fqdn-based-egress-control.md))
 
 ## Contact and Discussion
 

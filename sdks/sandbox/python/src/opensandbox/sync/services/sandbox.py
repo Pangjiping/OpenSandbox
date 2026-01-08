@@ -22,7 +22,6 @@ This is the sync counterpart of :mod:`opensandbox.services.sandbox`.
 
 from datetime import datetime, timedelta
 from typing import Protocol
-from uuid import UUID
 
 from opensandbox.models.sandboxes import (
     PagedSandboxInfos,
@@ -31,6 +30,7 @@ from opensandbox.models.sandboxes import (
     SandboxFilter,
     SandboxImageSpec,
     SandboxInfo,
+    SandboxRenewResponse,
 )
 
 
@@ -73,7 +73,7 @@ class SandboxesSync(Protocol):
         """
         ...
 
-    def get_sandbox_info(self, sandbox_id: UUID) -> SandboxInfo:
+    def get_sandbox_info(self, sandbox_id: str) -> SandboxInfo:
         """
         Retrieve information about an existing sandbox.
 
@@ -103,7 +103,7 @@ class SandboxesSync(Protocol):
         """
         ...
 
-    def get_sandbox_endpoint(self, sandbox_id: UUID, port: int) -> SandboxEndpoint:
+    def get_sandbox_endpoint(self, sandbox_id: str, port: int) -> SandboxEndpoint:
         """
         Get sandbox endpoint for an exposed port.
 
@@ -119,7 +119,7 @@ class SandboxesSync(Protocol):
         """
         ...
 
-    def pause_sandbox(self, sandbox_id: UUID) -> None:
+    def pause_sandbox(self, sandbox_id: str) -> None:
         """
         Pause a running sandbox, preserving its state.
 
@@ -131,7 +131,7 @@ class SandboxesSync(Protocol):
         """
         ...
 
-    def resume_sandbox(self, sandbox_id: UUID) -> None:
+    def resume_sandbox(self, sandbox_id: str) -> None:
         """
         Resume a paused sandbox.
 
@@ -143,7 +143,9 @@ class SandboxesSync(Protocol):
         """
         ...
 
-    def renew_sandbox_expiration(self, sandbox_id: UUID, new_expiration_time: datetime) -> None:
+    def renew_sandbox_expiration(
+        self, sandbox_id: str, new_expiration_time: datetime
+    ) -> SandboxRenewResponse:
         """
         Renew the expiration time of a sandbox.
 
@@ -151,12 +153,15 @@ class SandboxesSync(Protocol):
             sandbox_id: Unique identifier of the sandbox.
             new_expiration_time: New expiration timestamp (timezone-aware recommended).
 
+        Returns:
+            Renew response including the new expiration time.
+
         Raises:
             SandboxException: If the operation fails.
         """
         ...
 
-    def kill_sandbox(self, sandbox_id: UUID) -> None:
+    def kill_sandbox(self, sandbox_id: str) -> None:
         """
         Terminate a sandbox and release all associated resources.
 
