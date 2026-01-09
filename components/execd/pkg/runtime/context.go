@@ -68,6 +68,14 @@ func (c *Controller) DeleteContext(session string) error {
 	return c.deleteSessionAndCleanup(session)
 }
 
+func (c *Controller) GetContext(session string) CodeContext {
+	kernel := c.getJupyterKernel(session)
+	return CodeContext{
+		ID:       session,
+		Language: kernel.language,
+	}
+}
+
 func (c *Controller) ListContext(language string) ([]CodeContext, error) {
 	switch language {
 	case Command.String(), BackgroundCommand.String(), SQL.String():

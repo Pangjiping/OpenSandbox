@@ -75,6 +75,7 @@ func init() {
 		web.NSRouter("/context", &controller.CodeInterpretingController{}, "post:CreateContext"),
 		web.NSRouter("/contexts", &controller.CodeInterpretingController{}, "get:ListContexts;delete:DeleteContextsByLanguage"),
 		web.NSRouter("/contexts/:contextId", &controller.CodeInterpretingController{}, "delete:DeleteContext"),
+		web.NSRouter("/contexts/:contextId", &controller.CodeInterpretingController{}, "get:GetContext"),
 	)
 
 	command := web.NewNamespace("/command",

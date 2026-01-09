@@ -121,6 +121,21 @@ func (c *CodeInterpretingController) RunCode() {
 	time.Sleep(flag.ApiGracefulShutdownTimeout)
 }
 
+// GetContext returns a specific code context by id.
+func (c *CodeInterpretingController) GetContext() {
+	contextID := c.Ctx.Input.Param(":contextId")
+	if contextID == "" {
+		c.RespondError(
+			http.StatusBadRequest,
+			model.ErrorCodeMissingQuery,
+			"missing path parameter 'contextId'",
+		)
+	}
+
+	codeContext := codeRunner.GetContext(contextID)
+	c.RespondSuccess(codeContext)
+}
+
 // ListContexts returns active code contexts, optionally filtered by language.
 func (c *CodeInterpretingController) ListContexts() {
 	language := c.GetString("language")
