@@ -33,4 +33,5 @@ export EXECD_ENVS
 echo "starting OpenSandbox execd daemon at $EXECD"
 $EXECD &
 
+set -x
 exec "$@"
