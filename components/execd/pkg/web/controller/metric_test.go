@@ -16,11 +16,12 @@ package controller
 
 import (
 	"encoding/json"
-	"github.com/beego/beego/v2/server/web/context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/beego/beego/v2/server/web/context"
 
 	"github.com/stretchr/testify/assert"
 

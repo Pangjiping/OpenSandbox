@@ -56,6 +56,7 @@ func ProxyMiddleware() web.MiddleWare {
 			isWebSocket := strings.ToLower(r.Header.Get("Upgrade")) == "websocket"
 
 			proxy := httputil.NewSingleHostReverseProxy(target)
+			proxy.FlushInterval = 200 * time.Millisecond
 
 			proxy.Director = func(req *http.Request) {
 				req.URL.Scheme = "http"
@@ -82,7 +83,7 @@ func ProxyMiddleware() web.MiddleWare {
 			proxy.Transport = &http.Transport{
 				DialContext: (&net.Dialer{
 					Timeout:   600 * time.Second,
-					KeepAlive: 600 * time.Second,
+					KeepAlive: 30 * time.Second,
 				}).DialContext,
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 100,
