@@ -176,6 +176,8 @@ func (s *bashSession) readStdout(r io.Reader) {
 			s.stdoutLines <- strings.TrimRight(line, "\r\n")
 		}
 		if err != nil {
+			// mark session terminated so subsequent commands can reject early
+			s.terminated.Store(true)
 			if !errors.Is(err, io.EOF) {
 				s.stdoutErr <- err
 			}
@@ -193,6 +195,9 @@ func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteR
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.terminated.Load() {
+		return errors.New("bash session is terminated (probably by exit); please create a new session")
+	}
 	if !s.started {
 		return errors.New("session not started")
 	}
@@ -203,9 +208,9 @@ func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteR
 		hooks.OnExecuteInit(s.config.Session)
 	}
 
-	waitSeconds := timeout
-	if waitSeconds <= 0 {
-		waitSeconds = 30 * time.Second
+	wait := timeout
+	if wait <= 0 {
+		wait = 3600 * time.Second
 	}
 
 	cleanCmd := strings.ReplaceAll(command, "\n", " ; ")
@@ -213,24 +218,30 @@ func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteR
 	// send command + marker
 	cmdText := fmt.Sprintf("%s\nprintf \"%s$?%s\\n\"\n", cleanCmd, exitCodePrefix, exitCodeSuffix)
 	if _, err := fmt.Fprint(s.stdin, cmdText); err != nil {
+		if errors.Is(err, io.ErrClosedPipe) || strings.Contains(err.Error(), "broken pipe") {
+			s.terminated.Store(true)
+			return errors.New("bash session is terminated (probably by exit); please create a new session")
+		}
 		return fmt.Errorf("write command: %w", err)
 	}
 
 	// collect output until marker
-	timer := time.NewTimer(waitSeconds)
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
 
 	for {
 		select {
 		case <-timer.C:
-			return fmt.Errorf("timeout after %s while running command %q", waitSeconds, command)
+			return fmt.Errorf("timeout after %s while running command %q", wait, command)
 		case err := <-s.stdoutErr:
 			if err != nil {
+				s.terminated.Store(true)
 				return err
 			}
 		case line, ok := <-s.stdoutLines:
 			if !ok {
-				return errors.New("stdout closed unexpectedly")
+				s.terminated.Store(true)
+				return errors.New("bash session stdout closed (probably by exit); please create a new session")
 			}
 			if _, ok := parseExitCodeLine(line); ok {
 				if hooks != nil && hooks.OnExecuteComplete != nil {

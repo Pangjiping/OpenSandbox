@@ -19,6 +19,7 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
@@ -112,4 +113,5 @@ type bashSession struct {
 	stdoutErr   chan error
 	mu          sync.Mutex
 	started     bool
+	terminated  atomic.Bool
 }
