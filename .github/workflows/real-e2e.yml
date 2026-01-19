@@ -47,7 +47,7 @@ jobs:
           api_key = ""
           [runtime]
           type = "docker"
-          execd_image = "opensandbox/execd:latest"
+          execd_image = "opensandbox/execd:local"
           [docker]
           network_mode = "bridge"
           EOF
@@ -96,7 +96,7 @@ jobs:
           api_key = ""
           [runtime]
           type = "docker"
-          execd_image = "opensandbox/execd:${TAG}"
+          execd_image = "opensandbox/execd:local"
           [docker]
           network_mode = "bridge"
           EOF
@@ -150,7 +150,7 @@ jobs:
           api_key = ""
           [runtime]
           type = "docker"
-          execd_image = "opensandbox/execd:${TAG}"
+          execd_image = "opensandbox/execd:local"
           [docker]
           network_mode = "bridge"
           EOF

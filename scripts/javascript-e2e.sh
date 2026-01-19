@@ -18,13 +18,14 @@ set -euxo pipefail
 TAG=${TAG:-latest}
 
 # build execd image locally
-cd components/execd && docker build -t opensandbox/execd:${TAG} .
+cd components/execd && docker build -t opensandbox/execd:local .
 cd ../..
 
 # prepare required images from registry
 docker pull opensandbox/code-interpreter:${TAG}
 
 # setup server
+echo "-------- Eval test images --------"
 cd server
 uv sync && uv run python -m src.main > server.log 2>&1 &
 cd ..

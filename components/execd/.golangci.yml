@@ -69,7 +69,6 @@ linters-settings:
     - (io.ReadCloser).Close
     - (k8s.io/client-go/tools/cache.SharedInformer).AddEventHandler
   nestif:
-    # 复杂度大于32的认为阻塞
     min-complexity: 32
   goconst:
     # Minimal length of string constant.
