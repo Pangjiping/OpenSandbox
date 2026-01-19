@@ -54,8 +54,8 @@ func newBashSession(config *bashSessionConfig) *bashSession {
 	return &bashSession{config: config}
 }
 
-func (s *bashSession) start() (string, error) {
-	return "", errBashSessionNotSupported
+func (s *bashSession) start() error {
+	return errBashSessionNotSupported
 }
 
 func (s *bashSession) run(_ string, _ time.Duration, _ *ExecuteResultHook) error {
