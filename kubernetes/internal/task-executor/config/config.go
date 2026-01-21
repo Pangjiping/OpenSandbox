@@ -21,28 +21,26 @@ import (
 )
 
 type Config struct {
-	DataDir             string
-	ListenAddr          string
-	CRISocket           string
-	ReadTimeout         time.Duration
-	WriteTimeout        time.Duration
-	ReconcileInterval   time.Duration
-	EnableSidecarMode   bool
-	EnableContainerMode bool
-	MainContainerName   string
+	DataDir           string
+	ListenAddr        string
+	CRISocket         string
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	ReconcileInterval time.Duration
+	EnableSidecarMode bool
+	MainContainerName string
 }
 
 func NewConfig() *Config {
 	return &Config{
-		DataDir:             "/var/lib/sandbox/tasks",
-		ListenAddr:          "0.0.0.0:5758",
-		CRISocket:           "/var/run/containerd/containerd.sock",
-		ReadTimeout:         30 * time.Second,
-		WriteTimeout:        30 * time.Second,
-		ReconcileInterval:   500 * time.Millisecond,
-		EnableContainerMode: false,
-		EnableSidecarMode:   false,
-		MainContainerName:   "main",
+		DataDir:           "/var/lib/sandbox/tasks",
+		ListenAddr:        "0.0.0.0:5758",
+		CRISocket:         "/var/run/containerd/containerd.sock",
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		ReconcileInterval: 500 * time.Millisecond,
+		EnableSidecarMode: false,
+		MainContainerName: "main",
 	}
 }
 
@@ -56,9 +54,6 @@ func (c *Config) LoadFromEnv() {
 	if v := os.Getenv("CRI_SOCKET"); v != "" {
 		c.CRISocket = v
 	}
-	if v := os.Getenv("ENABLE_CONTAINER_MODE"); v == "true" {
-		c.EnableContainerMode = true
-	}
 	if v := os.Getenv("ENABLE_SIDECAR_MODE"); v == "true" {
 		c.EnableSidecarMode = true
 	}
@@ -71,7 +66,6 @@ func (c *Config) LoadFromFlags() {
 	flag.StringVar(&c.DataDir, "data-dir", c.DataDir, "data storage directory")
 	flag.StringVar(&c.ListenAddr, "listen-addr", c.ListenAddr, "service listen address")
 	flag.StringVar(&c.CRISocket, "cri-socket", c.CRISocket, "CRI socket path for container runner mode")
-	flag.BoolVar(&c.EnableContainerMode, "enable-container-mode", c.EnableContainerMode, "enable container runner mode")
 	flag.BoolVar(&c.EnableSidecarMode, "enable-sidecar-mode", c.EnableSidecarMode, "enable sidecar runner mode")
 	flag.StringVar(&c.MainContainerName, "main-container-name", c.MainContainerName, "main container name")
 	flag.Parse()

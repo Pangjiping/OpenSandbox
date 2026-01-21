@@ -36,14 +36,10 @@ func NewExecutor(cfg *config.Config) (Executor, error) {
 	}
 	klog.InfoS("process executor initialized.", "enableSidecar", cfg.EnableSidecarMode, "mainContainer", cfg.MainContainerName)
 
-	// 2. Initialize ContainerExecutor (Optional)
-	var containerExec Executor
-	if cfg.EnableContainerMode {
-		klog.InfoS("container executor initialized", "criSocket", cfg.CRISocket)
-		containerExec, err = newContainerExecutor(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create container executor: %w", err)
-		}
+	// 2. Initialize ContainerExecutor
+	containerExec, err := newContainerExecutor(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create container executor: %w", err)
 	}
 	// 3. Return Composite
 	return &compositeExecutor{

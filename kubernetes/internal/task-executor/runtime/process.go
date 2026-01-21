@@ -240,31 +240,33 @@ func (e *processExecutor) Inspect(ctx context.Context, task *types.Task) (*types
 	status := &types.Status{
 		State: types.TaskStateUnknown,
 	}
+	// Prepare a single sub-status for the process
+	subStatus := types.SubStatus{}
 	var pid int
-
 	// 1. Check Exit File (Completed)
 	if exitData, err := os.ReadFile(exitPath); err == nil {
 		fileInfo, _ := os.Stat(exitPath)
 		exitCode, _ := strconv.Atoi(string(exitData))
 
-		status.ExitCode = exitCode
+		subStatus.ExitCode = exitCode
 		finishedAt := fileInfo.ModTime()
-		status.FinishedAt = &finishedAt
+		subStatus.FinishedAt = &finishedAt
 
 		if exitCode == 0 {
 			status.State = types.TaskStateSucceeded
-			status.Reason = "Succeeded"
+			subStatus.Reason = "Succeeded"
 		} else {
 			status.State = types.TaskStateFailed
-			status.Reason = "Failed"
+			subStatus.Reason = "Failed"
 		}
 
 		// Try to read start time from PID file
 		if pidFileInfo, err := os.Stat(pidPath); err == nil {
 			startedAt := pidFileInfo.ModTime()
-			status.StartedAt = &startedAt
+			subStatus.StartedAt = &startedAt
 		}
 
+		status.SubStatuses = []types.SubStatus{subStatus}
 		return status, nil
 	}
 
@@ -273,25 +275,37 @@ func (e *processExecutor) Inspect(ctx context.Context, task *types.Task) (*types
 		pid, _ = strconv.Atoi(strings.TrimSpace(string(pidData)))
 		fileInfo, _ := os.Stat(pidPath)
 		startedAt := fileInfo.ModTime()
-		status.StartedAt = &startedAt
+		subStatus.StartedAt = &startedAt
 
 		if isProcessRunning(pid) {
 			status.State = types.TaskStateRunning
+			if task.Process != nil && task.Process.TimeoutSeconds != nil {
+				timeout := time.Duration(*task.Process.TimeoutSeconds) * time.Second
+				elapsed := time.Since(startedAt)
+				if elapsed > timeout {
+					status.State = types.TaskStateTimeout
+					subStatus.Reason = "TaskTimeout"
+					subStatus.Message = fmt.Sprintf("Task exceeded timeout of %d seconds", *task.Process.TimeoutSeconds)
+				}
+			}
 		} else {
 			// Process crashed
 			status.State = types.TaskStateFailed
-			status.ExitCode = 137 // Assume kill/crash
-			status.Reason = "ProcessCrashed"
-			status.Message = "Process exited without writing exit code"
+			subStatus.ExitCode = 137 // Assume kill/crash
+			subStatus.Reason = "ProcessCrashed"
+			subStatus.Message = "Process exited without writing exit code"
 			// Use ModTime as FinishedAt for crash approximation
-			status.FinishedAt = &startedAt
+			subStatus.FinishedAt = &startedAt
 		}
+		status.SubStatuses = []types.SubStatus{subStatus}
 		return status, nil
 	}
 
 	// 3. Pending
 	status.State = types.TaskStatePending
-	status.Reason = "Pending"
+	subStatus.Reason = "Pending"
+	status.SubStatuses = []types.SubStatus{subStatus}
+
 	return status, nil
 }
 

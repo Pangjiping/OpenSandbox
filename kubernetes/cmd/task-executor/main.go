@@ -53,11 +53,6 @@ func main() {
 		klog.ErrorS(err, "failed to create executor")
 		os.Exit(1)
 	}
-	mode := "process"
-	if cfg.EnableContainerMode {
-		mode = "container"
-	}
-	klog.InfoS("executor initialized", "mode", mode)
 
 	// Initialize TaskManager
 	taskManager, err := manager.NewTaskManager(cfg, taskStore, exec)

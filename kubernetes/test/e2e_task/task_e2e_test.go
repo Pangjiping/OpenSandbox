@@ -193,4 +193,119 @@ var _ = Describe("Task Executor E2E", Ordered, func() {
 			}, 5*time.Second, 500*time.Millisecond).Should(BeNil())
 		})
 	})
+
+	Context("When creating a task with timeout", func() {
+		taskName := "e2e-timeout-test"
+
+		It("should timeout and be terminated", func() {
+			By("Creating task with 5 second timeout that runs for 30 seconds")
+			timeoutSec := int64(5)
+			task := &api.Task{
+				Name: taskName,
+				Process: &api.Process{
+					Command:        []string{"sleep", "30"},
+					TimeoutSeconds: &timeoutSec,
+				},
+			}
+			_, err := client.Set(context.Background(), task)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Waiting for task to be terminated (within 15 seconds)")
+			// After timeout detection, Stop is called and the process is killed.
+			// Once Stop completes, the exit file is written and state becomes Failed.
+			Eventually(func(g Gomega) {
+				got, err := client.Get(context.Background())
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(got).NotTo(BeNil())
+				g.Expect(got.Name).To(Equal(taskName))
+
+				// Should be Terminated with exit code 137 (SIGKILL) or 143 (SIGTERM)
+				// sleep responds to SIGTERM quickly, so we usually get 143
+				// The state will be "Failed" after exit file is written
+				if got.ProcessStatus != nil && got.ProcessStatus.Terminated != nil {
+					g.Expect(got.ProcessStatus.Terminated.ExitCode).To(SatisfyAny(
+						Equal(int32(137)), // SIGKILL
+						Equal(int32(143)), // SIGTERM
+					))
+				} else {
+					// Fail if not terminated yet
+					g.Expect(got.ProcessStatus).NotTo(BeNil(), "Task ProcessStatus is nil")
+					g.Expect(got.ProcessStatus.Terminated).NotTo(BeNil(), "Task status: %v", got.ProcessStatus)
+				}
+			}, 15*time.Second, 1*time.Second).Should(Succeed())
+
+			By("Verifying the task was terminated")
+			got, err := client.Get(context.Background())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.ProcessStatus.Terminated).NotTo(BeNil())
+			Expect(got.ProcessStatus.Terminated.ExitCode).To(SatisfyAny(
+				Equal(int32(137)), // SIGKILL
+				Equal(int32(143)), // SIGTERM
+			))
+			// State could be "Failed" (after exit file written) or "Timeout" (during stop)
+			Expect(got.ProcessStatus.Terminated.Reason).To(SatisfyAny(
+				Equal("Failed"),
+				Equal("TaskTimeout"),
+			))
+		})
+
+		It("should be deletable after timeout", func() {
+			By("Deleting task")
+			_, err := client.Set(context.Background(), nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying deletion")
+			Eventually(func() *api.Task {
+				got, _ := client.Get(context.Background())
+				return got
+			}, 5*time.Second, 500*time.Millisecond).Should(BeNil())
+		})
+	})
+
+	Context("When creating a task that completes before timeout", func() {
+		taskName := "e2e-no-timeout-test"
+
+		It("should succeed without timeout", func() {
+			By("Creating task with 60 second timeout that completes in 2 seconds")
+			timeoutSec := int64(60)
+			task := &api.Task{
+				Name: taskName,
+				Process: &api.Process{
+					Command:        []string{"sleep", "2"},
+					TimeoutSeconds: &timeoutSec,
+				},
+			}
+			_, err := client.Set(context.Background(), task)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Waiting for task to succeed")
+			Eventually(func(g Gomega) {
+				got, err := client.Get(context.Background())
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(got).NotTo(BeNil())
+				g.Expect(got.Name).To(Equal(taskName))
+
+				// Should succeed with exit code 0
+				if got.ProcessStatus != nil && got.ProcessStatus.Terminated != nil {
+					g.Expect(got.ProcessStatus.Terminated.ExitCode).To(BeZero())
+					g.Expect(got.ProcessStatus.Terminated.Reason).To(Equal("Succeeded"))
+				} else {
+					g.Expect(got.ProcessStatus).NotTo(BeNil(), "Task ProcessStatus is nil")
+					g.Expect(got.ProcessStatus.Terminated).NotTo(BeNil(), "Task status: %v", got.ProcessStatus)
+				}
+			}, 10*time.Second, 1*time.Second).Should(Succeed())
+		})
+
+		It("should be deletable", func() {
+			By("Deleting task")
+			_, err := client.Set(context.Background(), nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying deletion")
+			Eventually(func() *api.Task {
+				got, _ := client.Get(context.Background())
+				return got
+			}, 5*time.Second, 500*time.Millisecond).Should(BeNil())
+		})
+	})
 })

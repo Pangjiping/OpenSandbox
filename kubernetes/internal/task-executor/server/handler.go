@@ -18,7 +18,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
@@ -247,8 +249,9 @@ func (h *Handler) convertAPIToInternalTask(apiTask *api.Task) *types.Task {
 		return nil
 	}
 	task := &types.Task{
-		Name:    apiTask.Name,
-		Process: apiTask.Process,
+		Name:            apiTask.Name,
+		Process:         apiTask.Process,
+		PodTemplateSpec: apiTask.PodTemplateSpec,
 	}
 	// Initialize default status
 	task.Status = types.Status{
@@ -265,48 +268,142 @@ func convertInternalToAPITask(task *types.Task) *api.Task {
 	}
 
 	apiTask := &api.Task{
-		Name:    task.Name,
-		Process: task.Process,
+		Name:            task.Name,
+		Process:         task.Process,
+		PodTemplateSpec: task.PodTemplateSpec,
 	}
 
-	// Map internal Status to api.ProcessStatus
-	apiStatus := &api.ProcessStatus{}
+	// 1. Process Status Conversion
+	if task.Process != nil && len(task.Status.SubStatuses) > 0 {
+		sub := task.Status.SubStatuses[0]
+		apiStatus := &api.ProcessStatus{}
 
-	switch task.Status.State {
-	case types.TaskStatePending:
-		apiStatus.Waiting = &api.Waiting{
-			Reason: task.Status.Reason,
-		}
-	case types.TaskStateRunning:
-		if task.Status.StartedAt != nil {
-			t := metav1.NewTime(*task.Status.StartedAt)
+		// Handle Timeout state - map to Terminated with exitCode 137
+		if task.Status.State == types.TaskStateTimeout {
+			term := &api.Terminated{
+				ExitCode: 137,
+				Reason:   sub.Reason,  // "TaskTimeout"
+				Message:  sub.Message, // "Task exceeded timeout of X seconds"
+			}
+			if sub.StartedAt != nil {
+				term.StartedAt = metav1.NewTime(*sub.StartedAt)
+			}
+			term.FinishedAt = metav1.Now()
+			apiStatus.Terminated = term
+		} else if sub.FinishedAt != nil {
+			// Terminated
+			term := &api.Terminated{
+				ExitCode: int32(sub.ExitCode),
+				Reason:   sub.Reason,
+				Message:  sub.Message,
+			}
+			term.FinishedAt = metav1.NewTime(*sub.FinishedAt)
+			if sub.StartedAt != nil {
+				term.StartedAt = metav1.NewTime(*sub.StartedAt)
+			}
+			apiStatus.Terminated = term
+		} else if sub.StartedAt != nil {
+			// Running
 			apiStatus.Running = &api.Running{
-				StartedAt: t,
+				StartedAt: metav1.NewTime(*sub.StartedAt),
 			}
 		} else {
-			apiStatus.Running = &api.Running{}
+			// Waiting
+			apiStatus.Waiting = &api.Waiting{
+				Reason:  sub.Reason,
+				Message: sub.Message,
+			}
 		}
-	case types.TaskStateSucceeded, types.TaskStateFailed:
-		term := &api.Terminated{
-			ExitCode: int32(task.Status.ExitCode),
-			Reason:   task.Status.Reason,
-			Message:  task.Status.Message,
-		}
-		if task.Status.StartedAt != nil {
-			t := metav1.NewTime(*task.Status.StartedAt)
-			term.StartedAt = t
-		}
-		if task.Status.FinishedAt != nil {
-			t := metav1.NewTime(*task.Status.FinishedAt)
-			term.FinishedAt = t
-		}
-		apiStatus.Terminated = term
-	default:
-		apiStatus.Waiting = &api.Waiting{
-			Reason: "Unknown",
-		}
+		apiTask.ProcessStatus = apiStatus
 	}
 
-	apiTask.ProcessStatus = apiStatus
+	// 2. Pod Status Conversion
+	if task.PodTemplateSpec != nil {
+		podStatus := &corev1.PodStatus{
+			// Default phase mapping
+			Phase: corev1.PodUnknown,
+		}
+
+		switch task.Status.State {
+		case types.TaskStatePending:
+			podStatus.Phase = corev1.PodPending
+		case types.TaskStateRunning:
+			podStatus.Phase = corev1.PodRunning
+		case types.TaskStateSucceeded:
+			podStatus.Phase = corev1.PodSucceeded
+		case types.TaskStateFailed:
+			podStatus.Phase = corev1.PodFailed
+		}
+
+		for _, sub := range task.Status.SubStatuses {
+			cs := corev1.ContainerStatus{
+				Name: sub.Name,
+			}
+			if sub.FinishedAt != nil {
+				cs.State.Terminated = &corev1.ContainerStateTerminated{
+					ExitCode:   int32(sub.ExitCode),
+					Reason:     sub.Reason,
+					Message:    sub.Message,
+					FinishedAt: metav1.NewTime(*sub.FinishedAt),
+				}
+				if sub.StartedAt != nil {
+					cs.State.Terminated.StartedAt = metav1.NewTime(*sub.StartedAt)
+				}
+			} else if sub.StartedAt != nil {
+				cs.State.Running = &corev1.ContainerStateRunning{
+					StartedAt: metav1.NewTime(*sub.StartedAt),
+				}
+				cs.Ready = true
+			} else {
+				cs.State.Waiting = &corev1.ContainerStateWaiting{
+					Reason:  sub.Reason,
+					Message: sub.Message,
+				}
+			}
+			podStatus.ContainerStatuses = append(podStatus.ContainerStatuses, cs)
+		}
+
+		allReady := len(podStatus.ContainerStatuses) > 0
+		for _, cs := range podStatus.ContainerStatuses {
+			if !cs.Ready {
+				allReady = false
+				break
+			}
+		}
+		readyStatus := corev1.ConditionFalse
+		if allReady {
+			readyStatus = corev1.ConditionTrue
+		}
+
+		var latestTransition time.Time
+		for _, sub := range task.Status.SubStatuses {
+			if sub.StartedAt != nil && sub.StartedAt.After(latestTransition) {
+				latestTransition = *sub.StartedAt
+			}
+			if sub.FinishedAt != nil && sub.FinishedAt.After(latestTransition) {
+				latestTransition = *sub.FinishedAt
+			}
+		}
+		ltt := metav1.NewTime(latestTransition)
+		if latestTransition.IsZero() {
+			ltt = metav1.Now()
+		}
+
+		podStatus.Conditions = append(podStatus.Conditions,
+			corev1.PodCondition{
+				Type:               corev1.PodReady,
+				Status:             readyStatus,
+				LastTransitionTime: ltt,
+			},
+			corev1.PodCondition{
+				Type:               corev1.ContainersReady,
+				Status:             readyStatus,
+				LastTransitionTime: ltt,
+			},
+		)
+
+		apiTask.PodStatus = podStatus
+	}
+
 	return apiTask
 }

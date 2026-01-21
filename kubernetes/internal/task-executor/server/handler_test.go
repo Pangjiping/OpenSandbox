@@ -23,9 +23,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/task-executor/config"
 	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/task-executor/types"
+	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/utils"
 	api "github.com/alibaba/OpenSandbox/sandbox-k8s/pkg/task-executor"
 )
 
@@ -240,4 +245,185 @@ func TestHandler_Errors(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("CreateTask should fail with 500, got %d", w.Code)
 	}
+}
+
+func TestConvertInternalToAPITask(t *testing.T) {
+	now := time.Now()
+
+	t.Run("Process Task", func(t *testing.T) {
+		task := &types.Task{
+			Name:    "proc-task",
+			Process: &api.Process{Command: []string{"ls"}},
+			Status: types.Status{
+				State: types.TaskStateSucceeded,
+				SubStatuses: []types.SubStatus{
+					{
+						ExitCode:   0,
+						Reason:     "Completed",
+						FinishedAt: &now,
+					},
+				},
+			},
+		}
+
+		apiTask := convertInternalToAPITask(task)
+		assert.NotNil(t, apiTask.ProcessStatus)
+		assert.NotNil(t, apiTask.ProcessStatus.Terminated)
+		assert.Equal(t, int32(0), apiTask.ProcessStatus.Terminated.ExitCode)
+		assert.Nil(t, apiTask.PodStatus)
+	})
+
+	t.Run("Pod Task - Partially Ready", func(t *testing.T) {
+		task := &types.Task{
+			Name:            "pod-task-partial",
+			PodTemplateSpec: &corev1.PodTemplateSpec{},
+			Status: types.Status{
+				State: types.TaskStateRunning,
+				SubStatuses: []types.SubStatus{
+					{
+						Name:      "c1",
+						StartedAt: &now,
+					},
+					{
+						Name:   "c2",
+						Reason: "Pending",
+					},
+				},
+			},
+		}
+
+		apiTask := convertInternalToAPITask(task)
+		assert.NotNil(t, apiTask.PodStatus)
+		assert.Equal(t, corev1.PodRunning, apiTask.PodStatus.Phase)
+		assert.Len(t, apiTask.PodStatus.ContainerStatuses, 2)
+		assert.True(t, apiTask.PodStatus.ContainerStatuses[0].Ready)
+		assert.False(t, apiTask.PodStatus.ContainerStatuses[1].Ready)
+		assert.False(t, utils.IsPodReadyConditionTrue(*apiTask.PodStatus))
+
+		// Conditions check
+		var podReady, containersReady *corev1.PodCondition
+		for i := range apiTask.PodStatus.Conditions {
+			c := &apiTask.PodStatus.Conditions[i]
+			if c.Type == corev1.PodReady {
+				podReady = c
+			} else if c.Type == corev1.ContainersReady {
+				containersReady = c
+			}
+		}
+		assert.NotNil(t, podReady)
+		assert.Equal(t, corev1.ConditionFalse, podReady.Status)
+		assert.NotNil(t, containersReady)
+		assert.Equal(t, corev1.ConditionFalse, containersReady.Status)
+		assert.Equal(t, now.Unix(), podReady.LastTransitionTime.Unix())
+	})
+
+	t.Run("Pod Task - Fully Ready", func(t *testing.T) {
+		later := now.Add(time.Minute)
+		task := &types.Task{
+			Name:            "pod-task-ready",
+			PodTemplateSpec: &corev1.PodTemplateSpec{},
+			Status: types.Status{
+				State: types.TaskStateRunning,
+				SubStatuses: []types.SubStatus{
+					{
+						Name:      "c1",
+						StartedAt: &now,
+					},
+					{
+						Name:      "c2",
+						StartedAt: &later,
+					},
+				},
+			},
+		}
+
+		apiTask := convertInternalToAPITask(task)
+		assert.NotNil(t, apiTask.PodStatus)
+
+		// Conditions check
+		var podReady, containersReady *corev1.PodCondition
+		for i := range apiTask.PodStatus.Conditions {
+			c := &apiTask.PodStatus.Conditions[i]
+			if c.Type == corev1.PodReady {
+				podReady = c
+			} else if c.Type == corev1.ContainersReady {
+				containersReady = c
+			}
+		}
+		assert.NotNil(t, podReady)
+		assert.Equal(t, corev1.ConditionTrue, podReady.Status)
+		assert.NotNil(t, containersReady)
+		assert.Equal(t, corev1.ConditionTrue, containersReady.Status)
+		// Should use the latest timestamp (later)
+		assert.Equal(t, later.Unix(), podReady.LastTransitionTime.Unix())
+		assert.True(t, utils.IsPodReadyConditionTrue(*apiTask.PodStatus))
+	})
+}
+
+func TestConvertInternalToAPITask_Timeout(t *testing.T) {
+	now := time.Now()
+	timeoutSec := int64(60)
+
+	t.Run("Process Task Timeout", func(t *testing.T) {
+		task := &types.Task{
+			Name: "timeout-task",
+			Process: &api.Process{
+				Command:        []string{"sleep", "100"},
+				TimeoutSeconds: &timeoutSec,
+			},
+			Status: types.Status{
+				State: types.TaskStateTimeout,
+				SubStatuses: []types.SubStatus{
+					{
+						Reason:     "TaskTimeout",
+						Message:    "Task exceeded timeout of 60 seconds",
+						StartedAt:  &now,
+						FinishedAt: nil, // Not finished yet
+					},
+				},
+			},
+		}
+
+		apiTask := convertInternalToAPITask(task)
+
+		// Should map to Terminated with exit code 137
+		assert.NotNil(t, apiTask.ProcessStatus)
+		assert.NotNil(t, apiTask.ProcessStatus.Terminated)
+		assert.Nil(t, apiTask.ProcessStatus.Running)
+		assert.Nil(t, apiTask.ProcessStatus.Waiting)
+		assert.Equal(t, int32(137), apiTask.ProcessStatus.Terminated.ExitCode)
+		assert.Equal(t, "TaskTimeout", apiTask.ProcessStatus.Terminated.Reason)
+		assert.Equal(t, "Task exceeded timeout of 60 seconds", apiTask.ProcessStatus.Terminated.Message)
+		assert.Equal(t, now.Unix(), apiTask.ProcessStatus.Terminated.StartedAt.Unix())
+		// FinishedAt should be set to "now" for timeout
+		assert.False(t, apiTask.ProcessStatus.Terminated.FinishedAt.IsZero())
+		assert.Nil(t, apiTask.PodStatus)
+	})
+
+	t.Run("Timeout After Completion", func(t *testing.T) {
+		later := now.Add(2 * time.Minute)
+		task := &types.Task{
+			Name:    "completed-task",
+			Process: &api.Process{Command: []string{"ls"}},
+			Status: types.Status{
+				State: types.TaskStateFailed, // After stop, it becomes Failed
+				SubStatuses: []types.SubStatus{
+					{
+						ExitCode:   137,
+						Reason:     "Killed",
+						StartedAt:  &now,
+						FinishedAt: &later,
+					},
+				},
+			},
+		}
+
+		apiTask := convertInternalToAPITask(task)
+
+		// Should be Terminated with actual exit code
+		assert.NotNil(t, apiTask.ProcessStatus.Terminated)
+		assert.Equal(t, int32(137), apiTask.ProcessStatus.Terminated.ExitCode)
+		assert.Equal(t, now.Unix(), apiTask.ProcessStatus.Terminated.StartedAt.Unix())
+		assert.Equal(t, later.Unix(), apiTask.ProcessStatus.Terminated.FinishedAt.Unix())
+	})
 }

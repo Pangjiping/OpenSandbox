@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -37,11 +38,14 @@ const (
 type taskManager struct {
 	mu    sync.RWMutex
 	tasks map[string]*types.Task // name -> task
-	// TODO we need design queue for pending tasks
-	activeTasks int // Count of active tasks (not deleted AND not terminated)
-	store       store.TaskStore
-	executor    runtime.Executor
-	config      *config.Config
+
+	store    store.TaskStore
+	executor runtime.Executor
+	config   *config.Config
+
+	// stopping tracks tasks that are currently being stopped.
+	// This prevents duplicate Stop calls and status rollback during async stop.
+	stopping map[string]bool
 
 	// Reconcile loop control
 	stopCh chan struct{}
@@ -65,6 +69,7 @@ func NewTaskManager(cfg *config.Config, taskStore store.TaskStore, exec runtime.
 		store:    taskStore,
 		executor: exec,
 		config:   cfg,
+		stopping: make(map[string]bool),
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
 	}, nil
@@ -81,6 +86,18 @@ func (m *taskManager) isTaskActive(task *types.Task) bool {
 	}
 	state := task.Status.State
 	return state == types.TaskStatePending || state == types.TaskStateRunning
+}
+
+// countActiveTasks counts tasks that are active (not deleted AND not terminated).
+// Must be called with lock held.
+func (m *taskManager) countActiveTasks() int {
+	count := 0
+	for _, task := range m.tasks {
+		if m.isTaskActive(task) {
+			count++
+		}
+	}
+	return count
 }
 
 // Create creates a new task and starts execution.
@@ -100,8 +117,8 @@ func (m *taskManager) Create(ctx context.Context, task *types.Task) (*types.Task
 		return nil, fmt.Errorf("task %s already exists", task.Name)
 	}
 
-	// Enforce single task limitation using the cached counter
-	if m.activeTasks >= maxConcurrentTasks {
+	// Enforce single task limitation using real-time count
+	if m.countActiveTasks() >= maxConcurrentTasks {
 		return nil, fmt.Errorf("maximum concurrent tasks (%d) reached, cannot create new task", maxConcurrentTasks)
 	}
 
@@ -133,14 +150,10 @@ func (m *taskManager) Create(ctx context.Context, task *types.Task) (*types.Task
 	// Safety fallback: Ensure task has a state
 	if task.Status.State == "" {
 		task.Status.State = types.TaskStatePending
-		task.Status.Reason = "Initialized"
 	}
 
 	// Add to memory
 	m.tasks[task.Name] = task
-	if m.isTaskActive(task) {
-		m.activeTasks++
-	}
 
 	klog.InfoS("task created successfully", "name", task.Name)
 	return task, nil
@@ -244,11 +257,6 @@ func (m *taskManager) softDeleteLocked(ctx context.Context, task *types.Task) er
 		return nil // Already marked
 	}
 
-	// If the task was active, decrement the active count
-	if m.isTaskActive(task) {
-		m.activeTasks--
-	}
-
 	now := time.Now()
 	task.DeletionTimestamp = &now
 
@@ -294,8 +302,8 @@ func (m *taskManager) createTaskLocked(ctx context.Context, task *types.Task) er
 		return fmt.Errorf("task %s already exists", task.Name)
 	}
 
-	// Enforce single task limitation using the cached counter
-	if m.activeTasks >= maxConcurrentTasks {
+	// Enforce single task limitation using real-time count
+	if m.countActiveTasks() >= maxConcurrentTasks {
 		return fmt.Errorf("maximum concurrent tasks (%d) reached, cannot create new task", maxConcurrentTasks)
 	}
 
@@ -324,36 +332,6 @@ func (m *taskManager) createTaskLocked(ctx context.Context, task *types.Task) er
 
 	// Add to memory
 	m.tasks[task.Name] = task
-	if m.isTaskActive(task) {
-		m.activeTasks++
-	}
-	return nil
-}
-
-// deleteTaskLocked deletes a task without acquiring the lock (must be called with lock held).
-func (m *taskManager) deleteTaskLocked(ctx context.Context, name string) error {
-	task, exists := m.tasks[name]
-	if !exists {
-		// Already deleted, no error
-		klog.InfoS("task not found, skipping delete", "name", name)
-		return nil
-	}
-
-	// Stop task execution
-	if err := m.executor.Stop(ctx, task); err != nil {
-		klog.ErrorS(err, "failed to stop task", "name", name)
-		// Continue with deletion even if stop fails
-	}
-
-	// Delete from store
-	if err := m.store.Delete(ctx, name); err != nil {
-		return fmt.Errorf("failed to delete task from store: %w", err)
-	}
-
-	// Remove from memory
-	delete(m.tasks, name)
-
-	klog.InfoS("task deleted successfully", "name", name)
 	return nil
 }
 
@@ -398,11 +376,6 @@ func (m *taskManager) recoverTasks(ctx context.Context) error {
 		// Add to memory
 		m.tasks[task.Name] = task
 
-		// Update active count
-		if m.isTaskActive(task) {
-			m.activeTasks++
-		}
-
 		klog.InfoS("recovered task", "name", task.Name, "state", task.Status.State, "deleting", task.DeletionTimestamp != nil)
 	}
 
@@ -432,71 +405,92 @@ func (m *taskManager) reconcileLoop(ctx context.Context) {
 
 // reconcileTasks updates the status of all tasks and handles deletion.
 func (m *taskManager) reconcileTasks(ctx context.Context) {
-	m.mu.RLock()
-	tasks := make([]*types.Task, 0, len(m.tasks))
-	for _, task := range m.tasks {
-		if task != nil {
-			tasks = append(tasks, task)
-		}
-	}
-	m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	// Update each task's status
-	for _, task := range tasks {
+	var tasksToDelete []string
+
+	for name, task := range m.tasks {
+		if task == nil {
+			continue
+		}
 		status, err := m.executor.Inspect(ctx, task)
 		if err != nil {
-			klog.ErrorS(err, "failed to inspect task", "name", task.Name)
+			klog.ErrorS(err, "failed to inspect task", "name", name)
+			continue
+		}
+		state := status.State
+
+		// Determine if we should stop the task
+		shouldStop := false
+		stopReason := ""
+
+		if task.DeletionTimestamp != nil && !m.stopping[name] {
+			if !isTerminalState(state) {
+				shouldStop = true
+				stopReason = "deletion requested"
+			}
+		} else if state == types.TaskStateTimeout && !m.stopping[name] {
+			shouldStop = true
+			stopReason = "timeout exceeded"
+		}
+
+		if shouldStop {
+			klog.InfoS("stopping task", "name", name, "reason", stopReason)
+			m.stopping[name] = true
+
+			// Async stop to avoid blocking the reconcile loop
+			go func(t *types.Task, taskName string) {
+				defer func() {
+					m.mu.Lock()
+					delete(m.stopping, taskName)
+					m.mu.Unlock()
+				}()
+
+				if err := m.executor.Stop(ctx, t); err != nil {
+					klog.ErrorS(err, "failed to stop task", "name", taskName)
+				}
+				klog.InfoS("task stopped", "name", taskName)
+			}(task, name)
+		}
+
+		// Determine if we can finalize deletion
+		if task.DeletionTimestamp != nil && isTerminalState(state) {
+			klog.InfoS("task terminated, finalizing deletion", "name", name)
+			tasksToDelete = append(tasksToDelete, name)
+		}
+
+		// Update status only if not stopping (prevent status rollback during async stop)
+		if !m.stopping[name] {
+			if !reflect.DeepEqual(task.Status, *status) {
+				task.Status = *status
+				if err := m.store.Update(ctx, task); err != nil {
+					klog.ErrorS(err, "failed to update task status in store", "name", name)
+				}
+			}
+		}
+	}
+
+	// Finalize deletions
+	for _, name := range tasksToDelete {
+		if _, exists := m.tasks[name]; !exists {
 			continue
 		}
 
-		// Acquire lock to safely update status and active count
-		m.mu.Lock()
-		wasActive := m.isTaskActive(task)
-
-		// Update status
-		task.Status = *status
-
-		isActive := m.isTaskActive(task)
-
-		// If task transitioned from Active -> Inactive (Terminated), decrement active count
-		if wasActive && !isActive {
-			m.activeTasks--
-		}
-		m.mu.Unlock()
-
-		// Handle Deletion
-		if task.DeletionTimestamp != nil {
-			if task.Status.State == types.TaskStateSucceeded || task.Status.State == types.TaskStateFailed {
-				// Task is fully terminated, finalize deletion (remove from store/memory)
-				klog.InfoS("task terminated, finalizing deletion", "name", task.Name)
-				m.mu.Lock()
-				if err := m.deleteTaskLocked(ctx, task.Name); err != nil {
-					klog.ErrorS(err, "failed to finalize task deletion", "name", task.Name)
-				}
-				m.mu.Unlock()
-				continue
-			} else {
-				// Task is still running, trigger Stop
-				klog.InfoS("stopping task marked for deletion", "name", task.Name)
-				if err := m.executor.Stop(ctx, task); err != nil {
-					klog.ErrorS(err, "failed to stop task", "name", task.Name)
-				}
-			}
+		if err := m.store.Delete(ctx, name); err != nil {
+			klog.ErrorS(err, "failed to delete task from store", "name", name)
+			continue
 		}
 
-		// Update task status in memory only.
-		// We do not need to persist to store here because Persistent fields (Spec, PID, etc.) do not change during the reconcile loop.
-		// The Status struct IS persisted, but we choose not to persist every few seconds if only runtime state changes.
-		// However, since we made Status a first-class citizen and it's small, we COULD persist it.
-		// But for performance, we stick to the decision: only persist on significant changes (Create/Delete).
-		// Note: If we want to persist ExitCode/FinishedAt, we might need to Update store when state changes to Terminated.
-		// Let's add that optimization: if state changed to Terminated, persist it.
-		if wasActive && !isActive {
-			if err := m.store.Update(ctx, task); err != nil {
-				klog.ErrorS(err, "failed to update task status in store", "name", task.Name)
-			}
-		}
+		delete(m.tasks, name)
+		delete(m.stopping, name)
+		klog.InfoS("task deleted successfully", "name", name)
 	}
 }
 
-// createTaskLocked creates a task without acquiring the lock (must be called with lock held).
+// isTerminalState returns true if the task will not transition to another state.
+func isTerminalState(state types.TaskState) bool {
+	return state == types.TaskStateSucceeded ||
+		state == types.TaskStateFailed ||
+		state == types.TaskStateNotFound
+}

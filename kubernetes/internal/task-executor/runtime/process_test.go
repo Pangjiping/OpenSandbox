@@ -133,8 +133,9 @@ func TestProcessExecutor_ShortLived(t *testing.T) {
 	if status.State != types.TaskStateSucceeded {
 		t.Errorf("Task should be succeeded, got: %s", status.State)
 	}
-	if status.ExitCode != 0 {
-		t.Errorf("Exit code should be 0, got %d", status.ExitCode)
+	assert.NotEmpty(t, status.SubStatuses)
+	if status.SubStatuses[0].ExitCode != 0 {
+		t.Errorf("Exit code should be 0, got %d", status.SubStatuses[0].ExitCode)
 	}
 }
 
@@ -169,8 +170,10 @@ func TestProcessExecutor_Failure(t *testing.T) {
 	}
 	if status.State != types.TaskStateFailed {
 		t.Errorf("Task should be failed")
-	} else if status.ExitCode != 1 {
-		t.Errorf("Exit code should be 1, got %d", status.ExitCode)
+	}
+	assert.NotEmpty(t, status.SubStatuses)
+	if status.SubStatuses[0].ExitCode != 1 {
+		t.Errorf("Exit code should be 1, got %d", status.SubStatuses[0].ExitCode)
 	}
 }
 
@@ -213,9 +216,7 @@ func TestShellEscape(t *testing.T) {
 
 func TestNewExecutor(t *testing.T) {
 	// 1. Container mode + Host Mode
-	cfg := &config.Config{
-		EnableContainerMode: true,
-	}
+	cfg := &config.Config{}
 	e, err := NewExecutor(cfg)
 	if err != nil {
 		t.Fatalf("NewExecutor(container) failed: %v", err)
@@ -226,8 +227,7 @@ func TestNewExecutor(t *testing.T) {
 
 	// 2. Process mode only
 	cfg = &config.Config{
-		EnableContainerMode: false,
-		DataDir:             t.TempDir(),
+		DataDir: t.TempDir(),
 	}
 	e, err = NewExecutor(cfg)
 	if err != nil {
@@ -293,4 +293,120 @@ func TestProcessExecutor_EnvInheritance(t *testing.T) {
 
 	assert.Contains(t, outputStr, expectedHostVar, "Should inherit host environment variables")
 	assert.Contains(t, outputStr, expectedTaskVar, "Should include task-specific environment variables")
+}
+
+func TestProcessExecutor_TimeoutDetection(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not found")
+	}
+
+	executor, _ := setupTestExecutor(t)
+	pExecutor := executor.(*processExecutor)
+	ctx := context.Background()
+
+	timeoutSec := int64(2)
+	task := &types.Task{
+		Name: "timeout-task",
+		Process: &api.Process{
+			Command:        []string{"sleep", "30"},
+			TimeoutSeconds: &timeoutSec,
+		},
+	}
+	taskDir, err := utils.SafeJoin(pExecutor.rootDir, task.Name)
+	assert.Nil(t, err)
+	os.MkdirAll(taskDir, 0755)
+
+	if err := executor.Start(ctx, task); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Wait for timeout to be detected (2 seconds + margin)
+	time.Sleep(2500 * time.Millisecond)
+
+	status, err := executor.Inspect(ctx, task)
+	if err != nil {
+		t.Fatalf("Inspect failed: %v", err)
+	}
+
+	// Should detect timeout
+	assert.Equal(t, types.TaskStateTimeout, status.State, "Task should be in Timeout state")
+	assert.NotEmpty(t, status.SubStatuses)
+	assert.Equal(t, "TaskTimeout", status.SubStatuses[0].Reason)
+	assert.Contains(t, status.SubStatuses[0].Message, "timeout of 2 seconds")
+
+	// Cleanup
+	executor.Stop(ctx, task)
+}
+
+func TestProcessExecutor_TimeoutNotExceeded(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not found")
+	}
+
+	executor, _ := setupTestExecutor(t)
+	ctx := context.Background()
+
+	timeoutSec := int64(10)
+	task := &types.Task{
+		Name: "quick-task",
+		Process: &api.Process{
+			Command:        []string{"echo", "done"},
+			TimeoutSeconds: &timeoutSec,
+		},
+	}
+	taskDir, err := utils.SafeJoin(executor.(*processExecutor).rootDir, task.Name)
+	assert.Nil(t, err)
+	os.MkdirAll(taskDir, 0755)
+
+	if err := executor.Start(ctx, task); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Wait for process to complete
+	time.Sleep(200 * time.Millisecond)
+
+	status, err := executor.Inspect(ctx, task)
+	if err != nil {
+		t.Fatalf("Inspect failed: %v", err)
+	}
+
+	// Should be Succeeded, not Timeout
+	assert.Equal(t, types.TaskStateSucceeded, status.State, "Task should be Succeeded, not Timeout")
+}
+
+func TestProcessExecutor_NoTimeout(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not found")
+	}
+
+	executor, _ := setupTestExecutor(t)
+	pExecutor := executor.(*processExecutor)
+	ctx := context.Background()
+
+	// Task without timeout setting
+	task := &types.Task{
+		Name: "no-timeout-task",
+		Process: &api.Process{
+			Command: []string{"sleep", "1"},
+		},
+	}
+	taskDir, err := utils.SafeJoin(pExecutor.rootDir, task.Name)
+	assert.Nil(t, err)
+	os.MkdirAll(taskDir, 0755)
+
+	if err := executor.Start(ctx, task); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Inspect immediately
+	status, err := executor.Inspect(ctx, task)
+	if err != nil {
+		t.Fatalf("Inspect failed: %v", err)
+	}
+
+	// Should be Running, not Timeout
+	assert.Equal(t, types.TaskStateRunning, status.State, "Task should be Running when no timeout is set")
+
+	// Cleanup
+	executor.Stop(ctx, task)
 }

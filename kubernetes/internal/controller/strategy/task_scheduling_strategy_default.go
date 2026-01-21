@@ -69,17 +69,19 @@ func (s *DefaultTaskSchedulingStrategy) getTaskSpec(batchSbx *sandboxv1alpha1.Ba
 			return nil, fmt.Errorf("batchsandbox: failed to unmarshal %s to TaskTemplateSpec, idx %d, err %w", modified, idx, err)
 		}
 		task.Process = &api.Process{
-			Command:    newTaskTemplate.Spec.Process.Command,
-			Args:       newTaskTemplate.Spec.Process.Args,
-			Env:        newTaskTemplate.Spec.Process.Env,
-			WorkingDir: newTaskTemplate.Spec.Process.WorkingDir,
+			Command:        newTaskTemplate.Spec.Process.Command,
+			Args:           newTaskTemplate.Spec.Process.Args,
+			Env:            newTaskTemplate.Spec.Process.Env,
+			WorkingDir:     newTaskTemplate.Spec.Process.WorkingDir,
+			TimeoutSeconds: batchSbx.Spec.TaskTemplate.Spec.TimeoutSeconds,
 		}
 	} else if batchSbx.Spec.TaskTemplate != nil && batchSbx.Spec.TaskTemplate.Spec.Process != nil {
 		task.Process = &api.Process{
-			Command:    batchSbx.Spec.TaskTemplate.Spec.Process.Command,
-			Args:       batchSbx.Spec.TaskTemplate.Spec.Process.Args,
-			Env:        batchSbx.Spec.TaskTemplate.Spec.Process.Env,
-			WorkingDir: batchSbx.Spec.TaskTemplate.Spec.Process.WorkingDir,
+			Command:        batchSbx.Spec.TaskTemplate.Spec.Process.Command,
+			Args:           batchSbx.Spec.TaskTemplate.Spec.Process.Args,
+			Env:            batchSbx.Spec.TaskTemplate.Spec.Process.Env,
+			WorkingDir:     batchSbx.Spec.TaskTemplate.Spec.Process.WorkingDir,
+			TimeoutSeconds: batchSbx.Spec.TaskTemplate.Spec.TimeoutSeconds,
 		}
 	}
 	return task, nil
