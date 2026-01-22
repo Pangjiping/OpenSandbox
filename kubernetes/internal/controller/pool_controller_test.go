@@ -29,6 +29,7 @@ import (
 	"k8s.io/utils/ptr"
 	kclient "sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/utils/expectations"
 	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/utils/fieldindex"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -521,3 +522,134 @@ func getPoolAllocation(pool *sandboxv1alpha1.Pool) (*PoolAllocation, error) {
 	}
 	return allocation, nil
 }
+
+var _ = Describe("Pool deletion and recreation", func() {
+	var (
+		timeout  = 10 * time.Second
+		interval = 1 * time.Second
+	)
+	Context("When deleting and recreating a Pool with same name", func() {
+		const resourceName = "pool-recreate-test"
+
+		ctx := context.Background()
+
+		typeNamespacedName := types.NamespacedName{
+			Name:      resourceName,
+			Namespace: "default",
+		}
+
+		BeforeEach(func() {
+			By("creating the custom resource for the Kind Pool")
+			typeNamespacedName.Name = resourceName + "-" + rand.String(8)
+			resource := &sandboxv1alpha1.Pool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      typeNamespacedName.Name,
+					Namespace: typeNamespacedName.Namespace,
+				},
+				Spec: sandboxv1alpha1.PoolSpec{
+					Template: &v1.PodTemplateSpec{
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name:  "main",
+									Image: "example.com",
+								},
+							},
+						},
+					},
+					CapacitySpec: sandboxv1alpha1.CapacitySpec{
+						PoolMin:   0,
+						PoolMax:   2,
+						BufferMin: 1,
+						BufferMax: 1,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			Eventually(func(g Gomega) {
+				pool := &sandboxv1alpha1.Pool{}
+				err := k8sClient.Get(ctx, typeNamespacedName, pool)
+				g.Expect(err).NotTo(HaveOccurred())
+				cnt := min(pool.Spec.CapacitySpec.PoolMax, pool.Spec.CapacitySpec.BufferMin)
+				g.Expect(pool.Status.ObservedGeneration).To(Equal(pool.Generation))
+				g.Expect(pool.Status.Total).To(Equal(cnt))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		AfterEach(func() {
+			resource := &sandboxv1alpha1.Pool{}
+			err := k8sClient.Get(ctx, typeNamespacedName, resource)
+			if err != nil {
+				if !errors.IsNotFound(err) {
+					Expect(err).NotTo(HaveOccurred())
+				}
+			} else {
+				By("Cleanup the specific resource instance Pool")
+				Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			}
+		})
+
+		It("should clear scale expectations when Pool is deleted and allow recreation with same name", func() {
+			By("verifying scale expectations exist for the created Pool")
+			controllerKey := typeNamespacedName.String()
+			Eventually(func(g Gomega) {
+				// After pool creation with pods, expectations should be satisfied (empty)
+				// but the controller key might still exist briefly
+				scaleExpectations := PoolScaleExpectations.GetExpectations(controllerKey)
+				// Expectations can be nil or empty (satisfied)
+				if scaleExpectations != nil {
+					g.Expect(scaleExpectations[expectations.Create]).To(BeEmpty(), "create expectations should be empty after pods are observed")
+				}
+			}, timeout, interval).Should(Succeed())
+
+			By("deleting the Pool")
+			pool := &sandboxv1alpha1.Pool{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, pool)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, pool)).To(Succeed())
+
+			By("verifying scale expectations are cleared after deletion")
+			Eventually(func(g Gomega) {
+				// Reconcile should be triggered and clear expectations
+				scaleExpectations := PoolScaleExpectations.GetExpectations(controllerKey)
+				g.Expect(scaleExpectations).To(BeNil(), "expectations should be nil after Pool deletion")
+			}, timeout, interval).Should(Succeed())
+
+			By("recreating a Pool with the same name")
+			newPool := &sandboxv1alpha1.Pool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      typeNamespacedName.Name,
+					Namespace: typeNamespacedName.Namespace,
+				},
+				Spec: sandboxv1alpha1.PoolSpec{
+					Template: &v1.PodTemplateSpec{
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name:  "main",
+									Image: "example.com",
+								},
+							},
+						},
+					},
+					CapacitySpec: sandboxv1alpha1.CapacitySpec{
+						PoolMin:   0,
+						PoolMax:   2,
+						BufferMin: 1,
+						BufferMax: 1,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, newPool)).To(Succeed())
+
+			By("verifying the new Pool is successfully reconciled without getting stuck")
+			Eventually(func(g Gomega) {
+				pool := &sandboxv1alpha1.Pool{}
+				err := k8sClient.Get(ctx, typeNamespacedName, pool)
+				g.Expect(err).NotTo(HaveOccurred())
+				cnt := min(pool.Spec.CapacitySpec.PoolMax, pool.Spec.CapacitySpec.BufferMin)
+				g.Expect(pool.Status.ObservedGeneration).To(Equal(pool.Generation))
+				g.Expect(pool.Status.Total).To(Equal(cnt), "new Pool should have correct total pod count")
+			}, timeout, interval).Should(Succeed())
+		})
+	})
+})

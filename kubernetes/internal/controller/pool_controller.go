@@ -85,7 +85,9 @@ func (r *PoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
 		if errors.IsNotFound(err) {
 			// Pool resource not found, could have been deleted
-			log.Info("Pool resource not found, ignoring since object must be deleted")
+			controllerKey := req.NamespacedName.String()
+			PoolScaleExpectations.DeleteExpectations(controllerKey)
+			log.Info("Pool resource not found, cleaned up scale expectations", "pool", controllerKey)
 			return ctrl.Result{}, nil
 		}
 		// Error reading the object - requeue the request
@@ -93,7 +95,9 @@ func (r *PoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 	if !pool.DeletionTimestamp.IsZero() {
-		log.Info("Pool resource is being deleted, ignoring")
+		controllerKey := controllerutils.GetControllerKey(pool)
+		PoolScaleExpectations.DeleteExpectations(controllerKey)
+		log.Info("Pool resource is being deleted, cleaned up scale expectations", "pool", controllerKey)
 		return ctrl.Result{}, nil
 	}
 
