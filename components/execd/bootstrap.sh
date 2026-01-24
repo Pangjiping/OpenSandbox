@@ -33,5 +33,25 @@ export EXECD_ENVS
 echo "starting OpenSandbox execd daemon at $EXECD"
 $EXECD &
 
+# Allow chained shell commands (e.g., /test1.sh && /test2.sh)
+# Usage:
+#   bootstrap.sh -c "/test1.sh && /test2.sh"
+# Or set BOOTSTRAP_CMD="/test1.sh && /test2.sh"
+CMD=""
+if [ "${BOOTSTRAP_CMD:-}" != "" ]; then
+	CMD="$BOOTSTRAP_CMD"
+elif [ $# -ge 1 ] && [ "$1" = "-c" ]; then
+	shift
+	CMD="$*"
+fi
+
 set -x
+if [ "$CMD" != "" ]; then
+	exec /bin/sh -c "$CMD"
+fi
+
+if [ $# -eq 0 ]; then
+	exec /bin/sh
+fi
+
 exec "$@"
