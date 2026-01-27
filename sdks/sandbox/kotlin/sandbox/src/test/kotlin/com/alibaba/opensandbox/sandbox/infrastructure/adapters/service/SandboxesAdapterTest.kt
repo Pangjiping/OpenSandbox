@@ -18,10 +18,13 @@ package com.alibaba.opensandbox.sandbox.infrastructure.adapters.service
 
 import com.alibaba.opensandbox.sandbox.HttpClientProvider
 import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkRule
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxState
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.MockResponse
@@ -80,6 +83,16 @@ class SandboxesAdapterTest {
         // Execute
         val spec = SandboxImageSpec.builder().image("ubuntu:latest").build()
         val extensions = mapOf("storage.id" to "abc123", "debug" to "true")
+        val networkPolicy =
+            NetworkPolicy.builder()
+                .defaultAction(NetworkPolicy.DefaultAction.DENY)
+                .addEgress(
+                    NetworkRule.builder()
+                        .action(NetworkRule.Action.ALLOW)
+                        .target("pypi.org")
+                        .build(),
+                )
+                .build()
         val result =
             sandboxesAdapter.createSandbox(
                 spec = spec,
@@ -88,6 +101,7 @@ class SandboxesAdapterTest {
                 metadata = mapOf("meta" to "data"),
                 timeout = Duration.ofSeconds(600),
                 resource = mapOf("cpu" to "1"),
+                networkPolicy = networkPolicy,
                 extensions = extensions,
             )
 
@@ -103,6 +117,16 @@ class SandboxesAdapterTest {
         assertNotNull(gotExtensions, "extensions should be present in createSandbox request")
         assertEquals("abc123", gotExtensions!!["storage.id"]!!.jsonPrimitive.content)
         assertEquals("true", gotExtensions["debug"]!!.jsonPrimitive.content)
+        val gotNetworkPolicy = payload["networkPolicy"]?.jsonObject
+        assertNotNull(gotNetworkPolicy, "networkPolicy should be present in createSandbox request")
+        val gotDefaultAction = gotNetworkPolicy!!["defaultAction"]
+        assertNotNull(gotDefaultAction, "defaultAction should be present in networkPolicy")
+        assertEquals("deny", gotDefaultAction!!.jsonPrimitive.content)
+        val egressArray = gotNetworkPolicy["egress"]!!.jsonArray
+        assertEquals(1, egressArray.size)
+        val rule = egressArray[0].jsonObject
+        assertEquals("allow", rule["action"]!!.jsonPrimitive.content)
+        assertEquals("pypi.org", rule["target"]!!.jsonPrimitive.content)
 
         // Verify response
         assertEquals("550e8400-e29b-41d4-a716-446655440000", result.id)

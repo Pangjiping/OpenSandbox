@@ -252,9 +252,13 @@ ConnectionConfig sharedConfig = ConnectionConfig.builder()
 | `resource`     | CPU 和内存限制         | `{"cpu": "1", "memory": "2Gi"}` |
 | `env`          | 环境变量               | 空                              |
 | `metadata`     | 自定义元数据标签       | 空                              |
+| `networkPolicy` | 可选的出站网络策略（egress） | -                         |
 | `readyTimeout` | 等待沙箱就绪的最大时间 | 30 秒                           |
 
 ```java
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy;
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkRule;
+
 Sandbox sandbox = Sandbox.builder()
     .connectionConfig(config)
     .image("python:3.11")
@@ -265,5 +269,16 @@ Sandbox sandbox = Sandbox.builder()
     })
     .env("PYTHONPATH", "/app")
     .metadata("project", "demo")
+    .networkPolicy(
+        NetworkPolicy.builder()
+            .defaultAction(NetworkPolicy.DefaultAction.DENY)
+            .addEgress(
+                NetworkRule.builder()
+                    .action(NetworkRule.Action.ALLOW)
+                    .target("pypi.org")
+                    .build()
+            )
+            .build()
+    )
     .build();
 ```

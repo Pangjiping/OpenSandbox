@@ -32,6 +32,7 @@ import type { ExecdMetrics } from "./services/execdMetrics.js";
 import type {
   CreateSandboxRequest,
   Endpoint,
+  NetworkPolicy,
   RenewSandboxExpirationResponse,
   SandboxId,
   SandboxInfo,
@@ -55,9 +56,26 @@ export interface SandboxCreateOptions {
     | string
     | { uri: string; auth?: { username: string; password: string } };
 
+  /**
+   * Entrypoint command for the sandbox (defaults to tail -f /dev/null).
+   */
   entrypoint?: string[];
+  /**
+   * Environment variables to inject into the sandbox runtime.
+   */
   env?: Record<string, string>;
+  /**
+   * Custom metadata tags (used for filtering/management).
+   */
   metadata?: Record<string, string>;
+  /**
+   * Optional outbound network policy for the sandbox.
+   * If provided without defaultAction, defaults to "deny".
+   */
+  networkPolicy?: NetworkPolicy;
+  /**
+   * Opaque extension parameters passed through to the server as-is.
+   */
   extensions?: Record<string, string>;
 
   /**
@@ -90,13 +108,34 @@ export interface SandboxCreateOptions {
 }
 
 export interface SandboxConnectOptions {
+  /**
+   * Connection configuration for calling the OpenSandbox APIs.
+   */
   connectionConfig?: ConnectionConfig | ConnectionConfigOptions;
+  /**
+   * Advanced override: inject a custom adapter factory (custom transports, dependency injection).
+   */
   adapterFactory?: AdapterFactory;
+  /**
+   * ID of the existing sandbox to connect to.
+   */
   sandboxId: SandboxId;
 
+  /**
+   * Skip readiness checks after connecting.
+   */
   skipHealthCheck?: boolean;
+  /**
+   * Optional custom readiness check used by {@link Sandbox.waitUntilReady}.
+   */
   healthCheck?: (sbx: Sandbox) => boolean | Promise<boolean>;
+  /**
+   * Max time to wait for readiness.
+   */
   readyTimeoutSeconds?: number;
+  /**
+   * Polling interval for readiness checks (milliseconds).
+   */
   healthCheckPollingInterval?: number;
 }
 
@@ -199,6 +238,12 @@ export class Sandbox {
       resourceLimits: opts.resource ?? DEFAULT_RESOURCE_LIMITS,
       env: opts.env ?? {},
       metadata: opts.metadata ?? {},
+      networkPolicy: opts.networkPolicy
+        ? {
+            ...opts.networkPolicy,
+            defaultAction: opts.networkPolicy.defaultAction ?? "deny",
+          }
+        : undefined,
       extensions: opts.extensions ?? {},
     };
 

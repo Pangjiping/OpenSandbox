@@ -22,6 +22,7 @@ import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxInternalException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutException
 import com.alibaba.opensandbox.sandbox.domain.models.execd.DEFAULT_EXECD_PORT
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
@@ -255,6 +256,7 @@ class Sandbox internal constructor(
          * @param timeout Sandbox timeout (automatic termination time)
          * @param readyTimeout Timeout for waiting for sandbox readiness
          * @param resource Resource limits (optional)
+         * @param networkPolicy Optional outbound network policy (egress)
          * @param connectionConfig Connection configuration
          * @param healthCheck Custom health check function (optional)
          * @param healthCheckPollingInterval Polling interval for readiness/health check
@@ -270,6 +272,7 @@ class Sandbox internal constructor(
             timeout: Duration,
             readyTimeout: Duration,
             resource: Map<String, String>,
+            networkPolicy: NetworkPolicy?,
             connectionConfig: ConnectionConfig,
             healthCheck: ((Sandbox) -> Boolean)? = null,
             healthCheckPollingInterval: Duration,
@@ -292,6 +295,7 @@ class Sandbox internal constructor(
                         metadata,
                         timeout,
                         resource,
+                        networkPolicy,
                         extensions,
                     )
                 InitializationResult.NewSandbox(response.id)
@@ -737,6 +741,11 @@ class Sandbox internal constructor(
         private val extensions = mutableMapOf<String, String>()
 
         /**
+         * Optional outbound network policy (egress).
+         */
+        private var networkPolicy: NetworkPolicy? = null
+
+        /**
          * Lifecycle config
          */
         private var timeout: Duration = Duration.ofSeconds(600)
@@ -917,6 +926,24 @@ class Sandbox internal constructor(
         }
 
         /**
+         * Sets a sandbox outbound network policy (egress).
+         */
+        fun networkPolicy(networkPolicy: NetworkPolicy): Builder {
+            this.networkPolicy = networkPolicy
+            return this
+        }
+
+        /**
+         * Configures a sandbox outbound network policy (egress).
+         */
+        fun networkPolicy(configure: NetworkPolicy.Builder.() -> Unit): Builder {
+            val builder = NetworkPolicy.builder()
+            builder.configure()
+            this.networkPolicy = builder.build()
+            return this
+        }
+
+        /**
          * Adds a single extension parameter.
          *
          * Extensions are opaque client-side and are passed through to the server.
@@ -1058,6 +1085,7 @@ class Sandbox internal constructor(
                 timeout = timeout,
                 readyTimeout = readyTimeout,
                 resource = resource,
+                networkPolicy = networkPolicy,
                 extensions = extensions,
                 connectionConfig = connectionConfig ?: ConnectionConfig.builder().build(),
                 healthCheckPollingInterval = healthCheckPollingInterval,

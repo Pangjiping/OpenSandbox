@@ -23,7 +23,6 @@ import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.Co
 import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.RunCodeRequest;
 import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.SupportedLanguage;
 import com.alibaba.opensandbox.sandbox.Sandbox;
-import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxApiException;
 import com.alibaba.opensandbox.sandbox.domain.models.execd.executions.*;
 import java.time.Duration;
 import java.util.ArrayList;

@@ -290,10 +290,13 @@ config = ConnectionConfig(
 | `resource`      | CPU 和内存限制        | `{"cpu": "1", "memory": "2Gi"}` |
 | `env`           | 环境变量             | 空                              |
 | `metadata`      | 自定义元数据标签       | 空                              |
+| `network_policy` | 可选的出站网络策略（egress） | -                         |
 | `ready_timeout` | 等待沙箱就绪的最大时间 | 30 秒                           |
 
 ```python
 from datetime import timedelta
+
+from opensandbox.models.sandboxes import NetworkPolicy, NetworkRule
 
 sandbox = await Sandbox.create(
     "python:3.11",
@@ -301,6 +304,10 @@ sandbox = await Sandbox.create(
     timeout=timedelta(minutes=30),
     resource={"cpu": "2", "memory": "4Gi"},
     env={"PYTHONPATH": "/app"},
-    metadata={"project": "demo"}
+    metadata={"project": "demo"},
+    network_policy=NetworkPolicy(
+        defaultAction="deny",
+        egress=[NetworkRule(action="allow", target="pypi.org")],
+    ),
 )
 ```

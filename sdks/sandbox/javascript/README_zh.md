@@ -208,11 +208,23 @@ const config2 = new ConnectionConfig({
 | `resource` | CPU/内存限制（字符串 map） | `{"cpu":"1","memory":"2Gi"}` |
 | `env` | 环境变量 | `{}` |
 | `metadata` | 自定义元数据标签 | `{}` |
+| `networkPolicy` | 可选的出站网络策略（egress） | - |
 | `extensions` | 额外的服务端扩展字段 | `{}` |
 | `skipHealthCheck` | 跳过就绪检测（`Running` + 健康检查） | `false` |
 | `healthCheck` | 自定义就绪检查 | - |
 | `readyTimeoutSeconds` | 等待就绪最大时间 | 30 秒 |
 | `healthCheckPollingInterval` | 就绪轮询间隔（毫秒） | 200 ms |
+
+```ts
+const sandbox = await Sandbox.create({
+  connectionConfig: config,
+  image: "python:3.11",
+  networkPolicy: {
+    defaultAction: "deny",
+    egress: [{ action: "allow", target: "pypi.org" }],
+  },
+});
+```
 
 ### 3. 资源清理
 

@@ -251,9 +251,13 @@ The `Sandbox.builder()` allows configuring the sandbox environment.
 | `resource`     | CPU and memory limits                    | `{"cpu": "1", "memory": "2Gi"}` |
 | `env`          | Environment variables                    | Empty                           |
 | `metadata`     | Custom metadata tags                     | Empty                           |
+| `networkPolicy` | Optional outbound network policy (egress) | -                             |
 | `readyTimeout` | Max time to wait for sandbox to be ready | 30 seconds                      |
 
 ```java
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy;
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkRule;
+
 Sandbox sandbox = Sandbox.builder()
     .connectionConfig(config)
     .image("python:3.11")
@@ -264,5 +268,16 @@ Sandbox sandbox = Sandbox.builder()
     })
     .env("PYTHONPATH", "/app")
     .metadata("project", "demo")
+    .networkPolicy(
+        NetworkPolicy.builder()
+            .defaultAction(NetworkPolicy.DefaultAction.DENY)
+            .addEgress(
+                NetworkRule.builder()
+                    .action(NetworkRule.Action.ALLOW)
+                    .target("pypi.org")
+                    .build()
+            )
+            .build()
+    )
     .build();
 ```

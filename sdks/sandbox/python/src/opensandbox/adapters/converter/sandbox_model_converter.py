@@ -41,6 +41,7 @@ from opensandbox.api.lifecycle.models import (
 from opensandbox.api.lifecycle.models.create_sandbox_request import CreateSandboxRequest
 from opensandbox.api.lifecycle.models.image_spec import ImageSpec
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
     PagedSandboxInfos,
     PaginationInfo,
     SandboxCreateResponse,
@@ -90,6 +91,7 @@ class SandboxModelConverter:
         metadata: dict[str, str],
         timeout: timedelta,
         resource: dict[str, str],
+        network_policy: NetworkPolicy | None,
         extensions: dict[str, str],
     ) -> CreateSandboxRequest:
         """Convert domain parameters to API CreateSandboxRequest."""
@@ -104,6 +106,18 @@ class SandboxModelConverter:
         )
         from opensandbox.api.lifecycle.models.create_sandbox_request_metadata import (
             CreateSandboxRequestMetadata,
+        )
+        from opensandbox.api.lifecycle.models.network_policy import (
+            NetworkPolicy as ApiNetworkPolicy,
+        )
+        from opensandbox.api.lifecycle.models.network_policy_default_action import (
+            NetworkPolicyDefaultAction,
+        )
+        from opensandbox.api.lifecycle.models.network_rule import (
+            NetworkRule as ApiNetworkRule,
+        )
+        from opensandbox.api.lifecycle.models.network_rule_action import (
+            NetworkRuleAction,
         )
         from opensandbox.api.lifecycle.models.resource_limits import ResourceLimits
         from opensandbox.api.lifecycle.types import UNSET
@@ -121,6 +135,34 @@ class SandboxModelConverter:
         # Convert resource limits dict to API model
         api_resource_limits = ResourceLimits.from_dict(resource)
 
+        api_network_policy = UNSET
+        if network_policy is not None:
+            if not isinstance(network_policy, NetworkPolicy):
+                raise TypeError(
+                    "network_policy must be a NetworkPolicy or None, "
+                    f"got {type(network_policy).__name__}"
+                )
+            api_default_action = UNSET
+            if network_policy.default_action:
+                api_default_action = NetworkPolicyDefaultAction(
+                    network_policy.default_action
+                )
+
+            api_egress = UNSET
+            if network_policy.egress is not None:
+                api_egress = [
+                    ApiNetworkRule(
+                        action=NetworkRuleAction(rule.action),
+                        target=rule.target,
+                    )
+                    for rule in network_policy.egress
+                ]
+
+            api_network_policy = ApiNetworkPolicy(
+                default_action=api_default_action,
+                egress=api_egress,
+            )
+
         api_extensions = (
             CreateSandboxRequestExtensions.from_dict(extensions) if extensions else UNSET
         )
@@ -132,6 +174,7 @@ class SandboxModelConverter:
             metadata=api_metadata,
             timeout=int(timeout.total_seconds()),
             resource_limits=api_resource_limits,
+            network_policy=api_network_policy,
             extensions=api_extensions,
         )
 

@@ -42,7 +42,7 @@ from opensandbox.exceptions import (
     SandboxInternalException,
 )
 from opensandbox.models.execd import RunCommandOpts
-from opensandbox.models.sandboxes import SandboxImageSpec
+from opensandbox.models.sandboxes import NetworkPolicy, NetworkRule, SandboxImageSpec
 
 
 def test_parse_sandbox_error_from_json_bytes() -> None:
@@ -139,6 +139,10 @@ def test_sandbox_model_converter_to_api_create_request_and_renew_tz() -> None:
         metadata={},
         timeout=timedelta(seconds=3),
         resource={"cpu": "100m"},
+        network_policy=NetworkPolicy(
+            defaultAction="deny",
+            egress=[NetworkRule(action="allow", target="pypi.org")],
+        ),
         extensions={},
     )
     d = req.to_dict()
@@ -146,6 +150,8 @@ def test_sandbox_model_converter_to_api_create_request_and_renew_tz() -> None:
     assert d["timeout"] == 3
     assert "env" not in d
     assert "metadata" not in d
+    assert d["networkPolicy"]["defaultAction"] == "deny"
+    assert d["networkPolicy"]["egress"] == [{"action": "allow", "target": "pypi.org"}]
 
     renew = SandboxModelConverter.to_api_renew_request(datetime(2025, 1, 1))
     assert renew.expires_at.tzinfo is timezone.utc

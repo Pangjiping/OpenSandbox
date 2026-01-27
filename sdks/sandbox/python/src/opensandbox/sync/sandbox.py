@@ -32,6 +32,7 @@ from opensandbox.exceptions import (
     SandboxReadyTimeoutException,
 )
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
     SandboxEndpoint,
     SandboxImageSpec,
     SandboxInfo,
@@ -341,6 +342,7 @@ class SandboxSync:
         env: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
         resource: dict[str, str] | None = None,
+        network_policy: NetworkPolicy | None = None,
         extensions: dict[str, str] | None = None,
         entrypoint: list[str] | None = None,
         connection_config: ConnectionConfigSync | None = None,
@@ -358,6 +360,7 @@ class SandboxSync:
             env: Environment variables for the sandbox
             metadata: Custom metadata for the sandbox
             resource: Resource limits (CPU, memory, etc.)
+            network_policy: Optional outbound network policy (egress).
             extensions: Opaque extension parameters passed through to the server as-is.
                 Prefer namespaced keys (e.g. ``storage.id``).
             entrypoint: Command to run as entrypoint
@@ -394,7 +397,14 @@ class SandboxSync:
         try:
             sandbox_service = factory.create_sandbox_service()
             response = sandbox_service.create_sandbox(
-                image, entrypoint, env, metadata, timeout, resource, extensions
+                image,
+                entrypoint,
+                env,
+                metadata,
+                timeout,
+                resource,
+                network_policy,
+                extensions,
             )
             sandbox_id = response.id
             execd_endpoint = sandbox_service.get_sandbox_endpoint(response.id, DEFAULT_EXECD_PORT)

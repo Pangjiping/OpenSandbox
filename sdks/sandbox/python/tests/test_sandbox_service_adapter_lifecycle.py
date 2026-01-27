@@ -23,7 +23,12 @@ import pytest
 from opensandbox.adapters.sandboxes_adapter import SandboxesAdapter
 from opensandbox.config import ConnectionConfig
 from opensandbox.exceptions import SandboxApiException
-from opensandbox.models.sandboxes import SandboxFilter, SandboxImageSpec
+from opensandbox.models.sandboxes import (
+    NetworkPolicy,
+    NetworkRule,
+    SandboxFilter,
+    SandboxImageSpec,
+)
 
 
 class _Resp:
@@ -99,11 +104,18 @@ async def test_create_sandbox_success(monkeypatch: pytest.MonkeyPatch) -> None:
         metadata={},
         timeout=timedelta(seconds=3),
         resource={"cpu": "100m"},
+        network_policy=NetworkPolicy(
+            defaultAction="deny",
+            egress=[NetworkRule(action="allow", target="pypi.org")],
+        ),
         extensions={"storage.id": "abc123", "debug": "true"},
     )
     assert isinstance(out.id, str)
     assert "image" in called["body"].to_dict()
     assert called["body"].to_dict()["extensions"] == {"storage.id": "abc123", "debug": "true"}
+    network_policy = called["body"].to_dict()["networkPolicy"]
+    assert network_policy["defaultAction"] == "deny"
+    assert network_policy["egress"] == [{"action": "allow", "target": "pypi.org"}]
 
 
 @pytest.mark.asyncio
@@ -126,6 +138,7 @@ async def test_create_sandbox_empty_response_raises(monkeypatch: pytest.MonkeyPa
             timeout=timedelta(seconds=1),
             resource={"cpu": "100m"},
             extensions={"debug": "true"},
+            network_policy=NetworkPolicy()
         )
 
 

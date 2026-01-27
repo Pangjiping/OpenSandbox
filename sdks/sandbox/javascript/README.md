@@ -210,11 +210,23 @@ const config2 = new ConnectionConfig({
 | `resource` | CPU and memory limits (string map) | `{"cpu":"1","memory":"2Gi"}` |
 | `env` | Environment variables | `{}` |
 | `metadata` | Custom metadata tags | `{}` |
+| `networkPolicy` | Optional outbound network policy (egress) | - |
 | `extensions` | Extra server-defined fields | `{}` |
 | `skipHealthCheck` | Skip readiness checks (`Running` + health check) | `false` |
 | `healthCheck` | Custom readiness check | - |
 | `readyTimeoutSeconds` | Max time to wait for readiness | 30 seconds |
 | `healthCheckPollingInterval` | Poll interval while waiting (milliseconds) | 200 ms |
+
+```ts
+const sandbox = await Sandbox.create({
+  connectionConfig: config,
+  image: "python:3.11",
+  networkPolicy: {
+    defaultAction: "deny",
+    egress: [{ action: "allow", target: "pypi.org" }],
+  },
+});
+```
 
 ### 3. Resource cleanup
 

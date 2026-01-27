@@ -39,6 +39,7 @@ from opensandbox.adapters.converter.sandbox_model_converter import (
 from opensandbox.api.lifecycle.types import UNSET
 from opensandbox.config import ConnectionConfig
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
     PagedSandboxInfos,
     SandboxCreateResponse,
     SandboxEndpoint,
@@ -114,6 +115,7 @@ class SandboxesAdapter(Sandboxes):
         metadata: dict[str, str],
         timeout: timedelta,
         resource: dict[str, str],
+        network_policy: NetworkPolicy | None,
         extensions: dict[str, str],
     ) -> SandboxCreateResponse:
         """Create a new sandbox instance with the specified configuration."""
@@ -129,6 +131,7 @@ class SandboxesAdapter(Sandboxes):
                 metadata=metadata,
                 timeout=timeout,
                 resource=resource,
+                network_policy=network_policy,
                 extensions=extensions,
             )
 

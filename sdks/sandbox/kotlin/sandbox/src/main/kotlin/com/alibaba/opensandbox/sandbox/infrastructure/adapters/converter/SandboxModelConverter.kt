@@ -26,6 +26,8 @@ import com.alibaba.opensandbox.sandbox.api.models.ListSandboxesResponse
 import com.alibaba.opensandbox.sandbox.api.models.RenewSandboxExpirationRequest
 import com.alibaba.opensandbox.sandbox.api.models.RenewSandboxExpirationResponse
 import com.alibaba.opensandbox.sandbox.api.models.execd.Metrics
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkRule
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PaginationInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxCreateResponse
@@ -37,6 +39,8 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxMetrics
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
 import java.time.Duration
 import java.time.OffsetDateTime
+import com.alibaba.opensandbox.sandbox.api.models.NetworkPolicy as ApiNetworkPolicy
+import com.alibaba.opensandbox.sandbox.api.models.NetworkRule as ApiNetworkRule
 import com.alibaba.opensandbox.sandbox.api.models.PaginationInfo as ApiPaginationInfo
 import com.alibaba.opensandbox.sandbox.api.models.Sandbox as ApiSandbox
 import com.alibaba.opensandbox.sandbox.api.models.SandboxStatus as ApiSandboxStatus
@@ -68,6 +72,34 @@ internal object SandboxModelConverter {
         )
     }
 
+    /**
+     * Converts Domain NetworkPolicy -> API NetworkPolicy
+     */
+    fun NetworkPolicy.toApiNetworkPolicy(): ApiNetworkPolicy {
+        val apiDefaultAction =
+            defaultAction?.let { action ->
+                when (action) {
+                    NetworkPolicy.DefaultAction.ALLOW -> ApiNetworkPolicy.DefaultAction.allow
+                    NetworkPolicy.DefaultAction.DENY -> ApiNetworkPolicy.DefaultAction.deny
+                }
+            }
+        val apiEgress =
+            egress?.map { rule ->
+                ApiNetworkRule(
+                    action =
+                        when (rule.action) {
+                            NetworkRule.Action.ALLOW -> ApiNetworkRule.Action.allow
+                            NetworkRule.Action.DENY -> ApiNetworkRule.Action.deny
+                        },
+                    target = rule.target,
+                )
+            }
+        return ApiNetworkPolicy(
+            defaultAction = apiDefaultAction,
+            egress = apiEgress,
+        )
+    }
+
     fun toApiCreateSandboxRequest(
         spec: SandboxImageSpec,
         entrypoint: List<String>,
@@ -75,6 +107,7 @@ internal object SandboxModelConverter {
         metadata: Map<String, String>,
         timeout: Duration,
         resource: Map<String, String>,
+        networkPolicy: NetworkPolicy?,
         extensions: Map<String, String>,
     ): CreateSandboxRequest {
         return CreateSandboxRequest(
@@ -84,6 +117,7 @@ internal object SandboxModelConverter {
             metadata = metadata,
             timeout = timeout.seconds.toInt(),
             resourceLimits = resource,
+            networkPolicy = networkPolicy?.toApiNetworkPolicy(),
             extensions = extensions,
         )
     }

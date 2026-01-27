@@ -18,6 +18,7 @@ package com.alibaba.opensandbox.sandbox.infrastructure.adapters.service
 
 import com.alibaba.opensandbox.sandbox.HttpClientProvider
 import com.alibaba.opensandbox.sandbox.api.SandboxesApi
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxCreateResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
@@ -58,6 +59,7 @@ internal class SandboxesAdapter(
         metadata: Map<String, String>,
         timeout: Duration,
         resource: Map<String, String>,
+        networkPolicy: NetworkPolicy?,
         extensions: Map<String, String>,
     ): SandboxCreateResponse {
         logger.info("Creating sandbox with image: {}", spec.image)
@@ -71,6 +73,7 @@ internal class SandboxesAdapter(
                     metadata = metadata,
                     timeout = timeout,
                     resource = resource,
+                    networkPolicy = networkPolicy,
                     extensions = extensions,
                 )
             val apiResponse = api.sandboxesPost(createRequest)

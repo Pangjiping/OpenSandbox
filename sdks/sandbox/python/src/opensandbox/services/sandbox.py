@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from typing import Protocol
 
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
     PagedSandboxInfos,
     SandboxCreateResponse,
     SandboxEndpoint,
@@ -49,6 +50,7 @@ class Sandboxes(Protocol):
         metadata: dict[str, str],
         timeout: timedelta,
         resource: dict[str, str],
+        network_policy: NetworkPolicy | None,
         extensions: dict[str, str],
     ) -> SandboxCreateResponse:
         """
@@ -61,6 +63,7 @@ class Sandboxes(Protocol):
             metadata: User-defined metadata used for management and filtering.
             timeout: Sandbox lifetime. The server may terminate the sandbox when it expires.
             resource: Runtime resource limits (e.g. cpu/memory). Exact semantics are server-defined.
+            network_policy: Optional outbound network policy (egress).
             extensions: Opaque extension parameters passed through to the server as-is.
                 Prefer namespaced keys (e.g. ``storage.id``).
 

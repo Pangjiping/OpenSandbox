@@ -16,6 +16,7 @@
 
 package com.alibaba.opensandbox.sandbox.domain.services
 
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxCreateResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
@@ -42,6 +43,7 @@ interface Sandboxes {
      * @param metadata User-defined metadata used for management and filtering
      * @param timeout Sandbox lifetime. The server may terminate the sandbox when it expires
      * @param resource Runtime resource limits (e.g. cpu/memory). Exact semantics are server-defined
+     * @param networkPolicy Optional outbound network policy (egress)
      * @param extensions Opaque extension parameters passed through to the server as-is. Prefer namespaced keys
      * @return Sandbox creation response containing the sandbox id
      */
@@ -52,6 +54,7 @@ interface Sandboxes {
         metadata: Map<String, String>,
         timeout: Duration,
         resource: Map<String, String>,
+        networkPolicy: NetworkPolicy?,
         extensions: Map<String, String>,
     ): SandboxCreateResponse
 

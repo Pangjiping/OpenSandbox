@@ -290,10 +290,13 @@ The `Sandbox.create()` allows configuring the sandbox environment.
 | `resource`      | CPU and memory limits                    | `{"cpu": "1", "memory": "2Gi"}` |
 | `env`           | Environment variables                    | Empty                           |
 | `metadata`      | Custom metadata tags                     | Empty                           |
+| `network_policy` | Optional outbound network policy (egress) | -                             |
 | `ready_timeout` | Max time to wait for sandbox to be ready | 30 seconds                      |
 
 ```python
 from datetime import timedelta
+
+from opensandbox.models.sandboxes import NetworkPolicy, NetworkRule
 
 sandbox = await Sandbox.create(
     "python:3.11",
@@ -301,6 +304,10 @@ sandbox = await Sandbox.create(
     timeout=timedelta(minutes=30),
     resource={"cpu": "2", "memory": "4Gi"},
     env={"PYTHONPATH": "/app"},
-    metadata={"project": "demo"}
+    metadata={"project": "demo"},
+    network_policy=NetworkPolicy(
+        defaultAction="deny",
+        egress=[NetworkRule(action="allow", target="pypi.org")],
+    ),
 )
 ```

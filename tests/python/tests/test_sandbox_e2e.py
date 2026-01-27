@@ -41,7 +41,7 @@ from opensandbox.models.filesystem import (
     SetPermissionEntry,
     WriteEntry,
 )
-from opensandbox.models.sandboxes import SandboxImageSpec
+from opensandbox.models.sandboxes import NetworkPolicy, NetworkRule, SandboxImageSpec
 
 from tests.base_e2e_test import create_connection_config, get_sandbox_image
 
@@ -278,6 +278,37 @@ class TestSandboxE2E:
             await sandbox2.close()
 
         logger.info("TEST 1 PASSED: Sandbox lifecycle and health test completed successfully")
+
+
+    @pytest.mark.skip(reason="server-side networkPolicy not fully supported yet")
+    @pytest.mark.timeout(120)
+    @pytest.mark.order(1)
+    async def test_01a_network_policy_create(self):
+        logger.info("=" * 80)
+        logger.info("TEST 1a: Creating sandbox with networkPolicy (async)")
+        logger.info("=" * 80)
+
+        cfg = create_connection_config()
+        sandbox = await Sandbox.create(
+            image=SandboxImageSpec(get_sandbox_image()),
+            connection_config=cfg,
+            timeout=timedelta(minutes=2),
+            ready_timeout=timedelta(seconds=30),
+            network_policy=NetworkPolicy(
+                defaultAction="deny",
+                egress=[NetworkRule(action="allow", target="pypi.org")],
+            ),
+        )
+        try:
+            result = await sandbox.commands.run("echo policy-ok")
+            assert result.error is None
+            assert result.logs.stdout[0].text == "policy-ok"
+        finally:
+            try:
+                await sandbox.kill()
+            except Exception:
+                pass
+            await sandbox.close()
 
     @pytest.mark.timeout(120)
     @pytest.mark.order(2)

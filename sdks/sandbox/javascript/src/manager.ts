@@ -20,14 +20,32 @@ import type { ListSandboxesResponse, SandboxId, SandboxInfo } from "./models/san
 import type { Sandboxes } from "./services/sandboxes.js";
 
 export interface SandboxManagerOptions {
+  /**
+   * Connection configuration for calling the OpenSandbox Lifecycle API.
+   */
   connectionConfig?: ConnectionConfig | ConnectionConfigOptions;
+  /**
+   * Advanced override: inject a custom adapter factory (custom transports, dependency injection).
+   */
   adapterFactory?: AdapterFactory;
 }
 
 export interface SandboxFilter {
+  /**
+   * Filter by sandbox lifecycle states.
+   */
   states?: string[];
+  /**
+   * Filter by metadata key-value pairs.
+   */
   metadata?: Record<string, string>;
+  /**
+   * Pagination page number (1-indexed).
+   */
   page?: number;
+  /**
+   * Number of items per page.
+   */
   pageSize?: number;
 }
 

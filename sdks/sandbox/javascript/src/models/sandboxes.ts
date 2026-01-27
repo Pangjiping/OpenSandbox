@@ -37,6 +37,31 @@ export interface ImageSpec {
 
 export type ResourceLimits = Record<string, string>;
 
+export type NetworkRuleAction = "allow" | "deny";
+
+export interface NetworkRule extends Record<string, unknown> {
+  /**
+   * Whether to allow or deny matching targets.
+   */
+  action: NetworkRuleAction;
+  /**
+   * FQDN or wildcard domain (e.g., "example.com", "*.example.com").
+   * IP/CIDR is not supported in the egress MVP.
+   */
+  target: string;
+}
+
+export interface NetworkPolicy extends Record<string, unknown> {
+  /**
+   * Default action when no egress rule matches. Defaults to "deny".
+   */
+  defaultAction?: NetworkRuleAction;
+  /**
+   * List of egress rules evaluated in order.
+   */
+  egress?: NetworkRule[];
+}
+
 export type SandboxState =
   | "Creating"
   | "Running"
@@ -80,6 +105,10 @@ export interface CreateSandboxRequest extends Record<string, unknown> {
   resourceLimits: ResourceLimits;
   env?: Record<string, string>;
   metadata?: Record<string, string>;
+  /**
+   * Optional outbound network policy for the sandbox.
+   */
+  networkPolicy?: NetworkPolicy;
   extensions?: Record<string, unknown>;
 }
 

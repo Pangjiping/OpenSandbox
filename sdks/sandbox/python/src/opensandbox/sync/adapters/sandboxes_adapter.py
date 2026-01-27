@@ -35,6 +35,7 @@ from opensandbox.adapters.converter.sandbox_model_converter import (
 from opensandbox.api.lifecycle.types import UNSET
 from opensandbox.config.connection_sync import ConnectionConfigSync
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
     PagedSandboxInfos,
     SandboxCreateResponse,
     SandboxEndpoint,
@@ -91,6 +92,7 @@ class SandboxesAdapterSync(SandboxesSync):
         metadata: dict[str, str],
         timeout: timedelta,
         resource: dict[str, str],
+        network_policy: NetworkPolicy | None,
         extensions: dict[str, str],
     ) -> SandboxCreateResponse:
         logger.info("Creating sandbox with image: %s", spec.image)
@@ -107,6 +109,7 @@ class SandboxesAdapterSync(SandboxesSync):
                 metadata=metadata,
                 timeout=timeout,
                 resource=resource,
+                network_policy=network_policy,
                 extensions=extensions,
             )
             response_obj = post_sandboxes.sync_detailed(client=self._get_client(), body=create_request)

@@ -113,6 +113,31 @@ test("01 sandbox lifecycle, health, endpoint, metrics, renew, connect", async ()
   }
 });
 
+test.skip("01a sandbox create with networkPolicy", async () => {
+  const connectionConfig = createConnectionConfig();
+  const networkPolicySandbox = await Sandbox.create({
+    connectionConfig,
+    image: getSandboxImage(),
+    timeoutSeconds: 2 * 60,
+    readyTimeoutSeconds: 60,
+    networkPolicy: {
+      defaultAction: "deny",
+      egress: [{ action: "allow", target: "pypi.org" }],
+    },
+  });
+  try {
+    const r = await networkPolicySandbox.commands.run("echo policy-ok");
+    expect(r.error).toBeUndefined();
+    expect(r.logs.stdout[0]?.text).toBe("policy-ok");
+  } finally {
+    try {
+      await networkPolicySandbox.kill();
+    } catch {
+      // ignore
+    }
+  }
+}, 3 * 60_000);
+
 test("01b sandbox manager: list + get", async () => {
   if (!sandbox) throw new Error("sandbox not created");
 

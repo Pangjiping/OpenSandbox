@@ -637,6 +637,12 @@ export interface components {
              */
             entrypoint: string[];
             /**
+             * @description Optional outbound network policy for the sandbox.
+             *     Shape matches the sidecar `/policy` endpoint. If omitted or empty,
+             *     the sidecar starts in allow-all mode until updated.
+             */
+            networkPolicy?: components["schemas"]["NetworkPolicy"];
+            /**
              * @description Opaque container for provider-specific or transient parameters not supported by the core API.
              *
              *     **Note**: This field is reserved for internal features, experimental flags, or temporary behaviors. Standard parameters should be proposed as core API fields.
@@ -709,6 +715,32 @@ export interface components {
              *     Example: endpoint.opensandbox.io/sandboxes/abc123/port/8080
              */
             endpoint: string;
+        };
+        /**
+         * @description Egress network policy matching the sidecar `/policy` request body.
+         *     If `defaultAction` is omitted, the sidecar defaults to "deny"; passing an empty
+         *     object or null results in allow-all behavior at startup.
+         */
+        NetworkPolicy: {
+            /**
+             * @description Default action when no egress rule matches. Defaults to "deny".
+             * @enum {string}
+             */
+            defaultAction?: "allow" | "deny";
+            /** @description List of egress rules evaluated in order. */
+            egress?: components["schemas"]["NetworkRule"][];
+        };
+        NetworkRule: {
+            /**
+             * @description Whether to allow or deny matching targets.
+             * @enum {string}
+             */
+            action: "allow" | "deny";
+            /**
+             * @description FQDN or wildcard domain (e.g., "example.com", "*.example.com").
+             *     IP/CIDR not yet supported in the egress MVP.
+             */
+            target: string;
         };
     };
     responses: {

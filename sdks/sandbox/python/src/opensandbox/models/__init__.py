@@ -37,6 +37,8 @@ from opensandbox.models.filesystem import (
     WriteEntry,
 )
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
+    NetworkRule,
     PagedSandboxInfos,
     PaginationInfo,
     SandboxCreateResponse,
@@ -70,6 +72,8 @@ __all__ = [
     "SandboxInfo",
     "SandboxStatus",
     "SandboxState",
+    "NetworkPolicy",
+    "NetworkRule",
     "SandboxCreateResponse",
     "SandboxEndpoint",
     "SandboxImageSpec",

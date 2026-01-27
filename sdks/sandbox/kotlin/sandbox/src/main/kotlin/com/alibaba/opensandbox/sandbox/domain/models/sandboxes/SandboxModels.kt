@@ -218,6 +218,101 @@ class SandboxImageAuth private constructor(
 }
 
 /**
+ * Egress rule for matching network targets.
+ *
+ * @property action Whether to allow or deny matching targets.
+ * @property target FQDN or wildcard domain (e.g., "example.com", "*.example.com")
+ */
+class NetworkRule private constructor(
+    val action: Action,
+    val target: String,
+) {
+    enum class Action {
+        ALLOW,
+        DENY,
+    }
+
+    companion object {
+        @JvmStatic
+        fun builder(): Builder = Builder()
+    }
+
+    class Builder {
+        private var action: Action? = null
+        private var target: String? = null
+
+        fun action(action: Action): Builder {
+            this.action = action
+            return this
+        }
+
+        fun target(target: String): Builder {
+            require(target.isNotBlank()) { "Target cannot be blank" }
+            this.target = target
+            return this
+        }
+
+        fun build(): NetworkRule {
+            val actionValue = action ?: throw IllegalArgumentException("Action must be specified")
+            val targetValue = target ?: throw IllegalArgumentException("Target must be specified")
+            return NetworkRule(
+                action = actionValue,
+                target = targetValue,
+            )
+        }
+    }
+}
+
+/**
+ * Egress network policy matching the sidecar `/policy` request body.
+ *
+ * @property defaultAction Default action when no egress rule matches. Defaults to "deny".
+ * @property egress Egress rules evaluated in order
+ */
+class NetworkPolicy private constructor(
+    val defaultAction: DefaultAction?,
+    val egress: List<NetworkRule>?,
+) {
+    enum class DefaultAction {
+        ALLOW,
+        DENY,
+    }
+
+    companion object {
+        @JvmStatic
+        fun builder(): Builder = Builder()
+    }
+
+    class Builder {
+        private var defaultAction: DefaultAction = DefaultAction.DENY
+        private val egress = mutableListOf<NetworkRule>()
+
+        fun defaultAction(action: DefaultAction): Builder {
+            this.defaultAction = action
+            return this
+        }
+
+        fun addEgress(rule: NetworkRule): Builder {
+            egress.add(rule)
+            return this
+        }
+
+        fun egress(rules: List<NetworkRule>): Builder {
+            egress.clear()
+            egress.addAll(rules)
+            return this
+        }
+
+        fun build(): NetworkPolicy {
+            return NetworkPolicy(
+                defaultAction = defaultAction,
+                egress = if (egress.isEmpty()) null else egress.toList(),
+            )
+        }
+    }
+}
+
+/**
  * Detailed information about a sandbox instance.
  *
  * @property id Unique identifier of the sandbox

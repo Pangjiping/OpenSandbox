@@ -218,12 +218,54 @@ public class SandboxE2ETest extends BaseE2ETest {
         }
     }
 
+    @Test
+    @Order(2)
+    @DisplayName("Sandbox create with networkPolicy")
+    @Disabled("server-side networkPolicy not fully supported yet")
+    @Timeout(value = 2, unit = TimeUnit.MINUTES)
+    void testSandboxCreateWithNetworkPolicy() {
+        NetworkPolicy networkPolicy =
+                NetworkPolicy.builder()
+                        .defaultAction(NetworkPolicy.DefaultAction.DENY)
+                        .addEgress(
+                                NetworkRule.builder()
+                                        .action(NetworkRule.Action.ALLOW)
+                                        .target("pypi.org")
+                                        .build())
+                        .build();
+
+        Sandbox policySandbox =
+                Sandbox.builder()
+                        .connectionConfig(sharedConnectionConfig)
+                        .image(getSandboxImage())
+                        .timeout(Duration.ofMinutes(2))
+                        .readyTimeout(Duration.ofSeconds(60))
+                        .networkPolicy(networkPolicy)
+                        .build();
+
+        try {
+            Execution r =
+                    policySandbox
+                            .commands()
+                            .run(RunCommandRequest.builder().command("echo policy-ok").build());
+            assertNotNull(r);
+            assertNull(r.getError());
+            assertEquals("policy-ok", r.getLogs().getStdout().get(0).getText());
+        } finally {
+            try {
+                policySandbox.kill();
+            } catch (Exception ignored) {
+            }
+            policySandbox.close();
+        }
+    }
+
     // ==========================================
     // Command Execution Tests
     // ==========================================
 
     @Test
-    @Order(2)
+    @Order(3)
     @DisplayName("Command execution: success, cwd, background, failure")
     @Timeout(value = 2, unit = TimeUnit.MINUTES)
     void testBasicCommandExecution() {
@@ -353,7 +395,7 @@ public class SandboxE2ETest extends BaseE2ETest {
     // ==========================================
 
     @Test
-    @Order(3)
+    @Order(4)
     @DisplayName("Filesystem operations: CRUD + replace/move/delete + mtime checks")
     @Timeout(value = 2, unit = TimeUnit.MINUTES)
     void testBasicFilesystemOperations() {
@@ -590,7 +632,7 @@ public class SandboxE2ETest extends BaseE2ETest {
     }
 
     @Test
-    @Order(4)
+    @Order(5)
     @DisplayName("Interrupt command")
     @Timeout(value = 2, unit = TimeUnit.MINUTES)
     void testInterruptCommand() throws Exception {
@@ -640,7 +682,7 @@ public class SandboxE2ETest extends BaseE2ETest {
     }
 
     @Test
-    @Order(5)
+    @Order(6)
     @DisplayName("Sandbox Pause Operation")
     @Timeout(value = 5, unit = TimeUnit.MINUTES)
     void testSandboxPause() throws InterruptedException {
@@ -679,7 +721,7 @@ public class SandboxE2ETest extends BaseE2ETest {
     }
 
     @Test
-    @Order(6)
+    @Order(7)
     @DisplayName("Sandbox Resume Operation")
     @Timeout(value = 3, unit = TimeUnit.MINUTES)
     void testSandboxResume() throws InterruptedException {

@@ -20,6 +20,7 @@ Models for sandbox creation, configuration, status, and lifecycle management.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -91,6 +92,44 @@ class SandboxImageSpec(BaseModel):
         if not v.strip():
             raise ValueError("Image cannot be blank")
         return v
+
+
+class NetworkRule(BaseModel):
+    """
+    Egress rule for matching network targets.
+    """
+
+    action: Literal["allow", "deny"] = Field(
+        description='Whether to allow or deny matching targets. One of "allow" or "deny".'
+    )
+    target: str = Field(
+        description='FQDN or wildcard domain (e.g., "example.com", "*.example.com").'
+    )
+
+    @field_validator("target")
+    @classmethod
+    def target_must_not_be_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Network rule target cannot be blank")
+        return v
+
+
+class NetworkPolicy(BaseModel):
+    """
+    Egress network policy matching the sidecar `/policy` request body.
+    """
+
+    default_action: Literal["allow", "deny"] | None = Field(
+        default="deny",
+        description='Default action when no rule matches. Defaults to "deny".',
+        alias="defaultAction",
+    )
+    egress: list[NetworkRule] | None = Field(
+        default=None,
+        description="List of egress rules evaluated in order.",
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class SandboxStatus(BaseModel):
