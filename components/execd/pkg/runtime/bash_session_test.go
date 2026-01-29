@@ -18,6 +18,8 @@
 package runtime
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -170,6 +172,104 @@ func TestBashSessionEnvLargeOutputChained(t *testing.T) {
 	}
 	if completeCalls != 3 {
 		t.Fatalf("OnExecuteComplete expected 3 calls, got %d", completeCalls)
+	}
+}
+
+func TestBashSession_heredoc(t *testing.T) {
+	rewardDir := t.TempDir()
+	controller := NewController("", "")
+
+	hooks := ExecuteResultHook{
+		OnExecuteStdout: func(line string) {
+			fmt.Printf("[stdout] %s\n", line)
+		},
+		OnExecuteComplete: func(d time.Duration) {
+			fmt.Printf("[complete] %s\n", d)
+		},
+	}
+
+	// First run: heredoc + reward file write.
+	script := fmt.Sprintf(`
+set -x
+reward_dir=%q
+mkdir -p "$reward_dir"
+
+cat > /tmp/repro_script.sh <<'SHEOF'
+#!/usr/bin/env sh
+echo "hello heredoc"
+SHEOF
+
+chmod +x /tmp/repro_script.sh
+/tmp/repro_script.sh
+echo "after heredoc"
+echo 1 > "$reward_dir/reward.txt"
+cat "$reward_dir/reward.txt"
+`, rewardDir)
+
+	if err := controller.Execute(&ExecuteCodeRequest{
+		Language: Bash,
+		Timeout:  10 * time.Second,
+		Code:     script,
+		Hooks:    hooks,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "first Execute failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Second run: ensure the session keeps working.
+	if err := controller.Execute(&ExecuteCodeRequest{
+		Language: Bash,
+		Timeout:  5 * time.Second,
+		Code:     "echo 'second command works'",
+		Hooks:    hooks,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "second Execute failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func TestBashSession_execReplacesShell(t *testing.T) {
+	session := newBashSession(nil)
+	t.Cleanup(func() { _ = session.close() })
+
+	if err := session.start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	var stdoutLines []string
+	hooks := ExecuteResultHook{
+		OnExecuteStdout: func(line string) {
+			stdoutLines = append(stdoutLines, line)
+		},
+	}
+
+	script := `
+cat > /tmp/exec_child.sh <<'EOF'
+echo "child says hi"
+EOF
+chmod +x /tmp/exec_child.sh
+exec /tmp/exec_child.sh
+`
+
+	err := session.run(script, 5*time.Second, &hooks)
+	if err == nil {
+		t.Fatalf("expected error because exec replaces the shell, got nil")
+	}
+	if !strings.Contains(err.Error(), "stdout closed") && !strings.Contains(err.Error(), "terminated") {
+		t.Fatalf("unexpected error for exec: %v", err)
+	}
+	if !containsLine(stdoutLines, "child says hi") {
+		t.Fatalf("expected child output, got %v", stdoutLines)
+	}
+	if !session.terminated.Load() {
+		t.Fatalf("expected session to be marked terminated after exec")
+	}
+
+	// Subsequent run should fail immediately because the shell was replaced.
+	if err := session.run("echo still-alive", 2*time.Second, &hooks); err == nil {
+		t.Fatalf("expected run to fail after exec replaced the shell")
+	} else if !strings.Contains(err.Error(), "terminated") {
+		t.Fatalf("expected terminated error, got %v", err)
 	}
 }
 

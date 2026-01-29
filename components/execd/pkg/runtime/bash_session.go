@@ -184,6 +184,7 @@ func (s *bashSession) readStdout(r io.Reader) {
 	}
 }
 
+//nolint:gocognit
 func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteResultHook) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -206,11 +207,14 @@ func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteR
 		wait = 24 * 3600 * time.Second // default to 24 hours
 	}
 
-	cleanCmd := strings.ReplaceAll(command, "\n", " ; ")
+	cmdBody := command
+	if !strings.HasSuffix(cmdBody, "\n") {
+		cmdBody += "\n"
+	}
 
 	// send command + marker, preserving the user's last exit code
 	// use a subshell at the end to restore $? to the original exit code
-	cmdText := fmt.Sprintf("%s\n__c=$?\nprintf \"%s${__c}%s\\n\"\n(exit ${__c})\n", cleanCmd, exitCodePrefix, exitCodeSuffix)
+	cmdText := fmt.Sprintf("%s__c=$?\nprintf \"%s${__c}%s\\n\"\n(exit ${__c})\n", cmdBody, exitCodePrefix, exitCodeSuffix)
 	if _, err := fmt.Fprint(s.stdin, cmdText); err != nil {
 		if errors.Is(err, io.ErrClosedPipe) || strings.Contains(err.Error(), "broken pipe") {
 			s.terminated.Store(true)
