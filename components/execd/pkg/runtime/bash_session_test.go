@@ -252,24 +252,65 @@ exec /tmp/exec_child.sh
 `
 
 	err := session.run(script, 5*time.Second, &hooks)
-	if err == nil {
-		t.Fatalf("expected error because exec replaces the shell, got nil")
-	}
-	if !strings.Contains(err.Error(), "stdout closed") && !strings.Contains(err.Error(), "terminated") {
-		t.Fatalf("unexpected error for exec: %v", err)
+	if err != nil {
+		t.Fatalf("expected exec to complete without killing the session, got %v", err)
 	}
 	if !containsLine(stdoutLines, "child says hi") {
 		t.Fatalf("expected child output, got %v", stdoutLines)
 	}
-	if !session.terminated.Load() {
-		t.Fatalf("expected session to be marked terminated after exec")
+
+	// Subsequent run should still work because we restart bash per run.
+	stdoutLines = nil
+	if err := session.run("echo still-alive", 2*time.Second, &hooks); err != nil {
+		t.Fatalf("expected run to succeed after exec replaced the shell, got %v", err)
+	}
+	if !containsLine(stdoutLines, "still-alive") {
+		t.Fatalf("expected follow-up output, got %v", stdoutLines)
+	}
+}
+
+func TestBashSession_complexExec(t *testing.T) {
+	session := newBashSession(nil)
+	t.Cleanup(func() { _ = session.close() })
+
+	if err := session.start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
 	}
 
-	// Subsequent run should fail immediately because the shell was replaced.
-	if err := session.run("echo still-alive", 2*time.Second, &hooks); err == nil {
-		t.Fatalf("expected run to fail after exec replaced the shell")
-	} else if !strings.Contains(err.Error(), "terminated") {
-		t.Fatalf("expected terminated error, got %v", err)
+	var stdoutLines []string
+	hooks := ExecuteResultHook{
+		OnExecuteStdout: func(line string) {
+			stdoutLines = append(stdoutLines, line)
+		},
+	}
+
+	script := `
+LOG_FILE=$(mktemp)
+export LOG_FILE
+exec 3>&1 4>&2
+exec > >(tee "$LOG_FILE") 2>&1
+
+set -x
+echo "from-complex-exec"
+exec 1>&3 2>&4 # step record
+echo "after-restore"
+`
+
+	err := session.run(script, 5*time.Second, &hooks)
+	if err != nil {
+		t.Fatalf("expected complex exec to finish, got %v", err)
+	}
+	if !containsLine(stdoutLines, "from-complex-exec") || !containsLine(stdoutLines, "after-restore") {
+		t.Fatalf("expected exec outputs, got %v", stdoutLines)
+	}
+
+	// Session should still be usable.
+	stdoutLines = nil
+	if err := session.run("echo still-alive", 2*time.Second, &hooks); err != nil {
+		t.Fatalf("expected run to succeed after complex exec, got %v", err)
+	}
+	if !containsLine(stdoutLines, "still-alive") {
+		t.Fatalf("expected follow-up output, got %v", stdoutLines)
 	}
 }
 

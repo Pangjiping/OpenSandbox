@@ -16,10 +16,7 @@ package runtime
 
 import (
 	"fmt"
-	"io"
-	"os/exec"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
@@ -104,13 +101,9 @@ const (
 
 // bashSession represents a bash session.
 type bashSession struct {
-	config      *bashSessionConfig
-	cmd         *exec.Cmd
-	stdin       io.WriteCloser
-	stdout      io.ReadCloser
-	stdoutLines chan string
-	stdoutErr   chan error
-	mu          sync.Mutex
-	started     bool
-	terminated  atomic.Bool
+	config  *bashSessionConfig
+	mu      sync.Mutex
+	started bool
+	env     map[string]string
+	cwd     string
 }
