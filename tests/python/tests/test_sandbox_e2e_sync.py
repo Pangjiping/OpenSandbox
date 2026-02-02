@@ -262,6 +262,7 @@ class TestSandboxE2ESync:
             ),
         )
         try:
+            time.sleep(5)
             result = sandbox.commands.run("curl -I https://www.github.com")
             assert result.error is not None
             result = sandbox.commands.run("curl -I https://pypi.org")

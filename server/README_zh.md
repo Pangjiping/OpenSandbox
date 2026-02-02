@@ -129,6 +129,7 @@ egress_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egre
 
 - 仅支持 Docker bridge 模式（`network_mode=host` 时会拒绝携带 `networkPolicy` 的请求）。
 - 主容器共享 sidecar 网络命名空间，主容器会显式 drop `NET_ADMIN`，sidecar 保留 `NET_ADMIN` 完成 iptables。
+- 注入 sidecar 时会在共享 netns 内默认禁用 IPv6，以保持策略生效一致性。
 - 侧车镜像会在启动前自动拉取；删除/过期/失败时会尝试同步清理 sidecar。
 - 请求体示例（`CreateSandboxRequest` 中携带 `networkPolicy`）：
 ```json

@@ -123,6 +123,7 @@ cp example.batchsandbox-template.yaml ~/batchsandbox-template.yaml
    ```
 - Supported only in Docker bridge mode; requests with `networkPolicy` are rejected when `network_mode=host`.
 - Main container shares the sidecar netns and explicitly drops `NET_ADMIN`; the sidecar keeps `NET_ADMIN` to manage iptables.
+- IPv6 is disabled in the shared namespace when the egress sidecar is injected to keep policy enforcement consistent.
 - Sidecar image is pulled before start; delete/expire/failure paths attempt to clean up the sidecar as well.
 - Request example (`CreateSandboxRequest` with `networkPolicy`):
    ```json

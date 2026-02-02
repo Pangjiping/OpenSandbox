@@ -299,6 +299,7 @@ class TestSandboxE2E:
             ),
         )
         try:
+            await asyncio.sleep(5)
             result = await sandbox.commands.run("curl -I https://www.github.com")
             assert result.error is not None
             result = await sandbox.commands.run("curl -I https://pypi.org")

@@ -241,6 +241,10 @@ public class SandboxE2ETest extends BaseE2ETest {
                         .readyTimeout(Duration.ofSeconds(60))
                         .networkPolicy(networkPolicy)
                         .build();
+        try {
+            Thread.sleep(5);
+        } catch (InterruptedException ignored) {
+        }
 
         try {
             Execution r =

@@ -1328,14 +1328,22 @@ class DockerSandboxService(SandboxService):
         policy_payload = json.dumps(network_policy.model_dump(by_alias=True, exclude_none=True))
         sidecar_env = [f"{EGRESS_RULES_ENV}={policy_payload}"]
 
-        sidecar_host_config = self.docker_client.api.create_host_config(
-            network_mode=BRIDGE_NETWORK_MODE,
-            cap_add=["NET_ADMIN"],
-            port_bindings={
+        sidecar_host_config_kwargs: dict[str, Any] = {
+            "network_mode": BRIDGE_NETWORK_MODE,
+            "cap_add": ["NET_ADMIN"],
+            "port_bindings": {
                 "44772": ("0.0.0.0", host_execd_port),
                 "8080": ("0.0.0.0", host_http_port),
             },
-        )
+            # FIXME(Pangjiping): Disable IPv6 in the shared namespace to keep policy enforcement consistent.
+            "sysctls": {
+                "net.ipv6.conf.all.disable_ipv6": 1,
+                "net.ipv6.conf.default.disable_ipv6": 1,
+                "net.ipv6.conf.lo.disable_ipv6": 1,
+            },
+        }
+
+        sidecar_host_config = self.docker_client.api.create_host_config(**sidecar_host_config_kwargs)
 
         sidecar_container = None
         try:
