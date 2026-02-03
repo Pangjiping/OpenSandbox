@@ -43,7 +43,7 @@ func (f *DefaultProviderFactory) CreateProvider(providerType ProviderType) (Prov
 	case ProviderTypeBatchSandbox:
 		return NewBatchSandboxProvider(f.config, f.namespace, f.resyncPeriod), nil
 	case ProviderTypeAgentSandbox:
-		return NewAgentSandboxProvider(), nil
+		return NewAgentSandboxProvider(f.config, f.namespace, f.resyncPeriod), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %s", providerType)
 	}
