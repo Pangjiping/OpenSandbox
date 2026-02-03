@@ -29,7 +29,6 @@ from kubernetes.client import (
 )
 
 from src.api.schema import ImageSpec
-from src.services.constants import SANDBOX_ID_LABEL
 from src.services.k8s.agent_sandbox_template import AgentSandboxTemplateManager
 from src.services.k8s.client import K8sClient
 from src.services.k8s.workload_provider import WorkloadProvider
@@ -74,8 +73,6 @@ class AgentSandboxProvider(WorkloadProvider):
         execd_image: str,
         extensions: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
-        sandbox_name = f"sandbox-{sandbox_id}"
-
         pod_spec = self._build_pod_spec(
             image_spec=image_spec,
             entrypoint=entrypoint,
@@ -91,7 +88,7 @@ class AgentSandboxProvider(WorkloadProvider):
             "apiVersion": f"{self.group}/{self.version}",
             "kind": "Sandbox",
             "metadata": {
-                "name": sandbox_name,
+                "name": sandbox_id,
                 "namespace": namespace,
                 "labels": labels,
             },
@@ -236,18 +233,14 @@ class AgentSandboxProvider(WorkloadProvider):
         return result
 
     def get_workload(self, sandbox_id: str, namespace: str) -> Optional[Dict[str, Any]]:
-        label_selector = f"{SANDBOX_ID_LABEL}={sandbox_id}"
         try:
-            sandbox_list = self.custom_api.list_namespaced_custom_object(
+            return self.custom_api.get_namespaced_custom_object(
                 group=self.group,
                 version=self.version,
                 namespace=namespace,
                 plural=self.plural,
-                label_selector=label_selector,
+                name=sandbox_id,
             )
-            if sandbox_list.get("items"):
-                return sandbox_list["items"][0]
-            return None
         except ApiException as e:
             if e.status == 404:
                 return None
