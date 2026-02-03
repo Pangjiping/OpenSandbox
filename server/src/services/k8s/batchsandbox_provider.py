@@ -509,15 +509,30 @@ class BatchSandboxProvider(WorkloadProvider):
                 name=sandbox_id,
             )
         except ApiException as e:
-            # Handle 404 when CRD doesn't exist or no resources found
-            if e.status == 404:
-                return None
-            # Re-raise other API exceptions
-            raise
-        except Exception as e:
-            # Log unexpected errors and re-raise
-            logger.error(f"Unexpected error getting BatchSandbox for {sandbox_id}: {e}")
-            raise
+            if e.status != 404:
+                logger.error(f"Unexpected error getting BatchSandbox for {sandbox_id}: {e}")
+                raise
+
+        # Fallback for pre-upgrade sandboxes that used "sandbox-<id>" naming
+        legacy_name = self.legacy_resource_name(sandbox_id)
+        if legacy_name != sandbox_id:
+            try:
+                return self.custom_api.get_namespaced_custom_object(
+                    group=self.group,
+                    version=self.version,
+                    namespace=namespace,
+                    plural=self.plural,
+                    name=legacy_name,
+                )
+            except ApiException as e:
+                if e.status == 404:
+                    return None
+                raise
+            except Exception as e:
+                logger.error(f"Unexpected error getting BatchSandbox for {sandbox_id}: {e}")
+                raise
+
+        return None
     
     def delete_workload(self, sandbox_id: str, namespace: str) -> None:
         """Delete BatchSandbox workload."""

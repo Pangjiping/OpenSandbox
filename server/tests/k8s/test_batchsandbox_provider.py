@@ -388,11 +388,31 @@ spec:
         """
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_api = mock_k8s_client.get_custom_objects_api()
-        mock_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+        mock_api.get_namespaced_custom_object.side_effect = [
+            ApiException(status=404),
+            ApiException(status=404),
+        ]
         
         result = provider.get_workload("test-id", "test-ns")
         
         assert result is None
+
+    def test_get_workload_falls_back_to_legacy_name(self, mock_k8s_client):
+        """
+        Test case: Verify legacy sandbox-<id> name is used when primary lookup 404s
+        """
+        provider = BatchSandboxProvider(mock_k8s_client)
+        mock_api = mock_k8s_client.get_custom_objects_api()
+        mock_api.get_namespaced_custom_object.side_effect = [
+            ApiException(status=404),
+            {"metadata": {"name": "sandbox-test-id"}},
+        ]
+        
+        result = provider.get_workload("test-id", "test-ns")
+        
+        assert result["metadata"]["name"] == "sandbox-test-id"
+        assert mock_api.get_namespaced_custom_object.call_args_list[0].kwargs["name"] == "test-id"
+        assert mock_api.get_namespaced_custom_object.call_args_list[1].kwargs["name"] == "sandbox-test-id"
     
     def test_get_workload_handles_404_gracefully(self, mock_k8s_client):
         """
@@ -403,7 +423,7 @@ spec:
         
         # Mock 404 exception
         error = ApiException(status=404)
-        mock_api.get_namespaced_custom_object.side_effect = error
+        mock_api.get_namespaced_custom_object.side_effect = [error, error]
         
         result = provider.get_workload("test-id", "test-ns")
         
@@ -494,7 +514,10 @@ spec:
         """
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_api = mock_k8s_client.get_custom_objects_api()
-        mock_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+        mock_api.get_namespaced_custom_object.side_effect = [
+            ApiException(status=404),
+            ApiException(status=404),
+        ]
         
         with pytest.raises(Exception) as exc_info:
             provider.delete_workload("test-id", "test-ns")
