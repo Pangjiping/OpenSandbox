@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
@@ -32,6 +33,8 @@ const (
 	agentSandboxGroup    = "agents.x-k8s.io"
 	agentSandboxVersion  = "v1alpha1"
 	agentSandboxResource = "sandboxes"
+
+	agentSandboxConditionReady = "Ready"
 )
 
 // AgentSandboxProvider implements Provider for agents.x-k8s.io Sandbox CR.
@@ -99,6 +102,11 @@ func (a *AgentSandboxProvider) GetEndpoint(sandboxId string) (string, error) {
 		return "", fmt.Errorf("%w: sandbox %s missing status", ErrSandboxNotReady, sandboxId)
 	}
 
+	// Check ready condition first; must be Ready=True to proceed.
+	if ready, reason, message := a.checkSandboxReadyCondition(status); !ready {
+		return "", fmt.Errorf("%w: sandbox %s not ready (%s: %s)", ErrSandboxNotReady, sandboxId, reason, message)
+	}
+
 	serviceFQDN, _ := status["serviceFQDN"].(string)
 	if serviceFQDN == "" {
 		return "", fmt.Errorf("%w: sandbox %s has no serviceFQDN", ErrSandboxNotReady, sandboxId)
@@ -116,6 +124,40 @@ func (a *AgentSandboxProvider) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// checkSandboxReadyCondition inspects status.conditions for Ready=True.
+// Returns (isReady, reason, message).
+//
+// https://github.com/kubernetes-sigs/agent-sandbox/blob/main/controllers/sandbox_controller.go#L195
+func (a *AgentSandboxProvider) checkSandboxReadyCondition(status map[string]any) (bool, string, string) {
+	conds, ok := status["conditions"].([]any)
+	if !ok {
+		return false, "NoConditions", "no sandbox conditions reported"
+	}
+	for _, c := range conds {
+		m, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := m["type"].(string); t != agentSandboxConditionReady {
+			continue
+		}
+		if s, _ := m["status"].(string); s == string(metav1.ConditionTrue) {
+			return true, agentSandboxConditionReady, ""
+		}
+		reason, _ := m["reason"].(string)
+		message, _ := m["message"].(string)
+		if reason == "" {
+			reason = "DependenciesNotReady"
+		}
+		if message == "" {
+			message = "Ready condition is not True"
+		}
+		return false, reason, message
+	}
+
+	return false, "ReadyConditionMissing", "ready condition missing"
 }
 
 var _ Provider = (*AgentSandboxProvider)(nil)

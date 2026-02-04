@@ -114,6 +114,12 @@ func TestAgentSandboxProvider_GetEndpoint_ServiceFQDN(t *testing.T) {
 	obj := buildUnstructuredSandbox("demo", namespace)
 	obj.Object["status"] = map[string]any{
 		"serviceFQDN": "sandbox.demo.svc.cluster.local",
+		"conditions": []any{
+			map[string]any{
+				"type":   "Ready",
+				"status": "True",
+			},
+		},
 	}
 
 	scheme := runtime.NewScheme()
@@ -177,6 +183,50 @@ func TestAgentSandboxProvider_GetEndpoint_NoServiceFQDN(t *testing.T) {
 	namespace := "test-ns"
 	obj := buildUnstructuredSandbox("demo", namespace)
 	obj.Object["status"] = map[string]any{}
+
+	scheme := runtime.NewScheme()
+	gvr := schema.GroupVersionResource{
+		Group:    agentSandboxGroup,
+		Version:  agentSandboxVersion,
+		Resource: agentSandboxResource,
+	}
+	fakeDyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		scheme,
+		map[schema.GroupVersionResource]string{
+			gvr: "SandboxList",
+		},
+	)
+
+	provider := newAgentSandboxProviderWithClient(fakeDyn, namespace, 30*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := provider.Start(ctx)
+	assert.NoError(t, err)
+
+	// Seed store
+	err = provider.informer.GetStore().Add(obj)
+	assert.NoError(t, err)
+
+	_, err = provider.GetEndpoint("demo")
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, ErrSandboxNotReady))
+}
+
+func TestAgentSandboxProvider_GetEndpoint_NotReadyCondition(t *testing.T) {
+	namespace := "test-ns"
+	obj := buildUnstructuredSandbox("demo", namespace)
+	obj.Object["status"] = map[string]any{
+		"serviceFQDN": "sandbox.demo.svc.cluster.local",
+		"conditions": []any{
+			map[string]any{
+				"type":    "Ready",
+				"status":  "False",
+				"reason":  "DependenciesNotReady",
+				"message": "Pod not ready",
+			},
+		},
+	}
 
 	scheme := runtime.NewScheme()
 	gvr := schema.GroupVersionResource{
