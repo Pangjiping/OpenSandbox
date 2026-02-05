@@ -56,13 +56,23 @@ func TestBashSessionEnvAndExitCode(t *testing.T) {
 	}
 
 	// 1) export an env var
-	if err := session.run("export FOO=hello", 3*time.Second, &hooks); err != nil {
+	request := &ExecuteCodeRequest{
+		Code:    "export FOO=hello",
+		Hooks:   hooks,
+		Timeout: 3 * time.Second,
+	}
+	if err := session.run(request); err != nil {
 		t.Fatalf("runCommand(export) error = %v", err)
 	}
 	exportStdoutCount := len(stdoutLines)
 
 	// 2) verify env is persisted
-	if err := session.run("echo $FOO", 3*time.Second, &hooks); err != nil {
+	request = &ExecuteCodeRequest{
+		Code:    "echo $FOO",
+		Hooks:   hooks,
+		Timeout: 3 * time.Second,
+	}
+	if err := session.run(request); err != nil {
 		t.Fatalf("runCommand(echo) error = %v", err)
 	}
 	echoLines := stdoutLines[exportStdoutCount:]
@@ -78,8 +88,13 @@ func TestBashSessionEnvAndExitCode(t *testing.T) {
 	}
 
 	// 3) ensure exit code of previous command is reflected in shell state
+	request = &ExecuteCodeRequest{
+		Code:    "false; echo EXIT:$?",
+		Hooks:   hooks,
+		Timeout: 3 * time.Second,
+	}
 	prevCount := len(stdoutLines)
-	if err := session.run("false; echo EXIT:$?", 3*time.Second, &hooks); err != nil {
+	if err := session.run(request); err != nil {
 		t.Fatalf("runCommand(exitcode) error = %v", err)
 	}
 	exitLines := stdoutLines[prevCount:]
@@ -134,7 +149,12 @@ func TestBashSessionEnvLargeOutputChained(t *testing.T) {
 
 	runAndCollect := func(cmd string) []string {
 		start := len(stdoutLines)
-		if err := session.run(cmd, 10*time.Second, &hooks); err != nil {
+		request := &ExecuteCodeRequest{
+			Code:    cmd,
+			Hooks:   hooks,
+			Timeout: 10 * time.Second,
+		}
+		if err := session.run(request); err != nil {
 			t.Fatalf("runCommand(%q) error = %v", cmd, err)
 		}
 		return append([]string(nil), stdoutLines[start:]...)
@@ -172,6 +192,111 @@ func TestBashSessionEnvLargeOutputChained(t *testing.T) {
 	}
 	if completeCalls != 3 {
 		t.Fatalf("OnExecuteComplete expected 3 calls, got %d", completeCalls)
+	}
+}
+
+func TestBashSessionCwdPersistsWithoutOverride(t *testing.T) {
+	session := newBashSession(nil)
+	t.Cleanup(func() { _ = session.close() })
+
+	if err := session.start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	targetDir := t.TempDir()
+	var stdoutLines []string
+	hooks := ExecuteResultHook{
+		OnExecuteStdout: func(line string) {
+			stdoutLines = append(stdoutLines, line)
+		},
+	}
+
+	runAndCollect := func(req *ExecuteCodeRequest) []string {
+		start := len(stdoutLines)
+		if err := session.run(req); err != nil {
+			t.Fatalf("runCommand(%q) error = %v", req.Code, err)
+		}
+		return append([]string(nil), stdoutLines[start:]...)
+	}
+
+	firstRunLines := runAndCollect(&ExecuteCodeRequest{
+		Code:    fmt.Sprintf("cd %s\npwd", targetDir),
+		Hooks:   hooks,
+		Timeout: 3 * time.Second,
+	})
+	if !containsLine(firstRunLines, targetDir) {
+		t.Fatalf("expected cd to update cwd to %q, got %v", targetDir, firstRunLines)
+	}
+
+	secondRunLines := runAndCollect(&ExecuteCodeRequest{
+		Code:    "pwd",
+		Hooks:   hooks,
+		Timeout: 3 * time.Second,
+	})
+	if !containsLine(secondRunLines, targetDir) {
+		t.Fatalf("expected subsequent run to inherit cwd %q, got %v", targetDir, secondRunLines)
+	}
+
+	session.mu.Lock()
+	finalCwd := session.cwd
+	session.mu.Unlock()
+	if finalCwd != targetDir {
+		t.Fatalf("expected session cwd to stay at %q, got %q", targetDir, finalCwd)
+	}
+}
+
+func TestBashSessionRequestCwdOverridesAfterCd(t *testing.T) {
+	session := newBashSession(nil)
+	t.Cleanup(func() { _ = session.close() })
+
+	if err := session.start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	initialDir := t.TempDir()
+	overrideDir := t.TempDir()
+
+	var stdoutLines []string
+	hooks := ExecuteResultHook{
+		OnExecuteStdout: func(line string) {
+			stdoutLines = append(stdoutLines, line)
+		},
+	}
+
+	runAndCollect := func(req *ExecuteCodeRequest) []string {
+		start := len(stdoutLines)
+		if err := session.run(req); err != nil {
+			t.Fatalf("runCommand(%q) error = %v", req.Code, err)
+		}
+		return append([]string(nil), stdoutLines[start:]...)
+	}
+
+	// First request: change session cwd via script.
+	firstRunLines := runAndCollect(&ExecuteCodeRequest{
+		Code:    fmt.Sprintf("cd %s\npwd", initialDir),
+		Hooks:   hooks,
+		Timeout: 3 * time.Second,
+	})
+	if !containsLine(firstRunLines, initialDir) {
+		t.Fatalf("expected cd to update cwd to %q, got %v", initialDir, firstRunLines)
+	}
+
+	// Second request: explicit Cwd overrides session cwd.
+	secondRunLines := runAndCollect(&ExecuteCodeRequest{
+		Code:    "pwd",
+		Cwd:     overrideDir,
+		Hooks:   hooks,
+		Timeout: 3 * time.Second,
+	})
+	if !containsLine(secondRunLines, overrideDir) {
+		t.Fatalf("expected command to run in override cwd %q, got %v", overrideDir, secondRunLines)
+	}
+
+	session.mu.Lock()
+	finalCwd := session.cwd
+	session.mu.Unlock()
+	if finalCwd != overrideDir {
+		t.Fatalf("expected session cwd updated to override dir %q, got %q", overrideDir, finalCwd)
 	}
 }
 
@@ -251,7 +376,12 @@ chmod +x /tmp/exec_child.sh
 exec /tmp/exec_child.sh
 `
 
-	err := session.run(script, 5*time.Second, &hooks)
+	request := &ExecuteCodeRequest{
+		Code:    script,
+		Hooks:   hooks,
+		Timeout: 5 * time.Second,
+	}
+	err := session.run(request)
 	if err != nil {
 		t.Fatalf("expected exec to complete without killing the session, got %v", err)
 	}
@@ -260,8 +390,13 @@ exec /tmp/exec_child.sh
 	}
 
 	// Subsequent run should still work because we restart bash per run.
+	request = &ExecuteCodeRequest{
+		Code:    "echo still-alive",
+		Hooks:   hooks,
+		Timeout: 2 * time.Second,
+	}
 	stdoutLines = nil
-	if err := session.run("echo still-alive", 2*time.Second, &hooks); err != nil {
+	if err := session.run(request); err != nil {
 		t.Fatalf("expected run to succeed after exec replaced the shell, got %v", err)
 	}
 	if !containsLine(stdoutLines, "still-alive") {
@@ -296,7 +431,12 @@ exec 1>&3 2>&4 # step record
 echo "after-restore"
 `
 
-	err := session.run(script, 5*time.Second, &hooks)
+	request := &ExecuteCodeRequest{
+		Code:    script,
+		Hooks:   hooks,
+		Timeout: 5 * time.Second,
+	}
+	err := session.run(request)
 	if err != nil {
 		t.Fatalf("expected complex exec to finish, got %v", err)
 	}
@@ -305,8 +445,13 @@ echo "after-restore"
 	}
 
 	// Session should still be usable.
+	request = &ExecuteCodeRequest{
+		Code:    "echo still-alive",
+		Hooks:   hooks,
+		Timeout: 2 * time.Second,
+	}
 	stdoutLines = nil
-	if err := session.run("echo still-alive", 2*time.Second, &hooks); err != nil {
+	if err := session.run(request); err != nil {
 		t.Fatalf("expected run to succeed after complex exec, got %v", err)
 	}
 	if !containsLine(stdoutLines, "still-alive") {

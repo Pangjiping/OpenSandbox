@@ -72,7 +72,7 @@ func (c *Controller) runBashSession(_ context.Context, request *ExecuteCodeReque
 		return ErrContextNotFound
 	}
 
-	return session.run(request.Code, request.Timeout, &request.Hooks)
+	return session.run(request)
 }
 
 func (c *Controller) createDefaultBashSession() error {
@@ -156,7 +156,7 @@ func (s *bashSession) start() error {
 }
 
 //nolint:gocognit
-func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteResultHook) error {
+func (s *bashSession) run(request *ExecuteCodeRequest) error {
 	s.mu.Lock()
 	if !s.started {
 		s.mu.Unlock()
@@ -164,18 +164,23 @@ func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteR
 	}
 
 	envSnapshot := copyEnvMap(s.env)
+
 	cwd := s.cwd
+	// override original cwd if specified
+	if request.Cwd != "" {
+		cwd = request.Cwd
+	}
 	sessionID := s.config.Session
 	s.mu.Unlock()
 
 	startAt := time.Now()
-	if hooks != nil && hooks.OnExecuteInit != nil {
-		hooks.OnExecuteInit(sessionID)
+	if request.Hooks.OnExecuteInit != nil {
+		request.Hooks.OnExecuteInit(sessionID)
 	}
 
-	wait := timeout
+	wait := request.Timeout
 	if wait <= 0 {
-		wait = 24 * 3600 * time.Second // default to 24 hours
+		wait = 24 * 3600 * time.Second // max to 24 hours
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
@@ -199,7 +204,7 @@ func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteR
 		return fmt.Errorf("start bash: %w", err)
 	}
 
-	script := buildWrappedScript(command, envSnapshot, cwd)
+	script := buildWrappedScript(request.Code, envSnapshot, cwd)
 	if _, err := io.WriteString(stdin, script); err != nil {
 		_ = stdin.Close()
 		_ = cmd.Wait()
@@ -235,8 +240,8 @@ func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteR
 				envLines = append(envLines, line)
 				continue
 			}
-			if hooks != nil && hooks.OnExecuteStdout != nil {
-				hooks.OnExecuteStdout(line)
+			if request.Hooks.OnExecuteStdout != nil {
+				request.Hooks.OnExecuteStdout(line)
 			}
 		}
 	}
@@ -248,8 +253,8 @@ func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteR
 		return fmt.Errorf("read stdout: %w", scanErr)
 	}
 
-	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("timeout after %s while running command %q", wait, command)
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("timeout after %s while running command %q", wait, request.Code)
 	}
 
 	if exitCode == nil && cmd.ProcessState != nil {
@@ -267,8 +272,8 @@ func (s *bashSession) run(command string, timeout time.Duration, hooks *ExecuteR
 	}
 	s.mu.Unlock()
 
-	if hooks != nil && hooks.OnExecuteComplete != nil {
-		hooks.OnExecuteComplete(time.Since(startAt))
+	if request.Hooks.OnExecuteComplete != nil {
+		request.Hooks.OnExecuteComplete(time.Since(startAt))
 	}
 
 	// Maintain previous behavior: non-zero exit codes do not surface as errors.
