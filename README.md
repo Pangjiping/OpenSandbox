@@ -49,7 +49,7 @@ opensandbox-server init-config ~/.sandbox.toml --example docker
 > uv sync
 > cp example.config.toml ~/.sandbox.toml # Copy configuration file
 > uv run python -m src.main # Start the service
-```
+> ```
 
 #### 2. Start the Sandbox Server
 
