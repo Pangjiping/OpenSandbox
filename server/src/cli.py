@@ -26,6 +26,7 @@ from src.config import (
     CONFIG_ENV_VAR,
     DEFAULT_CONFIG_PATH,
     DockerConfig,
+    EgressConfig,
     KubernetesRuntimeConfig,
     RouterConfig,
     RuntimeConfig,
@@ -167,6 +168,11 @@ def render_full_config(destination: str | Path | None = None, *, force: bool = F
         _render_section("server", ServerConfig),
         _render_section("runtime", RuntimeConfig),
         _render_section("docker", DockerConfig),
+        _render_section(
+            "egress",
+            EgressConfig,
+            extra_comments=["Used when networkPolicy is provided. Requires docker.network_mode = \"bridge\"."],
+        ),
         _render_section(
             "kubernetes",
             KubernetesRuntimeConfig,

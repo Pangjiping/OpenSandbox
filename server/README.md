@@ -125,16 +125,18 @@ cp example.batchsandbox-template.yaml ~/batchsandbox-template.yaml
    ```
    Further reading on Docker container security: https://docs.docker.com/engine/security/
 
-### (Optional) Egress sidecar for `networkPolicy`
+### Egress sidecar for `networkPolicy`
 
-- Configure the sidecar image (used only when requests include `networkPolicy`):
+- **Required when using `networkPolicy`**: Configure the sidecar image. The `egress.image` setting is mandatory when requests include `networkPolicy`:
    ```toml
    [runtime]
    type = "docker"
    execd_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:v1.0.3"
-   egress_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress:latest"
+   
+   [egress]
+   image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress:latest"
    ```
-- Supported only in Docker bridge mode; requests with `networkPolicy` are rejected when `network_mode=host`.
+- Supported only in Docker bridge mode; requests with `networkPolicy` are rejected when `network_mode=host` or when `egress.image` is not configured.
 - Main container shares the sidecar netns and explicitly drops `NET_ADMIN`; the sidecar keeps `NET_ADMIN` to manage iptables.
 - IPv6 is disabled in the shared namespace when the egress sidecar is injected to keep policy enforcement consistent.
 - Sidecar image is pulled before start; delete/expire/failure paths attempt to clean up the sidecar as well.
@@ -366,7 +368,12 @@ curl -X DELETE \
 |------------------------|--------|----------|-------------------------------------------------------|
 | `runtime.type`         | string | Yes      | Runtime implementation (`"docker"` or `"kubernetes"`) |
 | `runtime.execd_image`  | string | Yes      | Container image with execd binary                     |
-| `runtime.egress_image` | string | No       | Container image with egress binary                    |
+
+### Egress configuration
+
+| Key           | Type   | Required | Description                    |
+|---------------|--------|----------|--------------------------------|
+| `egress.image` | string | **Required when using `networkPolicy`** | Container image with egress binary. Must be configured when `networkPolicy` is provided in sandbox creation requests. |
 
 ### Docker configuration
 
