@@ -34,6 +34,12 @@ jobs:
         run: |
           pip install uv
 
+      - name: Prepare host volume test directory
+        run: |
+          mkdir -p /tmp/opensandbox-e2e/host-volume-test
+          echo "opensandbox-e2e-marker" > /tmp/opensandbox-e2e/host-volume-test/marker.txt
+          chmod -R 755 /tmp/opensandbox-e2e
+
       - name: Run tests
         run: |
           set -e
@@ -48,9 +54,12 @@ jobs:
           [runtime]
           type = "docker"
           execd_image = "opensandbox/execd:local"
-          egress_image = "opensandbox/egress:latest"
+          [egress]
+          image = "opensandbox/egress:latest"
           [docker]
           network_mode = "bridge"
+          [storage]
+          allowed_host_paths = ["/tmp/opensandbox-e2e"]
           EOF
 
           ./scripts/python-e2e.sh
@@ -81,6 +90,12 @@ jobs:
       - name: Install uv
         run: pip install uv
 
+      - name: Prepare host volume test directory
+        run: |
+          mkdir -p /tmp/opensandbox-e2e/host-volume-test
+          echo "opensandbox-e2e-marker" > /tmp/opensandbox-e2e/host-volume-test/marker.txt
+          chmod -R 755 /tmp/opensandbox-e2e
+
       - name: Run tests
         env:
           GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-user-home
@@ -97,9 +112,12 @@ jobs:
           [runtime]
           type = "docker"
           execd_image = "opensandbox/execd:local"
-          egress_image = "opensandbox/egress:latest"
+          [egress]
+          image = "opensandbox/egress:latest"
           [docker]
           network_mode = "bridge"
+          [storage]
+          allowed_host_paths = ["/tmp/opensandbox-e2e"]
           EOF
 
           bash ./scripts/java-e2e.sh
@@ -136,6 +154,12 @@ jobs:
       - name: Install uv
         run: pip install uv
 
+      - name: Prepare host volume test directory
+        run: |
+          mkdir -p /tmp/opensandbox-e2e/host-volume-test
+          echo "opensandbox-e2e-marker" > /tmp/opensandbox-e2e/host-volume-test/marker.txt
+          chmod -R 755 /tmp/opensandbox-e2e
+
       - name: Run tests
         run: |
           set -e
@@ -150,9 +174,12 @@ jobs:
           [runtime]
           type = "docker"
           execd_image = "opensandbox/execd:local"
-          egress_image = "opensandbox/egress:latest"
+          [egress]
+          image = "opensandbox/egress:latest"
           [docker]
           network_mode = "bridge"
+          [storage]
+          allowed_host_paths = ["/tmp/opensandbox-e2e"]
           EOF
 
           bash ./scripts/javascript-e2e.sh

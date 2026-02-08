@@ -19,10 +19,11 @@ OpenSandbox is a **general-purpose sandbox platform** for AI applications, offer
 
 ## Features
 
-- **Multi-language SDKs**: Provides sandbox SDKs in Python, Java/Kotlin, JavaScript/TypeScript, Go (Roadmap), and more.
-- **Sandbox Protocol**: Defines sandbox lifecycle management API and sandbox execution API. You can extend your own sandbox runtime through these sandbox protocols.
-- **Sandbox Runtime**: Implements sandbox lifecycle management by default, supports Docker and Kubernetes runtimes, enabling large-scale distributed sandbox scheduling.
-- **Sandbox Environments**: Built-in implementations for Command, Filesystem, Code Interpreter. And provides examples for Coding Agents (Claude Code, etc.), Browser automation (Chrome, Playwright), and Desktop environments (VNC, VS Code).
+- **Multi-language SDKs**: Client SDKs for Python, Java/Kotlin, and JavaScript/TypeScript.
+- **Sandbox Protocol**: Defines sandbox lifecycle management APIs and sandbox execution APIs so you can extend custom sandbox runtimes.
+- **Sandbox Runtime**: Built-in lifecycle management supporting Docker and [high-performance Kubernetes runtime](./kubernetes), enabling both local runs and large-scale distributed scheduling.
+- **Sandbox Environments**: Built-in Command, Filesystem, and Code Interpreter implementations. Examples cover Coding Agents (e.g., Claude Code), browser automation (Chrome, Playwright), and desktop environments (VNC, VS Code).
+- **Network Policy**: Unified [Ingress Gateway](components/ingress) with multiple routing strategies plus per-sandbox [egress controls](components/egress).
 
 ## Examples
 
@@ -33,20 +34,29 @@ Requirements:
 - Docker (required for local execution)
 - Python 3.10+ (recommended for examples and local runtime)
 
-#### 1. Clone the Repository
+#### 1. Install and Configure the Sandbox Server
 
 ```bash
-git clone https://github.com/alibaba/OpenSandbox.git
-cd OpenSandbox
+uv pip install opensandbox-server
+opensandbox-server init-config ~/.sandbox.toml --example docker
 ```
+
+> If you prefer working from source, you can still clone the repo for development, but server startup no longer requires it.
+>
+> ```bash
+> git clone https://github.com/alibaba/OpenSandbox.git
+> cd OpenSandbox/server
+> uv sync
+> cp example.config.toml ~/.sandbox.toml # Copy configuration file
+> uv run python -m src.main # Start the service
+> ```
 
 #### 2. Start the Sandbox Server
 
 ```bash
-cd server
-uv sync
-cp example.config.toml ~/.sandbox.toml # Copy configuration file
-uv run python -m src.main # Start the service
+opensandbox-server
+
+# opensandbox-server -h # Show help
 ```
 
 #### 3. Create a Code Interpreter and Execute Commands
@@ -173,8 +183,8 @@ For detailed architecture, see [docs/architecture.md](docs/architecture.md).
 - SDK
   - Sandbox base SDK ([Java\Kotlin SDK](sdks/sandbox/kotlin/README.md), [Python SDK](sdks/sandbox/python/README.md), [JavaScript/TypeScript SDK](sdks/sandbox/javascript/README.md)) - includes sandbox lifecycle, command execution, file operations
   - Code Interpreter SDK ([Java\Kotlin SDK](sdks/code-interpreter/kotlin/README.md), [Python SDK](sdks/code-interpreter/python/README.md), [JavaScript/TypeScript SDK](sdks/code-interpreter/javascript/README.md)) - code interpreter
-- [specs/README.md](specs/README.md) - Contains OpenAPI definitions for sandbox lifecycle API and sandbox execution API
-- [server/README.md](server/README.md) - Contains sandbox server startup and configuration, currently supports Docker Runtime, will support Kubernetes Runtime in the future
+- [specs/README.md](specs/README.md) - OpenAPI definitions for sandbox lifecycle API and sandbox execution API
+- [server/README.md](server/README.md) - Sandbox server startup and configuration; supports Docker and Kubernetes runtimes
 
 ## License
 
@@ -184,15 +194,17 @@ This project is open source under the [Apache 2.0 License](LICENSE).
 
 ### SDK
 
-- [ ] **Go SDK** - Go client SDK for sandbox lifecycle management and command execution, file operations.
+- [ ] **Go SDK** - Go client SDK for sandbox lifecycle management, command execution, and file operations.
 
-### Server Runtime
+### Sandbox Runtime
 
-- [x] **OpenSandbox Kubernetes Runtime** - High-performance sandbox scheduling implementation (see [`kubernetes/`](kubernetes/README.md))
-- [x] **kubernetes-sigs/agent-sandbox Support** - Integration with [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) (see [OSEP-0002](oseps/0002-kubernetes-sigs-agent-sandbox-support.md) and [Example](examples/agent-sandbox/README.md))
-- [ ] **Declarative Network Isolation** - Network egress control with allow/deny rules for specific domains (see [OSEP-0001](oseps/0001-fqdn-based-egress-control.md))
-  - [x] DNS-based egress control (Layer 1)
-  - [ ] Network-based egress control (Layer 2)
+- [ ] **Persistent storage** - Mountable persistent storage for sandboxes (see [Proposal 0003](oseps/0003-volume-and-volumebinding-support.md)).
+- [ ] **Ingress multi-network strategies** - Multi-Kubernetes provisioning and multi-network modes for the Ingress Gateway.
+- [ ] **Local lightweight sandbox** - Lightweight sandbox for AI tools running directly on PCs.
+
+### Deployment
+
+- [ ] **Kubernetes Helm** - Helm charts to deploy all components.
 
 ## Contact and Discussion
 

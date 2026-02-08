@@ -24,6 +24,7 @@ from src.config import (
     IngressConfig,
     RuntimeConfig,
     ServerConfig,
+    StorageConfig
 )
 
 
@@ -327,3 +328,82 @@ def test_docker_runtime_rejects_gateway_ingress():
         ingress=IngressConfig(mode="direct"),
     )
     assert app_cfg.ingress.mode == "direct"
+
+
+# ============================================================================
+# StorageConfig Tests
+# ============================================================================
+
+
+def test_storage_config_defaults():
+    """StorageConfig should default to empty allowed_host_paths list."""
+    cfg = StorageConfig()
+    assert cfg.allowed_host_paths == []
+
+
+def test_storage_config_with_paths():
+    """StorageConfig should accept explicit allowed_host_paths."""
+    cfg = StorageConfig(allowed_host_paths=["/data/opensandbox", "/tmp/sandbox"])
+    assert cfg.allowed_host_paths == ["/data/opensandbox", "/tmp/sandbox"]
+
+
+def test_app_config_default_storage():
+    """AppConfig should include default StorageConfig when not specified."""
+    server_cfg = ServerConfig()
+    runtime_cfg = RuntimeConfig(type="docker", execd_image="busybox:latest")
+    app_cfg = AppConfig(server=server_cfg, runtime=runtime_cfg)
+    assert app_cfg.storage is not None
+    assert app_cfg.storage.allowed_host_paths == []
+
+
+def test_load_config_with_storage_block(tmp_path, monkeypatch):
+    """StorageConfig should be loaded from [storage] TOML block."""
+    _reset_config(monkeypatch)
+    toml = textwrap.dedent(
+        """
+        [server]
+        host = "127.0.0.1"
+        port = 9000
+
+        [runtime]
+        type = "docker"
+        execd_image = "ghcr.io/opensandbox/platform:test"
+
+        [router]
+        domain = "opensandbox.io"
+
+        [storage]
+        allowed_host_paths = ["/data/opensandbox", "/tmp/sandbox"]
+        """
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml)
+
+    loaded = config_module.load_config(config_path)
+    assert loaded.storage is not None
+    assert loaded.storage.allowed_host_paths == ["/data/opensandbox", "/tmp/sandbox"]
+
+
+def test_load_config_without_storage_block_uses_defaults(tmp_path, monkeypatch):
+    """AppConfig should use default StorageConfig when [storage] is not in TOML."""
+    _reset_config(monkeypatch)
+    toml = textwrap.dedent(
+        """
+        [server]
+        host = "127.0.0.1"
+        port = 9000
+
+        [runtime]
+        type = "docker"
+        execd_image = "ghcr.io/opensandbox/platform:test"
+
+        [router]
+        domain = "opensandbox.io"
+        """
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml)
+
+    loaded = config_module.load_config(config_path)
+    assert loaded.storage is not None
+    assert loaded.storage.allowed_host_paths == []
