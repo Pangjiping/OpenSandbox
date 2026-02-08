@@ -156,10 +156,20 @@ To test the sidecar with a sandbox application:
 go test ./...
 ```
 
+### E2E benchmark: dns vs dns+nft (sync dynamic IP write)
+
+An end-to-end benchmark compares **dns** (pass-through, no nft write) and **dns+nft** (sync `AddResolvedIPs` before each DNS reply) under real conditions: sidecar in Docker, iptables redirect, real DNS + HTTPS from a client container.
+
+```bash
+./tests/bench-dns-nft.sh
+```
+
+More details in [docs/benchmark.md](docs/benchmark.md).
+
 ## Troubleshooting
 
 - **"iptables setup failed"**: Ensure the sidecar container has `--cap-add=NET_ADMIN`.
 - **DNS resolution fails for all domains**:  
   - Check if the upstream DNS (from `/etc/resolv.conf`) is reachable.  
   - In `dns+nft` mode, the sidecar whitelists nameserver IPs from resolv.conf at startup; check logs for `[dns] whitelisting proxy listen + N nameserver(s)` and ensure `/etc/resolv.conf` is readable and contains valid, reachable nameservers. If the nameserver is loopback (e.g. Docker 127.0.0.11), the proxy uses a fallback upstream (8.8.8.8) for forwarding.
-- **Traffic not blocked**: If nftables apply fails, the sidecar falls back to DNS-only; check logs, `nft list table inet opensandbox`, and `CAP_NET_ADMIN`.
+- **Traffic not blocked**: If nftables apply fails, the sidecar falls back to dns; check logs, `nft list table inet opensandbox`, and `CAP_NET_ADMIN`.
