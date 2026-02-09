@@ -15,15 +15,17 @@
 # limitations under the License.
 
 # E2E benchmark: baseline (no egress) vs dns (pass-through) vs dns+nft (sync dynamic IP write).
-# Baseline: plain Ubuntu container, same workload, no sidecar. Then egress dns and dns+nft.
+# Baseline: plain curl container, same workload, no container. Then egress dns and dns+nft.
 # Metrics: E2E latency (p50, p99), throughput (req/s).
 #
 # Usage: ./tests/bench-dns-nft.sh
-# Requires: Docker, curl in PATH (for policy push). Egress image and baseline image (default ubuntu:22.04) must have curl.
+# Optional: BENCH_SAMPLE_SIZE=n to randomly use n domains from hostname.txt (default: use all).
+# Requires: Docker, curl in PATH (for policy push). Egress image and baseline image (default curlimages/curl:latest) must have curl.
 # Domain list: tests/hostname.txt (one domain per line).
-# Override baseline image: BASELINE_IMG=ubuntu:22.04 ./tests/bench-dns-nft.sh (Ubuntu needs curl installed).
 
 set -euo pipefail
+
+info() { echo "[$(date +%H:%M:%S)] $*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOSTNAME_FILE="${SCRIPT_DIR}/hostname.txt"
@@ -46,17 +48,35 @@ while IFS= read -r line; do
   line="${line%"${line##*[![:space:]]}"}"
   [[ -n "$line" ]] && BENCH_DOMAINS+=( "$line" )
 done < "${HOSTNAME_FILE}"
-NUM_DOMAINS=${#BENCH_DOMAINS[@]}
-if [[ "$NUM_DOMAINS" -eq 0 ]]; then
+total_in_file=${#BENCH_DOMAINS[@]}
+if [[ "$total_in_file" -eq 0 ]]; then
   echo "Error: no domains in ${HOSTNAME_FILE}" >&2
   exit 1
+fi
+
+# Optionally randomly sample n domains (BENCH_SAMPLE_SIZE); if unset or 0, use all.
+if [[ -n "${BENCH_SAMPLE_SIZE:-}" ]] && [[ "${BENCH_SAMPLE_SIZE}" -gt 0 ]]; then
+  if [[ "${BENCH_SAMPLE_SIZE}" -ge "$total_in_file" ]]; then
+    NUM_DOMAINS=$total_in_file
+  else
+    # Portable shuffle: shuf (Linux), gshuf (macOS coreutils), else awk
+    if command -v shuf >/dev/null 2>&1; then
+      BENCH_DOMAINS=( $(printf '%s\n' "${BENCH_DOMAINS[@]}" | shuf -n "${BENCH_SAMPLE_SIZE}") )
+    elif command -v gshuf >/dev/null 2>&1; then
+      BENCH_DOMAINS=( $(printf '%s\n' "${BENCH_DOMAINS[@]}" | gshuf -n "${BENCH_SAMPLE_SIZE}") )
+    else
+      BENCH_DOMAINS=( $(printf '%s\n' "${BENCH_DOMAINS[@]}" | awk 'BEGIN{srand()} {printf "%s\t%s\n", rand(), $0}' | sort -n | cut -f2- | head -n "${BENCH_SAMPLE_SIZE}") )
+    fi
+    NUM_DOMAINS=${#BENCH_DOMAINS[@]}
+    info "Using ${NUM_DOMAINS} randomly sampled domains (of ${total_in_file}) from ${HOSTNAME_FILE}"
+  fi
+else
+  NUM_DOMAINS=$total_in_file
 fi
 TOTAL_REQUESTS=$((ROUNDS * NUM_DOMAINS))
 CURL_TIMEOUT=10
 # Max wall time for the benchmark loop (docker exec); avoid hanging forever.
 BENCH_EXEC_TIMEOUT=300
-
-info() { echo "[$(date +%H:%M:%S)] $*"; }
 
 cleanup() {
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
@@ -183,7 +203,7 @@ run_workload() {
   echo "$wall_s" > "/tmp/bench-e2e-${mode}-wall.txt"
 }
 
-# Run one benchmark phase: start sidecar with given mode, push policy, run client workload, collect timings.
+# Run one benchmark phase: start container with given mode, push policy, run client workload, collect timings.
 # Usage: run_phase "dns" | "dns+nft"
 run_phase() {
   local mode="$1"
@@ -216,10 +236,11 @@ run_phase() {
   run_workload "${mode}"
 }
 
-# Run baseline phase: plain Ubuntu container, no egress sidecar. Same workload for comparison.
+# Run baseline phase: plain curl container, no egress container. Same workload for comparison.
 run_phase_baseline() {
   info "Phase: baseline (no egress)"
   cleanup
+  docker pull "${BASELINE_IMG}" > /dev/null 2>&1
   docker run -d --name "${CONTAINER_NAME}" "${BASELINE_IMG}" sleep 3600
   sleep 2
   copy_url_file_to_container
@@ -236,7 +257,7 @@ report() {
   wall1=$(cat /tmp/bench-e2e-dns-wall.txt 2>/dev/null || echo "0")
   wall2=$(cat /tmp/bench-e2e-dns+nft-wall.txt 2>/dev/null || echo "0")
   if [[ "${nb:-0}" -eq 0 ]] || [[ "${n1:-0}" -eq 0 ]] || [[ "${n2:-0}" -eq 0 ]]; then
-    echo "WARN: some phases had no successful requests; check sidecar logs and network."
+    echo "WARN: some phases had no successful requests; check container logs and network."
   fi
 
   local rps0 rps1 rps2
@@ -248,12 +269,23 @@ report() {
   echo "========== E2E benchmark: baseline vs dns vs dns+nft =========="
   echo "Workload: ${TOTAL_REQUESTS} requests (${ROUNDS} rounds × ${NUM_DOMAINS} domains)"
   echo ""
-  printf "%-12s %12s %12s %12s %12s\n" "Mode" "Req/s" "Avg(s)" "P50(s)" "P99(s)"
-  printf "%-12s %12s %12.3f %12.3f %12.3f\n" "baseline" "$rps0" "$avg0" "$p50_0" "$p99_0"
-  printf "%-12s %12s %12.3f %12.3f %12.3f\n" "dns"      "$rps1" "$avg1" "$p50_1" "$p99_1"
-  printf "%-12s %12s %12.3f %12.3f %12.3f\n" "dns+nft"  "$rps2" "$avg2" "$p50_2" "$p99_2"
+  local ov_avg1 ov_p50_1 ov_p99_1 ov_rps1 ov_avg2 ov_p50_2 ov_p99_2 ov_rps2
+  ov_avg1=$(awk -v a="$avg1" -v b="$avg0" 'BEGIN { printf "%+.1f", (b>0 && b!="") ? (a-b)/b*100 : 0 }')
+  ov_p50_1=$(awk -v a="$p50_1" -v b="$p50_0" 'BEGIN { printf "%+.1f", (b>0 && b!="") ? (a-b)/b*100 : 0 }')
+  ov_p99_1=$(awk -v a="$p99_1" -v b="$p99_0" 'BEGIN { printf "%+.1f", (b>0 && b!="") ? (a-b)/b*100 : 0 }')
+  ov_rps1=$(awk -v a="$rps1" -v b="$rps0" 'BEGIN { printf "%+.1f", (b>0 && b!="") ? (b-a)/b*100 : 0 }')
+  ov_avg2=$(awk -v a="$avg2" -v b="$avg0" 'BEGIN { printf "%+.1f", (b>0 && b!="") ? (a-b)/b*100 : 0 }')
+  ov_p50_2=$(awk -v a="$p50_2" -v b="$p50_0" 'BEGIN { printf "%+.1f", (b>0 && b!="") ? (a-b)/b*100 : 0 }')
+  ov_p99_2=$(awk -v a="$p99_2" -v b="$p99_0" 'BEGIN { printf "%+.1f", (b>0 && b!="") ? (a-b)/b*100 : 0 }')
+  ov_rps2=$(awk -v a="$rps2" -v b="$rps0" 'BEGIN { printf "%+.1f", (b>0 && b!="") ? (b-a)/b*100 : 0 }')
+
+  printf "%-10s %14s %20s %20s %20s\n" "Mode" "Req/s" "Avg(s)" "P50(s)" "P99(s)"
+  printf "%-10s %14s %20s %20s %20s\n" "baseline" "$rps0" "$avg0" "$p50_0" "$p99_0"
+  printf "%-10s %14s %20s %20s %20s\n" "dns"      "$(printf '%.2f(%s%%)' "$rps1" "$ov_rps1")" "$(printf '%.3f(%s%%)' "$avg1" "$ov_avg1")" "$(printf '%.3f(%s%%)' "$p50_1" "$ov_p50_1")" "$(printf '%.3f(%s%%)' "$p99_1" "$ov_p99_1")"
+  printf "%-10s %14s %20s %20s %20s\n" "dns+nft"  "$(printf '%.2f(%s%%)' "$rps2" "$ov_rps2")" "$(printf '%.3f(%s%%)' "$avg2" "$ov_avg2")" "$(printf '%.3f(%s%%)' "$p50_2" "$ov_p50_2")" "$(printf '%.3f(%s%%)' "$p99_2" "$ov_p99_2")"
   echo ""
-  echo "baseline: Plain container (${BASELINE_IMG}), no egress sidecar."
+  echo "Overhead in parentheses vs baseline: latency +%% = slower, Req/s -%% = lower throughput."
+  echo "baseline: Plain container (${BASELINE_IMG}), no egress container."
   echo "dns:      DNS proxy only, no nft write (pass-through)."
   echo "dns+nft:  DNS proxy + sync AddResolvedIPs before each DNS reply (L2 enforcement)."
   echo ""
@@ -262,7 +294,7 @@ report() {
 }
 
 info "Building image ${IMG}"
-docker build -t "${IMG}" .
+docker build -t "${IMG}" . > /dev/null 2>&1
 
 run_phase_baseline
 run_phase "dns+nft"

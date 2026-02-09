@@ -68,3 +68,5 @@ jobs:
         run: |
           chmod +x tests/bench-dns-nft.sh
           ./tests/bench-dns-nft.sh
+        env:
+          BENCH_SAMPLE_SIZE: "20"
