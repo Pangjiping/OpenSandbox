@@ -221,14 +221,24 @@ func discoverUpstream() (string, error) {
 		}
 		return fallbackUpstream, nil
 	}
-	first := cfg.Servers[0]
-	// Loopback nameserver (e.g. Docker 127.0.0.11) is unreachable from inside the container;
-	// client traffic to it is whitelisted and redirected to us, but we must use a reachable upstream.
-	if ip := net.ParseIP(first); ip != nil && ip.IsLoopback() {
-		log.Printf("[dns] resolv.conf nameserver %s is loopback; using fallback %s for proxy upstream", first, fallbackUpstream)
-		return fallbackUpstream, nil
+	// Prefer first non-loopback nameserver (e.g. K8s cluster DNS after 127.0.0.11).
+	// If only loopback exists (e.g. Docker 127.0.0.11), use it: proxy upstream traffic
+	// is marked and bypasses the redirect, so loopback is reachable from the sidecar.
+	var chosen string
+	for _, s := range cfg.Servers {
+		if ip := net.ParseIP(s); ip != nil && ip.IsLoopback() {
+			if chosen == "" {
+				chosen = s
+			}
+			continue
+		}
+		chosen = s
+		break
 	}
-	return net.JoinHostPort(first, cfg.Port), nil
+	if chosen == "" {
+		chosen = cfg.Servers[0]
+	}
+	return net.JoinHostPort(chosen, cfg.Port), nil
 }
 
 // ResolvNameserverIPs reads nameserver lines from resolvPath and returns parsed IPv4/IPv6 addresses.

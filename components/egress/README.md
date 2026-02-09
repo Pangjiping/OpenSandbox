@@ -171,5 +171,5 @@ More details in [docs/benchmark.md](docs/benchmark.md).
 - **"iptables setup failed"**: Ensure the sidecar container has `--cap-add=NET_ADMIN`.
 - **DNS resolution fails for all domains**:  
   - Check if the upstream DNS (from `/etc/resolv.conf`) is reachable.  
-  - In `dns+nft` mode, the sidecar whitelists nameserver IPs from resolv.conf at startup; check logs for `[dns] whitelisting proxy listen + N nameserver(s)` and ensure `/etc/resolv.conf` is readable and contains valid, reachable nameservers. If the nameserver is loopback (e.g. Docker 127.0.0.11), the proxy uses a fallback upstream (8.8.8.8) for forwarding.
+  - In `dns+nft` mode, the sidecar whitelists nameserver IPs from resolv.conf at startup; check logs for `[dns] whitelisting proxy listen + N nameserver(s)` and ensure `/etc/resolv.conf` is readable and contains valid, reachable nameservers. The proxy prefers the first non-loopback nameserver from resolv.conf; if only loopback exists (e.g. Docker 127.0.0.11), it is used (proxy upstream traffic bypasses the redirect). Fallback to 8.8.8.8 only when resolv.conf is empty or unreadable.
 - **Traffic not blocked**: If nftables apply fails, the sidecar falls back to dns; check logs, `nft list table inet opensandbox`, and `CAP_NET_ADMIN`.
