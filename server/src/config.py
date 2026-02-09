@@ -96,6 +96,28 @@ class KubernetesRuntimeConfig(BaseModel):
         default=None,
         description="Absolute path to the kubeconfig file used for API authentication.",
     )
+    informer_enabled: bool = Field(
+        default=True,
+        description=(
+            "[Beta] Enable informer-backed cache for workload reads. "
+            "Keeps a watch to reduce API pressure; set false to disable."
+        ),
+    )
+    informer_resync_seconds: int = Field(
+        default=300,
+        ge=1,
+        description=(
+            "[Beta] Full resync interval for informer cache (seconds). "
+            "Shorter intervals refresh the cache more eagerly."
+        ),
+    )
+    informer_watch_timeout_seconds: int = Field(
+        default=60,
+        ge=1,
+        description=(
+            "[Beta] Watch timeout (seconds) before restarting the informer stream."
+        ),
+    )
     namespace: Optional[str] = Field(
         default=None,
         description="Namespace used for sandbox workloads.",

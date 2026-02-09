@@ -94,6 +94,7 @@ spec:
         assert provider.k8s_client == mock_k8s_client
         assert provider.shutdown_policy == "Retain"
         assert provider.service_account == agent_sandbox_runtime_config.service_account
+        assert provider._enable_informer is True
     
     def test_create_provider_case_insensitive(self, mock_k8s_client):
         """
@@ -159,6 +160,9 @@ spec:
             call_kwargs = mock_init.call_args.kwargs
             assert 'template_file_path' in call_kwargs
             assert call_kwargs['template_file_path'] == str(template_file)
+            assert call_kwargs['enable_informer'] is True
+            assert call_kwargs['informer_resync_seconds'] == k8s_runtime_config.informer_resync_seconds
+            assert call_kwargs['informer_watch_timeout_seconds'] == k8s_runtime_config.informer_watch_timeout_seconds
     
     def test_list_available_providers(self):
         """

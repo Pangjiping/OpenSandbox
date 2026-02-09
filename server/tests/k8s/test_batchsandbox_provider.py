@@ -444,6 +444,39 @@ spec:
             provider.get_workload("test-id", "test-ns")
         
         assert exc_info.value.status == 500
+
+    def test_get_workload_prefers_informer_cache(self, mock_k8s_client, monkeypatch):
+        """
+        Test case: Use informer cache when synced to avoid direct API call
+        """
+        cached = {"metadata": {"name": "test-id"}}
+
+        class FakeInformer:
+            def __init__(self):
+                self.started = False
+                self.has_synced = True
+
+            def start(self):
+                self.started = True
+
+            def get(self, name):
+                return cached if name == "test-id" else None
+
+            def update_cache(self, obj):
+                self.updated = obj
+
+        fake_informer = FakeInformer()
+        provider = BatchSandboxProvider(
+            mock_k8s_client,
+            enable_informer=True,
+            informer_factory=lambda ns: fake_informer,
+        )
+
+        result = provider.get_workload("test-id", "test-ns")
+
+        assert result == cached
+        assert fake_informer.started is True
+        mock_k8s_client.get_custom_objects_api().get_namespaced_custom_object.assert_not_called()
     
     def test_get_workload_logs_unexpected_errors(self, mock_k8s_client):
         """

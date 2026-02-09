@@ -128,6 +128,38 @@ class TestAgentSandboxProvider:
 
         assert exc_info.value.status == 500
 
+    def test_get_workload_prefers_informer_cache(self, mock_k8s_client, monkeypatch):
+        """
+        Test case: Use informer cache when already synced
+        """
+        cached = {"metadata": {"name": "test-id"}}
+
+        class FakeInformer:
+            def __init__(self):
+                self.started = False
+                self.has_synced = True
+
+            def start(self):
+                self.started = True
+
+            def get(self, name):
+                return cached if name == "test-id" else None
+
+            def update_cache(self, obj):
+                self.updated = obj
+
+        fake_informer = FakeInformer()
+        provider = AgentSandboxProvider(
+            mock_k8s_client,
+            informer_factory=lambda ns: fake_informer,
+        )
+
+        result = provider.get_workload("test-id", "test-ns")
+
+        assert result == cached
+        assert fake_informer.started is True
+        mock_k8s_client.get_custom_objects_api().get_namespaced_custom_object.assert_not_called()
+
     def test_update_expiration_patches_spec(self, mock_k8s_client):
         """
         Test case: Verify expiration time update

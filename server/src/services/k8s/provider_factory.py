@@ -89,7 +89,13 @@ def create_workload_provider(
         template_file = k8s_config.batchsandbox_template_file
         if template_file:
             logger.info(f"Using BatchSandbox template file: {template_file}")
-        return provider_class(k8s_client, template_file_path=template_file)
+        return provider_class(
+            k8s_client,
+            template_file_path=template_file,
+            enable_informer=k8s_config.informer_enabled,
+            informer_resync_seconds=k8s_config.informer_resync_seconds,
+            informer_watch_timeout_seconds=k8s_config.informer_watch_timeout_seconds,
+        )
 
     # Special handling for AgentSandboxProvider - pass agent-specific settings
     if provider_type_lower == PROVIDER_TYPE_AGENT_SANDBOX:
@@ -99,6 +105,13 @@ def create_workload_provider(
             template_file_path=agent_config.template_file,
             shutdown_policy=agent_config.shutdown_policy,
             service_account=k8s_config.service_account if k8s_config else None,
+            enable_informer=k8s_config.informer_enabled if k8s_config else True,
+            informer_resync_seconds=(
+                k8s_config.informer_resync_seconds if k8s_config else 300
+            ),
+            informer_watch_timeout_seconds=(
+                k8s_config.informer_watch_timeout_seconds if k8s_config else 60
+            ),
         )
     
     return provider_class(k8s_client)

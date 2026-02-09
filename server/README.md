@@ -126,6 +126,23 @@ Before you start the server, edit the configuration file to suit your environmen
    ```
    Further reading on Docker container security: https://docs.docker.com/engine/security/
 
+**Kubernetes runtime**
+   ```toml
+   [runtime]
+   type = "kubernetes"
+   execd_image = "opensandbox/execd:v1.0.5"
+
+   [kubernetes]
+   kubeconfig_path = "~/.kube/config"
+   namespace = "opensandbox"
+   workload_provider = "batchsandbox"   # or "agent-sandbox"
+   informer_enabled = true              # Beta: enable watch-based cache
+   informer_resync_seconds = 300        # Beta: full list interval
+   informer_watch_timeout_seconds = 60  # Beta: watch restart interval
+   ```
+   - Informer settings are **beta** and enabled by default to reduce API calls; set `informer_enabled = false` to turn off.
+   - Resync and watch timeouts control how often the cache refreshes; tune for your cluster API limits.
+
 ### Egress sidecar for `networkPolicy`
 
 - **Required when using `networkPolicy`**: Configure the sidecar image. The `egress.image` setting is mandatory when requests include `networkPolicy`:
