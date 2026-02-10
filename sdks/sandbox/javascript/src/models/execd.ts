@@ -37,12 +37,6 @@ export interface ServerStreamEvent extends Record<string, unknown> {
   error?: Record<string, unknown>;
 }
 
-export interface RunCommandRequest extends Record<string, unknown> {
-  command: string;
-  cwd?: string;
-  background?: boolean;
-}
-
 export interface CodeContextRequest extends Record<string, unknown> {
   language: string;
 }
@@ -64,6 +58,11 @@ export interface RunCommandOpts {
    * Run command in detached mode.
    */
   background?: boolean;
+  /**
+   * Maximum execution time in seconds; server will terminate the command when reached.
+   * Omit for server default.
+   */
+  timeoutSeconds?: number;
 }
 
 export interface CommandStatus {
