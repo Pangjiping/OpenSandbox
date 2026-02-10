@@ -143,12 +143,15 @@ class WorkloadInformer:
         metadata = resp.get("metadata", {}) if isinstance(resp, dict) else {}
         resource_version = metadata.get("resourceVersion")
 
+        # Build new cache outside the lock to avoid blocking readers
+        new_cache: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            name = item.get("metadata", {}).get("name")
+            if name:
+                new_cache[name] = item
+
         with self._lock:
-            self._cache = {}
-            for item in items:
-                name = item.get("metadata", {}).get("name")
-                if name:
-                    self._cache[name] = item
+            self._cache = new_cache
             if resource_version:
                 self._resource_version = resource_version
             self._has_synced = True
