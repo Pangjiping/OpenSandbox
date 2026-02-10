@@ -99,21 +99,28 @@ class WorkloadInformer:
         backoff = 1.0
         while not self._stop_event.is_set():
             try:
-                self._full_resync()
-                backoff = 1.0
+                if not self._has_synced:
+                    self._full_resync()
+                    backoff = 1.0
 
                 if not self.enable_watch:
                     self._stop_event.wait(self.resync_period_seconds)
                     continue
 
                 self._run_watch_loop()
+                backoff = 1.0
             except ApiException as exc:
-                logger.warning(
-                    "Informer watch error for %s: %s", self.plural, exc, exc_info=True
-                )
-                self._has_synced = False
-                self._stop_event.wait(min(backoff, 30.0))
-                backoff = min(backoff * 2, 30.0)
+                if exc.status == 410:
+                    # Resource version too old; force a fresh list on next loop.
+                    self._resource_version = None
+                    self._has_synced = False
+                else:
+                    logger.warning(
+                        "Informer watch error for %s: %s", self.plural, exc, exc_info=True
+                    )
+                    self._has_synced = False
+                    self._stop_event.wait(min(backoff, 30.0))
+                    backoff = min(backoff * 2, 30.0)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning(
                     "Unexpected informer error for %s: %s", self.plural, exc, exc_info=True
