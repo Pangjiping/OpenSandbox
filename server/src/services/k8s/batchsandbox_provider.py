@@ -20,6 +20,7 @@ import logging
 import shlex
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
+from threading import Lock
 
 from kubernetes.client import (
     V1Container,
@@ -91,6 +92,7 @@ class BatchSandboxProvider(WorkloadProvider):
             )
         )
         self._informers: Dict[str, WorkloadInformer] = {}
+        self._informers_lock = Lock()
     
     def create_workload(
         self,
@@ -560,17 +562,19 @@ class BatchSandboxProvider(WorkloadProvider):
         if not self._enable_informer:
             return None
 
-        informer = self._informers.get(namespace)
-        if informer is None:
-            informer = self._informer_factory(namespace)
-            self._informers[namespace] = informer
-            try:
-                informer.start()
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning(
-                    "Failed to start informer for namespace %s: %s", namespace, exc
-                )
-                return None
+        with self._informers_lock:
+            informer = self._informers.get(namespace)
+            if informer is None:
+                informer = self._informer_factory(namespace)
+                self._informers[namespace] = informer
+                try:
+                    informer.start()
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(
+                        "Failed to start informer for namespace %s: %s", namespace, exc
+                    )
+                    self._informers.pop(namespace, None)
+                    return None
         return informer
 
     def get_workload(self, sandbox_id: str, namespace: str) -> Optional[Dict[str, Any]]:
