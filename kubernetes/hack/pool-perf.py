@@ -31,7 +31,8 @@ class PoolPerformanceTester:
     def __init__(self, pool_name, pool_size, replicas_per_bsb, total_bsb_count, timeout):
         try:
             config.load_kube_config()
-        except:
+        except Exception:
+            # Fall back to in-cluster config if kube config is not available
             config.load_incluster_config()
         self.custom_api = client.CustomObjectsApi()
         self.pool_name = pool_name
@@ -176,10 +177,14 @@ class PoolPerformanceTester:
         for name in self.bsb_names:
             try:
                 self.custom_api.delete_namespaced_custom_object(GROUP, VERSION, NAMESPACE, BSB_PLURAL, name)
-            except: pass
+            except Exception as e:
+                # Silently ignore deletion errors during cleanup
+                pass
         try:
             self.custom_api.delete_namespaced_custom_object(GROUP, VERSION, NAMESPACE, POOL_PLURAL, self.pool_name)
-        except: pass
+        except Exception as e:
+            # Silently ignore deletion errors during cleanup
+            pass
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pool Performance Tester")
