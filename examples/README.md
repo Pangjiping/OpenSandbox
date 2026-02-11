@@ -14,6 +14,7 @@ Examples for common OpenSandbox use cases. Each subdirectory contains runnable c
 - [**codex-cli**](codex-cli): Call OpenAI/Codex-like models within the sandbox
 - [**langgraph**](langgraph): LangGraph agent orchestrating sandbox lifecycle + tools
 - [**google-adk**](google-adk): Google ADK agent calling OpenSandbox tools
+- [**openclaw**](openclaw): Run an OpenClaw Gateway inside a sandbox
 - [**desktop**](desktop): Launch VNC desktop (Xvfb + x11vnc) for VNC client connections
 - [**playwright**](playwright): Launch headless browser (Playwright + Chromium) to scrape web content
 - [**vscode**](vscode): Launch code-server (VS Code Web) to provide browser access
