@@ -21,9 +21,10 @@ set -euxo pipefail
 
 TAG=${TAG:-latest}
 
-# build execd image locally
-cd components/execd && docker build -t opensandbox/execd:local .
-cd ../..
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# build execd image locally (context must include internal/)
+docker build -f components/execd/Dockerfile -t opensandbox/execd:local "${REPO_ROOT}"
 
 # prepare required images from registry
 docker pull opensandbox/code-interpreter:${TAG}

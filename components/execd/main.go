@@ -30,7 +30,7 @@ import (
 func main() {
 	flag.InitFlags()
 
-	log.SetLevel(flag.ServerLogLevel)
+	log.Init(flag.ServerLogLevel)
 
 	controller.InitCodeRunner()
 	engine := web.NewRouter(flag.ServerAccessToken)

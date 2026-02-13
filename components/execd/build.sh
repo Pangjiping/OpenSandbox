@@ -17,6 +17,8 @@ set -ex
 
 TAG=${TAG:-latest}
 
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
 docker buildx rm execd-builder || true
 
 docker buildx create --use --name execd-builder
@@ -30,4 +32,5 @@ docker buildx build \
   -t sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:${TAG} \
   --platform linux/amd64,linux/arm64 \
   --push \
-  .
+  -f components/execd/Dockerfile \
+  "${REPO_ROOT}"
