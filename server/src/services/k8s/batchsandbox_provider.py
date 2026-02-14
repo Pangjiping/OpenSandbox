@@ -587,7 +587,9 @@ class BatchSandboxProvider(WorkloadProvider):
     def get_workload(self, sandbox_id: str, namespace: str) -> Optional[Dict[str, Any]]:
         """Get BatchSandbox by sandbox ID."""
         informer = self._get_informer(namespace)
-        if informer:
+        cache_ready = informer.has_synced if informer else False
+
+        if informer and cache_ready:
             cached = informer.get(sandbox_id)
             if cached:
                 return cached
@@ -598,8 +600,10 @@ class BatchSandboxProvider(WorkloadProvider):
                 if legacy_cached:
                     return legacy_cached
 
-            if informer.has_synced:
-                return None
+        if informer and not cache_ready:
+            logger.warning(
+                f"Informer cache not synced for namespace {namespace}; falling back to direct API get."
+            )
 
         try:
             workload = self.custom_api.get_namespaced_custom_object(
