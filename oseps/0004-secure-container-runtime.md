@@ -171,7 +171,7 @@ Extension to `~/.sandbox.toml`. A single `[secure_runtime]` section configures t
 ```toml
 [runtime]
 type = "docker"  # or "kubernetes"
-execd_image = "opensandbox/execd:v1.0.5"
+execd_image = "opensandbox/execd:vlatest"
 
 # Secure container runtime configuration.
 # When enabled, ALL sandboxes on this server use the specified runtime.
@@ -201,7 +201,7 @@ Example 1 — gVisor on Docker:
 # ~/.sandbox.toml
 [runtime]
 type = "docker"
-execd_image = "opensandbox/execd:v1.0.5"
+execd_image = "opensandbox/execd:vlatest"
 
 [secure_runtime]
 type = "gvisor"
@@ -215,7 +215,7 @@ Example 2 — Kata Containers (QEMU) on Kubernetes:
 # ~/.sandbox.toml
 [runtime]
 type = "kubernetes"
-execd_image = "opensandbox/execd:v1.0.5"
+execd_image = "opensandbox/execd:vlatest"
 
 [secure_runtime]
 type = "kata"
@@ -231,7 +231,7 @@ Example 3 — Kata + Firecracker on Kubernetes:
 # ~/.sandbox.toml
 [runtime]
 type = "kubernetes"
-execd_image = "opensandbox/execd:v1.0.5"
+execd_image = "opensandbox/execd:vlatest"
 
 [secure_runtime]
 type = "firecracker"
