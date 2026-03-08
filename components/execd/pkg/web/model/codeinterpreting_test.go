@@ -60,6 +60,28 @@ func TestRunCommandRequestValidate(t *testing.T) {
 	}
 }
 
+func ptr32(v uint32) *uint32 { return &v }
+
+func TestRunCommandRequestValidateUidGid(t *testing.T) {
+	// uid-only: valid
+	req := RunCommandRequest{Command: "id", Uid: ptr32(1000)}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("expected success with uid only: %v", err)
+	}
+
+	// uid + gid: valid
+	req = RunCommandRequest{Command: "id", Uid: ptr32(1000), Gid: ptr32(1000)}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("expected success with uid and gid: %v", err)
+	}
+
+	// gid-only: must be rejected
+	req = RunCommandRequest{Command: "id", Gid: ptr32(1000)}
+	if err := req.Validate(); err == nil {
+		t.Fatalf("expected validation error when gid is set without uid")
+	}
+}
+
 func TestServerStreamEventToJSON(t *testing.T) {
 	event := ServerStreamEvent{
 		Type:           StreamEventTypeStdout,
