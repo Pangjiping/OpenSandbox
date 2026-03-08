@@ -46,7 +46,7 @@ The egress control is implemented as a **Sidecar** that shares the network names
   - `dns`: DNS proxy only, no nftables (IP/CIDR rules have no effect at L2).
   - `dns+nft`: enable nftables; if nft apply fails, fallback to `dns`. IP/CIDR enforcement and DoH/DoT blocking require this mode.
 - **Nameserver exempt**  
-  Set `OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT` to a comma-separated list of **nameserver IP or CIDR** (e.g. `26.26.26.26` or `26.26.26.26,10.0.0.0/8`). Traffic to these destinations on port 53 is **not** redirected to the proxy; it goes directly. So the proxy (and any client) can reach these nameservers without going through the local proxy. Use when the upstream is reachable only via a specific route (e.g. tunnel) and SO_MARK would send proxy traffic elsewhere.
+  Set `OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT` to a comma-separated list of **nameserver IPs** (e.g. `26.26.26.26` or `26.26.26.26,100.100.2.116`). Only single IPs are supported; CIDR entries are ignored. Traffic to these IPs on port 53 is not redirected to the proxy (iptables RETURN). In `dns+nft` mode, these IPs are also merged into the nft allow set so proxy upstream traffic to them (sent without SO_MARK) is accepted. Use when the upstream is reachable only via a specific route (e.g. tunnel) and SO_MARK would send proxy traffic elsewhere.
 - **DNS and nft mode (nameserver whitelist)**  
   In `dns+nft` mode, the sidecar automatically allows:
   - **127.0.0.1** — so packets redirected by iptables to the proxy (127.0.0.1:15353) are accepted by nft.

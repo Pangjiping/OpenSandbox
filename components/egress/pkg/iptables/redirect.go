@@ -26,8 +26,7 @@ import (
 
 // SetupRedirect installs OUTPUT nat redirect for DNS (udp/tcp 53 -> port).
 //
-// exemptDst: optional list of destination IP or CIDR; traffic to these is not redirected (direct forward).
-// Packets carrying mark are also RETURNed (proxy's own upstream). Requires CAP_NET_ADMIN.
+// exemptDst: optional list of destination IPs; traffic to these is not redirected. Packets carrying mark are also RETURNed (proxy's own upstream). Requires CAP_NET_ADMIN.
 func SetupRedirect(port int, exemptDst []string) error {
 	log.Infof("installing iptables DNS redirect: OUTPUT port 53 -> %d (mark %s bypass)", port, constants.MarkHex)
 	targetPort := strconv.Itoa(port)
@@ -37,33 +36,20 @@ func SetupRedirect(port int, exemptDst []string) error {
 		if d == "" {
 			continue
 		}
-		// Exempt by destination: don't redirect DNS to these IPs/CIDRs. Use iptables for IPv4, ip6tables for IPv6 only.
-		if addr, err := netip.ParseAddr(d); err == nil {
-			if addr.Is4() {
-				rules = append(rules,
-					[]string{"iptables", "-t", "nat", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-d", d, "-j", "RETURN"},
-					[]string{"iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-d", d, "-j", "RETURN"},
-				)
-			} else {
-				rules = append(rules,
-					[]string{"ip6tables", "-t", "nat", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-d", d, "-j", "RETURN"},
-					[]string{"ip6tables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-d", d, "-j", "RETURN"},
-				)
-			}
+		addr, err := netip.ParseAddr(d)
+		if err != nil {
 			continue
 		}
-		if p, err := netip.ParsePrefix(d); err == nil {
-			if p.Addr().Is4() {
-				rules = append(rules,
-					[]string{"iptables", "-t", "nat", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-d", d, "-j", "RETURN"},
-					[]string{"iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-d", d, "-j", "RETURN"},
-				)
-			} else {
-				rules = append(rules,
-					[]string{"ip6tables", "-t", "nat", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-d", d, "-j", "RETURN"},
-					[]string{"ip6tables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-d", d, "-j", "RETURN"},
-				)
-			}
+		if addr.Is4() {
+			rules = append(rules,
+				[]string{"iptables", "-t", "nat", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-d", d, "-j", "RETURN"},
+				[]string{"iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-d", d, "-j", "RETURN"},
+			)
+		} else {
+			rules = append(rules,
+				[]string{"ip6tables", "-t", "nat", "-A", "OUTPUT", "-p", "udp", "--dport", "53", "-d", d, "-j", "RETURN"},
+				[]string{"ip6tables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "--dport", "53", "-d", d, "-j", "RETURN"},
+			)
 		}
 	}
 	// Bypass packets marked by the proxy itself (see dnsproxy dialer).
