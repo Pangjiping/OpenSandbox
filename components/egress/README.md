@@ -56,9 +56,9 @@ The egress control is implemented as a **Sidecar** that shares the network names
 
 - Default listen address: `:18080` (override with `OPENSANDBOX_EGRESS_HTTP_ADDR`).
 - Endpoints:
-  - `GET /policy` — returns the current policy.
-  - `POST /policy` — replaces the policy. Empty/whitespace/`{}`/`null` resets to default deny-all.
-  - `PATCH /policy` — merge/append rules at runtime. New rules are placed before existing ones (same target overrides), so a later PATCH can override prior wildcard denies with a more specific allow, and vice versa.
+- `GET /policy` — returns the current policy.
+- `POST /policy` — replaces the policy. Empty/whitespace/`{}`/`null` resets to default deny-all.
+  - `PATCH /policy` — merge/append rules at runtime. Body **must** be a JSON array of egress rules (not wrapped in an object). New rules are placed before existing ones (same target overrides), so a later PATCH can override prior wildcard denies with a more specific allow, and vice versa.
 
 Examples:
 
@@ -90,7 +90,7 @@ Examples:
 
   # allow a specific host; PATCH rules are prepended, so this wins
   curl -XPATCH http://127.0.0.1:18080/policy \
-    -d '{"egress":[{"action":"allow","target":"www.cloudflare.com"}]}'
+    -d '[{"action":"allow","target":"www.cloudflare.com"}]'
   ```
 
 ## Build & Run

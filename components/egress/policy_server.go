@@ -220,12 +220,12 @@ func (s *policyServer) handlePatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	patchPolicy, err := policy.ParsePolicy(raw)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid patch policy: %v", err), http.StatusBadRequest)
+	var patchRules []policy.EgressRule
+	if err = json.Unmarshal([]byte(raw), &patchRules); err != nil {
+		http.Error(w, fmt.Sprintf("invalid patch rules: %v", err), http.StatusBadRequest)
 		return
 	}
-	if len(patchPolicy.Egress) == 0 {
+	if len(patchRules) == 0 {
 		http.Error(w, "patch must include at least one egress rule", http.StatusBadRequest)
 		return
 	}
@@ -237,14 +237,21 @@ func (s *policyServer) handlePatch(w http.ResponseWriter, r *http.Request) {
 	baseCopy := *base
 	baseCopy.Egress = append([]policy.EgressRule(nil), base.Egress...)
 
-	merged := mergeEgressRules(baseCopy.Egress, patchPolicy.Egress)
-	newPolicy := &policy.NetworkPolicy{
+	merged := mergeEgressRules(baseCopy.Egress, patchRules)
+
+	// Reuse parser to normalize targets/actions.
+	rawMerged, _ := json.Marshal(policy.NetworkPolicy{
 		DefaultAction: baseCopy.DefaultAction,
 		Egress:        merged,
+	})
+	newPolicy, err := policy.ParsePolicy(string(rawMerged))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid merged policy: %v", err), http.StatusBadRequest)
+		return
 	}
 
 	mode := modeFromPolicy(newPolicy)
-	log.Infof("policy API: patching policy with %d new rule(s), mode=%s, enforcement=%s", len(patchPolicy.Egress), mode, s.enforcementMode)
+	log.Infof("policy API: patching policy with %d new rule(s), mode=%s, enforcement=%s", len(patchRules), mode, s.enforcementMode)
 	if s.nft != nil {
 		polWithNS := newPolicy.WithExtraAllowIPs(s.nameserverIPs)
 		if err := s.nft.ApplyStatic(r.Context(), polWithNS); err != nil {
@@ -305,18 +312,29 @@ func mergeEgressRules(base, additions []policy.EgressRule) []policy.EgressRule {
 
 	// Priority: additions first; base rules only if target not overridden.
 	for _, r := range additions {
-		if _, ok := seen[r.Target]; ok {
+		key := mergeKey(r)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[r.Target] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, r)
 	}
 	for _, r := range base {
-		if _, ok := seen[r.Target]; ok {
+		key := mergeKey(r)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[r.Target] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, r)
 	}
 	return out
+}
+
+// mergeKey normalizes domain targets to lowercase for dedupe;
+// IP/CIDR targets are kept as-is.
+func mergeKey(r policy.EgressRule) string {
+	if r.Target == "" {
+		return r.Target
+	}
+	return strings.ToLower(r.Target)
 }

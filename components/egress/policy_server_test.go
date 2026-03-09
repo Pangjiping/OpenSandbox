@@ -138,7 +138,7 @@ func TestHandlePatch_MergesAndApplies(t *testing.T) {
 	nft := &stubNft{}
 	srv := &policyServer{proxy: proxy, nft: nft, enforcementMode: "dns+nft"}
 
-	body := `{"egress":[{"action":"deny","target":"blocked.com"},{"action":"allow","target":"example.com"}]}`
+	body := `[{"action":"deny","target":"blocked.com"},{"action":"allow","target":"example.com"}]`
 	req := httptest.NewRequest(http.MethodPatch, "/policy", strings.NewReader(body))
 	w := httptest.NewRecorder()
 
@@ -168,5 +168,37 @@ func TestHandlePatch_MergesAndApplies(t *testing.T) {
 	}
 	if proxy.updated.Egress[2].Target != "*.example.com" || proxy.updated.Egress[2].Action != policy.ActionDeny {
 		t.Fatalf("expected base wildcard rule to remain last, got %+v", proxy.updated.Egress[2])
+	}
+}
+
+func TestHandlePatch_DomainCaseOverride(t *testing.T) {
+	initial := &policy.NetworkPolicy{
+		DefaultAction: policy.ActionDeny,
+		Egress: []policy.EgressRule{
+			{Action: policy.ActionDeny, Target: "Example.COM"},
+		},
+	}
+	proxy := &stubProxy{updated: initial}
+	nft := &stubNft{}
+	srv := &policyServer{proxy: proxy, nft: nft, enforcementMode: "dns+nft"}
+
+	body := `[{"action":"allow","target":"example.com"}]`
+	req := httptest.NewRequest(http.MethodPatch, "/policy", strings.NewReader(body))
+	w := httptest.NewRecorder()
+
+	srv.handlePolicy(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if proxy.updated == nil {
+		t.Fatalf("expected proxy policy to be updated")
+	}
+	if len(proxy.updated.Egress) != 1 {
+		t.Fatalf("expected deduped rule count 1, got %d", len(proxy.updated.Egress))
+	}
+	if proxy.updated.Egress[0].Action != policy.ActionAllow || proxy.updated.Egress[0].Target != "example.com" {
+		t.Fatalf("expected allow example.com to override, got %+v", proxy.updated.Egress[0])
 	}
 }

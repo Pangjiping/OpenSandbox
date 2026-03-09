@@ -107,7 +107,7 @@ fi
 
 info "Patching allow for www.cloudflare.com (specific should override earlier deny)"
 curl -sSf -XPATCH "http://127.0.0.1:${POLICY_PORT}/policy" \
-  -d '{"egress":[{"action":"allow","target":"www.cloudflare.com"}]}'
+  -d '[{"action":"allow","target":"www.cloudflare.com"}]'
 
 info "Test: www.cloudflare.com should be allowed after patch"
 run_in_app -I https://www.cloudflare.com --max-time 10 >/dev/null 2>&1 || fail "www.cloudflare.com should succeed after patch"
@@ -123,7 +123,7 @@ pass "www.mozilla.org allowed before patch"
 
 info "Patching deny for www.mozilla.org (specific should override earlier allow)"
 curl -sSf -XPATCH "http://127.0.0.1:${POLICY_PORT}/policy" \
-  -d '{"egress":[{"action":"deny","target":"www.mozilla.org"}]}'
+  -d '[{"action":"deny","target":"www.mozilla.org"}]'
 
 info "Test: www.mozilla.org should be blocked after patch"
 if run_in_app -I https://www.mozilla.org --max-time 8 >/dev/null 2>&1; then
