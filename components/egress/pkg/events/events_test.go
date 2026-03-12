@@ -22,6 +22,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type captureSubscriber struct {
@@ -58,20 +60,16 @@ func TestBroadcasterFanout(t *testing.T) {
 
 	select {
 	case got := <-sub1.recv:
-		if got.Hostname != ev.Hostname {
-			t.Fatalf("sub1 expected hostname %s, got %s", ev.Hostname, got.Hostname)
-		}
+		require.Equal(t, ev.Hostname, got.Hostname, "sub1 expected hostname")
 	case <-time.After(2 * time.Second):
-		t.Fatal("sub1 did not receive event")
+		require.FailNow(t, "sub1 did not receive event")
 	}
 
 	select {
 	case got := <-sub2.recv:
-		if got.Hostname != ev.Hostname {
-			t.Fatalf("sub2 expected hostname %s, got %s", ev.Hostname, got.Hostname)
-		}
+		require.Equal(t, ev.Hostname, got.Hostname, "sub2 expected hostname")
 	case <-time.After(2 * time.Second):
-		t.Fatal("sub2 did not receive event")
+		require.FailNow(t, "sub2 did not receive event")
 	}
 
 	b.Close()
@@ -116,24 +114,14 @@ func TestWebhookSubscriberSendsPayload(t *testing.T) {
 	defer server.Close()
 
 	sub := NewWebhookSubscriber(server.URL)
-	if sub == nil {
-		t.Fatal("webhook subscriber should not be nil")
-	}
+	require.NotNil(t, sub, "webhook subscriber should not be nil")
 
 	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	ev := BlockedEvent{Hostname: "Example.com.", Timestamp: ts}
 	sub.HandleBlocked(context.Background(), ev)
 
-	if gotMethod != http.MethodPost {
-		t.Fatalf("expected POST, got %s", gotMethod)
-	}
-	if gotPayload.Hostname != ev.Hostname {
-		t.Fatalf("expected hostname %s, got %s", ev.Hostname, gotPayload.Hostname)
-	}
-	if gotPayload.Source != webhookSource {
-		t.Fatalf("expected source %s, got %s", webhookSource, gotPayload.Source)
-	}
-	if gotPayload.Timestamp == "" {
-		t.Fatalf("expected timestamp to be set")
-	}
+	require.Equal(t, http.MethodPost, gotMethod, "expected POST")
+	require.Equal(t, ev.Hostname, gotPayload.Hostname, "expected hostname")
+	require.Equal(t, webhookSource, gotPayload.Source, "expected source")
+	require.NotEmpty(t, gotPayload.Timestamp, "expected timestamp to be set")
 }
