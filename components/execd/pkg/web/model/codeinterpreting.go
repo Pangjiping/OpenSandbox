@@ -55,8 +55,9 @@ type RunCommandRequest struct {
 	// TimeoutMs caps execution duration; 0 uses server default.
 	TimeoutMs int64 `json:"timeout,omitempty" validate:"omitempty,gte=1"`
 
-	Uid *uint32 `json:"uid,omitempty"`
-	Gid *uint32 `json:"gid,omitempty"`
+	Uid  *uint32           `json:"uid,omitempty"`
+	Gid  *uint32           `json:"gid,omitempty"`
+	Envs map[string]string `json:"envs,omitempty"`
 }
 
 func (r *RunCommandRequest) Validate() error {

@@ -100,3 +100,33 @@ func TestMergeEnvsOverlaysExtra(t *testing.T) {
 		t.Fatalf("C mismatch, got %q", got["C"])
 	}
 }
+
+func TestMergeExtraEnvsMergesAndOverrides(t *testing.T) {
+	fromFile := map[string]string{"A": "1", "B": "2"}
+	fromRequest := map[string]string{"B": "override", "C": "3"}
+
+	got := mergeExtraEnvs(fromFile, fromRequest)
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 entries, got %#v", got)
+	}
+	if got["A"] != "1" {
+		t.Fatalf("A mismatch, got %q", got["A"])
+	}
+	if got["B"] != "override" {
+		t.Fatalf("B mismatch, got %q", got["B"])
+	}
+	if got["C"] != "3" {
+		t.Fatalf("C mismatch, got %q", got["C"])
+	}
+}
+
+func TestMergeExtraEnvsHandlesNilFromFile(t *testing.T) {
+	fromRequest := map[string]string{"ONLY": "request"}
+
+	got := mergeExtraEnvs(nil, fromRequest)
+
+	if len(got) != 1 || got["ONLY"] != "request" {
+		t.Fatalf("unexpected merge result: %#v", got)
+	}
+}

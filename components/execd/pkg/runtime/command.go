@@ -117,7 +117,8 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	cmd.Env = mergeEnvs(os.Environ(), loadExtraEnvFromFile())
+	extraEnv := mergeExtraEnvs(loadExtraEnvFromFile(), request.Envs)
+	cmd.Env = mergeEnvs(os.Environ(), extraEnv)
 	cmd.Dir = request.Cwd
 
 	done := make(chan struct{}, 1)
@@ -241,7 +242,8 @@ func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.Ca
 
 	cmd.Stdout = pipe
 	cmd.Stderr = pipe
-	cmd.Env = mergeEnvs(os.Environ(), loadExtraEnvFromFile())
+	extraEnv := mergeExtraEnvs(loadExtraEnvFromFile(), request.Envs)
+	cmd.Env = mergeEnvs(os.Environ(), extraEnv)
 
 	// use DevNull as stdin so interactive programs exit immediately.
 	cmd.Stdin = os.NewFile(uintptr(syscall.Stdin), os.DevNull)

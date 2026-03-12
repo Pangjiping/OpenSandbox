@@ -135,6 +135,7 @@ func (c *CodeInterpretingController) buildExecuteCommandRequest(request model.Ru
 			Timeout:  timeout,
 			Gid:      request.Gid,
 			Uid:      request.Uid,
+			Envs:     request.Envs,
 		}
 	} else {
 		return &runtime.ExecuteCodeRequest{
@@ -144,6 +145,7 @@ func (c *CodeInterpretingController) buildExecuteCommandRequest(request model.Ru
 			Timeout:  timeout,
 			Gid:      request.Gid,
 			Uid:      request.Uid,
+			Envs:     request.Envs,
 		}
 	}
 }

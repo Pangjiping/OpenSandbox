@@ -18,10 +18,53 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
+	"github.com/alibaba/opensandbox/execd/pkg/runtime"
 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
 )
+
+func TestBuildExecuteCommandRequestForwardsEnvs(t *testing.T) {
+	ctrl := &CodeInterpretingController{}
+	envs := map[string]string{"FOO": "bar", "BAZ": "qux"}
+	req := model.RunCommandRequest{
+		Command: "echo hi",
+		Cwd:     "/tmp",
+		Envs:    envs,
+	}
+
+	execReq := ctrl.buildExecuteCommandRequest(req)
+
+	if execReq.Language != runtime.Command {
+		t.Fatalf("expected runtime.Command, got %s", execReq.Language)
+	}
+	if !reflect.DeepEqual(execReq.Envs, envs) {
+		t.Fatalf("expected envs to be forwarded, got %#v", execReq.Envs)
+	}
+	if execReq.Cwd != "/tmp" {
+		t.Fatalf("expected Cwd to be forwarded, got %s", execReq.Cwd)
+	}
+}
+
+func TestBuildExecuteCommandRequestForwardsEnvsBackground(t *testing.T) {
+	ctrl := &CodeInterpretingController{}
+	envs := map[string]string{"FOO": "bar"}
+	req := model.RunCommandRequest{
+		Command:    "echo hi",
+		Background: true,
+		Envs:       envs,
+	}
+
+	execReq := ctrl.buildExecuteCommandRequest(req)
+
+	if execReq.Language != runtime.BackgroundCommand {
+		t.Fatalf("expected runtime.BackgroundCommand, got %s", execReq.Language)
+	}
+	if !reflect.DeepEqual(execReq.Envs, envs) {
+		t.Fatalf("expected envs to be forwarded, got %#v", execReq.Envs)
+	}
+}
 
 func setupCommandController(method, path string) (*CodeInterpretingController, *httptest.ResponseRecorder) {
 	ctx, w := newTestContext(method, path, nil)
