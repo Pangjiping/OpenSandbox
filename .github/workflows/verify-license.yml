@@ -10,9 +10,7 @@ concurrency:
 
 jobs:
   verify-license:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
