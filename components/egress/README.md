@@ -2,9 +2,6 @@
 
 The **Egress Sidecar** is a core component of OpenSandbox that provides **FQDN-based egress control**. It runs alongside the sandbox application container (sharing the same network namespace) and enforces declared network policies.
 
-> **Status**: Implementing. Currently supports Layer 1 (DNS Proxy). Layer 2 (Network Filter) is on the roadmap.
-> See [OSEP-0001: FQDN-based Egress Control](../../oseps/0001-fqdn-based-egress-control.md) for the detailed design.
-
 ## Features
 
 - **FQDN-based Allowlist**: Control outbound traffic by domain name (e.g., `api.github.com`).
@@ -45,11 +42,17 @@ The egress control is implemented as a **Sidecar** that shares the network names
 - Mode (`OPENSANDBOX_EGRESS_MODE`, default `dns`):
   - `dns`: DNS proxy only, no nftables (IP/CIDR rules have no effect at L2).
   - `dns+nft`: enable nftables; if nft apply fails, fallback to `dns`. IP/CIDR enforcement and DoH/DoT blocking require this mode.
+- **Nameserver exempt**  
+  Set `OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT` to a comma-separated list of **nameserver IPs** (e.g. `26.26.26.26` or `26.26.26.26,100.100.2.116`). Only single IPs are supported; CIDR entries are ignored. Traffic to these IPs on port 53 is not redirected to the proxy (iptables RETURN). In `dns+nft` mode, these IPs are also merged into the nft allow set so proxy upstream traffic to them (sent without SO_MARK) is accepted. Use when the upstream is reachable only via a specific route (e.g. tunnel) and SO_MARK would send proxy traffic elsewhere.
 - **DNS and nft mode (nameserver whitelist)**  
   In `dns+nft` mode, the sidecar automatically allows:
   - **127.0.0.1** — so packets redirected by iptables to the proxy (127.0.0.1:15353) are accepted by nft.
   - **Nameserver IPs** from `/etc/resolv.conf` — so client DNS and proxy upstream work (e.g. private DNS).  
   Nameserver IPs are validated (unspecified and loopback are skipped) and capped. Use `OPENSANDBOX_EGRESS_MAX_NS` (default `3`; `0` = no cap, `1`–`10` = cap). See [SECURITY-RISKS.md](SECURITY-RISKS.md) for trust and scope of this whitelist.
+- **Blocked hostname webhook**  
+  - `OPENSANDBOX_EGRESS_DENY_WEBHOOK`: HTTP endpoint URL. When set, egress asynchronously POSTs JSON **only when a hostname is denied**: `{"hostname": "<original query>", "timestamp": "<RFC3339>", "source": "opensandbox-egress", "sandboxId": "<id-or-empty>"}`. Default timeout 5s, up to 3 retries with exponential backoff starting at 1s; 4xx is not retried, 5xx/network errors are retried.
+  - `OPENSANDBOX_EGRESS_SANDBOX_ID`: optional sandbox identifier injected into the webhook payload as `sandboxId`. The value is read once at startup (unset → empty string).
+  - **Allow requirement**: you must allow the webhook host (or its IP/CIDR) in the policy; with default deny, if you don’t explicitly allow it, the webhook traffic will be blocked by egress itself. Example: `{"defaultAction":"deny","egress":[{"action":"allow","target":"webhook.example.com"}]}`. If a broader deny CIDR covers the resolved IP, it will still be blocked—adjust your policy accordingly.
 - DoH/DoT blocking:
   - DoT (tcp/udp 853) blocked by default.
   - Optional DoH over 443: `OPENSANDBOX_EGRESS_BLOCK_DOH_443=true`. If enabled without blocklist, all 443 is dropped.
@@ -59,8 +62,9 @@ The egress control is implemented as a **Sidecar** that shares the network names
 
 - Default listen address: `:18080` (override with `OPENSANDBOX_EGRESS_HTTP_ADDR`).
 - Endpoints:
-  - `GET /policy` — returns the current policy.
-  - `POST /policy` — replaces the policy. Empty/whitespace/`{}`/`null` resets to default deny-all.
+- `GET /policy` — returns the current policy.
+- `POST /policy` — replaces the policy. Empty/whitespace/`{}`/`null` resets to default deny-all.
+  - `PATCH /policy` — merge/append rules at runtime. Body **must** be a JSON array of egress rules (not wrapped in an object). New rules are placed before existing ones (same target overrides), so a later PATCH can override prior wildcard denies with a more specific allow, and vice versa.
 
 Examples:
 
@@ -83,6 +87,16 @@ Examples:
   ```bash
   curl -XPOST http://127.0.0.1:18080/policy \
     -d '{"defaultAction":"deny","egress":[{"action":"allow","target":"*.example.com"},{"action":"allow","target":"203.0.113.0/24"},{"action":"deny","target":"*.bad.com"}]}'
+  ```
+- Merge-only PATCH (override wildcard deny with a specific allow):
+  ```bash
+  # baseline: deny *.cloudflare.com
+  curl -XPOST http://127.0.0.1:18080/policy \
+    -d '{"defaultAction":"allow","egress":[{"action":"deny","target":"*.cloudflare.com"}]}'
+
+  # allow a specific host; PATCH rules are prepended, so this wins
+  curl -XPATCH http://127.0.0.1:18080/policy \
+    -d '[{"action":"allow","target":"www.cloudflare.com"}]'
   ```
 
 ## Build & Run
@@ -170,6 +184,5 @@ More details in [docs/benchmark.md](docs/benchmark.md).
 
 - **"iptables setup failed"**: Ensure the sidecar container has `--cap-add=NET_ADMIN`.
 - **DNS resolution fails for all domains**:  
-  - Check if the upstream DNS (from `/etc/resolv.conf`) is reachable.  
-  - In `dns+nft` mode, the sidecar whitelists nameserver IPs from resolv.conf at startup; check logs for `[dns] whitelisting proxy listen + N nameserver(s)` and ensure `/etc/resolv.conf` is readable and contains valid, reachable nameservers. The proxy prefers the first non-loopback nameserver from resolv.conf; if only loopback exists (e.g. Docker 127.0.0.11), it is used (proxy upstream traffic bypasses the redirect). Fallback to 8.8.8.8 only when resolv.conf is empty or unreadable.
+  Check upstream reachability from the sidecar (`ip route`, `dig @<upstream> . NS +timeout=3`). In `dns+nft` mode, check logs for `[dns] whitelisting proxy listen + N nameserver(s)`.
 - **Traffic not blocked**: If nftables apply fails, the sidecar falls back to dns; check logs, `nft list table inet opensandbox`, and `CAP_NET_ADMIN`.

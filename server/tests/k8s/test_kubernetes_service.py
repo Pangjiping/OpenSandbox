@@ -157,9 +157,10 @@ class TestKubernetesSandboxServiceCreate:
         assert kwargs["timeout_seconds"] == 120
         assert kwargs["poll_interval_seconds"] == 0.5
 
-    def test_create_sandbox_rejects_image_auth_for_k8s_runtime(
+    def test_create_sandbox_rejects_image_auth_when_provider_not_supported(
         self, k8s_service, create_sandbox_request
     ):
+        k8s_service.workload_provider.supports_image_auth.return_value = False
         create_sandbox_request.image.auth = ImageAuth(
             username="registry-user",
             password="registry-pass",
@@ -170,8 +171,28 @@ class TestKubernetesSandboxServiceCreate:
 
         assert exc_info.value.status_code == 400
         assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
-        assert "imagePullSecrets" in exc_info.value.detail["message"]
         k8s_service.workload_provider.create_workload.assert_not_called()
+
+    def test_create_sandbox_allows_image_auth_when_provider_supported(
+        self, k8s_service, create_sandbox_request
+    ):
+        k8s_service.workload_provider.supports_image_auth.return_value = True
+        create_sandbox_request.image.auth = ImageAuth(
+            username="registry-user",
+            password="registry-pass",
+        )
+        k8s_service.workload_provider.create_workload.return_value = {
+            "name": "test-id", "uid": "uid-1"
+        }
+        k8s_service.workload_provider.get_workload.return_value = MagicMock()
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running", "reason": "", "message": "",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+
+        # Should not raise
+        k8s_service.create_sandbox(create_sandbox_request)
+        k8s_service.workload_provider.create_workload.assert_called_once()
 
 
 class TestWaitForSandboxReady:

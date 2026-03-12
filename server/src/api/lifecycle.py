@@ -428,7 +428,7 @@ async def proxy_sandbox_endpoint_request(request: Request, sandbox_id: str, port
     and asynchronously proxies the request to it.
     """
 
-    endpoint = sandbox_service.get_endpoint(sandbox_id, port)
+    endpoint = sandbox_service.get_endpoint(sandbox_id, port, resolve_internal=True)
 
     target_host = endpoint.endpoint
     query_string = request.url.query
@@ -446,12 +446,20 @@ async def proxy_sandbox_endpoint_request(request: Request, sandbox_id: str, port
             raise HTTPException(status_code=400, detail="Websocket upgrade is not supported yet")
 
         # Filter headers
+        hop_by_hop = set(HOP_BY_HOP_HEADERS)
+        connection_header = request.headers.get("connection")
+        if connection_header:
+            hop_by_hop.update(
+                header.strip().lower()
+                for header in connection_header.split(",")
+                if header.strip()
+            )
         headers = {}
         for key, value in request.headers.items():
             key_lower = key.lower()
             if (
                 key_lower != "host"
-                and key_lower not in HOP_BY_HOP_HEADERS
+                and key_lower not in hop_by_hop
                 and key_lower not in SENSITIVE_HEADERS
             ):
                 headers[key] = value
@@ -465,10 +473,24 @@ async def proxy_sandbox_endpoint_request(request: Request, sandbox_id: str, port
 
         resp = await client.send(req, stream=True)
 
+        hop_by_hop = set(HOP_BY_HOP_HEADERS)
+        connection_header = resp.headers.get("connection")
+        if connection_header:
+            hop_by_hop.update(
+                header.strip().lower()
+                for header in connection_header.split(",")
+                if header.strip()
+            )
+        response_headers = {
+            key: value
+            for key, value in resp.headers.items()
+            if key.lower() not in hop_by_hop
+        }
+
         return StreamingResponse(
             content=resp.aiter_bytes(),
             status_code=resp.status_code,
-            headers=resp.headers,
+            headers=response_headers,
         )
     except httpx.ConnectError as e:
         raise HTTPException(

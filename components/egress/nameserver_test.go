@@ -21,21 +21,16 @@ import (
 	"testing"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAllowIPsForNft_EmptyResolv(t *testing.T) {
 	dir := t.TempDir()
 	resolv := filepath.Join(dir, "resolv.conf")
-	if err := os.WriteFile(resolv, []byte("# empty\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(resolv, []byte("# empty\n"), 0644))
 	ips := AllowIPsForNft(resolv)
-	if len(ips) != 1 {
-		t.Fatalf("expected 1 IP (127.0.0.1), got %d", len(ips))
-	}
-	if ips[0] != netip.MustParseAddr("127.0.0.1") {
-		t.Fatalf("expected 127.0.0.1, got %s", ips[0])
-	}
+	require.Len(t, ips, 1, "expected 1 IP (127.0.0.1)")
+	require.Equal(t, netip.MustParseAddr("127.0.0.1"), ips[0])
 }
 
 func TestAllowIPsForNft_ValidNameservers(t *testing.T) {
@@ -43,22 +38,12 @@ func TestAllowIPsForNft_ValidNameservers(t *testing.T) {
 	resolv := filepath.Join(dir, "resolv.conf")
 	// Standard resolv.conf with two nameservers
 	content := "nameserver 192.168.65.7\nnameserver 10.0.0.1\n"
-	if err := os.WriteFile(resolv, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(resolv, []byte(content), 0644))
 	ips := AllowIPsForNft(resolv)
-	if len(ips) != 3 {
-		t.Fatalf("expected 3 IPs (127.0.0.1 + 2 nameservers), got %d", len(ips))
-	}
-	if ips[0] != netip.MustParseAddr("127.0.0.1") {
-		t.Fatalf("expected first 127.0.0.1, got %s", ips[0])
-	}
-	if ips[1] != netip.MustParseAddr("192.168.65.7") {
-		t.Fatalf("expected 192.168.65.7, got %s", ips[1])
-	}
-	if ips[2] != netip.MustParseAddr("10.0.0.1") {
-		t.Fatalf("expected 10.0.0.1, got %s", ips[2])
-	}
+	require.Len(t, ips, 3, "expected 3 IPs (127.0.0.1 + 2 nameservers)")
+	require.Equal(t, netip.MustParseAddr("127.0.0.1"), ips[0], "expected first 127.0.0.1")
+	require.Equal(t, netip.MustParseAddr("192.168.65.7"), ips[1], "expected 192.168.65.7")
+	require.Equal(t, netip.MustParseAddr("10.0.0.1"), ips[2], "expected 10.0.0.1")
 }
 
 func TestAllowIPsForNft_FiltersInvalid(t *testing.T) {
@@ -66,40 +51,27 @@ func TestAllowIPsForNft_FiltersInvalid(t *testing.T) {
 	resolv := filepath.Join(dir, "resolv.conf")
 	// 0.0.0.0 and 127.0.0.11 should be filtered; 192.168.1.1 kept
 	content := "nameserver 0.0.0.0\nnameserver 192.168.1.1\nnameserver 127.0.0.11\n"
-	if err := os.WriteFile(resolv, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(resolv, []byte(content), 0644))
 	ips := AllowIPsForNft(resolv)
-	if len(ips) != 2 {
-		t.Fatalf("expected 2 IPs (127.0.0.1 + 192.168.1.1), got %d: %v", len(ips), ips)
-	}
-	if ips[0] != netip.MustParseAddr("127.0.0.1") {
-		t.Fatalf("expected first 127.0.0.1, got %s", ips[0])
-	}
-	if ips[1] != netip.MustParseAddr("192.168.1.1") {
-		t.Fatalf("expected 192.168.1.1, got %s", ips[1])
-	}
+	require.Len(t, ips, 2, "expected 2 IPs (127.0.0.1 + 192.168.1.1)")
+	require.Equal(t, netip.MustParseAddr("127.0.0.1"), ips[0], "expected first 127.0.0.1")
+	require.Equal(t, netip.MustParseAddr("192.168.1.1"), ips[1], "expected 192.168.1.1")
 }
 
 func TestAllowIPsForNft_Cap(t *testing.T) {
 	dir := t.TempDir()
 	resolv := filepath.Join(dir, "resolv.conf")
 	content := "nameserver 10.0.0.1\nnameserver 10.0.0.2\nnameserver 10.0.0.3\nnameserver 10.0.0.4\n"
-	if err := os.WriteFile(resolv, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(resolv, []byte(content), 0644))
 	old := os.Getenv(constants.EnvMaxNameservers)
 	defer os.Setenv(constants.EnvMaxNameservers, old)
 	os.Setenv(constants.EnvMaxNameservers, "2")
 
 	ips := AllowIPsForNft(resolv)
 	// 127.0.0.1 + 2 nameservers (cap)
-	if len(ips) != 3 {
-		t.Fatalf("expected 3 IPs (127.0.0.1 + 2 capped), got %d: %v", len(ips), ips)
-	}
-	if ips[1] != netip.MustParseAddr("10.0.0.1") || ips[2] != netip.MustParseAddr("10.0.0.2") {
-		t.Fatalf("expected first two nameservers, got %v", ips[1:])
-	}
+	require.Len(t, ips, 3, "expected 3 IPs (127.0.0.1 + 2 capped)")
+	require.Equal(t, netip.MustParseAddr("10.0.0.1"), ips[1], "expected first nameserver to be 10.0.0.1")
+	require.Equal(t, netip.MustParseAddr("10.0.0.2"), ips[2], "expected second nameserver to be 10.0.0.2")
 }
 
 func TestIsValidNameserverIP(t *testing.T) {

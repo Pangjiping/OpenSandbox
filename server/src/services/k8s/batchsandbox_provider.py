@@ -16,8 +16,8 @@
 BatchSandbox-based workload provider implementation.
 """
 
-import json
 import logging
+import json
 import shlex
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
@@ -33,7 +33,11 @@ from kubernetes.client import (
 
 from src.config import AppConfig, IngressConfig, INGRESS_MODE_GATEWAY, ExecdInitResources
 from src.services.helpers import format_ingress_endpoint
-from src.api.schema import Endpoint, ImageSpec, NetworkPolicy
+from src.api.schema import Endpoint, ImageSpec, NetworkPolicy, Volume
+from src.services.k8s.image_pull_secret_helper import (
+    build_image_pull_secret,
+    build_image_pull_secret_name,
+)
 from src.services.k8s.batchsandbox_template import BatchSandboxTemplateManager
 from src.services.k8s.client import K8sClient
 from src.services.k8s.egress_helper import (
@@ -43,6 +47,7 @@ from src.services.k8s.egress_helper import (
     serialize_security_context_to_dict,
 )
 from src.services.k8s.informer import WorkloadInformer
+from src.services.k8s.volume_helper import apply_volumes_to_pod_spec
 from src.services.k8s.workload_provider import WorkloadProvider
 from src.services.runtime_resolver import SecureRuntimeResolver
 
@@ -109,7 +114,11 @@ class BatchSandboxProvider(WorkloadProvider):
         )
         self._informers: Dict[str, WorkloadInformer] = {}
         self._informers_lock = Lock()
-    
+
+    def supports_image_auth(self) -> bool:
+        """BatchSandbox supports image pull auth via imagePullSecrets injection."""
+        return True
+
     def create_workload(
         self,
         sandbox_id: str,
@@ -124,15 +133,16 @@ class BatchSandboxProvider(WorkloadProvider):
         extensions: Optional[Dict[str, str]] = None,
         network_policy: Optional[NetworkPolicy] = None,
         egress_image: Optional[str] = None,
+        volumes: Optional[List[Volume]] = None,
     ) -> Dict[str, Any]:
         """
         Create a BatchSandbox workload.
-        
+
         Supports both template-based and pool-based creation:
         - Template mode (default): Creates workload with user-specified image, resources, and env
         - Pool mode (when extensions contains 'poolRef'): Creates workload from pre-warmed pool,
           only entrypoint and env can be customized
-        
+
         Args:
             sandbox_id: Unique sandbox identifier
             namespace: Kubernetes namespace
@@ -147,9 +157,14 @@ class BatchSandboxProvider(WorkloadProvider):
                 When contains 'poolRef', enables pool-based creation.
             network_policy: Optional network policy for egress traffic control.
                 When provided, an egress sidecar container will be added to the Pod.
-        
+            egress_image: Container image for the egress sidecar (required when network_policy is set).
+            volumes: Optional list of volume mounts for the sandbox.
+
         Returns:
             Dict with 'name' and 'uid' of created BatchSandbox
+
+        Raises:
+            SandboxError: If pool mode is used with volumes (not supported).
         """
         extensions = extensions or {}
 
@@ -163,6 +178,12 @@ class BatchSandboxProvider(WorkloadProvider):
 
         # If poolRef is provided and not empty, create workload from pool
         if extensions.get("poolRef"):
+            # Pool mode does not support volumes
+            if volumes:
+                raise ValueError(
+                    "Pool mode does not support volumes. "
+                    "Remove 'volumes' from request or use template mode."
+                )
             # When using pool, only entrypoint and env can be customized
             return self._create_workload_from_pool(
                 batchsandbox_name=sandbox_id,
@@ -208,6 +229,12 @@ class BatchSandboxProvider(WorkloadProvider):
         if self.runtime_class:
             pod_spec["runtimeClassName"] = self.runtime_class
 
+        # Inject imagePullSecrets if image auth is provided
+        # secret_name is deterministic so it can be embedded before the Secret is created
+        if image_spec.auth:
+            secret_name = build_image_pull_secret_name(sandbox_id)
+            pod_spec["imagePullSecrets"] = [{"name": secret_name}]
+
         # Add egress sidecar if network policy is provided
         apply_egress_to_spec(
             pod_spec=pod_spec,
@@ -215,7 +242,11 @@ class BatchSandboxProvider(WorkloadProvider):
             network_policy=network_policy,
             egress_image=egress_image,
         )
-        
+
+        # Add user-specified volumes if provided
+        if volumes:
+            apply_volumes_to_pod_spec(pod_spec, volumes)
+
         # Build runtime-generated BatchSandbox manifest
         # This contains only the essential runtime fields
         runtime_manifest = {
@@ -247,7 +278,35 @@ class BatchSandboxProvider(WorkloadProvider):
             plural=self.plural,
             body=batchsandbox,
         )
-        
+
+        # Create imagePullSecret with ownerReference pointing to the BatchSandbox
+        if image_spec.auth:
+            secret = build_image_pull_secret(
+                sandbox_id=sandbox_id,
+                image_uri=image_spec.uri,
+                auth=image_spec.auth,
+                owner_uid=created["metadata"]["uid"],
+                owner_api_version=f"{self.group}/{self.version}",
+                owner_kind="BatchSandbox",
+            )
+            try:
+                self.k8s_client.get_core_v1_api().create_namespaced_secret(namespace=namespace, body=secret)
+                logger.info("Created imagePullSecret for sandbox %s", sandbox_id)
+            except Exception:
+                logger.warning("Failed to create imagePullSecret for sandbox %s, rolling back BatchSandbox", sandbox_id)
+                try:
+                    self.custom_api.delete_namespaced_custom_object(
+                        group=self.group,
+                        version=self.version,
+                        namespace=namespace,
+                        plural=self.plural,
+                        name=sandbox_id,
+                        grace_period_seconds=0,
+                    )
+                except Exception as del_exc:
+                    logger.warning("Failed to rollback BatchSandbox %s: %s", sandbox_id, del_exc)
+                raise
+
         informer = self._get_informer(namespace)
         if informer:
             try:
@@ -600,7 +659,7 @@ class BatchSandboxProvider(WorkloadProvider):
                 result["securityContext"] = security_context_dict
         
         return result
-    
+
     def _get_informer(self, namespace: str) -> Optional[WorkloadInformer]:
         if not self._enable_informer:
             return None

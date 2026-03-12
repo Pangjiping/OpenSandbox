@@ -50,6 +50,7 @@ from src.services.validators import (
     ensure_egress_configured,
     ensure_future_expiration,
     ensure_metadata_labels,
+    ensure_volumes_valid,
 )
 from src.services.k8s.client import K8sClient
 from src.services.k8s.provider_factory import create_workload_provider
@@ -227,24 +228,25 @@ class KubernetesSandboxService(SandboxService):
 
     def _ensure_image_auth_support(self, request: CreateSandboxRequest) -> None:
         """
-        Validate image auth support for Kubernetes runtime.
+        Validate image auth support for the current workload provider.
 
-        K8s runtime currently does not map per-request image.auth to imagePullSecrets.
+        Raises HTTP 400 if the provider does not support per-request image auth.
         """
         if request.image.auth is None:
             return
-
+        if self.workload_provider.supports_image_auth():
+            return
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={
                 "code": SandboxErrorCodes.INVALID_PARAMETER,
                 "message": (
-                    "image.auth is not supported in Kubernetes runtime yet. "
+                    "image.auth is not supported by the current workload provider. "
                     "Use imagePullSecrets via Kubernetes ServiceAccount or sandbox template."
                 ),
             },
         )
-    
+
     def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         """
         Create a new sandbox using Kubernetes Pod.
@@ -293,6 +295,12 @@ class KubernetesSandboxService(SandboxService):
             if request.network_policy:
                 egress_image = self.app_config.egress.image if self.app_config.egress else None
             
+            # Validate volumes before creating workload
+            ensure_volumes_valid(
+                request.volumes,
+                self.app_config.storage.allowed_host_paths or None,
+            )
+            
             # Create workload
             workload_info = self.workload_provider.create_workload(
                 sandbox_id=sandbox_id,
@@ -307,6 +315,7 @@ class KubernetesSandboxService(SandboxService):
                 extensions=request.extensions,
                 network_policy=request.network_policy,
                 egress_image=egress_image,
+                volumes=request.volumes,
             )
             
             logger.info(

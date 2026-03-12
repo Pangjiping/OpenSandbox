@@ -714,17 +714,6 @@ sudo containerd config dump
 sudo systemctl restart containerd
 ```
 
-### Performance Comparison
-
-| Runtime | Cold Start | Warm Start (from Pool) | Memory per Sandbox |
-|---------|-----------|------------------------|-------------------|
-| runc | ~500ms | ~50ms | ~5MB |
-| gVisor | ~550ms | ~100ms | ~50MB |
-| Kata (QEMU) | ~1000ms | ~200ms | ~20-50MB |
-| Kata (Firecracker) | ~625ms | ~125ms | ~5MB |
-
-**Recommendation**: Use Pools for production workloads to avoid cold start penalties.
-
 ### Compatibility Matrix
 
 | Feature | runc | gVisor | Kata (QEMU) | Kata (CLH) | Kata (FC) |
