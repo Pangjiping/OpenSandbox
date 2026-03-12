@@ -16,11 +16,11 @@ package dnsproxy
 
 import (
 	"net/netip"
-	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
+	"github.com/stretchr/testify/require"
 )
 
 func resetNameserverExemptCache(t *testing.T) {
@@ -36,42 +36,26 @@ func TestParseNameserverExemptList_IPOnly(t *testing.T) {
 
 	got := ParseNameserverExemptList()
 	want := []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("2001:db8::1")}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ParseNameserverExemptList() = %v, want %v", got, want)
-	}
+	require.Equal(t, want, got, "ParseNameserverExemptList() mismatch")
 
 	// Cached result should stay the same on subsequent calls.
-	if got2 := ParseNameserverExemptList(); !reflect.DeepEqual(got2, want) {
-		t.Fatalf("cached ParseNameserverExemptList() = %v, want %v", got2, want)
-	}
+	require.Equal(t, want, ParseNameserverExemptList(), "cached ParseNameserverExemptList() mismatch")
 }
 
 func TestUpstreamInExemptList_IPOnly(t *testing.T) {
 	t.Setenv(constants.EnvNameserverExempt, "1.1.1.1,2001:db8::1")
 	resetNameserverExemptCache(t)
 
-	if !UpstreamInExemptList("1.1.1.1") {
-		t.Fatalf("expected IPv4 upstream to be exempt")
-	}
-	if !UpstreamInExemptList("2001:db8::1") {
-		t.Fatalf("expected IPv6 upstream to be exempt")
-	}
-	if UpstreamInExemptList("10.0.0.2") {
-		t.Fatalf("unexpected exempt match for non-listed IP")
-	}
-	if UpstreamInExemptList("not-an-ip") {
-		t.Fatalf("invalid IP string should not match")
-	}
+	require.True(t, UpstreamInExemptList("1.1.1.1"), "expected IPv4 upstream to be exempt")
+	require.True(t, UpstreamInExemptList("2001:db8::1"), "expected IPv6 upstream to be exempt")
+	require.False(t, UpstreamInExemptList("10.0.0.2"), "unexpected exempt match for non-listed IP")
+	require.False(t, UpstreamInExemptList("not-an-ip"), "invalid IP string should not match")
 }
 
 func TestUpstreamInExemptList_CIDRIgnored(t *testing.T) {
 	t.Setenv(constants.EnvNameserverExempt, "10.0.0.0/24")
 	resetNameserverExemptCache(t)
 
-	if got := ParseNameserverExemptList(); len(got) != 0 {
-		t.Fatalf("CIDR should be ignored in exempt list, got %v", got)
-	}
-	if UpstreamInExemptList("10.0.0.5") {
-		t.Fatalf("CIDR should not make upstream exempt")
-	}
+	require.Empty(t, ParseNameserverExemptList(), "CIDR should be ignored in exempt list")
+	require.False(t, UpstreamInExemptList("10.0.0.5"), "CIDR should not make upstream exempt")
 }
