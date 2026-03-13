@@ -25,6 +25,9 @@
   <a href="https://badge.fury.io/js/@alibaba-group%2Fopensandbox">
     <img src="https://badge.fury.io/js/@alibaba-group%2Fopensandbox.svg" alt="npm version" />
   </a>
+  <a href="https://qr.dingtalk.com/action/joingroup?code=v1,k1,A4Bgl5q1I1eNU/r33D18YFNrMY108aFF38V+r19RJOM=&_dt_no_comment=1&origin=11">
+    <img src="https://img.shields.io/badge/DingTalk-Join-0089FF?logo=dingtalk&logoColor=white" alt="DingTalk" />
+  </a>
   <a href="https://github.com/alibaba/OpenSandbox/actions">
     <img src="https://github.com/alibaba/OpenSandbox/actions/workflows/real-e2e.yml/badge.svg?branch=main" alt="E2E Status" />
   </a>
@@ -235,6 +238,7 @@ This project is open source under the [Apache 2.0 License](LICENSE).
 ## Contact and Discussion
 
 - Issues: Submit bugs, feature requests, or design discussions through GitHub Issues
+- DingTalk: Join the [OpenSandbox technical discussion group](https://qr.dingtalk.com/action/joingroup?code=v1,k1,A4Bgl5q1I1eNU/r33D18YFNrMY108aFF38V+r19RJOM=&_dt_no_comment=1&origin=11)
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=alibaba/OpenSandbox&type=date&legend=top-left)](https://www.star-history.com/#alibaba/OpenSandbox&type=date&legend=top-left)
