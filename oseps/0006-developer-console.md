@@ -4,7 +4,7 @@ authors:
   - "@divyamagrawal06"
 creation-date: 2026-03-05
 last-updated: 2026-03-06
-status: pending review
+status: implementable
 ---
 
 # OSEP-0006: Developer Console for Sandbox Operations with Phased Auth Model
