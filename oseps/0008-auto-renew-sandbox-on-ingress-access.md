@@ -1,0 +1,370 @@
+---
+title: Auto-Renew Sandbox on Ingress Access
+authors:
+  - "@pjp"
+creation-date: 2026-03-15
+last-updated: 2026-03-15
+status: draft
+---
+
+# OSEP-0008: Auto-Renew Sandbox on Ingress Access
+
+<!-- toc -->
+- [Summary](#summary)
+- [Motivation](#motivation)
+  - [Goals](#goals)
+  - [Non-Goals](#non-goals)
+- [Requirements](#requirements)
+- [Proposal](#proposal)
+  - [Notes/Constraints/Caveats](#notesconstraintscaveats)
+  - [Risks and Mitigations](#risks-and-mitigations)
+- [Design Details](#design-details)
+  - [Scope: Supported Reverse Proxy Paths](#scope-supported-reverse-proxy-paths)
+  - [Activation Model and Extensions Contract](#activation-model-and-extensions-contract)
+  - [Control Strategy to Prevent Renewal Storms](#control-strategy-to-prevent-renewal-storms)
+  - [Mode A: Server Proxy Path](#mode-a-server-proxy-path)
+  - [Mode B: Ingress Gateway Path (Redis Queue)](#mode-b-ingress-gateway-path-redis-queue)
+  - [Why Redis Between Ingress and Server](#why-redis-between-ingress-and-server)
+  - [Redis Data Model](#redis-data-model)
+  - [Configuration](#configuration)
+- [Test Plan](#test-plan)
+- [Drawbacks](#drawbacks)
+- [Infrastructure Needed](#infrastructure-needed)
+- [Upgrade & Migration Strategy](#upgrade--migration-strategy)
+<!-- /toc -->
+
+## Summary
+
+Introduce an access-driven sandbox auto-renew mechanism for ingress traffic. When users access sandbox services through reverse proxy paths, OpenSandbox can automatically extend sandbox expiration for sandboxes that explicitly opt in to this capability.
+
+This proposal only supports two proxy paths that can observe access traffic: server proxy and ingress gateway. Docker direct access is explicitly out of scope because no reverse proxy request can be reliably captured there.
+
+## Motivation
+
+Today users must renew expiration explicitly through `POST /sandboxes/{id}/renew-expiration`. For interactive workloads (IDE, notebook, web app), request traffic already implies sandbox activity, but expiration still depends on explicit lifecycle API calls from clients.
+
+This creates two practical issues:
+
+- User sessions can be interrupted even while ingress traffic is still active.
+- Naively triggering renewal on every ingress request would create renewal storms under high QPS.
+
+An access-driven renewal mechanism is needed, but it must be strongly rate-controlled and deduplicated.
+
+### Goals
+
+- Automatically renew sandbox expiration on observed ingress access for explicitly opted-in sandboxes.
+- Support exactly two existing reverse proxy implementations:
+  - server proxy path
+  - ingress gateway path
+- Use direct self-call renewal in server proxy mode.
+- Use Redis-backed queue forwarding in ingress gateway mode.
+- Require explicit capability enablement at three levels: server, ingress, and sandbox creation request.
+- Strictly control actual renewal API calls to avoid excessive renew traffic.
+- Preserve existing lifecycle API semantics and backward compatibility.
+
+### Non-Goals
+
+- Supporting Docker direct exposure mode for auto-renew triggers.
+- Replacing manual renewal API (`renew-expiration`) behavior.
+- Introducing per-request guaranteed renewal (best-effort under policy control is sufficient).
+- Building a generic event bus for all lifecycle actions.
+
+## Requirements
+
+- The implementation must work with existing lifecycle API and runtime providers.
+- Reverse proxy traffic must be the only trigger source for this proposal.
+- Auto-renew must be disabled unless all three conditions are met:
+  - server supports and enables auto-renew-on-access,
+  - ingress supports and enables renew-intent signaling (for ingress mode),
+  - sandbox creation request explicitly opts in via `extensions`.
+- Renewal requests must be bounded by deduplication and throttling controls.
+- Ingress gateway mode must use Redis as the forwarding queue.
+- Renewal must be idempotent from the caller perspective (repeated access events do not imply repeated renew calls).
+- The design must remain safe under burst traffic and multi-replica deployments.
+
+## Proposal
+
+Add an "access renew controller" that converts proxy access signals into controlled renewal attempts.
+
+- In server proxy mode, the server path handling proxied traffic submits local renew intents and performs internal renewal calls.
+- In ingress gateway mode, ingress publishes renew intents into Redis; OpenSandbox server consumes and executes controlled renewals.
+- Both modes share the same renewal gate logic: opt-in check, eligibility window, cooldown, and per-sandbox in-flight deduplication.
+
+At a high level, access traffic indicates activity, but only eligible events produce actual `renew-expiration` operations.
+
+### Notes/Constraints/Caveats
+
+- This OSEP applies to reverse proxy captured traffic only.
+- If a deployment bypasses proxy (direct pod/container access), no automatic renewal signal is available.
+- Ingress-mode auto-renew is best-effort and depends on Redis availability.
+- Renewal policy is intentionally conservative to prioritize control-plane stability.
+
+### Risks and Mitigations
+
+| Risk | Mitigation |
+| --- | --- |
+| Renewal storms under high ingress QPS | Multi-stage gating: renew-window check + cooldown + in-flight dedupe |
+| Duplicate renewals across server replicas | Redis lock keys for distributed dedupe in ingress mode; local dedupe in server proxy path |
+| Redis backlog growth in traffic spikes | Queue TTL, bounded consumer concurrency, and drop-on-overload policy |
+| False negatives (active sandbox not renewed) | Configurable renew window and cooldown; metrics/alerts for missed renew opportunities |
+| Added operational complexity | Feature flag rollout, default-off mode, and explicit docs/runbooks |
+
+## Design Details
+
+### Scope: Supported Reverse Proxy Paths
+
+Only these two paths are supported:
+
+1. **Server proxy path**
+   - Access route: `/sandboxes/{sandbox_id}/proxy/{port}/...`
+   - Traffic is observed inside OpenSandbox server directly.
+2. **Ingress gateway path**
+   - Access is observed by ingress/gateway implementation (wildcard/header/uri routing modes).
+   - Signals are forwarded through Redis queue to server workers.
+
+Explicitly unsupported:
+
+- **Docker direct mode** (client accesses container endpoint directly):
+  - No mandatory reverse proxy hop exists.
+  - OpenSandbox cannot reliably observe all access requests.
+
+### Activation Model and Extensions Contract
+
+This feature uses explicit "three-party handshake" activation.
+
+1. **Server-side capability switch**
+   - `server.auto_renew_on_access.enabled = true` must be set (stored under `ServerConfig`).
+2. **Ingress-side capability switch** (ingress mode only)
+   - ingress must be configured to publish renew-intents (`server.auto_renew_on_access.redis.enabled = true` and ingress integration enabled).
+3. **Sandbox-level opt-in**
+   - sandbox must declare auto-renew-on-access in `CreateSandboxRequest.extensions`.
+
+If any condition is missing, access events are ignored for renewal.
+
+Given current API schema (`extensions: Dict[str, str]`), this OSEP proposes string-based keys:
+
+- `extensions["auto_renew_on_access"] = "true" | "false"` (required opt-in key)
+
+Behavior rules:
+
+- Missing key or `"false"` means no auto-renew for that sandbox.
+- `"true"` enables auto-renew subject to policy gating; trigger source is inferred from the actual request path (server-proxy or ingress).
+- Invalid values are rejected at sandbox creation time with 4xx validation error.
+
+### Control Strategy to Prevent Renewal Storms
+
+Both modes share the same strict control policy. An access event triggers renewal only when all checks pass:
+
+1. **Opt-in check**: sandbox declares `auto_renew_on_access=true`.
+2. **Sandbox state check**: sandbox must be `Running`.
+3. **Renew window check**: remaining TTL must be below `before_expiration_seconds`.
+4. **Cooldown check**: no successful renewal for this sandbox within `min_interval_seconds`.
+5. **In-flight dedupe**: at most one renewal task per sandbox at a time.
+
+If any check fails, the event is acknowledged and dropped without a renewal call.
+
+Renew target time:
+
+- `new_expires_at = now + extension_seconds`
+- must also satisfy `new_expires_at > current_expires_at` before calling renew API
+
+This guarantees bounded renewal frequency even for very hot sandboxes.
+
+### Mode A: Server Proxy Path
+
+For requests handled by server proxy:
+
+```
+Client --> OpenSandbox Server Proxy --> Sandbox Service
+              |
+              +--> AccessRenewController (local signal)
+                        |
+                        +--> eligibility + cooldown + in-flight checks
+                                |
+                                +--> internal renew call (server -> own renew handler)
+```
+
+Implementation notes:
+
+- Trigger point: after sandbox resolution and before/after proxy forward (implementation-defined), with non-blocking behavior.
+- Renewal execution must not increase proxy path latency materially; use async/background task dispatch.
+- Internal renewal uses existing service-level renewal logic to avoid API divergence.
+
+### Mode B: Ingress Gateway Path (Redis Queue)
+
+For requests first seen by ingress:
+
+```
+Client --> Ingress/Gateway
+             |
+             +--> publish renew-intent to Redis (sandbox_id, ts, route info)
+                           |
+                           v
+                  OpenSandbox Renew Worker
+                           |
+                           +--> eligibility + cooldown + distributed dedupe
+                                   |
+                                   +--> renew call
+```
+
+Redis usage:
+
+- Queue channel: Redis Stream or List (implementation choice; Stream preferred for consumer groups).
+- Intent payload minimum fields:
+  - `sandbox_id`
+  - `observed_at`
+  - `source=ingress`
+  - optional `route_mode`, `request_id`
+- Distributed dedupe lock key example:
+  - `sandbox:renew:lock:{sandbox_id}` with short TTL
+
+Worker behavior:
+
+- Batch/poll messages, coalesce by `sandbox_id`, process with bounded concurrency.
+- Acknowledge/drop stale events based on event TTL.
+- On consume/publish failures, log and drop according to best-effort semantics.
+
+### Why Redis Between Ingress and Server
+
+Redis is selected for ingress -> server renew-intent delivery to decouple data-plane bursts from control-plane renew execution.
+
+Compared with ingress directly calling server renew APIs:
+
+- **Backpressure isolation**: ingress can enqueue quickly while server workers process at bounded concurrency.
+- **Latency protection**: ingress request path avoids synchronous dependency on server renew execution.
+- **Multi-replica friendliness**: multiple server workers can consume safely with consumer-group semantics.
+- **Failure containment**: when server is transiently unhealthy, intents can still be buffered briefly (within TTL) instead of amplifying retries on ingress.
+
+Compared with other MQs (Kafka/NATS/Pulsar):
+
+- **Scope fit**: this feature is best-effort and short-lived; Redis Streams/List fit this durability/complexity envelope.
+- **Operational cost**: Redis is commonly available in cluster deployments with lower setup overhead.
+- **Implementation speed**: simple producer/consumer and lock patterns are enough for this OSEP.
+
+### Redis Data Model
+
+This OSEP uses short-lived renew-intent events plus a lock key for distributed dedupe.
+
+Recommended keys:
+
+- **Intent stream/list key**: `opensandbox:renew:intent`
+- **Per-sandbox lock key**: `opensandbox:renew:lock:{sandbox_id}`
+
+Intent event payload (minimum):
+
+- `sandbox_id` (string)
+- `observed_at` (unix ms or RFC3339 string)
+- `source` (`ingress`)
+- `request_id` (optional)
+- `route_mode` (optional)
+
+Consumer group model (recommended for Streams):
+
+- Stream key: `opensandbox:renew:intent`
+- Group: `renew-workers`
+- Consumer: `<pod-name-or-instance-id>`
+
+Processing algorithm (best-effort):
+
+1. `XREADGROUP` batch read.
+2. Drop event if stale (`now - observed_at > event_ttl_seconds`).
+3. Acquire lock with `SET lock_key value NX EX lock_ttl_seconds`.
+4. If lock acquired: run gate checks and maybe renew.
+5. `XACK` event and release/expire lock.
+
+Notes:
+
+- Lock TTL must be short and greater than normal renew critical section.
+- If lock acquisition fails, treat as deduped in-flight and ack/drop event.
+- List mode is acceptable, but Streams are preferred for consumer-group semantics.
+
+### Configuration
+
+Use `server` configuration namespace; no independent top-level config block is required:
+
+```toml
+[server]
+auto_renew_on_access.enabled = false
+auto_renew_on_access.before_expiration_seconds = 300
+auto_renew_on_access.extension_seconds = 1800
+auto_renew_on_access.min_interval_seconds = 60
+
+# auto-detected by request path:
+# - server-proxy path uses local trigger
+# - ingress path uses redis trigger
+
+auto_renew_on_access.redis.enabled = false
+auto_renew_on_access.redis.url = "redis://127.0.0.1:6379/0"
+auto_renew_on_access.redis.queue_key = "opensandbox:renew:intent"
+auto_renew_on_access.redis.lock_ttl_seconds = 10
+auto_renew_on_access.redis.event_ttl_seconds = 30
+auto_renew_on_access.redis.consumer_concurrency = 8
+```
+
+Configuration rules:
+
+- `server.auto_renew_on_access.enabled=false` means feature fully disabled.
+- Ingress path renewal requires Redis block enabled and reachable.
+- Server proxy path can run without Redis.
+- Feature is applied per sandbox only when `extensions["auto_renew_on_access"]="true"`.
+- Docker runtime direct mode remains unsupported regardless of this config.
+
+Create request example:
+
+```json
+{
+  "image": { "uri": "python:3.11-slim" },
+  "entrypoint": ["python", "-m", "http.server", "8000"],
+  "timeout": 3600,
+  "extensions": {
+    "auto_renew_on_access": "true"
+  }
+}
+```
+
+## Test Plan
+
+- **Unit Tests**
+  - Extension validation for auto-renew opt-in keys and values
+  - Renew eligibility function (window/cooldown/state checks)
+  - In-flight dedupe behavior under concurrent signals
+  - Renew target time calculation and monotonicity checks
+- **Integration Tests (Server Proxy)**
+  - Non-opt-in sandbox never triggers renew under access traffic
+  - Opt-in sandbox triggers bounded renew calls under same traffic
+  - High-frequency proxy requests only trigger bounded renew calls
+  - Proxy request path remains successful when renew path fails transiently
+- **Integration Tests (Ingress + Redis)**
+  - Non-opt-in sandbox intents are ignored at consumer side
+  - Ingress event publish -> worker consume -> renew success
+  - Duplicate events for same sandbox are coalesced
+  - Redis unavailable path follows best-effort drop semantics
+- **Stress Tests**
+  - N sandboxes x high QPS access confirms renew call count stays within policy bound
+
+Success criteria:
+
+- Renewal request rate remains proportional to policy limits, not ingress QPS.
+- Active sandboxes in supported proxy paths are renewed before expiration under normal operating conditions.
+
+## Drawbacks
+
+- Adds background components and policy tuning complexity.
+- Ingress mode introduces hard dependency on Redis availability.
+- Conservative gating may skip some renew opportunities under extreme failure conditions.
+
+## Infrastructure Needed
+
+- Redis service for ingress gateway mode.
+- Optional ingress plugin or middleware capability to publish renew intents.
+
+## Upgrade & Migration Strategy
+
+- Backward compatible and disabled by default.
+- Rollout order:
+  1. Deploy server with feature flag off.
+  2. Enable in server proxy path for canary validation.
+  3. Enable ingress + Redis path progressively.
+- Rollback:
+  - Disable `server.auto_renew_on_access.enabled` (and `server.auto_renew_on_access.redis.enabled` for ingress mode).
+  - Existing manual renewal flow remains unchanged.
