@@ -37,8 +37,8 @@ func (c *Controller) createDefaultBashSession() error { //nolint:revive
 	return errBashSessionNotSupported
 }
 
-func (c *Controller) getBashSession(_ string) (*bashSession, error) { //nolint:revive
-	return nil, errBashSessionNotSupported
+func (c *Controller) getBashSession(_ string) *bashSession { //nolint:revive
+	return nil
 }
 
 func (c *Controller) closeBashSession(_ string) error { //nolint:revive
@@ -47,6 +47,21 @@ func (c *Controller) closeBashSession(_ string) error { //nolint:revive
 
 func (c *Controller) listBashSessions() []string { //nolint:revive
 	return nil
+}
+
+// CreateBashSession is not supported on Windows.
+func (c *Controller) CreateBashSession(_ *CreateContextRequest) (string, error) { //nolint:revive
+	return "", errBashSessionNotSupported
+}
+
+// RunInBashSession is not supported on Windows.
+func (c *Controller) RunInBashSession(_ context.Context, _ *ExecuteCodeRequest) error { //nolint:revive
+	return errBashSessionNotSupported
+}
+
+// DeleteBashSession is not supported on Windows.
+func (c *Controller) DeleteBashSession(_ string) error { //nolint:revive
+	return errBashSessionNotSupported
 }
 
 // Stub methods on bashSession to satisfy interfaces on non-Linux platforms.

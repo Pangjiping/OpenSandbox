@@ -31,11 +31,8 @@ import (
 )
 
 // CreateContext provisions a kernel-backed session and returns its ID.
+// Bash language uses Jupyter kernel like other languages; for pipe-based bash sessions use CreateBashSession (session API).
 func (c *Controller) CreateContext(req *CreateContextRequest) (string, error) {
-	if req.Language == Bash {
-		return c.createBashSession(req)
-	}
-
 	// Create a new Jupyter session.
 	var (
 		client  *jupyter.Client
@@ -119,11 +116,9 @@ func (c *Controller) deleteSessionAndCleanup(session string) error {
 	if c.getJupyterKernel(session) == nil {
 		return ErrContextNotFound
 	}
-
 	if err := c.jupyterClient().DeleteSession(session); err != nil {
 		return err
 	}
-
 	c.jupyterClientMap.Delete(session)
 	c.deleteDefaultSessionByID(session)
 	return nil

@@ -20,11 +20,12 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
 )
@@ -61,34 +62,23 @@ func TestBashSession_NonZeroExitEmitsError(t *testing.T) {
 		},
 	}
 
-	if err := c.runBashSession(ctx, req); err != nil {
-		t.Fatalf("runBashSession returned error: %v", err)
-	}
+	require.NoError(t, c.runBashSession(ctx, req))
 
 	var gotErr *execute.ErrorOutput
 	select {
 	case gotErr = <-errCh:
 	case <-time.After(2 * time.Second):
-		t.Fatalf("expected error hook to be called")
+		require.Fail(t, "expected error hook to be called")
 	}
-
-	if gotErr == nil {
-		t.Fatalf("expected non-nil error output")
-	}
-	if gotErr.EName != "CommandExecError" || gotErr.EValue != "7" {
-		t.Fatalf("unexpected error payload: %+v", gotErr)
-	}
-
-	if sessionID == "" {
-		t.Fatalf("expected session id to be set")
-	}
-	if stdoutLine != "before" {
-		t.Fatalf("unexpected stdout: %q", stdoutLine)
-	}
+	require.NotNil(t, gotErr, "expected non-nil error output")
+	require.Equal(t, "CommandExecError", gotErr.EName)
+	require.Equal(t, "7", gotErr.EValue)
+	require.NotEmpty(t, sessionID, "expected session id to be set")
+	require.Equal(t, "before", stdoutLine)
 
 	select {
 	case <-completeCh:
-		t.Fatalf("did not expect completion hook on non-zero exit")
+		require.Fail(t, "did not expect completion hook on non-zero exit")
 	default:
 	}
 }
@@ -97,9 +87,7 @@ func TestBashSession_envAndExitCode(t *testing.T) {
 	session := newBashSession(nil)
 	t.Cleanup(func() { _ = session.close() })
 
-	if err := session.start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+	require.NoError(t, session.start())
 
 	var (
 		initCalls     int
@@ -109,9 +97,7 @@ func TestBashSession_envAndExitCode(t *testing.T) {
 
 	hooks := ExecuteResultHook{
 		OnExecuteInit: func(ctx string) {
-			if ctx != session.config.Session {
-				t.Fatalf("unexpected session in OnExecuteInit: %s", ctx)
-			}
+			require.Equal(t, session.config.Session, ctx, "unexpected session in OnExecuteInit")
 			initCalls++
 		},
 		OnExecuteStdout: func(text string) {
@@ -129,9 +115,7 @@ func TestBashSession_envAndExitCode(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	}
-	if err := session.run(request); err != nil {
-		t.Fatalf("runCommand(export) error = %v", err)
-	}
+	require.NoError(t, session.run(request))
 	exportStdoutCount := len(stdoutLines)
 
 	// 2) verify env is persisted
@@ -140,9 +124,7 @@ func TestBashSession_envAndExitCode(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	}
-	if err := session.run(request); err != nil {
-		t.Fatalf("runCommand(echo) error = %v", err)
-	}
+	require.NoError(t, session.run(request))
 	echoLines := stdoutLines[exportStdoutCount:]
 	foundHello := false
 	for _, line := range echoLines {
@@ -151,9 +133,7 @@ func TestBashSession_envAndExitCode(t *testing.T) {
 			break
 		}
 	}
-	if !foundHello {
-		t.Fatalf("expected echo $FOO to output 'hello', got %v", echoLines)
-	}
+	require.True(t, foundHello, "expected echo $FOO to output 'hello', got %v", echoLines)
 
 	// 3) ensure exit code of previous command is reflected in shell state
 	request = &ExecuteCodeRequest{
@@ -162,9 +142,7 @@ func TestBashSession_envAndExitCode(t *testing.T) {
 		Timeout: 3 * time.Second,
 	}
 	prevCount := len(stdoutLines)
-	if err := session.run(request); err != nil {
-		t.Fatalf("runCommand(exitcode) error = %v", err)
-	}
+	require.NoError(t, session.run(request))
 	exitLines := stdoutLines[prevCount:]
 	foundExit := false
 	for _, line := range exitLines {
@@ -173,25 +151,16 @@ func TestBashSession_envAndExitCode(t *testing.T) {
 			break
 		}
 	}
-	if !foundExit {
-		t.Fatalf("expected exit code output 'EXIT:1', got %v", exitLines)
-	}
-
-	if initCalls != 3 {
-		t.Fatalf("OnExecuteInit expected 3 calls, got %d", initCalls)
-	}
-	if completeCalls != 3 {
-		t.Fatalf("OnExecuteComplete expected 3 calls, got %d", completeCalls)
-	}
+	require.True(t, foundExit, "expected exit code output 'EXIT:1', got %v", exitLines)
+	require.Equal(t, 3, initCalls, "OnExecuteInit expected 3 calls")
+	require.Equal(t, 3, completeCalls, "OnExecuteComplete expected 3 calls")
 }
 
 func TestBashSession_envLargeOutputChained(t *testing.T) {
 	session := newBashSession(nil)
 	t.Cleanup(func() { _ = session.close() })
 
-	if err := session.start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+	require.NoError(t, session.start())
 
 	var (
 		initCalls     int
@@ -201,9 +170,7 @@ func TestBashSession_envLargeOutputChained(t *testing.T) {
 
 	hooks := ExecuteResultHook{
 		OnExecuteInit: func(ctx string) {
-			if ctx != session.config.Session {
-				t.Fatalf("unexpected session in OnExecuteInit: %s", ctx)
-			}
+			require.Equal(t, session.config.Session, ctx, "unexpected session in OnExecuteInit")
 			initCalls++
 		},
 		OnExecuteStdout: func(text string) {
@@ -222,54 +189,31 @@ func TestBashSession_envLargeOutputChained(t *testing.T) {
 			Hooks:   hooks,
 			Timeout: 10 * time.Second,
 		}
-		if err := session.run(request); err != nil {
-			t.Fatalf("runCommand(%q) error = %v", cmd, err)
-		}
+		require.NoError(t, session.run(request))
 		return append([]string(nil), stdoutLines[start:]...)
 	}
 
 	lines1 := runAndCollect("export FOO=hello1; for i in $(seq 1 60); do echo A${i}:$FOO; done")
-	if len(lines1) < 60 {
-		t.Fatalf("expected >=60 lines for cmd1, got %d", len(lines1))
-	}
-	if !containsLine(lines1, "A1:hello1") || !containsLine(lines1, "A60:hello1") {
-		t.Fatalf("env not reflected in cmd1 output, got %v", lines1[:3])
-	}
+	require.GreaterOrEqual(t, len(lines1), 60, "expected >=60 lines for cmd1")
+	require.True(t, containsLine(lines1, "A1:hello1") && containsLine(lines1, "A60:hello1"), "env not reflected in cmd1 output, got %v", lines1[:3])
 
 	lines2 := runAndCollect("export FOO=${FOO}_next; export BAR=bar1; for i in $(seq 1 60); do echo B${i}:$FOO:$BAR; done")
-	if len(lines2) < 60 {
-		t.Fatalf("expected >=60 lines for cmd2, got %d", len(lines2))
-	}
-	if !containsLine(lines2, "B1:hello1_next:bar1") || !containsLine(lines2, "B60:hello1_next:bar1") {
-		t.Fatalf("env not propagated to cmd2 output, sample %v", lines2[:3])
-	}
+	require.GreaterOrEqual(t, len(lines2), 60, "expected >=60 lines for cmd2")
+	require.True(t, containsLine(lines2, "B1:hello1_next:bar1") && containsLine(lines2, "B60:hello1_next:bar1"), "env not propagated to cmd2 output, sample %v", lines2[:3])
 
 	lines3 := runAndCollect("export BAR=${BAR}_last; for i in $(seq 1 60); do echo C${i}:$FOO:$BAR; done; echo FINAL_FOO=$FOO; echo FINAL_BAR=$BAR")
-	if len(lines3) < 62 { // 60 lines + 2 finals
-		t.Fatalf("expected >=62 lines for cmd3, got %d", len(lines3))
-	}
-	if !containsLine(lines3, "C1:hello1_next:bar1_last") || !containsLine(lines3, "C60:hello1_next:bar1_last") {
-		t.Fatalf("env not propagated to cmd3 output, sample %v", lines3[:3])
-	}
-	if !containsLine(lines3, "FINAL_FOO=hello1_next") || !containsLine(lines3, "FINAL_BAR=bar1_last") {
-		t.Fatalf("final env lines missing, got %v", lines3[len(lines3)-5:])
-	}
-
-	if initCalls != 3 {
-		t.Fatalf("OnExecuteInit expected 3 calls, got %d", initCalls)
-	}
-	if completeCalls != 3 {
-		t.Fatalf("OnExecuteComplete expected 3 calls, got %d", completeCalls)
-	}
+	require.GreaterOrEqual(t, len(lines3), 62, "expected >=62 lines for cmd3") // 60 lines + 2 finals
+	require.True(t, containsLine(lines3, "C1:hello1_next:bar1_last") && containsLine(lines3, "C60:hello1_next:bar1_last"), "env not propagated to cmd3 output, sample %v", lines3[:3])
+	require.True(t, containsLine(lines3, "FINAL_FOO=hello1_next") && containsLine(lines3, "FINAL_BAR=bar1_last"), "final env lines missing, got %v", lines3[len(lines3)-5:])
+	require.Equal(t, 3, initCalls, "OnExecuteInit expected 3 calls")
+	require.Equal(t, 3, completeCalls, "OnExecuteComplete expected 3 calls")
 }
 
 func TestBashSession_cwdPersistsWithoutOverride(t *testing.T) {
 	session := newBashSession(nil)
 	t.Cleanup(func() { _ = session.close() })
 
-	if err := session.start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+	require.NoError(t, session.start())
 
 	targetDir := t.TempDir()
 	var stdoutLines []string
@@ -281,9 +225,7 @@ func TestBashSession_cwdPersistsWithoutOverride(t *testing.T) {
 
 	runAndCollect := func(req *ExecuteCodeRequest) []string {
 		start := len(stdoutLines)
-		if err := session.run(req); err != nil {
-			t.Fatalf("runCommand(%q) error = %v", req.Code, err)
-		}
+		require.NoError(t, session.run(req))
 		return append([]string(nil), stdoutLines[start:]...)
 	}
 
@@ -292,34 +234,26 @@ func TestBashSession_cwdPersistsWithoutOverride(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	})
-	if !containsLine(firstRunLines, targetDir) {
-		t.Fatalf("expected cd to update cwd to %q, got %v", targetDir, firstRunLines)
-	}
+	require.True(t, containsLine(firstRunLines, targetDir), "expected cd to update cwd to %q, got %v", targetDir, firstRunLines)
 
 	secondRunLines := runAndCollect(&ExecuteCodeRequest{
 		Code:    "pwd",
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	})
-	if !containsLine(secondRunLines, targetDir) {
-		t.Fatalf("expected subsequent run to inherit cwd %q, got %v", targetDir, secondRunLines)
-	}
+	require.True(t, containsLine(secondRunLines, targetDir), "expected subsequent run to inherit cwd %q, got %v", targetDir, secondRunLines)
 
 	session.mu.Lock()
 	finalCwd := session.cwd
 	session.mu.Unlock()
-	if finalCwd != targetDir {
-		t.Fatalf("expected session cwd to stay at %q, got %q", targetDir, finalCwd)
-	}
+	require.Equal(t, targetDir, finalCwd, "expected session cwd to stay at %q", targetDir)
 }
 
 func TestBashSession_requestCwdOverridesAfterCd(t *testing.T) {
 	session := newBashSession(nil)
 	t.Cleanup(func() { _ = session.close() })
 
-	if err := session.start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+	require.NoError(t, session.start())
 
 	initialDir := t.TempDir()
 	overrideDir := t.TempDir()
@@ -333,9 +267,7 @@ func TestBashSession_requestCwdOverridesAfterCd(t *testing.T) {
 
 	runAndCollect := func(req *ExecuteCodeRequest) []string {
 		start := len(stdoutLines)
-		if err := session.run(req); err != nil {
-			t.Fatalf("runCommand(%q) error = %v", req.Code, err)
-		}
+		require.NoError(t, session.run(req))
 		return append([]string(nil), stdoutLines[start:]...)
 	}
 
@@ -345,9 +277,7 @@ func TestBashSession_requestCwdOverridesAfterCd(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	})
-	if !containsLine(firstRunLines, initialDir) {
-		t.Fatalf("expected cd to update cwd to %q, got %v", initialDir, firstRunLines)
-	}
+	require.True(t, containsLine(firstRunLines, initialDir), "expected cd to update cwd to %q, got %v", initialDir, firstRunLines)
 
 	// Second request: explicit Cwd overrides session cwd.
 	secondRunLines := runAndCollect(&ExecuteCodeRequest{
@@ -356,25 +286,19 @@ func TestBashSession_requestCwdOverridesAfterCd(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	})
-	if !containsLine(secondRunLines, overrideDir) {
-		t.Fatalf("expected command to run in override cwd %q, got %v", overrideDir, secondRunLines)
-	}
+	require.True(t, containsLine(secondRunLines, overrideDir), "expected command to run in override cwd %q, got %v", overrideDir, secondRunLines)
 
 	session.mu.Lock()
 	finalCwd := session.cwd
 	session.mu.Unlock()
-	if finalCwd != overrideDir {
-		t.Fatalf("expected session cwd updated to override dir %q, got %q", overrideDir, finalCwd)
-	}
+	require.Equal(t, overrideDir, finalCwd, "expected session cwd updated to override dir %q", overrideDir)
 }
 
 func TestBashSession_envDumpNotLeakedWhenNoTrailingNewline(t *testing.T) {
 	session := newBashSession(nil)
 	t.Cleanup(func() { _ = session.close() })
 
-	if err := session.start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+	require.NoError(t, session.start())
 
 	var stdoutLines []string
 	hooks := ExecuteResultHook{
@@ -388,21 +312,13 @@ func TestBashSession_envDumpNotLeakedWhenNoTrailingNewline(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	}
+	require.NoError(t, session.run(request))
 
-	if err := session.run(request); err != nil {
-		t.Fatalf("runCommand(no-trailing-newline) error = %v", err)
-	}
-
-	if len(stdoutLines) != 1 {
-		t.Fatalf("expected exactly one stdout line, got %v", stdoutLines)
-	}
-	if strings.TrimSpace(stdoutLines[0]) != `{"foo":1}` {
-		t.Fatalf("unexpected stdout content %q", stdoutLines[0])
-	}
+	require.Len(t, stdoutLines, 1, "expected exactly one stdout line")
+	require.Equal(t, `{"foo":1}`, strings.TrimSpace(stdoutLines[0]))
 	for _, line := range stdoutLines {
-		if strings.Contains(line, envDumpStartMarker) || strings.Contains(line, "declare -x") {
-			t.Fatalf("env dump leaked into stdout: %v", stdoutLines)
-		}
+		require.NotContains(t, line, envDumpStartMarker, "env dump leaked into stdout: %v", stdoutLines)
+		require.NotContains(t, line, "declare -x", "env dump leaked into stdout: %v", stdoutLines)
 	}
 }
 
@@ -410,9 +326,7 @@ func TestBashSession_envDumpNotLeakedWhenNoOutput(t *testing.T) {
 	session := newBashSession(nil)
 	t.Cleanup(func() { _ = session.close() })
 
-	if err := session.start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+	require.NoError(t, session.start())
 
 	var stdoutLines []string
 	hooks := ExecuteResultHook{
@@ -426,27 +340,25 @@ func TestBashSession_envDumpNotLeakedWhenNoOutput(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	}
+	require.NoError(t, session.run(request))
 
-	if err := session.run(request); err != nil {
-		t.Fatalf("runCommand(no-output) error = %v", err)
-	}
-
-	if len(stdoutLines) > 1 {
-		t.Fatalf("expected at most one stdout line, got %v", stdoutLines)
-	}
-	if len(stdoutLines) == 1 && strings.TrimSpace(stdoutLines[0]) != "" {
-		t.Fatalf("expected empty stdout, got %q", stdoutLines[0])
+	require.LessOrEqual(t, len(stdoutLines), 1, "expected at most one stdout line, got %v", stdoutLines)
+	if len(stdoutLines) == 1 {
+		require.Empty(t, strings.TrimSpace(stdoutLines[0]), "expected empty stdout")
 	}
 	for _, line := range stdoutLines {
-		if strings.Contains(line, envDumpStartMarker) || strings.Contains(line, "declare -x") {
-			t.Fatalf("env dump leaked into stdout: %v", stdoutLines)
-		}
+		require.NotContains(t, line, envDumpStartMarker, "env dump leaked into stdout: %v", stdoutLines)
+		require.NotContains(t, line, "declare -x", "env dump leaked into stdout: %v", stdoutLines)
 	}
 }
 
 func TestBashSession_heredoc(t *testing.T) {
 	rewardDir := t.TempDir()
 	controller := NewController("", "")
+
+	sessionID, err := controller.CreateBashSession(&CreateContextRequest{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = controller.DeleteBashSession(sessionID) })
 
 	hooks := ExecuteResultHook{
 		OnExecuteStdout: func(line string) {
@@ -475,35 +387,30 @@ echo 1 > "$reward_dir/reward.txt"
 cat "$reward_dir/reward.txt"
 `, rewardDir)
 
-	if err := controller.Execute(&ExecuteCodeRequest{
+	ctx := context.Background()
+	require.NoError(t, controller.RunInBashSession(ctx, &ExecuteCodeRequest{
+		Context:  sessionID,
 		Language: Bash,
 		Timeout:  10 * time.Second,
 		Code:     script,
 		Hooks:    hooks,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "first Execute failed: %v\n", err)
-		os.Exit(1)
-	}
+	}))
 
 	// Second run: ensure the session keeps working.
-	if err := controller.Execute(&ExecuteCodeRequest{
+	require.NoError(t, controller.RunInBashSession(ctx, &ExecuteCodeRequest{
+		Context:  sessionID,
 		Language: Bash,
 		Timeout:  5 * time.Second,
 		Code:     "echo 'second command works'",
 		Hooks:    hooks,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "second Execute failed: %v\n", err)
-		os.Exit(1)
-	}
+	}))
 }
 
 func TestBashSession_execReplacesShell(t *testing.T) {
 	session := newBashSession(nil)
 	t.Cleanup(func() { _ = session.close() })
 
-	if err := session.start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+	require.NoError(t, session.start())
 
 	var stdoutLines []string
 	hooks := ExecuteResultHook{
@@ -525,13 +432,8 @@ exec /tmp/exec_child.sh
 		Hooks:   hooks,
 		Timeout: 5 * time.Second,
 	}
-	err := session.run(request)
-	if err != nil {
-		t.Fatalf("expected exec to complete without killing the session, got %v", err)
-	}
-	if !containsLine(stdoutLines, "child says hi") {
-		t.Fatalf("expected child output, got %v", stdoutLines)
-	}
+	require.NoError(t, session.run(request), "expected exec to complete without killing the session")
+	require.True(t, containsLine(stdoutLines, "child says hi"), "expected child output, got %v", stdoutLines)
 
 	// Subsequent run should still work because we restart bash per run.
 	request = &ExecuteCodeRequest{
@@ -540,21 +442,15 @@ exec /tmp/exec_child.sh
 		Timeout: 2 * time.Second,
 	}
 	stdoutLines = nil
-	if err := session.run(request); err != nil {
-		t.Fatalf("expected run to succeed after exec replaced the shell, got %v", err)
-	}
-	if !containsLine(stdoutLines, "still-alive") {
-		t.Fatalf("expected follow-up output, got %v", stdoutLines)
-	}
+	require.NoError(t, session.run(request), "expected run to succeed after exec replaced the shell")
+	require.True(t, containsLine(stdoutLines, "still-alive"), "expected follow-up output, got %v", stdoutLines)
 }
 
 func TestBashSession_complexExec(t *testing.T) {
 	session := newBashSession(nil)
 	t.Cleanup(func() { _ = session.close() })
 
-	if err := session.start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
+	require.NoError(t, session.start())
 
 	var stdoutLines []string
 	hooks := ExecuteResultHook{
@@ -580,13 +476,8 @@ echo "after-restore"
 		Hooks:   hooks,
 		Timeout: 5 * time.Second,
 	}
-	err := session.run(request)
-	if err != nil {
-		t.Fatalf("expected complex exec to finish, got %v", err)
-	}
-	if !containsLine(stdoutLines, "from-complex-exec") || !containsLine(stdoutLines, "after-restore") {
-		t.Fatalf("expected exec outputs, got %v", stdoutLines)
-	}
+	require.NoError(t, session.run(request), "expected complex exec to finish")
+	require.True(t, containsLine(stdoutLines, "from-complex-exec") && containsLine(stdoutLines, "after-restore"), "expected exec outputs, got %v", stdoutLines)
 
 	// Session should still be usable.
 	request = &ExecuteCodeRequest{
@@ -595,12 +486,8 @@ echo "after-restore"
 		Timeout: 2 * time.Second,
 	}
 	stdoutLines = nil
-	if err := session.run(request); err != nil {
-		t.Fatalf("expected run to succeed after complex exec, got %v", err)
-	}
-	if !containsLine(stdoutLines, "still-alive") {
-		t.Fatalf("expected follow-up output, got %v", stdoutLines)
-	}
+	require.NoError(t, session.run(request), "expected run to succeed after complex exec")
+	require.True(t, containsLine(stdoutLines, "still-alive"), "expected follow-up output, got %v", stdoutLines)
 }
 
 func containsLine(lines []string, target string) bool {

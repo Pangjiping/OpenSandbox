@@ -1183,12 +1183,12 @@ class TestCodeInterpreterE2E:
         code_interpreter = TestCodeInterpreterE2E.code_interpreter
         assert code_interpreter is not None
 
-        language = SupportedLanguage.PYTHON
+        language = SupportedLanguage.BASH
         logger.info("=" * 80)
         logger.info("TEST 9: Context management endpoints (%s)", language)
         logger.info("=" * 80)
 
-        # Ensure clean slate for python contexts to avoid interference with other tests.
+        # Ensure clean slate for bash contexts to avoid interference with other tests.
         await code_interpreter.codes.delete_contexts(language)
 
         ctx1 = await code_interpreter.codes.create_context(language)
@@ -1197,14 +1197,14 @@ class TestCodeInterpreterE2E:
         assert ctx2.id is not None and ctx2.id.strip()
         assert ctx1.language == language
         assert ctx2.language == language
-        logger.info("✓ Created two python contexts: %s, %s", ctx1.id, ctx2.id)
+        logger.info("✓ Created two bash contexts: %s, %s", ctx1.id, ctx2.id)
 
         listed = await code_interpreter.codes.list_contexts(language)
-        python_context_ids = {c.id for c in listed if c.id}
-        assert ctx1.id in python_context_ids
-        assert ctx2.id in python_context_ids
+        bash_context_ids = {c.id for c in listed if c.id}
+        assert ctx1.id in bash_context_ids
+        assert ctx2.id in bash_context_ids
         assert all(c.language == language for c in listed)
-        logger.info("✓ list_contexts returned expected python contexts")
+        logger.info("✓ list_contexts returned expected bash contexts")
 
         fetched = await code_interpreter.codes.get_context(ctx1.id)
         assert fetched.id == ctx1.id
@@ -1223,5 +1223,5 @@ class TestCodeInterpreterE2E:
             c for c in await code_interpreter.codes.list_contexts(language) if c.id
         ]
         assert len(final_contexts) == 0
-        logger.info("✓ delete_contexts removed all python contexts")
+        logger.info("✓ delete_contexts removed all bash contexts")
 

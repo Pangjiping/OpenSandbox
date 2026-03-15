@@ -43,8 +43,6 @@ jobs:
           docker run --rm -v /tmp:/host_tmp alpine rm -rf /host_tmp/opensandbox-e2e || true
 
       - name: Run tests
-        env:
-          OPENSANDBOX_SANDBOX_DEFAULT_IMAGE: opensandbox/code-interpreter:latest
         run: |
           set -e
 

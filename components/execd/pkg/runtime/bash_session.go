@@ -29,9 +29,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
 	"github.com/alibaba/opensandbox/execd/pkg/log"
-	"github.com/google/uuid"
 )
 
 const (
@@ -106,6 +107,22 @@ func (c *Controller) closeBashSession(sessionId string) error {
 
 	c.bashSessionClientMap.Delete(sessionId)
 	return nil
+}
+
+// CreateBashSession creates a pipe-based bash session for the session API only (POST /session).
+// It is separate from CreateContext; Bash language context still uses Jupyter kernel.
+func (c *Controller) CreateBashSession(req *CreateContextRequest) (string, error) {
+	return c.createBashSession(req)
+}
+
+// RunInBashSession runs code in an existing bash session for the session API only (POST /session/:id/run).
+func (c *Controller) RunInBashSession(ctx context.Context, req *ExecuteCodeRequest) error {
+	return c.runBashSession(ctx, req)
+}
+
+// DeleteBashSession deletes a pipe-based bash session for the session API only (DELETE /session/:id).
+func (c *Controller) DeleteBashSession(sessionID string) error {
+	return c.closeBashSession(sessionID)
 }
 
 // nolint:unused
