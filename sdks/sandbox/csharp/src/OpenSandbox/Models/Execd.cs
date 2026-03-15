@@ -133,6 +133,25 @@ public class RunCommandRequest
     /// </summary>
     [JsonPropertyName("timeout")]
     public long? Timeout { get; set; }
+
+    /// <summary>
+    /// Gets or sets the Unix user ID used to run the command process.
+    /// </summary>
+    [JsonPropertyName("uid")]
+    public int? Uid { get; set; }
+
+    /// <summary>
+    /// Gets or sets the Unix group ID used to run the command process.
+    /// Requires <see cref="Uid"/> to be set.
+    /// </summary>
+    [JsonPropertyName("gid")]
+    public int? Gid { get; set; }
+
+    /// <summary>
+    /// Gets or sets environment variables injected into the command process.
+    /// </summary>
+    [JsonPropertyName("envs")]
+    public Dictionary<string, string>? Envs { get; set; }
 }
 
 /// <summary>
@@ -155,6 +174,22 @@ public class RunCommandOptions
     /// The server terminates the command when this duration is reached.
     /// </summary>
     public int? TimeoutSeconds { get; set; }
+
+    /// <summary>
+    /// Gets or sets the Unix user ID used to run the command process.
+    /// </summary>
+    public int? Uid { get; set; }
+
+    /// <summary>
+    /// Gets or sets the Unix group ID used to run the command process.
+    /// Requires <see cref="Uid"/> to be set.
+    /// </summary>
+    public int? Gid { get; set; }
+
+    /// <summary>
+    /// Gets or sets environment variables injected into the command process.
+    /// </summary>
+    public Dictionary<string, string>? Envs { get; set; }
 }
 
 /// <summary>

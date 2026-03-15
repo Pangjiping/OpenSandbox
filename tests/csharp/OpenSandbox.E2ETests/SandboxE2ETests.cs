@@ -489,6 +489,35 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
     }
 
     [Fact(Timeout = 2 * 60 * 1000)]
+    public async Task Command_Env_Injection()
+    {
+        var sandbox = _fixture.Sandbox;
+        var envKey = "OPEN_SANDBOX_E2E_CMD_ENV";
+        var envValue = $"env-ok-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        var probeCommand =
+            $"sh -c 'if [ -z \"${{{envKey}:-}}\" ]; then echo \"__EMPTY__\"; else echo \"${{{envKey}}}\"; fi'";
+
+        var baseline = await sandbox.Commands.RunAsync(probeCommand);
+        Assert.Null(baseline.Error);
+        var baselineOutput = string.Join("\n", baseline.Logs.Stdout.Select(m => m.Text)).Trim();
+        Assert.Equal("__EMPTY__", baselineOutput);
+
+        var injected = await sandbox.Commands.RunAsync(
+            probeCommand,
+            options: new RunCommandOptions
+            {
+                Envs = new Dictionary<string, string>
+                {
+                    [envKey] = envValue,
+                    ["OPEN_SANDBOX_E2E_SECOND_ENV"] = "second-ok"
+                }
+            });
+        Assert.Null(injected.Error);
+        var injectedOutput = string.Join("\n", injected.Logs.Stdout.Select(m => m.Text)).Trim();
+        Assert.Equal(envValue, injectedOutput);
+    }
+
+    [Fact(Timeout = 2 * 60 * 1000)]
     public async Task Filesystem_Operations_CRUD_Replace_Move_Delete()
     {
         var sandbox = _fixture.Sandbox;

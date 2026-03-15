@@ -17,6 +17,7 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using OpenSandbox.Adapters;
+using OpenSandbox.Core;
 using OpenSandbox.Internal;
 using OpenSandbox.Models;
 using Microsoft.Extensions.Logging;
@@ -114,6 +115,70 @@ public class CommandsAdapterTests
         {
             // Drain events.
         }
+    }
+
+    [Fact]
+    public async Task RunStreamAsync_ShouldSendUidGidAndEnvs()
+    {
+        var handler = new StubHttpMessageHandler(async (request, _) =>
+        {
+            request.Content.Should().NotBeNull();
+            var body = await request.Content!.ReadAsStringAsync().ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(body);
+            doc.RootElement.GetProperty("uid").GetInt32().Should().Be(1000);
+            doc.RootElement.GetProperty("gid").GetInt32().Should().Be(1000);
+            var envs = doc.RootElement.GetProperty("envs");
+            envs.GetProperty("APP_ENV").GetString().Should().Be("test");
+            envs.GetProperty("LOG_LEVEL").GetString().Should().Be("debug");
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("data: {\"type\":\"init\",\"text\":\"cmd-1\"}\n\n", Encoding.UTF8, "text/event-stream")
+            };
+        });
+        var adapter = CreateAdapter(handler);
+
+        var options = new RunCommandOptions
+        {
+            Uid = 1000,
+            Gid = 1000,
+            Envs = new Dictionary<string, string>
+            {
+                ["APP_ENV"] = "test",
+                ["LOG_LEVEL"] = "debug"
+            }
+        };
+
+        await foreach (var _ in adapter.RunStreamAsync("id", options))
+        {
+            // Drain events.
+        }
+    }
+
+    [Fact]
+    public async Task RunStreamAsync_ShouldRejectGidWithoutUid()
+    {
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            throw new InvalidOperationException("HTTP should not be called when options are invalid.");
+        });
+        var adapter = CreateAdapter(handler);
+
+        var options = new RunCommandOptions
+        {
+            Gid = 1000
+        };
+
+        var act = async () =>
+        {
+            await foreach (var _ in adapter.RunStreamAsync("id", options))
+            {
+                // Drain events.
+            }
+        };
+
+        await act.Should().ThrowAsync<InvalidArgumentException>()
+            .WithMessage("*uid is required when gid is provided*");
     }
 
     private static CommandsAdapter CreateAdapter(HttpMessageHandler httpHandler)

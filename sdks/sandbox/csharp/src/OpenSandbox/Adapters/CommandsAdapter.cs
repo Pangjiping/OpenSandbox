@@ -59,6 +59,19 @@ internal sealed class CommandsAdapter : IExecdCommands
         RunCommandOptions? options = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        if (options?.Gid.HasValue == true && options.Uid.HasValue != true)
+        {
+            throw new InvalidArgumentException("uid is required when gid is provided");
+        }
+        if (options?.Uid.HasValue == true && options.Uid.Value < 0)
+        {
+            throw new InvalidArgumentException("uid must be >= 0");
+        }
+        if (options?.Gid.HasValue == true && options.Gid.Value < 0)
+        {
+            throw new InvalidArgumentException("gid must be >= 0");
+        }
+
         var url = $"{_baseUrl}/command";
         _logger.LogDebug("Running command stream (commandLength={CommandLength})", command.Length);
         var requestBody = new RunCommandRequest
@@ -66,7 +79,10 @@ internal sealed class CommandsAdapter : IExecdCommands
             Command = command,
             Cwd = options?.WorkingDirectory,
             Background = options?.Background,
-            Timeout = options?.TimeoutSeconds.HasValue == true ? options.TimeoutSeconds.Value * 1000L : null
+            Timeout = options?.TimeoutSeconds.HasValue == true ? options.TimeoutSeconds.Value * 1000L : null,
+            Uid = options?.Uid,
+            Gid = options?.Gid,
+            Envs = options?.Envs
         };
 
         var json = JsonSerializer.Serialize(requestBody, JsonOptions);
