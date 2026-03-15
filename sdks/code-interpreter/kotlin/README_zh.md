@@ -35,7 +35,7 @@ dependencies {
 ```java
 import com.alibaba.opensandbox.codeinterpreter.CodeInterpreter;
 import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.CodeContext;
-import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.Execution;
+import com.alibaba.opensandbox.sandbox.domain.models.execd.executions.Execution;
 import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.RunCodeRequest;
 import com.alibaba.opensandbox.codeinterpreter.domain.models.execd.executions.SupportedLanguage;
 import com.alibaba.opensandbox.sandbox.Sandbox;
@@ -55,7 +55,7 @@ public class QuickStart {
         // 使用 try-with-resources 确保资源正确关闭
         try (Sandbox sandbox = Sandbox.builder()
                 .connectionConfig(config)
-                .image("sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest")
+                .image("sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.1")
                 .entrypoint("/opt/opensandbox/code-interpreter.sh")
                 .env("PYTHON_VERSION", "3.11") // 指定语言版本
                 .build()) {
@@ -115,7 +115,7 @@ Code Interpreter SDK 依赖于特定的运行环境。请确保你的沙箱服�
 
 ```java
 Sandbox sandbox = Sandbox.builder()
-    .image("opensandbox/code-interpreter:latest")
+    .image("opensandbox/code-interpreter:v1.0.1")
     .entrypoint("/opt/opensandbox/code-interpreter.sh")
     .env("JAVA_VERSION", "17")
     .env("GO_VERSION", "1.23")

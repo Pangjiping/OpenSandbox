@@ -21,11 +21,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	sandboxv1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/api/v1alpha1"
+	sandboxv1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/apis/sandbox/v1alpha1"
 )
 
 func TestDefaultPoolStrategy_IsPooledMode(t *testing.T) {
-	strategy := NewDefaultPoolStrategy()
 	tests := []struct {
 		name     string
 		batchSbx *sandboxv1alpha1.BatchSandbox
@@ -62,7 +61,8 @@ func TestDefaultPoolStrategy_IsPooledMode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := strategy.IsPooledMode(tt.batchSbx); got != tt.want {
+			strategy := NewDefaultPoolStrategy(tt.batchSbx)
+			if got := strategy.IsPooledMode(); got != tt.want {
 				t.Errorf("DefaultPoolStrategy.IsPooledMode() = %v, want %v", got, tt.want)
 			}
 		})

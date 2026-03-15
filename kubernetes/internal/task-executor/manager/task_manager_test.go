@@ -16,8 +16,11 @@ package manager
 
 import (
 	"context"
+	"os/exec"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 
 	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/task-executor/config"
 	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/task-executor/runtime"
@@ -486,5 +489,210 @@ func TestTaskManager_SyncNil(t *testing.T) {
 	_, err := mgr.Sync(ctx, nil)
 	if err == nil {
 		t.Error("Sync() should fail for nil desired list")
+	}
+}
+
+func TestTaskManager_AsyncStopOnDelete(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	mgr.Start(context.Background())
+	defer mgr.Stop()
+
+	ctx := context.Background()
+
+	timeoutSec := int64(30)
+	task := &types.Task{
+		Name: "long-running-task",
+		Process: &api.Process{
+			Command:        []string{"sleep", "30"},
+			TimeoutSeconds: &timeoutSec,
+		},
+	}
+
+	// Create task
+	created, err := mgr.Create(ctx, task)
+	if err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+	defer cleanupTask(t, mgr, task.Name)
+
+	// Verify task is running
+	assert.Equal(t, types.TaskStateRunning, created.Status.State)
+
+	// Record the time before delete
+	beforeDelete := time.Now()
+
+	// Delete task (should trigger async stop)
+	err = mgr.Delete(ctx, task.Name)
+	if err != nil {
+		t.Fatalf("Delete() failed: %v", err)
+	}
+
+	// Verify DeletionTimestamp is set immediately (soft delete)
+	got, err := mgr.Get(ctx, task.Name)
+	if err != nil {
+		t.Fatalf("Get() after Delete failed: %v", err)
+	}
+	if got.DeletionTimestamp == nil {
+		t.Error("DeletionTimestamp should be set immediately after Delete()")
+	}
+
+	// Verify Delete returned quickly (not blocked by Stop)
+	deleteDuration := time.Since(beforeDelete)
+	if deleteDuration > 500*time.Millisecond {
+		t.Errorf("Delete() took too long (%v), should be fast (async stop)", deleteDuration)
+	}
+
+	// Wait for task to be finalized
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		_, err := mgr.Get(ctx, task.Name)
+		if err != nil {
+			// Task is gone, success
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Error("Task was not finalized within timeout after async stop")
+}
+
+func TestTaskManager_TimeoutHandling(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not found, skipping timeout test")
+	}
+
+	mgr, _ := setupTestManager(t)
+	mgr.Start(context.Background())
+	defer mgr.Stop()
+
+	ctx := context.Background()
+
+	// Create task with short timeout
+	timeoutSec := int64(2)
+	task := &types.Task{
+		Name: "timeout-task",
+		Process: &api.Process{
+			Command:        []string{"sleep", "30"},
+			TimeoutSeconds: &timeoutSec,
+		},
+	}
+
+	_, err := mgr.Create(ctx, task)
+	if err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+	defer cleanupTask(t, mgr, task.Name)
+
+	// Wait for timeout to be detected and async stop triggered
+	time.Sleep(3 * time.Second)
+
+	// Check task status - should be Timeout or Failed (after stop)
+	got, err := mgr.Get(ctx, task.Name)
+	if err != nil {
+		t.Fatalf("Get() failed: %v", err)
+	}
+
+	// State should be Timeout (during stop) or Failed (after stop completes)
+	if got.Status.State != types.TaskStateTimeout && got.Status.State != types.TaskStateFailed {
+		t.Errorf("Expected Timeout or Failed state, got: %s", got.Status.State)
+	}
+
+	// If in Timeout state, verify reason
+	if got.Status.State == types.TaskStateTimeout {
+		assert.NotEmpty(t, got.Status.SubStatuses)
+		assert.Equal(t, "TaskTimeout", got.Status.SubStatuses[0].Reason)
+	}
+
+	// Wait for final state
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := mgr.Get(ctx, task.Name)
+		if err != nil {
+			// Task was deleted, that's also acceptable
+			return
+		}
+		if got.Status.State == types.TaskStateFailed {
+			// Stop completed
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func TestTaskManager_CountActiveTasks(t *testing.T) {
+	mgr, _ := setupTestManager(t)
+	mgr.Start(context.Background())
+	defer mgr.Stop()
+	ctx := context.Background()
+
+	// Initially empty
+	activeCount := mgr.(*taskManager).countActiveTasks()
+	if activeCount != 0 {
+		t.Errorf("Initial active count = %d, want 0", activeCount)
+	}
+
+	// Create a short-lived task that will complete quickly
+	task1 := &types.Task{
+		Name: "quick-task-1",
+		Process: &api.Process{
+			Command: []string{"echo", "done"},
+		},
+	}
+	_, err := mgr.Create(ctx, task1)
+	if err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+	defer mgr.Delete(ctx, task1.Name)
+
+	// Wait for task1 to complete
+	time.Sleep(500 * time.Millisecond)
+
+	// Should have 0 active tasks after task1 completes
+	activeCount = mgr.(*taskManager).countActiveTasks()
+	if activeCount != 0 {
+		t.Errorf("Active count after task1 completion = %d, want 0", activeCount)
+	}
+
+	// Create a running task
+	task2 := &types.Task{
+		Name: "active-task-2",
+		Process: &api.Process{
+			Command: []string{"sleep", "5"},
+		},
+	}
+	_, err = mgr.Create(ctx, task2)
+	if err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+	defer mgr.Delete(ctx, task2.Name)
+
+	// Should have 1 active task
+	activeCount = mgr.(*taskManager).countActiveTasks()
+	if activeCount != 1 {
+		t.Errorf("Active count after create = %d, want 1", activeCount)
+	}
+}
+
+func TestIsTerminalState(t *testing.T) {
+	tests := []struct {
+		name     string
+		state    types.TaskState
+		expected bool
+	}{
+		{"Succeeded is terminal", types.TaskStateSucceeded, true},
+		{"Failed is terminal", types.TaskStateFailed, true},
+		{"NotFound is terminal", types.TaskStateNotFound, true},
+		{"Pending is not terminal", types.TaskStatePending, false},
+		{"Running is not terminal", types.TaskStateRunning, false},
+		{"Unknown is not terminal", types.TaskStateUnknown, false},
+		{"Timeout is not terminal", types.TaskStateTimeout, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isTerminalState(tt.state)
+			if got != tt.expected {
+				t.Errorf("isTerminalState(%v) = %v, want %v", tt.state, got, tt.expected)
+			}
+		})
 	}
 }

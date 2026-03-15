@@ -17,6 +17,7 @@ package runtime
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -34,10 +35,10 @@ func (c *Controller) tailStdPipe(file string, onExecute func(text string), done 
 	for {
 		select {
 		case <-done:
-			c.readFromPos(mutex, file, lastPos, onExecute)
+			c.readFromPos(mutex, file, lastPos, onExecute, true)
 			return
 		case <-ticker.C:
-			newPos := c.readFromPos(mutex, file, lastPos, onExecute)
+			newPos := c.readFromPos(mutex, file, lastPos, onExecute, false)
 			lastPos = newPos
 		}
 	}
@@ -59,13 +60,21 @@ func (c *Controller) storeCommandKernel(sessionID string, kernel *commandKernel)
 }
 
 // stdLogDescriptor creates temporary files for capturing command output.
+// It ensures the temp directory exists before opening files, so that commands
+// continue to work even after the /tmp directory has been removed and recreated.
 func (c *Controller) stdLogDescriptor(session string) (io.WriteCloser, io.WriteCloser, error) {
+	logDir := os.TempDir()
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil, nil, fmt.Errorf("failed to create temp dir %s: %w", logDir, err)
+	}
+
 	stdout, err := os.OpenFile(c.stdoutFileName(session), os.O_RDWR|os.O_CREATE|os.O_TRUNC, os.ModePerm)
 	if err != nil {
 		return nil, nil, err
 	}
 	stderr, err := os.OpenFile(c.stderrFileName(session), os.O_RDWR|os.O_CREATE|os.O_TRUNC, os.ModePerm)
 	if err != nil {
+		stdout.Close()
 		return nil, nil, err
 	}
 
@@ -73,6 +82,10 @@ func (c *Controller) stdLogDescriptor(session string) (io.WriteCloser, io.WriteC
 }
 
 func (c *Controller) combinedOutputDescriptor(session string) (io.WriteCloser, error) {
+	logDir := os.TempDir()
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create temp dir %s: %w", logDir, err)
+	}
 	return os.OpenFile(c.combinedOutputFileName(session), os.O_RDWR|os.O_CREATE|os.O_TRUNC, os.ModePerm)
 }
 
@@ -91,7 +104,7 @@ func (c *Controller) combinedOutputFileName(session string) string {
 }
 
 // readFromPos streams new content from a file starting at startPos.
-func (c *Controller) readFromPos(mutex *sync.Mutex, filepath string, startPos int64, onExecute func(string)) int64 {
+func (c *Controller) readFromPos(mutex *sync.Mutex, filepath string, startPos int64, onExecute func(string), flushIncomplete bool) int64 {
 	if !mutex.TryLock() {
 		return -1
 	}
@@ -113,8 +126,11 @@ func (c *Controller) readFromPos(mutex *sync.Mutex, filepath string, startPos in
 		b, err := reader.ReadByte()
 		if err != nil {
 			if err == io.EOF {
-				// If buffer has content but no newline, it's an incomplete line, don't output
-				break
+				// If buffer has content but no newline, flush if needed, otherwise wait for next read
+				if flushIncomplete && buffer.Len() > 0 {
+					onExecute(buffer.String())
+					buffer.Reset()
+				}
 			}
 			break
 		}
@@ -135,8 +151,8 @@ func (c *Controller) readFromPos(mutex *sync.Mutex, filepath string, startPos in
 	}
 
 	endPos, _ := file.Seek(0, 1)
-	// If the last read position doesn't end with a newline, return the buffer start position
-	if buffer.Len() > 0 {
+	// If the last read position doesn't end with a newline, return buffer start position and wait for next flush
+	if !flushIncomplete && buffer.Len() > 0 {
 		return currentPos - int64(buffer.Len())
 	}
 	return endPos

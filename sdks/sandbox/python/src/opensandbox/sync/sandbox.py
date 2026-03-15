@@ -32,11 +32,13 @@ from opensandbox.exceptions import (
     SandboxReadyTimeoutException,
 )
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
     SandboxEndpoint,
     SandboxImageSpec,
     SandboxInfo,
     SandboxMetrics,
     SandboxRenewResponse,
+    Volume,
 )
 from opensandbox.sync.adapters.factory import AdapterFactorySync
 from opensandbox.sync.services import (
@@ -187,7 +189,9 @@ class SandboxSync:
         Raises:
             SandboxException: if endpoint cannot be retrieved
         """
-        return self._sandbox_service.get_sandbox_endpoint(self.id, port)
+        return self._sandbox_service.get_sandbox_endpoint(
+            self.id, port, self.connection_config.use_server_proxy
+        )
 
     def get_metrics(self) -> SandboxMetrics:
         """
@@ -324,9 +328,30 @@ class SandboxSync:
 
             time.sleep(polling_interval.total_seconds())
 
-        error_detail = f"Last error: {last_exception}" if last_exception else "Health check returned false continuously"
+        error_detail = (
+            f"Last error: {last_exception}"
+            if last_exception
+            else "Health check returned false continuously"
+        )
+        connection_detail = (
+            f"ConnectionConfig(domain={self.connection_config.get_domain()}, "
+            f"use_server_proxy={self.connection_config.use_server_proxy})"
+        )
+        if self.connection_config.use_server_proxy:
+            hint = (
+                "Hint: server proxy mode is enabled. Check server-to-sandbox connectivity "
+                "and server API key/auth configuration."
+            )
+        else:
+            hint = (
+                "Hint: direct sandbox endpoint access is enabled. If the SDK cannot directly "
+                "reach sandbox network/ports, set ConnectionConfigSync(use_server_proxy=True). "
+                "For Docker bridge deployments where server runs in a container, also configure "
+                "server [docker].host_ip to a host-reachable address."
+            )
         final_message = (
-            f"Sandbox health check timed out after {timeout.total_seconds()}s ({attempt} attempts). {error_detail}"
+            f"Sandbox health check timed out after {timeout.total_seconds()}s "
+            f"({attempt} attempts). {error_detail}. {connection_detail}. {hint}"
         )
         logger.error(final_message)
         raise SandboxReadyTimeoutException(final_message)
@@ -341,8 +366,10 @@ class SandboxSync:
         env: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
         resource: dict[str, str] | None = None,
+        network_policy: NetworkPolicy | None = None,
         extensions: dict[str, str] | None = None,
         entrypoint: list[str] | None = None,
+        volumes: list[Volume] | None = None,
         connection_config: ConnectionConfigSync | None = None,
         health_check: Callable[["SandboxSync"], bool] | None = None,
         health_check_polling_interval: timedelta = timedelta(milliseconds=200),
@@ -358,9 +385,11 @@ class SandboxSync:
             env: Environment variables for the sandbox
             metadata: Custom metadata for the sandbox
             resource: Resource limits (CPU, memory, etc.)
+            network_policy: Optional outbound network policy (egress).
             extensions: Opaque extension parameters passed through to the server as-is.
                 Prefer namespaced keys (e.g. ``storage.id``).
             entrypoint: Command to run as entrypoint
+            volumes: Optional list of volumes to mount in the sandbox.
             connection_config: Connection configuration
             health_check: Custom sync health check function
             health_check_polling_interval: Time between health check attempts
@@ -372,7 +401,7 @@ class SandboxSync:
         Raises:
             SandboxException: if sandbox creation or initialization fails
         """
-        config = connection_config or ConnectionConfigSync()
+        config = (connection_config or ConnectionConfigSync()).with_transport_if_missing()
         entrypoint = entrypoint or ["tail", "-f", "/dev/null"]
         env = env or {}
         metadata = metadata or {}
@@ -394,10 +423,20 @@ class SandboxSync:
         try:
             sandbox_service = factory.create_sandbox_service()
             response = sandbox_service.create_sandbox(
-                image, entrypoint, env, metadata, timeout, resource, extensions
+                image,
+                entrypoint,
+                env,
+                metadata,
+                timeout,
+                resource,
+                network_policy,
+                extensions,
+                volumes,
             )
             sandbox_id = response.id
-            execd_endpoint = sandbox_service.get_sandbox_endpoint(response.id, DEFAULT_EXECD_PORT)
+            execd_endpoint = sandbox_service.get_sandbox_endpoint(
+                response.id, DEFAULT_EXECD_PORT, config.use_server_proxy
+            )
 
             sandbox = cls(
                 sandbox_id=response.id,
@@ -468,13 +507,15 @@ class SandboxSync:
         # Accept any string identifier.
         sandbox_id = str(sandbox_id)
 
-        config = connection_config or ConnectionConfigSync()
+        config = (connection_config or ConnectionConfigSync()).with_transport_if_missing()
         logger.info("Connecting to sandbox: %s", sandbox_id)
         factory = AdapterFactorySync(config)
 
         try:
             sandbox_service = factory.create_sandbox_service()
-            execd_endpoint = sandbox_service.get_sandbox_endpoint(sandbox_id, DEFAULT_EXECD_PORT)
+            execd_endpoint = sandbox_service.get_sandbox_endpoint(
+                sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
+            )
 
             sandbox = cls(
                 sandbox_id=sandbox_id,
@@ -534,7 +575,7 @@ class SandboxSync:
         # Accept any string identifier.
         sandbox_id = str(sandbox_id)
 
-        config = connection_config or ConnectionConfigSync()
+        config = (connection_config or ConnectionConfigSync()).with_transport_if_missing()
 
         logger.info("Resuming sandbox: %s", sandbox_id)
         factory = AdapterFactorySync(config)
@@ -543,7 +584,9 @@ class SandboxSync:
             sandbox_service = factory.create_sandbox_service()
             sandbox_service.resume_sandbox(sandbox_id)
 
-            execd_endpoint = sandbox_service.get_sandbox_endpoint(sandbox_id, DEFAULT_EXECD_PORT)
+            execd_endpoint = sandbox_service.get_sandbox_endpoint(
+                sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
+            )
 
             sandbox = cls(
                 sandbox_id=sandbox_id,

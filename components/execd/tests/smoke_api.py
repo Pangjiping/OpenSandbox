@@ -91,6 +91,42 @@ def fetch_logs(cmd_id: str, cursor: int = 0):
     return r.text, r.headers.get("EXECD-COMMANDS-TAIL-CURSOR")
 
 
+def sse_disconnect_should_stop_ping():
+    """
+    Open an SSE stream for a long-running command, receive init, then close the
+    client side early to ensure the server handles disconnects (ping loop should
+    stop). We verify the server is still responsive afterwards.
+    """
+    url = f"{BASE_URL}/command"
+    payload = {
+        # long command so the server would keep pinging if not cancelled
+        "command": "sh -c 'echo long-run-start && sleep 20 && echo long-run-end'",
+        "background": False,
+    }
+
+    with session.post(url, json=payload, stream=True, timeout=10) as resp:
+        expect(resp.status_code == 200, f"SSE start failed: {resp.status_code} {resp.text}")
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            try:
+                if line.startswith(b"data:"):
+                    data = json.loads(line[len(b"data:") :].decode())
+                else:
+                    data = json.loads(line.decode())
+            except Exception:
+                continue
+            if data.get("type") == "init":
+                break
+        # explicitly close to simulate client drop
+        resp.close()
+
+    # Give server a moment to observe disconnect and ensure API remains healthy
+    time.sleep(1)
+    pong = session.get(f"{BASE_URL}/ping", timeout=5)
+    expect(pong.status_code == 200, "ping failed after SSE disconnect")
+
+
 def upload_and_download():
     tmp_dir = f"/tmp/execd-smoke-{uuid.uuid4().hex}"
     path = f"{tmp_dir}/hello.txt"
@@ -182,6 +218,9 @@ def main():
     r = session.get(f"{BASE_URL}/ping", timeout=5)
     expect(r.status_code == 200, "ping failed")
     print("[+] ping ok")
+
+    sse_disconnect_should_stop_ping()
+    print("[+] SSE disconnect handled")
 
     cmd_id = sse_get_command_id()
     print(f"[+] command id: {cmd_id}")

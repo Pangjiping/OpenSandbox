@@ -15,11 +15,11 @@
 package strategy
 
 import (
-	sandboxv1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/api/v1alpha1"
+	sandboxv1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/apis/sandbox/v1alpha1"
 )
 
 // NewTaskSchedulingStrategy creates a task scheduling strategy based on BatchSandbox properties.
 // This function is designed to be easily customizable for different implementations:
 func NewTaskSchedulingStrategy(batchSbx *sandboxv1alpha1.BatchSandbox) TaskSchedulingStrategy {
-	return NewDefaultTaskSchedulingStrategy()
+	return NewDefaultTaskSchedulingStrategy(batchSbx)
 }

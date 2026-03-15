@@ -120,6 +120,37 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateSandboxRequest'
+            examples:
+              deny-with-allowlist:
+                summary: Deny by default with allowed domains
+                value:
+                  image:
+                    uri: python:3.11
+                  timeout: 3600
+                  resourceLimits:
+                    cpu: "500m"
+                    memory: "512Mi"
+                  entrypoint: ["python", "/app/main.py"]
+                  networkPolicy:
+                    defaultAction: deny
+                    egress:
+                      - action: allow
+                        target: "pypi.org"
+              allow-with-denylist:
+                summary: Allow by default with a deny rule
+                value:
+                  image:
+                    uri: python:3.11
+                  timeout: 3600
+                  resourceLimits:
+                    cpu: "500m"
+                    memory: "512Mi"
+                  entrypoint: ["python", "/app/main.py"]
+                  networkPolicy:
+                    defaultAction: allow
+                    egress:
+                      - action: deny
+                        target: "bad.example.com"
       responses:
         '202':
           description: |
@@ -317,6 +348,12 @@ paths:
             type: integer
             minimum: 1
             maximum: 65535
+        - name: use_server_proxy
+          in: query
+          description: Whether to return a server-proxied URL
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: |
@@ -710,6 +747,22 @@ components:
             - "python"
             - "/app/main.py"
 
+        networkPolicy:
+          $ref: '#/components/schemas/NetworkPolicy'
+          description: |
+            Optional outbound network policy for the sandbox.
+            Shape matches the sidecar `/policy` endpoint. If omitted or empty,
+            the sidecar starts in allow-all mode until updated.
+
+        volumes:
+          type: array
+          description: |
+            Storage mounts for the sandbox. Each volume entry specifies a named backend-specific
+            storage source and common mount settings. Exactly one backend type must be specified
+            per volume entry.
+          items:
+            $ref: '#/components/schemas/Volume'
+
         extensions:
           type: object
           additionalProperties:
@@ -791,6 +844,125 @@ components:
             Public URL to access the service from outside the sandbox.
             Format: {endpoint-host}/sandboxes/{sandboxId}/port/{port}
             Example: endpoint.opensandbox.io/sandboxes/abc123/port/8080
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            Requests targeting the sandbox must include the corresponding header(s).
       required:
         - endpoint
       additionalProperties: false
+
+    NetworkPolicy:
+      type: object
+      description: |
+        Egress network policy matching the sidecar `/policy` request body.
+        If `defaultAction` is omitted, the sidecar defaults to "deny"; passing an empty
+        object or null results in allow-all behavior at startup.
+      properties:
+        defaultAction:
+          type: string
+          enum: [allow, deny]
+          description: Default action when no egress rule matches. Defaults to "deny".
+        egress:
+          type: array
+          description: List of egress rules evaluated in order.
+          items:
+            $ref: '#/components/schemas/NetworkRule'
+      additionalProperties: false
+
+    NetworkRule:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [allow, deny]
+          description: Whether to allow or deny matching targets.
+        target:
+          type: string
+          description: |
+            FQDN or wildcard domain (e.g., "example.com", "*.example.com").
+            IP/CIDR not yet supported in the egress MVP.
+      required: [action, target]
+      additionalProperties: false
+
+    Volume:
+      type: object
+      description: |
+        Storage mount definition for a sandbox. Each volume entry contains:
+        - A unique name identifier
+        - Exactly one backend struct (host, pvc, etc.) with backend-specific fields
+        - Common mount settings (mountPath, readOnly, subPath)
+      required: [name, mountPath]
+      properties:
+        name:
+          type: string
+          description: |
+            Unique identifier for the volume within the sandbox.
+            Must be a valid DNS label (lowercase alphanumeric, hyphens allowed, max 63 chars).
+          pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          maxLength: 63
+        host:
+          $ref: '#/components/schemas/Host'
+        pvc:
+          $ref: '#/components/schemas/PVC'
+        mountPath:
+          type: string
+          description: |
+            Absolute path inside the container where the volume is mounted.
+            Must start with '/'.
+          pattern: "^/.*"
+        readOnly:
+          type: boolean
+          description: |
+            If true, the volume is mounted as read-only. Defaults to false (read-write).
+          default: false
+        subPath:
+          type: string
+          description: |
+            Optional subdirectory under the backend path to mount.
+            Must be a relative path without '..' components.
+      additionalProperties: false
+
+    Host:
+      type: object
+      description: |
+        Host path bind mount backend. Maps a directory on the host filesystem
+        into the container. Only available when the runtime supports host mounts.
+
+        Security note: Host paths are restricted by server-side allowlist.
+        Users must specify paths under permitted prefixes.
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: |
+            Absolute path on the host filesystem to mount.
+            Must start with '/' and be under an allowed prefix.
+          pattern: "^/.*"
+      additionalProperties: false
+
+    PVC:
+      type: object
+      description: |
+        Platform-managed named volume backend. A runtime-neutral abstraction
+        for referencing a pre-existing, platform-managed named volume.
+
+        - Kubernetes: maps to a PersistentVolumeClaim in the same namespace.
+        - Docker: maps to a Docker named volume (created via `docker volume create`).
+
+        The volume must already exist on the target platform before sandbox
+        creation.
+      required: [claimName]
+      properties:
+        claimName:
+          type: string
+          description: |
+            Name of the volume on the target platform.
+            In Kubernetes this is the PVC name; in Docker this is the named
+            volume name. Must be a valid DNS label.
+          pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          maxLength: 253
+      additionalProperties: false
+

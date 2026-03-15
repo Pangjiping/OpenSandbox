@@ -17,6 +17,7 @@ BatchSandbox-based workload provider implementation.
 """
 
 import logging
+import json
 import shlex
 from datetime import datetime
 from typing import Dict, List, Any, Optional
@@ -26,14 +27,26 @@ from kubernetes.client import (
     V1EnvVar,
     V1ResourceRequirements,
     V1VolumeMount,
-    ApiException,
 )
 
-from src.api.schema import ImageSpec
-from src.services.constants import SANDBOX_ID_LABEL
+from src.config import AppConfig, INGRESS_MODE_GATEWAY
+from src.services.helpers import format_ingress_endpoint
+from src.api.schema import Endpoint, ImageSpec, NetworkPolicy, Volume
+from src.services.k8s.image_pull_secret_helper import (
+    build_image_pull_secret,
+    build_image_pull_secret_name,
+)
 from src.services.k8s.batchsandbox_template import BatchSandboxTemplateManager
 from src.services.k8s.client import K8sClient
+from src.services.k8s.egress_helper import (
+    apply_egress_to_spec,
+    build_security_context_for_sandbox_container,
+    build_security_context_from_dict,
+    serialize_security_context_to_dict,
+)
+from src.services.k8s.volume_helper import apply_volumes_to_pod_spec
 from src.services.k8s.workload_provider import WorkloadProvider
+from src.services.runtime_resolver import SecureRuntimeResolver
 
 logger = logging.getLogger(__name__)
 
@@ -46,17 +59,33 @@ class BatchSandboxProvider(WorkloadProvider):
     and provides additional features like task management.
     """
     
-    def __init__(self, k8s_client: K8sClient, template_file_path: Optional[str] = None):
+    def __init__(
+        self,
+        k8s_client: K8sClient,
+        app_config: Optional[AppConfig] = None,
+    ):
         """
         Initialize BatchSandbox provider.
-        
+
         Args:
             k8s_client: Kubernetes client wrapper
-            template_file_path: Optional path to BatchSandbox CR YAML template file
+            app_config: Application config; kubernetes/ingress sub-configs are read from it directly.
         """
         self.k8s_client = k8s_client
-        self.custom_api = k8s_client.get_custom_objects_api()
-        
+        self.ingress_config = app_config.ingress if app_config else None
+
+        k8s_config = app_config.kubernetes if app_config else None
+        template_file_path = k8s_config.batchsandbox_template_file if k8s_config else None
+        if template_file_path:
+            logger.info("Using BatchSandbox template file: %s", template_file_path)
+        self.execd_init_resources = k8s_config.execd_init_resources if k8s_config else None
+
+        # Initialize secure runtime resolver
+        self.resolver = SecureRuntimeResolver(app_config) if app_config else None
+        self.runtime_class = (
+            self.resolver.get_k8s_runtime_class() if self.resolver else None
+        )
+
         # CRD constants
         self.group = "sandbox.opensandbox.io"
         self.version = "v1alpha1"
@@ -64,7 +93,11 @@ class BatchSandboxProvider(WorkloadProvider):
         
         # Template manager
         self.template_manager = BatchSandboxTemplateManager(template_file_path)
-    
+
+    def supports_image_auth(self) -> bool:
+        """BatchSandbox supports image pull auth via imagePullSecrets injection."""
+        return True
+
     def create_workload(
         self,
         sandbox_id: str,
@@ -77,15 +110,18 @@ class BatchSandboxProvider(WorkloadProvider):
         expires_at: datetime,
         execd_image: str,
         extensions: Optional[Dict[str, str]] = None,
+        network_policy: Optional[NetworkPolicy] = None,
+        egress_image: Optional[str] = None,
+        volumes: Optional[List[Volume]] = None,
     ) -> Dict[str, Any]:
         """
         Create a BatchSandbox workload.
-        
+
         Supports both template-based and pool-based creation:
         - Template mode (default): Creates workload with user-specified image, resources, and env
         - Pool mode (when extensions contains 'poolRef'): Creates workload from pre-warmed pool,
           only entrypoint and env can be customized
-        
+
         Args:
             sandbox_id: Unique sandbox identifier
             namespace: Kubernetes namespace
@@ -98,18 +134,38 @@ class BatchSandboxProvider(WorkloadProvider):
             execd_image: execd daemon image (not used in pool mode)
             extensions: General extension field for additional configuration.
                 When contains 'poolRef', enables pool-based creation.
-        
+            network_policy: Optional network policy for egress traffic control.
+                When provided, an egress sidecar container will be added to the Pod.
+            egress_image: Container image for the egress sidecar (required when network_policy is set).
+            volumes: Optional list of volume mounts for the sandbox.
+
         Returns:
             Dict with 'name' and 'uid' of created BatchSandbox
+
+        Raises:
+            SandboxError: If pool mode is used with volumes (not supported).
         """
-        batchsandbox_name = f"sandbox-{sandbox_id}"
         extensions = extensions or {}
-        
+
+        # Log runtime class usage for debugging
+        if self.runtime_class:
+            logger.info(
+                "Using Kubernetes RuntimeClass '%s' for sandbox %s",
+                self.runtime_class,
+                sandbox_id,
+            )
+
         # If poolRef is provided and not empty, create workload from pool
         if extensions.get("poolRef"):
+            # Pool mode does not support volumes
+            if volumes:
+                raise ValueError(
+                    "Pool mode does not support volumes. "
+                    "Remove 'volumes' from request or use template mode."
+                )
             # When using pool, only entrypoint and env can be customized
             return self._create_workload_from_pool(
-                batchsandbox_name=batchsandbox_name,
+                batchsandbox_name=sandbox_id,
                 namespace=namespace,
                 labels=labels,
                 pool_ref=extensions["poolRef"],
@@ -118,6 +174,9 @@ class BatchSandboxProvider(WorkloadProvider):
                 env=env,
             )
         
+        # Extract extra pod spec fragments from template (volumes/volumeMounts only).
+        extra_volumes, extra_mounts = self._extract_template_pod_extras()
+
         # Build init container for execd installation
         init_container = self._build_execd_init_container(execd_image)
         
@@ -127,23 +186,53 @@ class BatchSandboxProvider(WorkloadProvider):
             entrypoint=entrypoint,
             env=env,
             resource_limits=resource_limits,
+            has_network_policy=network_policy is not None,
         )
         
-        # Build shared volume for execd
-        volumes = [
-            {
-                "name": "opensandbox-bin",
-                "emptyDir": {}
-            }
-        ]
+        # Build containers list
+        containers = [self._container_to_dict(main_container)]
         
+        # Build base pod spec
+        pod_spec: Dict[str, Any] = {
+            "initContainers": [self._container_to_dict(init_container)],
+            "containers": containers,
+            "volumes": [
+                {
+                    "name": "opensandbox-bin",
+                    "emptyDir": {}
+                }
+            ],
+        }
+
+        # Inject runtimeClassName if secure runtime is configured
+        if self.runtime_class:
+            pod_spec["runtimeClassName"] = self.runtime_class
+
+        # Inject imagePullSecrets if image auth is provided
+        # secret_name is deterministic so it can be embedded before the Secret is created
+        if image_spec.auth:
+            secret_name = build_image_pull_secret_name(sandbox_id)
+            pod_spec["imagePullSecrets"] = [{"name": secret_name}]
+
+        # Add egress sidecar if network policy is provided
+        apply_egress_to_spec(
+            pod_spec=pod_spec,
+            containers=containers,
+            network_policy=network_policy,
+            egress_image=egress_image,
+        )
+
+        # Add user-specified volumes if provided
+        if volumes:
+            apply_volumes_to_pod_spec(pod_spec, volumes)
+
         # Build runtime-generated BatchSandbox manifest
         # This contains only the essential runtime fields
         runtime_manifest = {
             "apiVersion": f"{self.group}/{self.version}",
             "kind": "BatchSandbox",
             "metadata": {
-                "name": batchsandbox_name,
+                "name": sandbox_id,
                 "namespace": namespace,
                 "labels": labels,
             },
@@ -151,27 +240,52 @@ class BatchSandboxProvider(WorkloadProvider):
                 "replicas": 1,
                 "expireTime": expires_at.isoformat(),
                 "template": {
-                    "spec": {
-                        "initContainers": [self._container_to_dict(init_container)],
-                        "containers": [self._container_to_dict(main_container)],
-                        "volumes": volumes,
-                    }
+                    "spec": pod_spec,
                 },
             },
         }
         
         # Merge with template to get final manifest
         batchsandbox = self.template_manager.merge_with_runtime_values(runtime_manifest)
+        self._merge_pod_spec_extras(batchsandbox, extra_volumes, extra_mounts)
         
         # Create BatchSandbox
-        created = self.custom_api.create_namespaced_custom_object(
+        created = self.k8s_client.create_custom_object(
             group=self.group,
             version=self.version,
             namespace=namespace,
             plural=self.plural,
             body=batchsandbox,
         )
-        
+
+        # Create imagePullSecret with ownerReference pointing to the BatchSandbox
+        if image_spec.auth:
+            secret = build_image_pull_secret(
+                sandbox_id=sandbox_id,
+                image_uri=image_spec.uri,
+                auth=image_spec.auth,
+                owner_uid=created["metadata"]["uid"],
+                owner_api_version=f"{self.group}/{self.version}",
+                owner_kind="BatchSandbox",
+            )
+            try:
+                self.k8s_client.create_secret(namespace=namespace, body=secret)
+                logger.info("Created imagePullSecret for sandbox %s", sandbox_id)
+            except Exception:
+                logger.warning("Failed to create imagePullSecret for sandbox %s, rolling back BatchSandbox", sandbox_id)
+                try:
+                    self.k8s_client.delete_custom_object(
+                        group=self.group,
+                        version=self.version,
+                        namespace=namespace,
+                        plural=self.plural,
+                        name=sandbox_id,
+                        grace_period_seconds=0,
+                    )
+                except Exception as del_exc:
+                    logger.warning("Failed to rollback BatchSandbox %s: %s", sandbox_id, del_exc)
+                raise
+
         return {
             "name": created["metadata"]["name"],
             "uid": created["metadata"]["uid"],
@@ -227,7 +341,7 @@ class BatchSandboxProvider(WorkloadProvider):
         
         # Pool-based creation does not need template merging
         # Create BatchSandbox directly
-        created = self.custom_api.create_namespaced_custom_object(
+        created = self.k8s_client.create_custom_object(
             group=self.group,
             version=self.version,
             namespace=namespace,
@@ -240,7 +354,87 @@ class BatchSandboxProvider(WorkloadProvider):
             "uid": created["metadata"]["uid"],
         }
 
-    # Todo support empty cmd or env
+    def _extract_template_pod_extras(self) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]]]:
+        """
+        Extract extra volumes and volume mounts from the BatchSandbox template.
+
+        Only these fields are supported here because runtime manifests must
+        always inject execd init container, main container, and volumes.
+        """
+        template = self.template_manager.get_base_template()
+        spec = template.get("spec", {}) if isinstance(template, dict) else {}
+        template_spec = spec.get("template", {}).get("spec", {})
+        extra_volumes = template_spec.get("volumes", []) or []
+
+        extra_mounts: list[Dict[str, Any]] = []
+        containers = template_spec.get("containers", []) or []
+        if containers:
+            # Prefer container named "sandbox" if present, otherwise first container.
+            target = None
+            for container in containers:
+                if container.get("name") == "sandbox":
+                    target = container
+                    break
+            if target is None:
+                target = containers[0]
+            extra_mounts = target.get("volumeMounts", []) or []
+
+        if not isinstance(extra_volumes, list):
+            extra_volumes = []
+        if not isinstance(extra_mounts, list):
+            extra_mounts = []
+        return extra_volumes, extra_mounts
+
+    def _merge_pod_spec_extras(
+        self,
+        batchsandbox: Dict[str, Any],
+        extra_volumes: list[Dict[str, Any]],
+        extra_mounts: list[Dict[str, Any]],
+    ) -> None:
+        """
+        Merge extra volumes/volumeMounts into the runtime-generated pod spec.
+
+        This keeps execd injections intact while allowing user templates to
+        provide additional read-only mounts (e.g., shared skills directory).
+        """
+        try:
+            spec = batchsandbox["spec"]["template"]["spec"]
+        except KeyError:
+            return
+
+        # Merge volumes by name (do not overwrite existing runtime volumes).
+        volumes = spec.get("volumes", []) or []
+        if isinstance(volumes, list) and extra_volumes:
+            existing = {v.get("name") for v in volumes if isinstance(v, dict)}
+            for vol in extra_volumes:
+                if not isinstance(vol, dict):
+                    continue
+                name = vol.get("name")
+                if not name or name in existing:
+                    continue
+                volumes.append(vol)
+                existing.add(name)
+            spec["volumes"] = volumes
+
+        # Merge volumeMounts into the main container (index 0).
+        containers = spec.get("containers", []) or []
+        if not containers or not isinstance(containers, list):
+            return
+        main_container = containers[0]
+        mounts = main_container.get("volumeMounts", []) or []
+        if isinstance(mounts, list) and extra_mounts:
+            existing = {m.get("name") for m in mounts if isinstance(m, dict)}
+            for mnt in extra_mounts:
+                if not isinstance(mnt, dict):
+                    continue
+                name = mnt.get("name")
+                if not name or name in existing:
+                    continue
+                mounts.append(mnt)
+                existing.add(name)
+            main_container["volumeMounts"] = mounts
+
+    # TODO: support empty cmd or env
     def _build_task_template(
         self,
         entrypoint: List[str],
@@ -308,7 +502,14 @@ class BatchSandboxProvider(WorkloadProvider):
             "chmod +x /opt/opensandbox/bin/execd && "
             "chmod +x /opt/opensandbox/bin/bootstrap.sh"
         )
-        
+
+        resources = None
+        if self.execd_init_resources:
+            resources = V1ResourceRequirements(
+                limits=self.execd_init_resources.limits,
+                requests=self.execd_init_resources.requests,
+            )
+
         return V1Container(
             name="execd-installer",
             image=execd_image,
@@ -320,6 +521,7 @@ class BatchSandboxProvider(WorkloadProvider):
                     mount_path="/opt/opensandbox/bin"
                 )
             ],
+            resources=resources,
         )
     
     def _build_main_container(
@@ -328,6 +530,7 @@ class BatchSandboxProvider(WorkloadProvider):
         entrypoint: List[str],
         env: Dict[str, str],
         resource_limits: Dict[str, str],
+        has_network_policy: bool = False,
     ) -> V1Container:
         """
         Build main container spec with execd support.
@@ -340,6 +543,7 @@ class BatchSandboxProvider(WorkloadProvider):
             entrypoint: Container entrypoint command
             env: Environment variables
             resource_limits: Resource limits
+            has_network_policy: Whether network policy is enabled for this sandbox
             
         Returns:
             V1Container: Main container spec
@@ -360,6 +564,12 @@ class BatchSandboxProvider(WorkloadProvider):
         # Wrap entrypoint with bootstrap script to start execd
         wrapped_command = ["/opt/opensandbox/bin/bootstrap.sh"] + entrypoint
         
+        # Apply security context when network policy is enabled
+        security_context = None
+        if has_network_policy:
+            security_context_dict = build_security_context_for_sandbox_container(True)
+            security_context = build_security_context_from_dict(security_context_dict)
+        
         return V1Container(
             name="sandbox",
             image=image_spec.uri,
@@ -372,6 +582,7 @@ class BatchSandboxProvider(WorkloadProvider):
                     mount_path="/opt/opensandbox/bin"
                 )
             ],
+            security_context=security_context,
         )
     
     def _container_to_dict(self, container: V1Container) -> Dict[str, Any]:
@@ -414,34 +625,37 @@ class BatchSandboxProvider(WorkloadProvider):
                 for vm in container.volume_mounts
             ]
         
+        if container.security_context:
+            security_context_dict = serialize_security_context_to_dict(container.security_context)
+            if security_context_dict:
+                result["securityContext"] = security_context_dict
+        
         return result
-    
+
     def get_workload(self, sandbox_id: str, namespace: str) -> Optional[Dict[str, Any]]:
         """Get BatchSandbox by sandbox ID."""
-        label_selector = f"{SANDBOX_ID_LABEL}={sandbox_id}"
-        
-        try:
-            batchsandbox_list = self.custom_api.list_namespaced_custom_object(
+        workload = self.k8s_client.get_custom_object(
+            group=self.group,
+            version=self.version,
+            namespace=namespace,
+            plural=self.plural,
+            name=sandbox_id,
+        )
+        if workload:
+            return workload
+
+        # Fallback for pre-upgrade sandboxes that used "sandbox-<id>" naming
+        legacy_name = self.legacy_resource_name(sandbox_id)
+        if legacy_name != sandbox_id:
+            return self.k8s_client.get_custom_object(
                 group=self.group,
                 version=self.version,
                 namespace=namespace,
                 plural=self.plural,
-                label_selector=label_selector,
+                name=legacy_name,
             )
-            
-            if batchsandbox_list.get("items"):
-                return batchsandbox_list["items"][0]
-            return None
-        except ApiException as e:
-            # Handle 404 when CRD doesn't exist or no resources found
-            if e.status == 404:
-                return None
-            # Re-raise other API exceptions
-            raise
-        except Exception as e:
-            # Log unexpected errors and re-raise
-            logger.error(f"Unexpected error getting BatchSandbox for {sandbox_id}: {e}")
-            raise
+
+        return None
     
     def delete_workload(self, sandbox_id: str, namespace: str) -> None:
         """Delete BatchSandbox workload."""
@@ -449,7 +663,7 @@ class BatchSandboxProvider(WorkloadProvider):
         if not batchsandbox:
             raise Exception(f"BatchSandbox for sandbox {sandbox_id} not found")
         
-        self.custom_api.delete_namespaced_custom_object(
+        self.k8s_client.delete_custom_object(
             group=self.group,
             version=self.version,
             namespace=namespace,
@@ -460,25 +674,13 @@ class BatchSandboxProvider(WorkloadProvider):
     
     def list_workloads(self, namespace: str, label_selector: str) -> List[Dict[str, Any]]:
         """List BatchSandboxes matching label selector."""
-        try:
-            batchsandbox_list = self.custom_api.list_namespaced_custom_object(
-                group=self.group,
-                version=self.version,
-                namespace=namespace,
-                plural=self.plural,
-                label_selector=label_selector,
-            )
-            return batchsandbox_list.get("items", [])
-        except ApiException as e:
-            # Handle 404 when CRD doesn't exist
-            if e.status == 404:
-                return []
-            # Re-raise other API exceptions
-            raise
-        except Exception as e:
-            # Log and re-raise unexpected errors
-            logger.error(f"Unexpected error listing BatchSandboxes: {e}")
-            raise
+        return self.k8s_client.list_custom_objects(
+            group=self.group,
+            version=self.version,
+            namespace=namespace,
+            plural=self.plural,
+            label_selector=label_selector,
+        )
     
     def update_expiration(self, sandbox_id: str, namespace: str, expires_at: datetime) -> None:
         """Update BatchSandbox expiration time.
@@ -502,7 +704,7 @@ class BatchSandboxProvider(WorkloadProvider):
             }
         }
         
-        self.custom_api.patch_namespaced_custom_object(
+        self.k8s_client.patch_custom_object(
             group=self.group,
             version=self.version,
             namespace=namespace,
@@ -530,9 +732,27 @@ class BatchSandboxProvider(WorkloadProvider):
             # Parse ISO format datetime
             return datetime.fromisoformat(expire_time_str.replace('Z', '+00:00'))
         except (ValueError, TypeError) as e:
-            logger.warning(f"Invalid expireTime format: {expire_time_str}, error: {e}")
+            logger.warning("Invalid expireTime format: %s, error: %s", expire_time_str, e)
             return None
     
+    def _parse_pod_ip(self, workload: Dict[str, Any]) -> Optional[str]:
+        """Parse the first Pod IP from the endpoints annotation.
+
+        Returns the IP string if the annotation exists and contains a non-empty
+        JSON array, otherwise returns None.
+        """
+        annotations = workload.get("metadata", {}).get("annotations", {})
+        endpoints_str = annotations.get("sandbox.opensandbox.io/endpoints")
+        if not endpoints_str:
+            return None
+        try:
+            endpoints = json.loads(endpoints_str)
+            if endpoints and len(endpoints) > 0:
+                return endpoints[0]
+        except (json.JSONDecodeError, IndexError, TypeError):
+            pass
+        return None
+
     def get_status(self, workload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Get status from BatchSandbox.
@@ -547,32 +767,29 @@ class BatchSandboxProvider(WorkloadProvider):
         replicas = status.get("replicas", 0)
         ready = status.get("ready", 0)
         allocated = status.get("allocated", 0)
-        
-        # Get annotations for endpoint information
-        annotations = workload.get("metadata", {}).get("annotations", {})
-        endpoints_str = annotations.get("sandbox.opensandbox.io/endpoints")
-        
-        # Determine state based on ready status and endpoint availability
-        if ready == 1 and endpoints_str:
-            # Pod is ready and has an IP address assigned
+
+        pod_ip = self._parse_pod_ip(workload)
+
+        # Determine state: Pending -> Allocated (IP assigned) -> Running (Pod ready)
+        if ready == 1 and pod_ip:
+            # Pod is ready and has IP
             state = "Running"
-            reason = "READY_WITH_IP"
-            message = f"Pod is ready with IP assigned ({ready}/{replicas} ready)"
-        elif ready > 0:
-            # Pod is ready but no IP yet - still pending
-            state = "Pending"
-            reason = "POD_READY_NO_IP"
-            message = f"Pod is ready but waiting for IP assignment ({ready}/{replicas} ready)"
-        elif allocated > 0:
-            # Pod is allocated/scheduled but not ready yet
-            state = "Pending"
-            reason = "POD_SCHEDULED"
-            message = f"Pod is scheduled but not ready ({allocated}/{replicas} allocated, {ready} ready)"
+            reason = "POD_READY_WITH_IP"
+            message = f"Pod is ready with IP ({ready}/{replicas} ready)"
+        elif pod_ip:
+            # Pod has IP assigned but not ready yet
+            state = "Allocated"
+            reason = "IP_ASSIGNED"
+            message = f"Pod has IP assigned but not ready ({allocated}/{replicas} allocated, {ready} ready)"
         else:
-            # Pod is not allocated yet
+            # Pod is not allocated yet or allocated but no IP
             state = "Pending"
-            reason = "BATCHSANDBOX_PENDING"
-            message = "BatchSandbox is pending allocation"
+            reason = "POD_SCHEDULED" if allocated > 0 else "BATCHSANDBOX_PENDING"
+            message = (
+                f"Pod is scheduled but waiting for IP ({allocated}/{replicas} allocated, {ready} ready)"
+                if allocated > 0
+                else "BatchSandbox is pending allocation"
+            )
         
         # Get creation timestamp
         creation_timestamp = workload.get("metadata", {}).get("creationTimestamp")
@@ -584,38 +801,16 @@ class BatchSandboxProvider(WorkloadProvider):
             "last_transition_at": creation_timestamp,
         }
     
-    def get_endpoint_info(self, workload: Dict[str, Any], port: int) -> Optional[str]:
+    def get_endpoint_info(self, workload: Dict[str, Any], port: int, sandbox_id: str) -> Optional[Endpoint]:
         """
         Get endpoint information from BatchSandbox.
-        
-        Reads Pod IP from sandbox.opensandbox.io/endpoints annotation.
-        The annotation contains a JSON array of IP addresses.
-        
-        Args:
-            workload: BatchSandbox dict
-            port: Port number
-            
-        Returns:
-            Endpoint string in format "IP:PORT" or None if not available
+        - gateway mode: use ingress config to format endpoint
+        - direct/default: resolve Pod IP from annotation
         """
-        import json
-        
-        # Get annotations
-        annotations = workload.get("metadata", {}).get("annotations", {})
-        
-        # Get endpoints from annotation
-        endpoints_str = annotations.get("sandbox.opensandbox.io/endpoints")
-        if not endpoints_str:
+        if self.ingress_config and self.ingress_config.mode == INGRESS_MODE_GATEWAY:
+            return format_ingress_endpoint(self.ingress_config, sandbox_id, port)
+
+        pod_ip = self._parse_pod_ip(workload)
+        if not pod_ip:
             return None
-        
-        try:
-            # Parse JSON array of IPs
-            endpoints = json.loads(endpoints_str)
-            if endpoints and len(endpoints) > 0:
-                # Use the first IP
-                pod_ip = endpoints[0]
-                return f"{pod_ip}:{port}"
-        except (json.JSONDecodeError, IndexError, TypeError):
-            return None
-        
-        return None
+        return Endpoint(endpoint=f"{pod_ip}:{port}")

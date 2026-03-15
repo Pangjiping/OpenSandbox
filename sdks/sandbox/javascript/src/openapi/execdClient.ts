@@ -41,7 +41,9 @@ export interface CreateExecdClientOptions {
 }
 
 export function createExecdClient(opts: CreateExecdClientOptions): ExecdClient {
-  return createClient<ExecdPaths>({
+  const createClientFn =
+      (createClient as unknown as { default?: typeof createClient }).default ?? createClient;
+  return createClientFn<ExecdPaths>({
     baseUrl: opts.baseUrl,
     headers: opts.headers,
     fetch: opts.fetch,

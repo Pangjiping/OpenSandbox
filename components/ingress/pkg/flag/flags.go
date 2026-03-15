@@ -21,9 +21,12 @@ var (
 	// Port controls the HTTP listener port.
 	Port int
 
-	// IngressLabelKey filters the target sandbox instances.
-	IngressLabelKey string
-
 	// Namespace filters the target sandbox instances.
 	Namespace string
+
+	// ProviderType specifies the sandbox provider type (e.g., batchsandbox).
+	ProviderType string
+
+	// Mode specifies the sandbox service discovery mode (e.g., header, uri).
+	Mode string
 )

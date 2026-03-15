@@ -16,6 +16,7 @@
 
 package com.alibaba.opensandbox.sandbox
 
+import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutException
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
@@ -67,6 +68,14 @@ class SandboxTest {
 
     @BeforeEach
     fun setUp() {
+        every {
+            httpClientProvider.config
+        } returns
+            ConnectionConfig.builder()
+                .domain("localhost:8080")
+                .useServerProxy(false)
+                .build()
+
         sandbox =
             Sandbox(
                 id = sandboxId,
@@ -115,12 +124,14 @@ class SandboxTest {
     fun `getEndpoint should delegate to sandboxService`() {
         val port = 8080
         val expectedEndpoint = mockk<SandboxEndpoint>()
-        every { sandboxService.getSandboxEndpoint(sandboxId, port) } returns expectedEndpoint
+        val connectionConfig = ConnectionConfig.builder().build()
+        every { httpClientProvider.config } returns connectionConfig
+        every { sandboxService.getSandboxEndpoint(sandboxId, port, false) } returns expectedEndpoint
 
         val result = sandbox.getEndpoint(port)
 
         assertSame(expectedEndpoint, result)
-        verify { sandboxService.getSandboxEndpoint(sandboxId, port) }
+        verify { sandboxService.getSandboxEndpoint(sandboxId, port, false) }
     }
 
     @Test
@@ -204,5 +215,39 @@ class SandboxTest {
         assertThrows(SandboxReadyTimeoutException::class.java) {
             sandbox.checkReady(Duration.ofMillis(100), Duration.ofMillis(10))
         }
+    }
+
+    @Test
+    fun `checkReady timeout should include connection context and bridge hint`() {
+        every { healthService.ping(sandboxId) } throws RuntimeException("connect ECONNREFUSED")
+
+        val ex =
+            assertThrows(SandboxReadyTimeoutException::class.java) {
+                sandbox.checkReady(Duration.ofMillis(100), Duration.ofMillis(10))
+            }
+
+        assertTrue(ex.message!!.contains("Connection context: domain=localhost:8080, useServerProxy=false"))
+        assertTrue(ex.message!!.contains("useServerProxy=true"))
+        assertTrue(ex.message!!.contains("[docker].host_ip"))
+        assertTrue(ex.message!!.contains("Last error: connect ECONNREFUSED"))
+    }
+
+    @Test
+    fun `checkReady timeout should omit host_ip hint when server proxy is enabled`() {
+        val proxyEnabledConfig =
+            ConnectionConfig.builder()
+                .domain("localhost:8080")
+                .useServerProxy(true)
+                .build()
+        every { httpClientProvider.config } returns proxyEnabledConfig
+        every { healthService.ping(sandboxId) } returns false
+
+        val ex =
+            assertThrows(SandboxReadyTimeoutException::class.java) {
+                sandbox.checkReady(Duration.ofMillis(100), Duration.ofMillis(10))
+            }
+
+        assertTrue(ex.message!!.contains("useServerProxy=true"))
+        assertFalse(ex.message!!.contains("[docker].host_ip"))
     }
 }

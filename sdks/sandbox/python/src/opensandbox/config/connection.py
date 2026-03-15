@@ -35,8 +35,9 @@ class ConnectionConfig(BaseModel):
     Sandbox operations connection configuration.
 
     Transport lifecycle:
-    - If `transport` is NOT provided, the SDK creates a default `httpx.AsyncHTTPTransport`.
-      In this case, `Sandbox.close()` / `SandboxManager.close()` will close the transport.
+    - If `transport` is NOT provided, the SDK creates a default `httpx.AsyncHTTPTransport`
+      per Sandbox/Manager instance. In this case, `Sandbox.close()` / `SandboxManager.close()`
+      will close the transport.
     - If `transport` IS provided by the user, the SDK will NOT close it; the user owns it.
 
     Note:
@@ -64,17 +65,24 @@ class ConnectionConfig(BaseModel):
         default=False, description="Enable debug logging for HTTP requests"
     )
     user_agent: str = Field(
-        default="OpenSandbox-Python-SDK/0.1.0", description="User agent string"
+        default="OpenSandbox-Python-SDK/0.1.4", description="User agent string"
     )
     headers: dict[str, str] = Field(
         default_factory=dict, description="User defined headers"
     )
-    transport: httpx.AsyncBaseTransport = Field(
-        default_factory=httpx.AsyncHTTPTransport,
+    transport: httpx.AsyncBaseTransport | None = Field(
+        default=None,
         description=(
-            "Shared httpx transport instance used by all SDK HTTP clients. "
-            "Pass a custom transport (e.g. AsyncHTTPTransport with custom settings) "
-            "to control connection pooling, proxies, retries, etc."
+            "Shared httpx transport instance used by all HTTP clients within a "
+            "Sandbox/Manager instance. Pass a custom transport (e.g. AsyncHTTPTransport "
+            "with custom settings) to control connection pooling, proxies, retries, etc."
+        ),
+    )
+    use_server_proxy: bool = Field(
+        default=False,
+        description=(
+            "Using sandbox server as proxy for process execd requests"
+            "It's useful when client sdk can't access the created sandbox directly"
         ),
     )
 
@@ -88,9 +96,29 @@ class ConnectionConfig(BaseModel):
         # If the user explicitly provided `transport`, the SDK must not close it.
         self._owns_transport = "transport" not in self.model_fields_set
 
+    def with_transport_if_missing(self) -> "ConnectionConfig":
+        """
+        Ensure a transport exists for this SDK resource.
+
+        If `transport` is missing, return a copy with a default transport and
+        mark it as SDK-owned. If present, return self unchanged.
+        """
+        if self.transport is not None:
+            return self
+        transport = httpx.AsyncHTTPTransport(
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=20,
+                keepalive_expiry=30.0,
+            ),
+        )
+        config = self.model_copy(update={"transport": transport})
+        config._owns_transport = True
+        return config
+
     async def close_transport_if_owned(self) -> None:
         """Close the transport only if it was created by default_factory."""
-        if not self._owns_transport:
+        if self.transport is None or not self._owns_transport:
             return
         try:
             await self.transport.aclose()

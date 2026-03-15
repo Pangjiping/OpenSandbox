@@ -23,7 +23,7 @@ from fastapi import HTTPException
 
 from src.services.k8s.kubernetes_service import KubernetesSandboxService
 from src.services.constants import SandboxErrorCodes
-from src.api.schema import ListSandboxesRequest
+from src.api.schema import ImageAuth, ListSandboxesRequest
 
 
 class TestKubernetesSandboxServiceInit:
@@ -121,6 +121,79 @@ class TestKubernetesSandboxServiceCreate:
         assert response.status.state == "Running"
         k8s_service.workload_provider.create_workload.assert_called_once()
 
+    def test_create_sandbox_uses_configured_timeout_and_poll_interval(
+        self, k8s_service, create_sandbox_request, mock_workload
+    ):
+        """
+        Test case: create_sandbox uses timeout and poll_interval from config
+
+        Purpose: Verify that sandbox_create_timeout_seconds and
+        sandbox_create_poll_interval_seconds are read from KubernetesRuntimeConfig
+        and forwarded to _wait_for_sandbox_ready.
+        """
+        from unittest.mock import patch
+
+        k8s_service.workload_provider.create_workload.return_value = {
+            "name": "test-sandbox-123",
+            "uid": "abc-123",
+        }
+        k8s_service.workload_provider.get_workload.return_value = mock_workload
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running",
+            "reason": "",
+            "message": "Pod is running",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+
+        # Override config values
+        k8s_service.app_config.kubernetes.sandbox_create_timeout_seconds = 120
+        k8s_service.app_config.kubernetes.sandbox_create_poll_interval_seconds = 0.5
+
+        with patch.object(k8s_service, "_wait_for_sandbox_ready", wraps=k8s_service._wait_for_sandbox_ready) as mock_wait:
+            k8s_service.create_sandbox(create_sandbox_request)
+
+        mock_wait.assert_called_once()
+        _, kwargs = mock_wait.call_args
+        assert kwargs["timeout_seconds"] == 120
+        assert kwargs["poll_interval_seconds"] == 0.5
+
+    def test_create_sandbox_rejects_image_auth_when_provider_not_supported(
+        self, k8s_service, create_sandbox_request
+    ):
+        k8s_service.workload_provider.supports_image_auth.return_value = False
+        create_sandbox_request.image.auth = ImageAuth(
+            username="registry-user",
+            password="registry-pass",
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            k8s_service.create_sandbox(create_sandbox_request)
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
+        k8s_service.workload_provider.create_workload.assert_not_called()
+
+    def test_create_sandbox_allows_image_auth_when_provider_supported(
+        self, k8s_service, create_sandbox_request
+    ):
+        k8s_service.workload_provider.supports_image_auth.return_value = True
+        create_sandbox_request.image.auth = ImageAuth(
+            username="registry-user",
+            password="registry-pass",
+        )
+        k8s_service.workload_provider.create_workload.return_value = {
+            "name": "test-id", "uid": "uid-1"
+        }
+        k8s_service.workload_provider.get_workload.return_value = MagicMock()
+        k8s_service.workload_provider.get_status.return_value = {
+            "state": "Running", "reason": "", "message": "",
+            "last_transition_at": datetime.now(timezone.utc),
+        }
+
+        # Should not raise
+        k8s_service.create_sandbox(create_sandbox_request)
+        k8s_service.workload_provider.create_workload.assert_called_once()
+
 
 class TestWaitForSandboxReady:
     """_wait_for_sandbox_ready method tests"""
@@ -145,14 +218,14 @@ class TestWaitForSandboxReady:
     
     def test_wait_for_pending_then_running_succeeds(self, k8s_service, mock_workload):
         """
-        Test case: Successfully wait from Pending to Running
+        Test case: Successfully wait from Pending to Allocated to Running
         
-        Purpose: Verify normal waiting when Pod transitions from Pending to Running state
+        Purpose: Verify normal waiting when Pod transitions through Pending -> Allocated -> Running
         """
-        # Mock state transition: Pending -> Running
+        # Mock state transition: Pending -> Allocated -> Running
         status_sequence = [
             {"state": "Pending", "reason": "", "message": "Pending", "last_transition_at": datetime.now(timezone.utc)},
-            {"state": "Pending", "reason": "", "message": "Pulling image", "last_transition_at": datetime.now(timezone.utc)},
+            {"state": "Allocated", "reason": "IP_ASSIGNED", "message": "IP assigned", "last_transition_at": datetime.now(timezone.utc)},
             {"state": "Running", "reason": "", "message": "Running", "last_transition_at": datetime.now(timezone.utc)},
         ]
         
@@ -162,27 +235,25 @@ class TestWaitForSandboxReady:
         result = k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=10, poll_interval_seconds=0.1)
         
         assert result == mock_workload
-        assert k8s_service.workload_provider.get_status.call_count == 3
+        assert k8s_service.workload_provider.get_status.call_count == 2
     
-    def test_wait_for_failed_pod_raises_exception(self, k8s_service, mock_workload):
+    def test_wait_for_allocated_pod_returns_immediately(self, k8s_service, mock_workload):
         """
-        Test case: Raises exception for Failed Pod
+        Test case: Returns immediately when Pod reaches Allocated state (IP assigned)
         
-        Purpose: Verify that HTTPException is raised when Pod enters Failed state
+        Purpose: Verify that Allocated state (IP assigned) is treated as ready
         """
         k8s_service.workload_provider.get_workload.return_value = mock_workload
         k8s_service.workload_provider.get_status.return_value = {
-            "state": "Failed",
-            "reason": "ImagePullBackOff",
-            "message": "Failed to pull image",
+            "state": "Allocated",
+            "reason": "IP_ASSIGNED",
+            "message": "Pod has IP assigned",
             "last_transition_at": datetime.now(timezone.utc),
         }
         
-        with pytest.raises(HTTPException) as exc_info:
-            k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=10)
+        result = k8s_service._wait_for_sandbox_ready("test-sandbox-id", timeout_seconds=10)
         
-        assert exc_info.value.status_code == 500
-        assert "Failed to pull image" in exc_info.value.detail["message"]
+        assert result == mock_workload
     
     def test_wait_timeout_raises_exception(self, k8s_service, mock_workload):
         """

@@ -44,14 +44,14 @@ classifiers = [
 dependencies = [
     "pydantic>=2.4.2,<3.0",
     "python-dateutil>=2.8.2,<3.0",
-    "attrs>=21.3.0,<25.0",
-    "httpx>=0.28.1,<1.0",
+    "attrs>=21.3.0",
+    "httpx>=0.27.0,<1.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/alibaba/OpenSandbox"
+Homepage = "https://open-sandbox.ai"
 Repository = "https://github.com/alibaba/OpenSandbox"
-Documentation = "https://docs.opensandbox.io"
+Documentation = "https://open-sandbox.ai"
 Issues = "https://github.com/alibaba/OpenSandbox/issues"
 
 [tool.hatch.version]

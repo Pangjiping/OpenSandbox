@@ -4,8 +4,8 @@ authors:
   - "@hittyt"
   - "@Pangjiping"
 creation-date: 2025-12-27
-last-updated: 2026-01-07
-status: implementing
+last-updated: 2026-01-22
+status: implemented
 ---
 
 # OSEP-0001: FQDN-based Egress Control
@@ -213,7 +213,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/EgressRule'
-        default_action:
+        defaultAction:
           type: string
           enum: [allow, deny]
           default: deny
@@ -268,7 +268,7 @@ sandbox = await Sandbox.create(
             EgressRule(action="allow", target="10.0.0.5"),       # Single IP
             EgressRule(action="allow", target="10.96.0.0/12"),   # K8s Service CIDR
         ],
-        default_action="deny",
+        defaultAction="deny",
     ),
 )
 ```
@@ -289,12 +289,12 @@ sandbox = await Sandbox.create(
 │                                  ▼                                          │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │ DockerSandboxService / K8sSandboxService                             │   │
-│  │   1. Serialize network_policy to JSON                                │   │
-│  │   2. Pass to egress sidecar via:                                     │   │
-│  │      - Environment variable: OPENSANDBOX_NETWORK_POLICY              │   │
-│  │      - Or mounted config file: /etc/opensandbox/network-policy.json  │   │
-│  │   3. Add CAP_NET_ADMIN capability to sidecar container only          │   │
-│  │   4. Configure app container to share sidecar network namespace      │   │
+│  │   1. Start egress sidecar (CAP_NET_ADMIN) + app container (shared ns) │   │
+│  │   2. Inject OPENSANDBOX_EGRESS_TOKEN into sidecar                    │   │
+│  │   3. (Optional) Seed policy from env OPENSANDBOX_EGRESS_RULES        │   │
+│  │   4. Wait for sidecar /healthz = 200                                 │   │
+│  │   5. POST network_policy to /policy with header                      │   │
+│  │      "OPENSANDBOX-EGRESS-AUTH: <token>"                              │   │
 │  └───────────────────────────────┬──────────────────────────────────────┘   │
 └──────────────────────────────────┼──────────────────────────────────────────┘
                                    │
@@ -303,11 +303,12 @@ sandbox = await Sandbox.create(
 │                           Sandbox (shared netns)                             │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │ Egress Sidecar (NET_ADMIN)                                           │   │
-│  │   1. Parse network_policy from env/file                              │   │
-│  │   2. Start DNS Proxy on 127.0.0.1:15353 (non-privileged port)        │   │
-│  │   3. Setup iptables REDIRECT 53→15353 (CAP_NET_ADMIN)                │   │
-│  │   4. Probe nftables capability (fallback to dns-only)                │   │
-│  │   5. Initialize network filter if available                          │   │
+│  │   1. Load optional bootstrap from OPENSANDBOX_EGRESS_RULES (else deny-all)│   │
+│  │   2. Accept updates via HTTP /policy (with auth header)              │   │
+│  │   3. Start DNS Proxy on 127.0.0.1:15353 (non-privileged port)        │   │
+│  │   4. Setup iptables REDIRECT 53→15353 (CAP_NET_ADMIN)                │   │
+│  │   5. Probe nftables capability (fallback to dns-only)                │   │
+│  │   6. Initialize network filter if available                          │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -529,7 +530,7 @@ func (p *DNSProxy) respondNXDomain(w dns.ResponseWriter, r *dns.Msg) {
 
 type NetworkPolicy struct {
     Egress        []EgressRule `json:"egress"`
-    DefaultAction Action       `json:"default_action"`
+    DefaultAction Action       `json:"defaultAction"`
 }
 
 type TargetType int
@@ -865,16 +866,15 @@ type NetFilter interface {
 func NewController(policy *NetworkPolicy) (*Controller, error) {
     ctrl := &Controller{policy: policy}
 
-    // No policy = disabled (preserve existing behavior exactly)
-    // - No DNS Proxy
+    // No policy = default deny-all fallback
+    // - DNS proxy still runs with deny-all baseline
     // - No resolv.conf modification
-    // - No network filtering
-    // - All external access allowed
+    // - No network filtering if nftables unavailable
+    // - External access denied unless rules are provided
     if policy == nil || len(policy.Egress) == 0 {
-        ctrl.mode = ModeDisabled
-        logs.Info("[egress] control disabled: no network_policy configured")
-        logs.Info("[egress] all external network access is allowed (default behavior)")
-        return ctrl, nil
+        ctrl.mode = ModeDNSOnly
+        ctrl.policy = &NetworkPolicy{DefaultAction: ActionDeny}
+        logs.Info("[egress] no network_policy configured; enforcing default deny-all")
     }
 
     // Probe capabilities in order of preference
@@ -1039,15 +1039,18 @@ The sidecar holds the only elevated capability (`CAP_NET_ADMIN`) needed for ipta
 
 - Create an egress sidecar container with `--cap-add=NET_ADMIN` (no root required).
 - Run the application container with `--network container:<sidecar>` so they share one network namespace.
-- Pass `OPENSANDBOX_NETWORK_POLICY` (or mounted config) to the sidecar only.
-- Sidecar startup: start DNS proxy on `127.0.0.1:15353`, install iptables REDIRECT 53→15353, probe nftables, program allowlists.
+- Sidecar starts DNS proxy on `127.0.0.1:15353`, installs iptables REDIRECT 53→15353, probes nftables.
+- Server waits for sidecar `/healthz` 200, then POSTs the declared sandbox network policy to sidecar `/policy`
+  with header `OPENSANDBOX-EGRESS-AUTH: <token>` (token injected via env `OPENSANDBOX_EGRESS_TOKEN`).
+- No `OPENSANDBOX_NETWORK_POLICY` env/config injection path is used anymore.
 
 #### Deployment Flow (Kubernetes)
 
 - Pod spec includes two containers: `egress-sidecar` (with `capabilities.add: [NET_ADMIN]`) and the application container (no extra caps).
 - Both containers share the pod network namespace by default; sidecar listens on `127.0.0.1:15353`.
-- `OPENSANDBOX_NETWORK_POLICY` (or a mounted file) is injected into the sidecar only.
-- Sidecar init: DNS proxy start, iptables REDIRECT setup, nftables allowlists.
+- Server (inside cluster) waits for sidecar `/healthz` 200 on the Pod IP, then POSTs the sandbox `networkPolicy`
+  to `/policy` with `OPENSANDBOX-EGRESS-AUTH` header. Token comes from `OPENSANDBOX_EGRESS_TOKEN` env on the sidecar.
+- HostNetwork + network_policy is rejected.
 
 #### Behavior When CAP_NET_ADMIN Is Unavailable
 
@@ -1061,8 +1064,7 @@ The sidecar holds the only elevated capability (`CAP_NET_ADMIN`) needed for ipta
 
 func (c *Controller) Start() error {
     if c.policy == nil || len(c.policy.Egress) == 0 {
-        logs.Info("[egress] no network_policy, all external access allowed")
-        return nil
+        logs.Info("[egress] no network_policy, enforcing default deny-all")
     }
 
     // Start DNS Proxy on non-privileged port (no root needed)
@@ -1121,15 +1123,16 @@ The key insight is that `CAP_NET_ADMIN` grants permission to modify network conf
 **`server/src/services/docker.py`** (sidecar pattern):
 - Create an egress sidecar container when `network_policy` is present.
 - Add `CAP_NET_ADMIN` only to the sidecar.
-- Inject `OPENSANDBOX_NETWORK_POLICY` (or mounted file) into the sidecar.
+- Set `OPENSANDBOX_EGRESS_TOKEN` env (random per-sandbox) and optionally `OPENSANDBOX_EGRESS_HTTP_ADDR`.
 - Run the application container with `network_mode: "container:<sidecar>"` (shared netns), no extra caps.
+- Wait for sidecar `/healthz` 200, then POST `networkPolicy` to `/policy` with header `OPENSANDBOX-EGRESS-AUTH: <token>`.
 - Reject `--network host` when `network_policy` is set (hostNetwork not supported).
 
 **`server/src/services/k8s/batchsandbox_provider.py`** (Pod pattern):
 - Pod spec includes `egress-sidecar` with `capabilities.add: [NET_ADMIN]` and the application container without extra caps.
-- Policy injected via env or mounted file to the sidecar only.
-- Both containers share the pod network namespace by default.
-- Reject `hostNetwork=true` when `network_policy` is set (hostNetwork not supported).
+- Sidecar env includes `OPENSANDBOX_EGRESS_TOKEN` (and `OPENSANDBOX_EGRESS_HTTP_ADDR` if non-default); may optionally seed `OPENSANDBOX_EGRESS_RULES`.
+- Server (inside cluster) waits for `/healthz` on the Pod IP, then POSTs `networkPolicy` to `/policy` with header `OPENSANDBOX-EGRESS-AUTH`.
+- Reject `hostNetwork=true` when `network_policy` is set.
 
 #### 2. Sidecar Implementation
 
@@ -1143,32 +1146,18 @@ New packages:
 
 ```go
 func main() {
-    // ... existing initialization ...
+    ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+    defer cancel()
 
-    // Initialize egress control before starting user process
-    policyJSON := os.Getenv("OPENSANDBOX_NETWORK_POLICY")
-    if policyJSON != "" {
-        policy, err := egress.ParsePolicy(policyJSON)
-        if err != nil {
-            logs.Error("failed to parse network_policy: %v", err)
-            os.Exit(1)
-        }
+    initial, _ := dnsproxy.LoadPolicyFromEnvVar("OPENSANDBOX_EGRESS_RULES")
+    proxy, err := dnsproxy.New(initial, "") // start default deny-all if nil
+    if err != nil { log.Fatal(err) }
+    go startPolicyServer(ctx, proxy, os.Getenv("OPENSANDBOX_EGRESS_HTTP_ADDR"), os.Getenv("OPENSANDBOX_EGRESS_TOKEN"))
 
-        ctrl, err := egress.NewController(policy)
-        if err != nil {
-            logs.Error("failed to initialize egress control: %v", err)
-            os.Exit(1)
-        }
+    if err := proxy.Start(ctx); err != nil { log.Fatal(err) }
+    if err := iptables.SetupRedirect(15353); err != nil { log.Fatal(err) }
 
-        // Start() handles DNS proxy + iptables setup internally
-        // Uses graceful degradation if CAP_NET_ADMIN unavailable
-        if err := ctrl.Start(); err != nil {
-            logs.Error("failed to start egress control: %v", err)
-            os.Exit(1)
-        }
-    }
-
-    // ... start HTTP server and user process ...
+    <-ctx.Done()
 }
 ```
 
@@ -1188,7 +1177,7 @@ class EgressRule(BaseModel):
 
 class NetworkPolicy(BaseModel):
     egress: List[EgressRule]
-    default_action: Literal["allow", "deny"] = "deny"
+    defaultAction: Literal["allow", "deny"] = "deny"
     require_full_isolation: bool = False
 ```
 
@@ -1304,21 +1293,15 @@ Update `specs/sandbox-lifecycle.yml` with the schema defined in [API Schema](#ap
 
 ### Backward Compatibility
 
-- **No breaking changes**: Existing sandboxes without `network_policy` continue to work unchanged.
-- **Opt-in feature**: Users must explicitly specify `network_policy` to enable egress control.
-- **Zero overhead when disabled**: When `network_policy` is not specified:
-  - No DNS Proxy is started
-  - No iptables rules added
-  - No CAP_NET_ADMIN capability added
-  - Container uses image's original USER
-  - All external network access is allowed (current default behavior)
-  - Zero performance overhead
+- **Default baseline is deny-all**: egress sidecar enforces deny-all until explicit policy is provided.
+- **Opt-in rules**: Users specify `network_policy` to open destinations (allow or explicit deny rules).
+- **Graceful degradation**: If `CAP_NET_ADMIN` is unavailable, DNS interception may be skipped but default deny remains at the proxy layer.
 
 **Behavior Matrix**:
 
 | Scenario | DNS Proxy | iptables REDIRECT | CAP_NET_ADMIN | Network Filter | External Access |
 |----------|-----------|-------------------|---------------|----------------|-----------------|
-| No `network_policy` | ❌ Off | ❌ None | ❌ Not added | ❌ Off | ✅ All allowed |
+| No `network_policy` | ✅ On (:15353) | ⚠️ Attempted; warn if unavailable | ⚠️ Required for redirect | ⚠️ If capable | 🔒 Deny-all baseline |
 | `network_policy` specified | ✅ On (:15353) | ✅ 53→15353 | ✅ Added | ⚡ If capable | 🔒 Policy-based |
 
 ### Migration Path
@@ -1333,5 +1316,3 @@ Update `specs/sandbox-lifecycle.yml` with the schema defined in [API Schema](#ap
 - Add egress control section to SDK documentation
 - Add security considerations page explaining enforcement modes
 - Add troubleshooting guide for network policy issues
-
-

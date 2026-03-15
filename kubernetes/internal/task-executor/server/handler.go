@@ -18,7 +18,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
@@ -28,7 +30,7 @@ import (
 	api "github.com/alibaba/OpenSandbox/sandbox-k8s/pkg/task-executor"
 )
 
-// ErrorResponse represents a standard error response.
+// ErrorResponse represents a standard error response
 type ErrorResponse struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -58,27 +60,23 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request body
 	var apiTask api.Task
 	if err := json.NewDecoder(r.Body).Decode(&apiTask); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
-	// Validate task
 	if apiTask.Name == "" {
 		writeError(w, http.StatusBadRequest, "task name is required")
 		return
 	}
 
-	// Convert to internal model
 	task := h.convertAPIToInternalTask(&apiTask)
 	if task == nil {
 		writeError(w, http.StatusBadRequest, "failed to convert task")
 		return
 	}
 
-	// Create task
 	created, err := h.manager.Create(r.Context(), task)
 	if err != nil {
 		klog.ErrorS(err, "failed to create task", "name", apiTask.Name)
@@ -86,7 +84,6 @@ func (h *Handler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert back to API model
 	response := convertInternalToAPITask(created)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -102,18 +99,16 @@ func (h *Handler) SyncTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request body - array of tasks
 	var apiTasks []api.Task
 	if err := json.NewDecoder(r.Body).Decode(&apiTasks); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
-	// Convert to internal model
 	desired := make([]*types.Task, 0, len(apiTasks))
 	for i := range apiTasks {
 		if apiTasks[i].Name == "" {
-			continue // Skip invalid tasks
+			continue
 		}
 		task := h.convertAPIToInternalTask(&apiTasks[i])
 		if task != nil {
@@ -121,7 +116,6 @@ func (h *Handler) SyncTasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Sync tasks
 	current, err := h.manager.Sync(r.Context(), desired)
 	if err != nil {
 		klog.ErrorS(err, "failed to sync tasks")
@@ -129,7 +123,6 @@ func (h *Handler) SyncTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert back to API model
 	response := make([]api.Task, 0, len(current))
 	for _, task := range current {
 		if task != nil {
@@ -140,7 +133,7 @@ func (h *Handler) SyncTasks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 
-	klog.InfoS("tasks synced via API", "count", len(response))
+	klog.V(1).InfoS("tasks synced via API", "count", len(response))
 }
 
 func (h *Handler) GetTask(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +149,6 @@ func (h *Handler) GetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get task
 	task, err := h.manager.Get(r.Context(), taskID)
 	if err != nil {
 		klog.ErrorS(err, "failed to get task", "id", taskID)
@@ -164,7 +156,6 @@ func (h *Handler) GetTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to API model
 	response := convertInternalToAPITask(task)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -177,7 +168,6 @@ func (h *Handler) ListTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// List all tasks
 	tasks, err := h.manager.List(r.Context())
 	if err != nil {
 		klog.ErrorS(err, "failed to list tasks")
@@ -185,7 +175,6 @@ func (h *Handler) ListTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Convert to API model
 	response := make([]api.Task, 0, len(tasks))
 	for _, task := range tasks {
 		if task != nil {
@@ -197,7 +186,6 @@ func (h *Handler) ListTasks(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// Health returns the health status of the task executor
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	response := map[string]string{
 		"status": "healthy",
@@ -219,7 +207,6 @@ func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete task
 	err := h.manager.Delete(r.Context(), taskID)
 	if err != nil {
 		klog.ErrorS(err, "failed to delete task", "id", taskID)
@@ -231,7 +218,6 @@ func (h *Handler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 	klog.InfoS("task deleted via API", "id", taskID)
 }
 
-// writeError writes an error response in JSON format.
 func writeError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -241,16 +227,15 @@ func writeError(w http.ResponseWriter, code int, message string) {
 	})
 }
 
-// convertAPIToInternalTask converts api.Task to types.Task.
 func (h *Handler) convertAPIToInternalTask(apiTask *api.Task) *types.Task {
 	if apiTask == nil {
 		return nil
 	}
 	task := &types.Task{
-		Name:    apiTask.Name,
-		Process: apiTask.Process,
+		Name:            apiTask.Name,
+		Process:         apiTask.Process,
+		PodTemplateSpec: apiTask.PodTemplateSpec,
 	}
-	// Initialize default status
 	task.Status = types.Status{
 		State: types.TaskStatePending,
 	}
@@ -258,55 +243,141 @@ func (h *Handler) convertAPIToInternalTask(apiTask *api.Task) *types.Task {
 	return task
 }
 
-// convertInternalToAPITask converts types.Task to api.Task.
 func convertInternalToAPITask(task *types.Task) *api.Task {
 	if task == nil {
 		return nil
 	}
 
 	apiTask := &api.Task{
-		Name:    task.Name,
-		Process: task.Process,
+		Name:            task.Name,
+		Process:         task.Process,
+		PodTemplateSpec: task.PodTemplateSpec,
 	}
 
-	// Map internal Status to api.ProcessStatus
-	apiStatus := &api.ProcessStatus{}
+	if task.Process != nil && len(task.Status.SubStatuses) > 0 {
+		sub := task.Status.SubStatuses[0]
+		apiStatus := &api.ProcessStatus{}
 
-	switch task.Status.State {
-	case types.TaskStatePending:
-		apiStatus.Waiting = &api.Waiting{
-			Reason: task.Status.Reason,
-		}
-	case types.TaskStateRunning:
-		if task.Status.StartedAt != nil {
-			t := metav1.NewTime(*task.Status.StartedAt)
+		if task.Status.State == types.TaskStateTimeout {
+			term := &api.Terminated{
+				ExitCode: 137,
+				Reason:   sub.Reason,
+				Message:  sub.Message,
+			}
+			if sub.StartedAt != nil {
+				term.StartedAt = metav1.NewTime(*sub.StartedAt)
+			}
+			term.FinishedAt = metav1.Now()
+			apiStatus.Terminated = term
+		} else if sub.FinishedAt != nil {
+			term := &api.Terminated{
+				ExitCode: int32(sub.ExitCode),
+				Reason:   sub.Reason,
+				Message:  sub.Message,
+			}
+			term.FinishedAt = metav1.NewTime(*sub.FinishedAt)
+			if sub.StartedAt != nil {
+				term.StartedAt = metav1.NewTime(*sub.StartedAt)
+			}
+			apiStatus.Terminated = term
+		} else if sub.StartedAt != nil {
 			apiStatus.Running = &api.Running{
-				StartedAt: t,
+				StartedAt: metav1.NewTime(*sub.StartedAt),
 			}
 		} else {
-			apiStatus.Running = &api.Running{}
+			apiStatus.Waiting = &api.Waiting{
+				Reason:  sub.Reason,
+				Message: sub.Message,
+			}
 		}
-	case types.TaskStateSucceeded, types.TaskStateFailed:
-		term := &api.Terminated{
-			ExitCode: int32(task.Status.ExitCode),
-			Reason:   task.Status.Reason,
-			Message:  task.Status.Message,
-		}
-		if task.Status.StartedAt != nil {
-			t := metav1.NewTime(*task.Status.StartedAt)
-			term.StartedAt = t
-		}
-		if task.Status.FinishedAt != nil {
-			t := metav1.NewTime(*task.Status.FinishedAt)
-			term.FinishedAt = t
-		}
-		apiStatus.Terminated = term
-	default:
-		apiStatus.Waiting = &api.Waiting{
-			Reason: "Unknown",
-		}
+		apiTask.ProcessStatus = apiStatus
 	}
 
-	apiTask.ProcessStatus = apiStatus
+	if task.PodTemplateSpec != nil {
+		podStatus := &corev1.PodStatus{
+			Phase: corev1.PodUnknown,
+		}
+
+		switch task.Status.State {
+		case types.TaskStatePending:
+			podStatus.Phase = corev1.PodPending
+		case types.TaskStateRunning:
+			podStatus.Phase = corev1.PodRunning
+		case types.TaskStateSucceeded:
+			podStatus.Phase = corev1.PodSucceeded
+		case types.TaskStateFailed:
+			podStatus.Phase = corev1.PodFailed
+		}
+
+		for _, sub := range task.Status.SubStatuses {
+			cs := corev1.ContainerStatus{
+				Name: sub.Name,
+			}
+			if sub.FinishedAt != nil {
+				cs.State.Terminated = &corev1.ContainerStateTerminated{
+					ExitCode:   int32(sub.ExitCode),
+					Reason:     sub.Reason,
+					Message:    sub.Message,
+					FinishedAt: metav1.NewTime(*sub.FinishedAt),
+				}
+				if sub.StartedAt != nil {
+					cs.State.Terminated.StartedAt = metav1.NewTime(*sub.StartedAt)
+				}
+			} else if sub.StartedAt != nil {
+				cs.State.Running = &corev1.ContainerStateRunning{
+					StartedAt: metav1.NewTime(*sub.StartedAt),
+				}
+				cs.Ready = true
+			} else {
+				cs.State.Waiting = &corev1.ContainerStateWaiting{
+					Reason:  sub.Reason,
+					Message: sub.Message,
+				}
+			}
+			podStatus.ContainerStatuses = append(podStatus.ContainerStatuses, cs)
+		}
+
+		allReady := len(podStatus.ContainerStatuses) > 0
+		for _, cs := range podStatus.ContainerStatuses {
+			if !cs.Ready {
+				allReady = false
+				break
+			}
+		}
+		readyStatus := corev1.ConditionFalse
+		if allReady {
+			readyStatus = corev1.ConditionTrue
+		}
+
+		var latestTransition time.Time
+		for _, sub := range task.Status.SubStatuses {
+			if sub.StartedAt != nil && sub.StartedAt.After(latestTransition) {
+				latestTransition = *sub.StartedAt
+			}
+			if sub.FinishedAt != nil && sub.FinishedAt.After(latestTransition) {
+				latestTransition = *sub.FinishedAt
+			}
+		}
+		ltt := metav1.NewTime(latestTransition)
+		if latestTransition.IsZero() {
+			ltt = metav1.Now()
+		}
+
+		podStatus.Conditions = append(podStatus.Conditions,
+			corev1.PodCondition{
+				Type:               corev1.PodReady,
+				Status:             readyStatus,
+				LastTransitionTime: ltt,
+			},
+			corev1.PodCondition{
+				Type:               corev1.ContainersReady,
+				Status:             readyStatus,
+				LastTransitionTime: ltt,
+			},
+		)
+
+		apiTask.PodStatus = podStatus
+	}
+
 	return apiTask
 }

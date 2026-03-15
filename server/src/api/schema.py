@@ -22,7 +22,7 @@ for request/response validation and serialization.
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, model_validator
 
 
 # ============================================================================
@@ -68,6 +68,148 @@ class ResourceLimits(RootModel[Dict[str, str]]):
         default_factory=dict,
         example={"cpu": "500m", "memory": "512Mi", "gpu": "1"},
     )
+
+
+class NetworkRule(BaseModel):
+    """
+    Egress rule: allow/deny a specific domain or wildcard.
+    """
+
+    action: str = Field(..., description="Whether to allow or deny matching targets (allow | deny).")
+    target: str = Field(
+        ...,
+        description="FQDN or wildcard domain (e.g., 'example.com', '*.example.com').",
+        min_length=1,
+    )
+
+    class Config:
+        populate_by_name = True
+
+
+class NetworkPolicy(BaseModel):
+    """
+    Egress network policy matching the sidecar /policy payload.
+    """
+
+    default_action: Optional[str] = Field(
+        default=None,
+        alias="defaultAction",
+        description="Default action when no egress rule matches (allow | deny). If omitted, sidecar defaults to deny.",
+    )
+    egress: list[NetworkRule] = Field(
+        default_factory=list,
+        description="Ordered egress rules. Empty/omitted yields allow-all at startup.",
+    )
+
+    class Config:
+        populate_by_name = True
+
+
+# ============================================================================
+# Volume Definitions
+# ============================================================================
+
+
+class Host(BaseModel):
+    """
+    Host path bind mount backend.
+
+    Maps a directory on the host filesystem into the container.
+    Only available when the runtime supports host mounts.
+
+    Security note: Host paths are restricted by server-side allowlist.
+    Users must specify paths under permitted prefixes.
+    """
+
+    path: str = Field(
+        ...,
+        description="Absolute path on the host filesystem to mount.",
+        pattern=r"^(/|[A-Za-z]:[\\/])",
+    )
+
+
+class PVC(BaseModel):
+    """
+    Platform-managed named volume backend.
+
+    A runtime-neutral abstraction for referencing a pre-existing, platform-managed
+    named volume. The semantics are identical across runtimes: claim an existing
+    volume by name, mount it into the container, and leave volume lifecycle
+    management to the user.
+
+    - Kubernetes: maps to a PersistentVolumeClaim in the same namespace.
+    - Docker: maps to a Docker named volume (created via ``docker volume create``).
+    """
+
+    claim_name: str = Field(
+        ...,
+        alias="claimName",
+        description=(
+            "Name of the volume on the target platform. "
+            "In Kubernetes this is the PVC name; in Docker this is the named volume name."
+        ),
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        max_length=253,
+    )
+
+    class Config:
+        populate_by_name = True
+
+
+class Volume(BaseModel):
+    """
+    Storage mount definition for a sandbox.
+
+    Each volume entry contains:
+    - A unique name identifier
+    - Exactly one backend struct (host, pvc, etc.) with backend-specific fields
+    - Common mount settings (mountPath, readOnly, subPath)
+    """
+
+    name: str = Field(
+        ...,
+        description="Unique identifier for the volume within the sandbox.",
+        pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+        max_length=63,
+    )
+    host: Optional[Host] = Field(
+        None,
+        description="Host path bind mount backend.",
+    )
+    pvc: Optional[PVC] = Field(
+        None,
+        description="Platform-managed named volume backend (PVC in Kubernetes, named volume in Docker).",
+    )
+    mount_path: str = Field(
+        ...,
+        alias="mountPath",
+        description="Absolute path inside the container where the volume is mounted.",
+        pattern=r"^/.*",
+    )
+    read_only: bool = Field(
+        False,
+        alias="readOnly",
+        description="If true, the volume is mounted as read-only. Defaults to false (read-write).",
+    )
+    sub_path: Optional[str] = Field(
+        None,
+        alias="subPath",
+        description="Optional subdirectory under the backend path to mount.",
+    )
+
+    class Config:
+        populate_by_name = True
+
+    @model_validator(mode="after")
+    def validate_exactly_one_backend(self) -> "Volume":
+        """Ensure exactly one backend type is specified."""
+        backends = [self.host, self.pvc]
+        specified = [b for b in backends if b is not None]
+        if len(specified) == 0:
+            raise ValueError("Exactly one backend (host, pvc) must be specified, but none was provided.")
+        if len(specified) > 1:
+            raise ValueError("Exactly one backend (host, pvc) must be specified, but multiple were provided.")
+        return self
 
 
 # ============================================================================
@@ -133,6 +275,21 @@ class CreateSandboxRequest(BaseModel):
         min_length=1,
         description="The command to execute as the sandbox's entry process",
         example=["python", "/app/main.py"],
+    )
+    network_policy: Optional[NetworkPolicy] = Field(
+        None,
+        alias="networkPolicy",
+        description=(
+            "Optional outbound network policy. Shape matches the egress sidecar /policy endpoint. "
+            "Empty/omitted means allow-all until updated."
+        ),
+    )
+    volumes: Optional[List[Volume]] = Field(
+        None,
+        description=(
+            "Storage mounts for the sandbox. Each volume entry specifies a named backend-specific "
+            "storage source and common mount settings. Exactly one backend type must be specified per volume entry."
+        ),
     )
     extensions: Optional[Dict[str, str]] = Field(
         None,
@@ -290,6 +447,10 @@ class Endpoint(BaseModel):
     endpoint: str = Field(
         ...,
         description="Public endpoint string (host[:port]/path) exposed for the sandbox service",
+    )
+    headers: Optional[dict[str, str]] = Field(
+        default=None,
+        description="Optional headers required when accessing the endpoint (e.g., for header-based routing).",
     )
 
 

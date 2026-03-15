@@ -17,6 +17,8 @@ package main
 import (
 	"fmt"
 
+	"github.com/alibaba/opensandbox/internal/version"
+
 	_ "go.uber.org/automaxprocs/maxprocs"
 
 	"github.com/alibaba/opensandbox/execd/pkg/flag"
@@ -28,9 +30,11 @@ import (
 
 // main initializes and starts the execd server.
 func main() {
+	version.EchoVersion("OpenSandbox Execd")
+
 	flag.InitFlags()
 
-	log.SetLevel(flag.ServerLogLevel)
+	log.Init(flag.ServerLogLevel)
 
 	controller.InitCodeRunner()
 	engine := web.NewRouter(flag.ServerAccessToken)

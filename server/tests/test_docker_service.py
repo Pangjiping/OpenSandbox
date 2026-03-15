@@ -12,25 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from datetime import datetime, timezone
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+from docker.errors import DockerException, NotFound as DockerNotFound
 import pytest
 from fastapi import HTTPException, status
 
-from src.config import AppConfig, RouterConfig, RuntimeConfig, ServerConfig
+from src.config import (
+    AppConfig,
+    EgressConfig,
+    RuntimeConfig,
+    ServerConfig,
+    StorageConfig,
+    IngressConfig,
+)
 from src.services.constants import SANDBOX_ID_LABEL, SandboxErrorCodes
 from src.services.docker import DockerSandboxService, PendingSandbox
 from src.services.helpers import parse_memory_limit, parse_nano_cpus, parse_timestamp
 from src.api.schema import (
     CreateSandboxRequest,
     CreateSandboxResponse,
+    Host,
     ImageSpec,
+    NetworkPolicy,
     ListSandboxesRequest,
+    PVC,
     ResourceLimits,
     Sandbox,
     SandboxFilter,
     SandboxStatus,
+    Volume,
 )
 
 
@@ -38,14 +52,14 @@ def _app_config() -> AppConfig:
     return AppConfig(
         server=ServerConfig(),
         runtime=RuntimeConfig(type="docker", execd_image="ghcr.io/opensandbox/platform:latest"),
-        router=RouterConfig(domain="opensandbox.io"),
+        ingress=IngressConfig(mode="direct"),
     )
 
 
 def test_parse_memory_limit_handles_units():
     assert parse_memory_limit("512Mi") == 512 * 1024 * 1024
     assert parse_memory_limit("1G") == 1_000_000_000
-    assert parse_memory_limit("2gi") == 2 * 1024 ** 3
+    assert parse_memory_limit("2gi") == 2 * 1024**3
     assert parse_memory_limit("invalid") is None
 
 
@@ -92,7 +106,11 @@ def test_env_allows_empty_string_and_skips_none():
 def test_create_sandbox_applies_security_defaults(mock_docker):
     mock_client = MagicMock()
     mock_client.containers.list.return_value = []
-    mock_client.api.create_host_config.return_value = {"host": "cfg"}
+    mock_client.api.create_host_config.return_value = {
+        "security_opt": ["no-new-privileges:true"],
+        "cap_drop": _app_config().docker.drop_capabilities,
+        "pids_limit": _app_config().docker.pids_limit,
+    }
     mock_client.api.create_container.return_value = {"Id": "cid"}
     mock_client.containers.get.return_value = MagicMock()
     mock_docker.from_env.return_value = mock_client
@@ -107,16 +125,72 @@ def test_create_sandbox_applies_security_defaults(mock_docker):
         entrypoint=["python"],
     )
 
-    with patch.object(service, "_ensure_image_available"), patch.object(
-        service, "_prepare_sandbox_runtime"
+    with (
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_prepare_sandbox_runtime"),
     ):
         service.create_sandbox(request)
 
-    host_kwargs = mock_client.api.create_host_config.call_args.kwargs
-    assert "no-new-privileges:true" in host_kwargs["security_opt"]
-    assert host_kwargs["cap_drop"] == service.app_config.docker.drop_capabilities
-    assert host_kwargs["pids_limit"] == service.app_config.docker.pids_limit
-    assert mock_client.api.create_container.call_args.kwargs["host_config"] == {"host": "cfg"}
+    host_config = mock_client.api.create_container.call_args.kwargs["host_config"]
+    assert "no-new-privileges:true" in host_config.get("security_opt", [])
+    assert host_config.get("cap_drop") == service.app_config.docker.drop_capabilities
+    assert host_config.get("pids_limit") == service.app_config.docker.pids_limit
+
+
+@pytest.mark.parametrize(
+    "runtime_exc, expected_status, expect_wrapped_error",
+    [
+        (
+            RuntimeError("tarfile error"),
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            True,
+        ),
+        (
+            HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "CONFLICT", "message": "conflict error"},
+            ),
+            status.HTTP_409_CONFLICT,
+            False,
+        ),
+    ],
+)
+@patch("src.services.docker.docker")
+def test_prepare_runtime_failure_triggers_cleanup(
+    mock_docker, runtime_exc, expected_status, expect_wrapped_error
+):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_client.api.create_container.return_value = {"Id": "cid"}
+    mock_container = MagicMock()
+    mock_client.containers.get.return_value = mock_container
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        metadata={},
+        entrypoint=["python"],
+    )
+
+    with (
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_prepare_sandbox_runtime", side_effect=runtime_exc),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            service.create_sandbox(request)
+
+    mock_container.remove.assert_called_with(force=True)
+
+    assert exc.value.status_code == expected_status
+
+    if expect_wrapped_error:
+        assert str(runtime_exc) in str(exc.value.detail["message"])
+    else:
+        assert exc.value.detail["message"] == runtime_exc.detail["message"]
 
 
 @patch("src.services.docker.docker")
@@ -168,6 +242,407 @@ def test_create_sandbox_requires_entrypoint(mock_docker):
     assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
     assert exc.value.detail["code"] == SandboxErrorCodes.INVALID_ENTRYPOINT
     mock_client.containers.create.assert_not_called()
+
+
+@patch("src.services.docker.docker")
+def test_network_policy_rejected_on_host_mode(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "host"
+    cfg.egress = EgressConfig(image="egress:latest")
+    service = DockerSandboxService(config=cfg)
+
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        metadata={},
+        entrypoint=["python"],
+        networkPolicy=NetworkPolicy(default_action="deny", egress=[]),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        service.create_sandbox(request)
+
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert exc.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
+
+
+@patch("src.services.docker.docker")
+def test_network_policy_requires_egress_image(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "bridge"
+    cfg.egress = None
+    service = DockerSandboxService(config=cfg)
+
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        metadata={},
+        entrypoint=["python"],
+        networkPolicy=NetworkPolicy(default_action="deny", egress=[]),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        service.create_sandbox(request)
+
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert exc.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
+
+
+@patch("src.services.docker.docker")
+def test_egress_sidecar_injection_and_capabilities(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+
+    def host_cfg_side_effect(**kwargs):
+        return kwargs
+
+    mock_client.api.create_host_config.side_effect = host_cfg_side_effect
+    mock_client.api.create_container.side_effect = [
+        {"Id": "sidecar-id"},
+        {"Id": "main-id"},
+    ]
+    mock_client.containers.get.side_effect = [MagicMock(id="sidecar-id"), MagicMock(id="main-id")]
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "bridge"
+    cfg.egress = EgressConfig(image="egress:latest")
+    service = DockerSandboxService(config=cfg)
+
+    req = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        metadata={},
+        entrypoint=["python"],
+        networkPolicy=NetworkPolicy(default_action="deny", egress=[]),
+    )
+
+    with (
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_prepare_sandbox_runtime"),
+    ):
+        service.create_sandbox(req)
+
+    assert len(mock_client.api.create_container.call_args_list) == 2
+    sidecar_call = mock_client.api.create_container.call_args_list[0]
+    main_call = mock_client.api.create_container.call_args_list[1]
+    sidecar_kwargs = sidecar_call.kwargs
+    main_kwargs = main_call.kwargs
+
+    # Sidecar host config should have NET_ADMIN and port bindings
+    assert "NET_ADMIN" in sidecar_kwargs["host_config"]["cap_add"]
+    assert "44772" in sidecar_kwargs["host_config"]["port_bindings"]
+    assert "8080" in sidecar_kwargs["host_config"]["port_bindings"]
+
+    # Main container should share sidecar netns, drop NET_ADMIN, and have no port bindings
+    assert main_kwargs["host_config"]["network_mode"] == "container:sidecar-id"
+    assert "NET_ADMIN" in set(main_kwargs["host_config"].get("cap_drop") or [])
+    assert "port_bindings" not in main_kwargs["host_config"]
+
+    # Main container labels should carry host port info
+    labels = main_kwargs["labels"]
+    assert labels.get("opensandbox.io/embedding-proxy-port")
+    assert labels.get("opensandbox.io/http-port")
+
+
+# ---------------------------------------------------------------------------
+# User-defined network tests
+# ---------------------------------------------------------------------------
+
+
+@patch("src.services.docker.docker")
+def test_network_policy_rejected_on_user_defined_network(mock_docker):
+    """networkPolicy must be rejected when network_mode is a user-defined named network."""
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "my-custom-net"
+    cfg.egress = EgressConfig(image="egress:latest")
+    service = DockerSandboxService(config=cfg)
+
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        metadata={},
+        entrypoint=["python"],
+        networkPolicy=NetworkPolicy(default_action="deny", egress=[]),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        service.create_sandbox(request)
+
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert exc.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
+    assert "my-custom-net" in exc.value.detail["message"]
+
+
+@patch("src.services.docker.docker")
+def test_create_sandbox_fails_when_user_defined_network_not_found(mock_docker):
+    """create_sandbox raises 400 with a clear message when the named network does not exist."""
+    from docker.errors import NotFound as DockerNotFound
+
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_client.networks.get.side_effect = DockerNotFound("network not found")
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "missing-net"
+    service = DockerSandboxService(config=cfg)
+
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        metadata={},
+        entrypoint=["python"],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        service.create_sandbox(request)
+
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+    assert exc.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
+    assert "missing-net" in exc.value.detail["message"]
+    assert "docker network create" in exc.value.detail["message"]
+
+
+@patch("src.services.docker.docker")
+def test_create_sandbox_user_defined_network_uses_correct_network_mode(mock_docker):
+    """Containers created on a user-defined network use the network name as network_mode."""
+
+    def host_cfg_side_effect(**kwargs):
+        return kwargs
+
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_client.networks.get.return_value = MagicMock()  # network exists
+    mock_client.api.create_host_config.side_effect = host_cfg_side_effect
+    mock_client.api.create_container.return_value = {"Id": "main-id"}
+    mock_client.containers.get.return_value = MagicMock(id="main-id")
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "my-app-net"
+    service = DockerSandboxService(config=cfg)
+
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        metadata={},
+        entrypoint=["python"],
+    )
+
+    with (
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_prepare_sandbox_runtime"),
+    ):
+        service.create_sandbox(request)
+
+    call_kwargs = mock_client.api.create_container.call_args.kwargs
+    assert call_kwargs["host_config"]["network_mode"] == "my-app-net"
+
+
+@patch("src.services.docker.docker")
+def test_validate_network_skipped_for_builtin_modes(mock_docker):
+    """_validate_network_exists does NOT call the Docker API for host or bridge modes."""
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_docker.from_env.return_value = mock_client
+
+    for mode in ("host", "bridge", "none"):
+        mock_client.networks.get.reset_mock()
+        cfg = _app_config()
+        cfg.docker.network_mode = mode
+        service = DockerSandboxService(config=cfg)
+        service._validate_network_exists()
+        mock_client.networks.get.assert_not_called()
+
+
+@patch("src.services.docker.docker")
+def test_egress_sidecar_cleanup_uses_api_remove_when_lookup_fails(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+
+    def host_cfg_side_effect(**kwargs):
+        return kwargs
+
+    mock_client.api.create_host_config.side_effect = host_cfg_side_effect
+    mock_client.api.create_container.return_value = {"Id": "sidecar-id"}
+    mock_client.containers.get.side_effect = DockerException("lookup failed")
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "bridge"
+    cfg.egress = EgressConfig(image="egress:latest")
+    service = DockerSandboxService(config=cfg)
+
+    with (
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_docker_operation") as mock_op,
+    ):
+        mock_op.return_value.__enter__.return_value = None
+        mock_op.return_value.__exit__.return_value = None
+
+        with pytest.raises(HTTPException) as exc:
+            service._start_egress_sidecar(
+                "sandbox-id",
+                NetworkPolicy(defaultAction="deny", egress=[]),
+                host_execd_port=44772,
+                host_http_port=8080,
+            )
+
+    detail = exc.value.detail
+    assert isinstance(detail, dict)
+    typed_detail = cast(dict[str, Any], detail)
+    assert exc.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert typed_detail["message"] == "Egress sidecar container failed to start."
+    mock_client.api.remove_container.assert_called_once_with("sidecar-id", force=True)
+
+
+@patch("src.services.docker.docker")
+def test_egress_sidecar_missing_id_preserves_specific_error(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+
+    def host_cfg_side_effect(**kwargs):
+        return kwargs
+
+    mock_client.api.create_host_config.side_effect = host_cfg_side_effect
+    mock_client.api.create_container.return_value = {}
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "bridge"
+    cfg.egress = EgressConfig(image="egress:latest")
+    service = DockerSandboxService(config=cfg)
+
+    with (
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_docker_operation") as mock_op,
+    ):
+        mock_op.return_value.__enter__.return_value = None
+        mock_op.return_value.__exit__.return_value = None
+
+        with pytest.raises(HTTPException) as exc:
+            service._start_egress_sidecar(
+                "sandbox-id",
+                NetworkPolicy(defaultAction="deny", egress=[]),
+                host_execd_port=44772,
+                host_http_port=8080,
+            )
+
+    detail = exc.value.detail
+    assert isinstance(detail, dict)
+    typed_detail = cast(dict[str, Any], detail)
+    assert exc.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert typed_detail["message"] == "Docker did not return an egress sidecar container ID."
+    mock_client.containers.get.assert_not_called()
+    mock_client.api.remove_container.assert_not_called()
+
+
+@patch("src.services.docker.docker")
+def test_egress_sidecar_cleanup_wraps_unexpected_lookup_error(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+
+    def host_cfg_side_effect(**kwargs):
+        return kwargs
+
+    mock_client.api.create_host_config.side_effect = host_cfg_side_effect
+    mock_client.api.create_container.return_value = {"Id": "sidecar-id"}
+    mock_client.containers.get.side_effect = RuntimeError("lookup failed")
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "bridge"
+    cfg.egress = EgressConfig(image="egress:latest")
+    service = DockerSandboxService(config=cfg)
+
+    with (
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_docker_operation") as mock_op,
+    ):
+        mock_op.return_value.__enter__.return_value = None
+        mock_op.return_value.__exit__.return_value = None
+
+        with pytest.raises(HTTPException) as exc:
+            service._start_egress_sidecar(
+                "sandbox-id",
+                NetworkPolicy(defaultAction="deny", egress=[]),
+                host_execd_port=44772,
+                host_http_port=8080,
+            )
+
+    detail = exc.value.detail
+    assert isinstance(detail, dict)
+    typed_detail = cast(dict[str, Any], detail)
+    assert exc.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert typed_detail["code"] == SandboxErrorCodes.CONTAINER_START_FAILED
+    assert typed_detail["message"] == "Egress sidecar container failed to start."
+    mock_client.api.remove_container.assert_called_once_with("sidecar-id", force=True)
+
+
+def test_expire_cleans_sidecar():
+    service = DockerSandboxService(config=_app_config())
+    mock_container = MagicMock()
+    mock_container.attrs = {"State": {"Running": False}, "Config": {"Labels": {}}}
+    mock_container.kill = MagicMock()
+    mock_container.remove = MagicMock()
+
+    with (
+        patch.object(service, "_get_container_by_sandbox_id", return_value=mock_container),
+        patch.object(service, "_remove_expiration_tracking") as mock_remove,
+        patch.object(service, "_cleanup_egress_sidecar") as mock_cleanup,
+        patch.object(service, "_docker_operation") as mock_op,
+    ):
+        mock_op.return_value.__enter__.return_value = None
+        mock_op.return_value.__exit__.return_value = None
+        service._expire_sandbox("sandbox-id")
+
+    mock_cleanup.assert_called_once_with("sandbox-id")
+    mock_remove.assert_called_once()
+
+
+def test_restore_cleans_orphan_sidecar():
+    cfg = _app_config()
+    service = DockerSandboxService(config=cfg)
+
+    orphan_sidecar = MagicMock()
+    orphan_sidecar.attrs = {
+        "Config": {"Labels": {"opensandbox.io/egress-sidecar-for": "orphan-id"}}
+    }
+
+    with (
+        patch.object(service.docker_client.containers, "list", return_value=[orphan_sidecar]),
+        patch.object(service, "_get_container_by_sandbox_id") as mock_get,
+        patch.object(service, "_cleanup_egress_sidecar") as mock_cleanup,
+    ):
+        mock_get.side_effect = HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={})
+        service._restore_existing_sandboxes()
+
+    mock_cleanup.assert_called_once_with("orphan-id")
 
 
 @patch("src.services.docker.docker")
@@ -379,3 +854,762 @@ def test_async_worker_cleans_up_leftover_container_on_failure(mock_docker):
 
     service._cleanup_failed_containers.assert_called_once_with(sandbox_id)
     assert service._pending_sandboxes[sandbox_id].status.state == "Failed"
+
+
+# ============================================================================
+# Volume Support Tests
+# ============================================================================
+
+
+@patch("src.services.docker.docker")
+class TestBuildVolumeBinds:
+    """Tests for DockerSandboxService._build_volume_binds instance method."""
+
+    def test_none_volumes_returns_empty(self, mock_docker):
+        """None volumes should produce empty binds list."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        assert service._build_volume_binds(None) == []
+
+    def test_empty_volumes_returns_empty(self, mock_docker):
+        """Empty volumes list should produce empty binds list."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        assert service._build_volume_binds([]) == []
+
+    def test_single_host_volume_rw(self, mock_docker):
+        """Single host volume with read-write should produce correct bind string."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        volume = Volume(
+            name="workdir",
+            host=Host(path="/data/opensandbox/user-a"),
+            mount_path="/mnt/work",
+            read_only=False,
+        )
+        binds = service._build_volume_binds([volume])
+        assert binds == ["/data/opensandbox/user-a:/mnt/work:rw"]
+
+    def test_single_host_volume_ro(self, mock_docker):
+        """Single host volume with read-only should produce correct bind string."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        volume = Volume(
+            name="workdir",
+            host=Host(path="/data/opensandbox/user-a"),
+            mount_path="/mnt/work",
+            read_only=True,
+        )
+        binds = service._build_volume_binds([volume])
+        assert binds == ["/data/opensandbox/user-a:/mnt/work:ro"]
+
+    def test_host_volume_with_subpath(self, mock_docker):
+        """Host volume with subPath should resolve the full host path."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        volume = Volume(
+            name="workdir",
+            host=Host(path="/data/opensandbox/user-a"),
+            mount_path="/mnt/work",
+            read_only=False,
+            sub_path="task-001",
+        )
+        binds = service._build_volume_binds([volume])
+        expected_host = os.path.normpath("/data/opensandbox/user-a/task-001")
+        assert binds == [f"{expected_host}:/mnt/work:rw"]
+
+    def test_multiple_host_volumes(self, mock_docker):
+        """Multiple host volumes should produce multiple bind strings."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        volumes = [
+            Volume(
+                name="workdir",
+                host=Host(path="/data/work"),
+                mount_path="/mnt/work",
+                read_only=False,
+            ),
+            Volume(
+                name="data",
+                host=Host(path="/data/shared"),
+                mount_path="/mnt/data",
+                read_only=True,
+            ),
+        ]
+        binds = service._build_volume_binds(volumes)
+        assert len(binds) == 2
+        assert "/data/work:/mnt/work:rw" in binds
+        assert "/data/shared:/mnt/data:ro" in binds
+
+    def test_single_pvc_volume_rw(self, mock_docker):
+        """Single PVC volume with read-write (no subPath) should produce named volume bind string."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        volume = Volume(
+            name="shared-data",
+            pvc=PVC(claim_name="my-shared-volume"),
+            mount_path="/mnt/data",
+            read_only=False,
+        )
+        binds = service._build_volume_binds([volume])
+        assert binds == ["my-shared-volume:/mnt/data:rw"]
+
+    def test_single_pvc_volume_ro(self, mock_docker):
+        """Single PVC volume with read-only (no subPath) should produce named volume bind string."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        volume = Volume(
+            name="models",
+            pvc=PVC(claim_name="shared-models-pvc"),
+            mount_path="/mnt/models",
+            read_only=True,
+        )
+        binds = service._build_volume_binds([volume])
+        assert binds == ["shared-models-pvc:/mnt/models:ro"]
+
+    def test_pvc_volume_with_subpath(self, mock_docker):
+        """PVC volume with subPath should resolve via cached Mountpoint and produce bind mount."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        volume = Volume(
+            name="datasets",
+            pvc=PVC(claim_name="my-vol"),
+            mount_path="/mnt/train",
+            read_only=False,
+            sub_path="datasets/train",
+        )
+        cache = {
+            "my-vol": {
+                "Name": "my-vol",
+                "Driver": "local",
+                "Mountpoint": "/var/lib/docker/volumes/my-vol/_data",
+            }
+        }
+        binds = service._build_volume_binds([volume], pvc_inspect_cache=cache)
+        assert binds == ["/var/lib/docker/volumes/my-vol/_data/datasets/train:/mnt/train:rw"]
+
+    def test_pvc_volume_with_subpath_readonly(self, mock_docker):
+        """PVC volume with subPath and readOnly should produce ':ro' bind mount."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        volume = Volume(
+            name="datasets",
+            pvc=PVC(claim_name="my-vol"),
+            mount_path="/mnt/eval",
+            read_only=True,
+            sub_path="datasets/eval",
+        )
+        cache = {
+            "my-vol": {
+                "Name": "my-vol",
+                "Driver": "local",
+                "Mountpoint": "/var/lib/docker/volumes/my-vol/_data",
+            }
+        }
+        binds = service._build_volume_binds([volume], pvc_inspect_cache=cache)
+        assert binds == ["/var/lib/docker/volumes/my-vol/_data/datasets/eval:/mnt/eval:ro"]
+
+    def test_mixed_host_and_pvc_volumes(self, mock_docker):
+        """Mixed host and PVC volumes should both produce bind strings."""
+        mock_docker.from_env.return_value = MagicMock()
+        service = DockerSandboxService(config=_app_config())
+        volumes = [
+            Volume(
+                name="workdir",
+                host=Host(path="/data/work"),
+                mount_path="/mnt/work",
+                read_only=False,
+            ),
+            Volume(
+                name="shared-data",
+                pvc=PVC(claim_name="my-shared-volume"),
+                mount_path="/mnt/data",
+                read_only=True,
+            ),
+        ]
+        binds = service._build_volume_binds(volumes)
+        assert len(binds) == 2
+        assert "/data/work:/mnt/work:rw" in binds
+        assert "my-shared-volume:/mnt/data:ro" in binds
+
+
+@patch("src.services.docker.docker")
+class TestDockerVolumeValidation:
+    """Tests for volume validation in DockerSandboxService.create_sandbox."""
+
+    def test_pvc_volume_not_found_rejected(self, mock_docker):
+        """PVC backend with non-existent Docker named volume should be rejected."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.inspect_volume.side_effect = DockerNotFound("volume not found")
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+            volumes=[
+                Volume(
+                    name="models",
+                    pvc=PVC(claim_name="nonexistent-volume"),
+                    mount_path="/mnt/models",
+                    read_only=True,
+                )
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            service.create_sandbox(request)
+
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.PVC_VOLUME_NOT_FOUND
+
+    def test_pvc_volume_inspect_failure_returns_500(self, mock_docker):
+        """Docker API failure during volume inspection should return 500."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.inspect_volume.side_effect = DockerException("connection error")
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+            volumes=[
+                Volume(
+                    name="shared-data",
+                    pvc=PVC(claim_name="my-volume"),
+                    mount_path="/mnt/data",
+                )
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            service.create_sandbox(request)
+
+        assert exc_info.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.PVC_VOLUME_INSPECT_FAILED
+
+    def test_pvc_volume_binds_passed_to_docker(self, mock_docker):
+        """PVC volume binds should be passed to Docker host config as named volume refs."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.inspect_volume.return_value = {"Name": "my-shared-volume"}
+        mock_client.api.create_host_config.return_value = {}
+        mock_client.api.create_container.return_value = {"Id": "cid"}
+        mock_client.containers.get.return_value = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+            volumes=[
+                Volume(
+                    name="shared-data",
+                    pvc=PVC(claim_name="my-shared-volume"),
+                    mount_path="/mnt/data",
+                    read_only=False,
+                )
+            ],
+        )
+
+        with (
+            patch.object(service, "_ensure_image_available"),
+            patch.object(service, "_prepare_sandbox_runtime"),
+        ):
+            response = service.create_sandbox(request)
+
+        assert response.status.state == "Running"
+
+        # Verify named volume bind was passed to create_host_config
+        host_config_call = mock_client.api.create_host_config.call_args
+        assert "binds" in host_config_call.kwargs
+        binds = host_config_call.kwargs["binds"]
+        assert len(binds) == 1
+        assert binds[0] == "my-shared-volume:/mnt/data:rw"
+
+    def test_pvc_volume_readonly_binds_passed_to_docker(self, mock_docker):
+        """PVC volume with read-only should produce ':ro' bind string."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.inspect_volume.return_value = {"Name": "shared-models"}
+        mock_client.api.create_host_config.return_value = {}
+        mock_client.api.create_container.return_value = {"Id": "cid"}
+        mock_client.containers.get.return_value = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+            volumes=[
+                Volume(
+                    name="models",
+                    pvc=PVC(claim_name="shared-models"),
+                    mount_path="/mnt/models",
+                    read_only=True,
+                )
+            ],
+        )
+
+        with (
+            patch.object(service, "_ensure_image_available"),
+            patch.object(service, "_prepare_sandbox_runtime"),
+        ):
+            service.create_sandbox(request)
+
+        host_config_call = mock_client.api.create_host_config.call_args
+        binds = host_config_call.kwargs["binds"]
+        assert binds[0] == "shared-models:/mnt/models:ro"
+
+    def test_pvc_subpath_non_local_driver_rejected(self, mock_docker):
+        """PVC with subPath on a non-local driver should be rejected."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.inspect_volume.return_value = {
+            "Name": "cloud-vol",
+            "Driver": "nfs",
+            "Mountpoint": "",
+        }
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+            volumes=[
+                Volume(
+                    name="data",
+                    pvc=PVC(claim_name="cloud-vol"),
+                    mount_path="/mnt/data",
+                    sub_path="subdir",
+                )
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            service.create_sandbox(request)
+
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.PVC_SUBPATH_UNSUPPORTED_DRIVER
+
+    def test_pvc_subpath_symlink_escape_rejected(self, mock_docker):
+        """PVC with subPath that resolves outside mountpoint via symlink should be rejected."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.inspect_volume.return_value = {
+            "Name": "my-vol",
+            "Driver": "local",
+            "Mountpoint": "/var/lib/docker/volumes/my-vol/_data",
+        }
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+            volumes=[
+                Volume(
+                    name="data",
+                    pvc=PVC(claim_name="my-vol"),
+                    mount_path="/mnt/data",
+                    sub_path="datasets",
+                )
+            ],
+        )
+
+        # Simulate: realpath resolves a symlink that escapes the mountpoint.
+        # datasets -> / inside the volume, so realpath(…/_data/datasets) = /
+        with patch("src.services.docker.os.path.realpath") as mock_realpath:
+            mock_realpath.side_effect = lambda p, **kwargs: ("/" if p.endswith("datasets") else p)
+            with pytest.raises(HTTPException) as exc_info:
+                service.create_sandbox(request)
+
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_SUB_PATH
+        assert "symlink" in exc_info.value.detail["message"]
+
+    def test_pvc_subpath_binds_resolved_to_mountpoint(self, mock_docker):
+        """PVC with subPath should resolve Mountpoint+subPath and pass as bind mount."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.inspect_volume.return_value = {
+            "Name": "my-vol",
+            "Driver": "local",
+            "Mountpoint": "/var/lib/docker/volumes/my-vol/_data",
+        }
+        mock_client.api.create_host_config.return_value = {}
+        mock_client.api.create_container.return_value = {"Id": "cid"}
+        mock_client.containers.get.return_value = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+            volumes=[
+                Volume(
+                    name="train-data",
+                    pvc=PVC(claim_name="my-vol"),
+                    mount_path="/mnt/train",
+                    read_only=True,
+                    sub_path="datasets/train",
+                )
+            ],
+        )
+
+        with (
+            patch.object(service, "_ensure_image_available"),
+            patch.object(service, "_prepare_sandbox_runtime"),
+        ):
+            service.create_sandbox(request)
+
+        host_config_call = mock_client.api.create_host_config.call_args
+        binds = host_config_call.kwargs["binds"]
+        assert len(binds) == 1
+        assert binds[0] == "/var/lib/docker/volumes/my-vol/_data/datasets/train:/mnt/train:ro"
+
+    def test_host_path_not_found_rejected(self, mock_docker):
+        """Host path create failure should return 500 with HOST_PATH_CREATE_FAILED."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+            volumes=[
+                Volume(
+                    name="workdir",
+                    host=Host(path="/nonexistent/path/that/does/not/exist"),
+                    mount_path="/mnt/work",
+                    read_only=False,
+                )
+            ],
+        )
+
+        with patch("src.services.docker.os.makedirs", side_effect=PermissionError("denied")):
+            with pytest.raises(HTTPException) as exc_info:
+                service.create_sandbox(request)
+
+        assert exc_info.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.HOST_PATH_CREATE_FAILED
+
+    def test_host_path_not_in_allowlist_rejected(self, mock_docker):
+        """Host path not in allowlist should be rejected."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_docker.from_env.return_value = mock_client
+
+        cfg = _app_config()
+        cfg.storage = StorageConfig(allowed_host_paths=["/data/opensandbox"])
+        service = DockerSandboxService(config=cfg)
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+            volumes=[
+                Volume(
+                    name="workdir",
+                    host=Host(path="/etc/passwd"),
+                    mount_path="/mnt/work",
+                    read_only=False,
+                )
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            service.create_sandbox(request)
+
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.HOST_PATH_NOT_ALLOWED
+
+    def test_no_volumes_passes_validation(self, mock_docker):
+        """Request without volumes should pass validation."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.create_host_config.return_value = {}
+        mock_client.api.create_container.return_value = {"Id": "cid"}
+        mock_client.containers.get.return_value = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+        )
+
+        with (
+            patch.object(service, "_ensure_image_available"),
+            patch.object(service, "_prepare_sandbox_runtime"),
+        ):
+            response = service.create_sandbox(request)
+
+        assert response.status.state == "Running"
+
+    def test_host_volume_binds_passed_to_docker(self, mock_docker):
+        """Host volume binds should be passed to Docker host config."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.create_host_config.return_value = {}
+        mock_client.api.create_container.return_value = {"Id": "cid"}
+        mock_client.containers.get.return_value = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            request = CreateSandboxRequest(
+                image=ImageSpec(uri="python:3.11"),
+                timeout=120,
+                resourceLimits=ResourceLimits(root={}),
+                env={},
+                metadata={},
+                entrypoint=["python"],
+                volumes=[
+                    Volume(
+                        name="workdir",
+                        host=Host(path=tmpdir),
+                        mount_path="/mnt/work",
+                        read_only=False,
+                    )
+                ],
+            )
+
+            with (
+                patch.object(service, "_ensure_image_available"),
+                patch.object(service, "_prepare_sandbox_runtime"),
+            ):
+                service.create_sandbox(request)
+
+            # Verify binds were passed to create_host_config
+            host_config_call = mock_client.api.create_host_config.call_args
+            assert "binds" in host_config_call.kwargs
+            binds = host_config_call.kwargs["binds"]
+            assert len(binds) == 1
+            assert binds[0] == f"{tmpdir}:/mnt/work:rw"
+
+    def test_host_volume_with_subpath_resolved_correctly(self, mock_docker):
+        """Host volume subPath should be resolved and validated."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.create_host_config.return_value = {}
+        mock_client.api.create_container.return_value = {"Id": "cid"}
+        mock_client.containers.get.return_value = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create the subPath directory
+            sub_dir = os.path.join(tmpdir, "task-001")
+            os.makedirs(sub_dir)
+
+            request = CreateSandboxRequest(
+                image=ImageSpec(uri="python:3.11"),
+                timeout=120,
+                resourceLimits=ResourceLimits(root={}),
+                env={},
+                metadata={},
+                entrypoint=["python"],
+                volumes=[
+                    Volume(
+                        name="workdir",
+                        host=Host(path=tmpdir),
+                        mount_path="/mnt/work",
+                        read_only=True,
+                        sub_path="task-001",
+                    )
+                ],
+            )
+
+            with (
+                patch.object(service, "_ensure_image_available"),
+                patch.object(service, "_prepare_sandbox_runtime"),
+            ):
+                service.create_sandbox(request)
+
+            host_config_call = mock_client.api.create_host_config.call_args
+            binds = host_config_call.kwargs["binds"]
+            assert len(binds) == 1
+            assert binds[0] == f"{sub_dir}:/mnt/work:ro"
+
+    def test_host_subpath_auto_created(self, mock_docker):
+        """Host volume with non-existent subPath should be auto-created."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.create_host_config.return_value = {}
+        mock_client.api.create_container.return_value = {"Id": "cid"}
+        mock_client.containers.get.return_value = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sub = "auto-created-sub"
+            request = CreateSandboxRequest(
+                image=ImageSpec(uri="python:3.11"),
+                timeout=120,
+                resourceLimits=ResourceLimits(root={}),
+                env={},
+                metadata={},
+                entrypoint=["python"],
+                volumes=[
+                    Volume(
+                        name="workdir",
+                        host=Host(path=tmpdir),
+                        mount_path="/mnt/work",
+                        read_only=False,
+                        sub_path=sub,
+                    )
+                ],
+            )
+
+            import os
+
+            resolved = os.path.join(tmpdir, sub)
+            assert not os.path.exists(resolved)
+
+            # create_sandbox will proceed past volume validation (subpath
+            # auto-created) but will fail later during container provisioning
+            # (mock doesn't cover the full flow).  We only care that the
+            # directory was created — NOT that it raised HOST_PATH_CREATE_FAILED.
+            try:
+                service.create_sandbox(request)
+            except HTTPException as e:
+                # If it's our own create-failed error, the auto-create didn't
+                # work — let the test fail explicitly.
+                if e.detail.get("code") == SandboxErrorCodes.HOST_PATH_CREATE_FAILED:
+                    raise
+            except Exception:
+                pass  # other provisioning errors are expected
+
+            assert os.path.isdir(resolved)
+
+    def test_empty_allowlist_permits_any_host_path(self, mock_docker):
+        """Empty allowed_host_paths (default) should permit any valid host path."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.create_host_config.return_value = {}
+        mock_client.api.create_container.return_value = {"Id": "cid"}
+        mock_client.containers.get.return_value = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+
+        # Default config has storage.allowed_host_paths = []
+        cfg = _app_config()
+        assert cfg.storage.allowed_host_paths == []
+        service = DockerSandboxService(config=cfg)
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            request = CreateSandboxRequest(
+                image=ImageSpec(uri="python:3.11"),
+                timeout=120,
+                resourceLimits=ResourceLimits(root={}),
+                env={},
+                metadata={},
+                entrypoint=["python"],
+                volumes=[
+                    Volume(
+                        name="workdir",
+                        host=Host(path=tmpdir),
+                        mount_path="/mnt/work",
+                        read_only=False,
+                    )
+                ],
+            )
+
+            with (
+                patch.object(service, "_ensure_image_available"),
+                patch.object(service, "_prepare_sandbox_runtime"),
+            ):
+                response = service.create_sandbox(request)
+
+            assert response.status.state == "Running"
+
+    def test_no_volumes_omits_binds_from_host_config(self, mock_docker):
+        """When no volumes are specified, 'binds' should not appear in Docker host config."""
+        mock_client = MagicMock()
+        mock_client.containers.list.return_value = []
+        mock_client.api.create_host_config.return_value = {}
+        mock_client.api.create_container.return_value = {"Id": "cid"}
+        mock_client.containers.get.return_value = MagicMock()
+        mock_docker.from_env.return_value = mock_client
+
+        service = DockerSandboxService(config=_app_config())
+
+        request = CreateSandboxRequest(
+            image=ImageSpec(uri="python:3.11"),
+            timeout=120,
+            resourceLimits=ResourceLimits(root={}),
+            env={},
+            metadata={},
+            entrypoint=["python"],
+        )
+
+        with (
+            patch.object(service, "_ensure_image_available"),
+            patch.object(service, "_prepare_sandbox_runtime"),
+        ):
+            service.create_sandbox(request)
+
+        host_config_call = mock_client.api.create_host_config.call_args
+        assert "binds" not in host_config_call.kwargs

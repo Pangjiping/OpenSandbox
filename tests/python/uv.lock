@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 
 [[package]]
@@ -149,8 +149,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "attrs", specifier = ">=21.3.0,<25.0" },
-    { name = "httpx", specifier = ">=0.28.1,<1.0" },
+    { name = "attrs", specifier = ">=21.3.0" },
+    { name = "httpx", specifier = ">=0.27.0,<1.0" },
     { name = "pydantic", specifier = ">=2.4.2,<3.0" },
     { name = "python-dateutil", specifier = ">=2.8.2,<3.0" },
 ]
@@ -176,7 +176,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "opensandbox", editable = "../../sdks/sandbox/python" },
-    { name = "pydantic", specifier = ">=2.0.0,<3.0" },
+    { name = "pydantic", specifier = ">=2.4.2,<3.0" },
 ]
 
 [package.metadata.requires-dev]

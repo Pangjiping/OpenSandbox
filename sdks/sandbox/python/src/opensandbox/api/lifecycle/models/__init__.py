@@ -23,17 +23,25 @@ from .create_sandbox_request_metadata import CreateSandboxRequestMetadata
 from .create_sandbox_response import CreateSandboxResponse
 from .create_sandbox_response_metadata import CreateSandboxResponseMetadata
 from .endpoint import Endpoint
+from .endpoint_headers import EndpointHeaders
 from .error_response import ErrorResponse
+from .host import Host
 from .image_spec import ImageSpec
 from .image_spec_auth import ImageSpecAuth
 from .list_sandboxes_response import ListSandboxesResponse
+from .network_policy import NetworkPolicy
+from .network_policy_default_action import NetworkPolicyDefaultAction
+from .network_rule import NetworkRule
+from .network_rule_action import NetworkRuleAction
 from .pagination_info import PaginationInfo
+from .pvc import PVC
 from .renew_sandbox_expiration_request import RenewSandboxExpirationRequest
 from .renew_sandbox_expiration_response import RenewSandboxExpirationResponse
 from .resource_limits import ResourceLimits
 from .sandbox import Sandbox
 from .sandbox_metadata import SandboxMetadata
 from .sandbox_status import SandboxStatus
+from .volume import Volume
 
 __all__ = (
     "CreateSandboxRequest",
@@ -43,15 +51,23 @@ __all__ = (
     "CreateSandboxResponse",
     "CreateSandboxResponseMetadata",
     "Endpoint",
+    "EndpointHeaders",
     "ErrorResponse",
+    "Host",
     "ImageSpec",
     "ImageSpecAuth",
     "ListSandboxesResponse",
+    "NetworkPolicy",
+    "NetworkPolicyDefaultAction",
+    "NetworkRule",
+    "NetworkRuleAction",
     "PaginationInfo",
+    "PVC",
     "RenewSandboxExpirationRequest",
     "RenewSandboxExpirationResponse",
     "ResourceLimits",
     "Sandbox",
     "SandboxMetadata",
     "SandboxStatus",
+    "Volume",
 )

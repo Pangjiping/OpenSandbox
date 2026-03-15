@@ -18,6 +18,7 @@ package com.alibaba.opensandbox.sandbox.infrastructure.adapters.service
 
 import com.alibaba.opensandbox.sandbox.HttpClientProvider
 import com.alibaba.opensandbox.sandbox.api.SandboxesApi
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxCreateResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
@@ -25,6 +26,7 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Volume
 import com.alibaba.opensandbox.sandbox.domain.services.Sandboxes
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter.toApiRenewRequest
@@ -58,7 +60,9 @@ internal class SandboxesAdapter(
         metadata: Map<String, String>,
         timeout: Duration,
         resource: Map<String, String>,
+        networkPolicy: NetworkPolicy?,
         extensions: Map<String, String>,
+        volumes: List<Volume>?,
     ): SandboxCreateResponse {
         logger.info("Creating sandbox with image: {}", spec.image)
 
@@ -71,7 +75,9 @@ internal class SandboxesAdapter(
                     metadata = metadata,
                     timeout = timeout,
                     resource = resource,
+                    networkPolicy = networkPolicy,
                     extensions = extensions,
+                    volumes = volumes,
                 )
             val apiResponse = api.sandboxesPost(createRequest)
             val response = apiResponse.toSandboxCreateResponse()
@@ -109,9 +115,17 @@ internal class SandboxesAdapter(
         sandboxId: String,
         port: Int,
     ): SandboxEndpoint {
+        return getSandboxEndpoint(sandboxId, port, false)
+    }
+
+    override fun getSandboxEndpoint(
+        sandboxId: String,
+        port: Int,
+        useServerProxy: Boolean,
+    ): SandboxEndpoint {
         logger.debug("Retrieving sandbox endpoint: {}, port {}", sandboxId, port)
         return try {
-            api.sandboxesSandboxIdEndpointsPortGet(sandboxId, port).toSandboxEndpoint()
+            api.sandboxesSandboxIdEndpointsPortGet(sandboxId, port, useServerProxy).toSandboxEndpoint()
         } catch (e: Exception) {
             logger.error("Failed to retrieve sandbox endpoint for sandbox {}", sandboxId, e)
             throw e.toSandboxException()

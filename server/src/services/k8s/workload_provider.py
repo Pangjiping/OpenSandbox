@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
-from src.api.schema import ImageSpec
+from src.api.schema import Endpoint, ImageSpec, NetworkPolicy, Volume
 
 
 class WorkloadProvider(ABC):
@@ -44,10 +44,13 @@ class WorkloadProvider(ABC):
         expires_at: datetime,
         execd_image: str,
         extensions: Optional[Dict[str, str]] = None,
+        network_policy: Optional[NetworkPolicy] = None,
+        egress_image: Optional[str] = None,
+        volumes: Optional[List[Volume]] = None,
     ) -> Dict[str, Any]:
         """
         Create a new workload resource.
-        
+
         Args:
             sandbox_id: Unique sandbox identifier
             namespace: Kubernetes namespace
@@ -60,10 +63,14 @@ class WorkloadProvider(ABC):
             execd_image: execd daemon image
             extensions: General extension field for passing additional configuration.
                 This is a flexible field for various use cases (e.g., ``poolRef`` for pool-based creation).
-            
+            network_policy: Optional network policy for egress traffic control.
+                When provided, an egress sidecar container will be added to the Pod.
+            egress_image: Optional egress sidecar image. Required when network_policy is provided.
+            volumes: Optional list of volume mounts for the sandbox.
+
         Returns:
             Dict containing workload metadata (name, uid, etc.)
-            
+
         Raises:
             ApiException: If creation fails
         """
@@ -153,15 +160,37 @@ class WorkloadProvider(ABC):
         pass
     
     @abstractmethod
-    def get_endpoint_info(self, workload: Any, port: int) -> Optional[str]:
+    def get_endpoint_info(self, workload: Any, port: int, sandbox_id: str) -> Optional[Endpoint]:
         """
         Get endpoint information from workload.
         
         Args:
             workload: Workload object
             port: Port number
+            sandbox_id: Sandbox identifier for ingress-based endpoints
             
         Returns:
-            Endpoint string (e.g., "10.244.0.5:8080") or None if not available
+            Endpoint object (including optional headers) or None if not available
         """
         pass
+
+    def supports_image_auth(self) -> bool:
+        """
+        Whether this provider supports per-request image pull authentication.
+
+        Providers that implement imagePullSecrets injection should override
+        this method to return True.
+        """
+        return False
+
+    def legacy_resource_name(self, sandbox_id: str) -> str:
+        """
+        Convert a sandbox_id to the legacy resource name with prefix.
+
+        Pre-upgrade sandboxes were named ``sandbox-<id>``. This helper
+        preserves access to those resources while allowing plain IDs
+        for new ones.
+        """
+        if sandbox_id.startswith("sandbox-"):
+            return sandbox_id
+        return f"sandbox-{sandbox_id}"

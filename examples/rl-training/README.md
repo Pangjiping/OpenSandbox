@@ -7,11 +7,9 @@ Demonstrates running a basic RL training loop (CartPole + DQN) inside an isolate
 Start the local OpenSandbox server:
 
 ```shell
-git clone git@github.com:alibaba/OpenSandbox.git
-cd OpenSandbox/server
-cp example.config.toml ~/.sandbox.toml
-uv sync
-uv run python -m src.main
+uv pip install opensandbox-server
+opensandbox-server init-config ~/.sandbox.toml --example docker
+opensandbox-server
 ```
 
 ## Run the Example
@@ -32,7 +30,7 @@ The script provisions a sandbox, installs RL dependencies, trains a DQN agent on
 
 - `SANDBOX_DOMAIN`: Sandbox service address (default: `localhost:8080`)
 - `SANDBOX_API_KEY`: API key if your server requires authentication
-- `SANDBOX_IMAGE`: Docker image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest`)
+- `SANDBOX_IMAGE`: Docker image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.1`)
 - `RL_TIMESTEPS`: Training timesteps to run (default: `5000`)
 
 ## TensorBoard

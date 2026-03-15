@@ -17,23 +17,35 @@ package dnsproxy
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
+	"net/netip"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
 
+	"github.com/alibaba/opensandbox/egress/pkg/events"
+	"github.com/alibaba/opensandbox/egress/pkg/log"
+	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 )
 
 const defaultListenAddr = "127.0.0.1:15353"
 
 type Proxy struct {
+	policyMu   sync.RWMutex
 	policy     *policy.NetworkPolicy
 	listenAddr string
 	upstream   string // single upstream for MVP
 	servers    []*dns.Server
+
+	// optional; called in goroutine when A/AAAA are present
+	onResolved func(domain string, ips []nftables.ResolvedIP)
+
+	// optional broadcaster to notify blocked hostnames
+	blockedBroadcaster *events.Broadcaster
 }
 
 // New builds a proxy with resolved upstream; listenAddr can be empty for default.
@@ -41,15 +53,19 @@ func New(p *policy.NetworkPolicy, listenAddr string) (*Proxy, error) {
 	if listenAddr == "" {
 		listenAddr = defaultListenAddr
 	}
+	if p == nil {
+		p = policy.DefaultDenyPolicy()
+	}
 	upstream, err := discoverUpstream()
 	if err != nil {
 		return nil, err
 	}
-	return &Proxy{
-		policy:     p,
+	proxy := &Proxy{
 		listenAddr: listenAddr,
 		upstream:   upstream,
-	}, nil
+		policy:     ensurePolicyDefaults(p),
+	}
+	return proxy, nil
 }
 
 func (p *Proxy) Start(ctx context.Context) error {
@@ -94,7 +110,11 @@ func (p *Proxy) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 	q := r.Question[0]
 	domain := q.Name
 
-	if p.policy != nil && p.policy.Evaluate(domain) == policy.ActionDeny {
+	p.policyMu.RLock()
+	currentPolicy := p.policy
+	p.policyMu.RUnlock()
+	if currentPolicy != nil && currentPolicy.Evaluate(domain) == policy.ActionDeny {
+		p.publishBlocked(domain)
 		resp := new(dns.Msg)
 		resp.SetRcode(r, dns.RcodeNameError)
 		_ = w.WriteMsg(resp)
@@ -103,13 +123,27 @@ func (p *Proxy) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	resp, err := p.forward(r)
 	if err != nil {
-		log.Printf("[dns] forward error for %s: %v", domain, err)
+		log.Warnf("[dns] forward error for %s: %v", domain, err)
 		fail := new(dns.Msg)
 		fail.SetRcode(r, dns.RcodeServerFailure)
 		_ = w.WriteMsg(fail)
 		return
 	}
+	p.maybeNotifyResolved(domain, resp)
 	_ = w.WriteMsg(resp)
+}
+
+// maybeNotifyResolved calls onResolved synchronously when resp contains A/AAAA,
+// so that IPs are in nft before the client receives the DNS response and connects.
+func (p *Proxy) maybeNotifyResolved(domain string, resp *dns.Msg) {
+	if p.onResolved == nil {
+		return
+	}
+	ips := extractResolvedIPs(resp)
+	if len(ips) == 0 {
+		return
+	}
+	p.onResolved(domain, ips)
 }
 
 func (p *Proxy) forward(r *dns.Msg) (*dns.Msg, error) {
@@ -130,21 +164,145 @@ func (p *Proxy) UpstreamHost() string {
 	return host
 }
 
-func discoverUpstream() (string, error) {
-	cfg, err := dns.ClientConfigFromFile("/etc/resolv.conf")
-	if err == nil && len(cfg.Servers) > 0 {
-		return net.JoinHostPort(cfg.Servers[0], cfg.Port), nil
-	}
-	// fallback to public resolver; comment to explain deterministic behavior
-	log.Printf("[dns] fallback upstream resolver due to error: %v", err)
-	return "8.8.8.8:53", nil
+// UpdatePolicy swaps the in-memory policy used by the proxy.
+// Passing nil reverts to the default deny-all policy.
+func (p *Proxy) UpdatePolicy(newPolicy *policy.NetworkPolicy) {
+	p.policyMu.Lock()
+	p.policy = ensurePolicyDefaults(newPolicy)
+	p.policyMu.Unlock()
 }
 
-// LoadPolicyFromEnv reads OPENSANDBOX_NETWORK_POLICY and parses it.
-func LoadPolicyFromEnv() (*policy.NetworkPolicy, error) {
-	raw := os.Getenv("OPENSANDBOX_NETWORK_POLICY")
-	if raw == "" {
+// CurrentPolicy returns the policy currently enforced by the proxy.
+func (p *Proxy) CurrentPolicy() *policy.NetworkPolicy {
+	p.policyMu.RLock()
+	defer p.policyMu.RUnlock()
+	return p.policy
+}
+
+// SetOnResolved sets the callback invoked when an allowed domain resolves to A/AAAA.
+// Called in a goroutine; pass nil to disable. Only used when L2 dynamic IP is enabled (e.g. dns+nft mode).
+func (p *Proxy) SetOnResolved(fn func(domain string, ips []nftables.ResolvedIP)) {
+	p.onResolved = fn
+}
+
+// SetBlockedBroadcaster wires a broadcaster used to notify blocked hostnames.
+func (p *Proxy) SetBlockedBroadcaster(b *events.Broadcaster) {
+	p.blockedBroadcaster = b
+}
+
+func (p *Proxy) publishBlocked(domain string) {
+	if p.blockedBroadcaster == nil {
+		return
+	}
+	normalized := strings.ToLower(strings.TrimSuffix(domain, "."))
+	if normalized == "" {
+		return
+	}
+
+	p.blockedBroadcaster.Publish(events.BlockedEvent{
+		Hostname:  normalized,
+		Timestamp: time.Now().UTC(),
+	})
+}
+
+// extractResolvedIPs parses A and AAAA records from resp.Answer into ResolvedIP slice.
+//
+// Uses netip.ParseAddr(v.A.String()) which allocates a temporary string per record; typically
+// one or a few records per resolution, so the cost is small compared to DNS RTT and nft writes.
+func extractResolvedIPs(resp *dns.Msg) []nftables.ResolvedIP {
+	if resp == nil || len(resp.Answer) == 0 {
+		return nil
+	}
+
+	var out []nftables.ResolvedIP
+	for _, rr := range resp.Answer {
+		switch v := rr.(type) {
+		case *dns.A:
+			if v.A == nil {
+				continue
+			}
+			addr, err := netip.ParseAddr(v.A.String())
+			if err != nil {
+				continue
+			}
+			out = append(out, nftables.ResolvedIP{Addr: addr, TTL: time.Duration(v.Hdr.Ttl) * time.Second})
+		case *dns.AAAA:
+			if v.AAAA == nil {
+				continue
+			}
+			addr, err := netip.ParseAddr(v.AAAA.String())
+			if err != nil {
+				continue
+			}
+			out = append(out, nftables.ResolvedIP{Addr: addr, TTL: time.Duration(v.Hdr.Ttl) * time.Second})
+		}
+	}
+	return out
+}
+
+const fallbackUpstream = "8.8.8.8:53"
+
+func discoverUpstream() (string, error) {
+	cfg, err := dns.ClientConfigFromFile("/etc/resolv.conf")
+	if err != nil || len(cfg.Servers) == 0 {
+		if err != nil {
+			log.Warnf("[dns] fallback upstream resolver due to error: %v", err)
+		}
+		return fallbackUpstream, nil
+	}
+	// Prefer first non-loopback nameserver (e.g. K8s cluster DNS after 127.0.0.11).
+	// If only loopback exists (e.g. Docker 127.0.0.11), use it: proxy upstream traffic
+	// is marked and bypasses the redirect, so loopback is reachable from the sidecar.
+	var chosen string
+	for _, s := range cfg.Servers {
+		if ip := net.ParseIP(s); ip != nil && ip.IsLoopback() {
+			if chosen == "" {
+				chosen = s
+			}
+			continue
+		}
+		chosen = s
+		break
+	}
+	if chosen == "" {
+		chosen = cfg.Servers[0]
+	}
+	return net.JoinHostPort(chosen, cfg.Port), nil
+}
+
+// ResolvNameserverIPs reads nameserver lines from resolvPath and returns parsed IPv4/IPv6 addresses.
+// Used at startup to whitelist the system DNS so client traffic to it is allowed and proxy can use it as upstream.
+func ResolvNameserverIPs(resolvPath string) ([]netip.Addr, error) {
+	cfg, err := dns.ClientConfigFromFile(resolvPath)
+	if err != nil || len(cfg.Servers) == 0 {
 		return nil, nil
 	}
+	var out []netip.Addr
+	for _, s := range cfg.Servers {
+		ip, err := netip.ParseAddr(s)
+		if err != nil {
+			continue
+		}
+		out = append(out, ip)
+	}
+	return out, nil
+}
+
+// LoadPolicyFromEnvVar reads the given env var and parses a policy; empty falls back to default deny-all.
+func LoadPolicyFromEnvVar(envName string) (*policy.NetworkPolicy, error) {
+	raw := os.Getenv(envName)
+	if raw == "" {
+		return policy.DefaultDenyPolicy(), nil
+	}
 	return policy.ParsePolicy(raw)
+}
+
+func ensurePolicyDefaults(p *policy.NetworkPolicy) *policy.NetworkPolicy {
+	if p == nil {
+		return policy.DefaultDenyPolicy()
+	}
+	if p.DefaultAction == "" {
+		p.DefaultAction = policy.ActionDeny
+	}
+	return p
 }

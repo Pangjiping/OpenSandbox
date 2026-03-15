@@ -41,6 +41,7 @@ from opensandbox.api.lifecycle.models import (
 from opensandbox.api.lifecycle.models.create_sandbox_request import CreateSandboxRequest
 from opensandbox.api.lifecycle.models.image_spec import ImageSpec
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
     PagedSandboxInfos,
     PaginationInfo,
     SandboxCreateResponse,
@@ -49,6 +50,7 @@ from opensandbox.models.sandboxes import (
     SandboxInfo,
     SandboxRenewResponse,
     SandboxStatus,
+    Volume,
 )
 
 
@@ -83,6 +85,39 @@ class SandboxModelConverter:
         )
 
     @staticmethod
+    def to_api_volume(volume: Volume):
+        """Convert domain Volume to API Volume."""
+        from opensandbox.api.lifecycle.models.host import (
+            Host as ApiHost,
+        )
+        from opensandbox.api.lifecycle.models.pvc import (
+            PVC as ApiPVC,
+        )
+        from opensandbox.api.lifecycle.models.volume import Volume as ApiVolume
+        from opensandbox.api.lifecycle.types import UNSET
+
+        api_host = UNSET
+        if volume.host is not None:
+            api_host = ApiHost(path=volume.host.path)
+
+        api_pvc = UNSET
+        if volume.pvc is not None:
+            api_pvc = ApiPVC(claim_name=volume.pvc.claim_name)
+
+        api_sub_path = UNSET
+        if volume.sub_path is not None:
+            api_sub_path = volume.sub_path
+
+        return ApiVolume(
+            name=volume.name,
+            mount_path=volume.mount_path,
+            read_only=volume.read_only,
+            host=api_host,
+            pvc=api_pvc,
+            sub_path=api_sub_path,
+        )
+
+    @staticmethod
     def to_api_create_sandbox_request(
         spec: SandboxImageSpec,
         entrypoint: list[str],
@@ -90,7 +125,9 @@ class SandboxModelConverter:
         metadata: dict[str, str],
         timeout: timedelta,
         resource: dict[str, str],
+        network_policy: NetworkPolicy | None,
         extensions: dict[str, str],
+        volumes: list[Volume] | None,
     ) -> CreateSandboxRequest:
         """Convert domain parameters to API CreateSandboxRequest."""
         from opensandbox.api.lifecycle.models.create_sandbox_request import (
@@ -104,6 +141,18 @@ class SandboxModelConverter:
         )
         from opensandbox.api.lifecycle.models.create_sandbox_request_metadata import (
             CreateSandboxRequestMetadata,
+        )
+        from opensandbox.api.lifecycle.models.network_policy import (
+            NetworkPolicy as ApiNetworkPolicy,
+        )
+        from opensandbox.api.lifecycle.models.network_policy_default_action import (
+            NetworkPolicyDefaultAction,
+        )
+        from opensandbox.api.lifecycle.models.network_rule import (
+            NetworkRule as ApiNetworkRule,
+        )
+        from opensandbox.api.lifecycle.models.network_rule_action import (
+            NetworkRuleAction,
         )
         from opensandbox.api.lifecycle.models.resource_limits import ResourceLimits
         from opensandbox.api.lifecycle.types import UNSET
@@ -121,9 +170,44 @@ class SandboxModelConverter:
         # Convert resource limits dict to API model
         api_resource_limits = ResourceLimits.from_dict(resource)
 
+        api_network_policy = UNSET
+        if network_policy is not None:
+            if not isinstance(network_policy, NetworkPolicy):
+                raise TypeError(
+                    "network_policy must be a NetworkPolicy or None, "
+                    f"got {type(network_policy).__name__}"
+                )
+            api_default_action = UNSET
+            if network_policy.default_action:
+                api_default_action = NetworkPolicyDefaultAction(
+                    network_policy.default_action
+                )
+
+            api_egress = UNSET
+            if network_policy.egress is not None:
+                api_egress = [
+                    ApiNetworkRule(
+                        action=NetworkRuleAction(rule.action),
+                        target=rule.target,
+                    )
+                    for rule in network_policy.egress
+                ]
+
+            api_network_policy = ApiNetworkPolicy(
+                default_action=api_default_action,
+                egress=api_egress,
+            )
+
         api_extensions = (
             CreateSandboxRequestExtensions.from_dict(extensions) if extensions else UNSET
         )
+
+        # Convert volumes to API model
+        api_volumes = UNSET
+        if volumes is not None and len(volumes) > 0:
+            api_volumes = [
+                SandboxModelConverter.to_api_volume(v) for v in volumes
+            ]
 
         return CreateSandboxRequest(
             image=SandboxModelConverter.to_api_image_spec(spec),
@@ -132,7 +216,9 @@ class SandboxModelConverter:
             metadata=api_metadata,
             timeout=int(timeout.total_seconds()),
             resource_limits=api_resource_limits,
+            network_policy=api_network_policy,
             extensions=api_extensions,
+            volumes=api_volumes,
         )
 
     @staticmethod
@@ -249,10 +335,15 @@ class SandboxModelConverter:
     @staticmethod
     def to_sandbox_endpoint(api_endpoint: Endpoint) -> SandboxEndpoint:
         """Convert API Endpoint to domain SandboxEndpoint."""
+        from opensandbox.api.lifecycle.types import Unset
         from opensandbox.models.sandboxes import SandboxEndpoint
 
+        headers: dict[str, str] = {}
+        if not isinstance(api_endpoint.headers, Unset):
+            headers = dict(api_endpoint.headers.additional_properties)
         return SandboxEndpoint(
             endpoint=api_endpoint.endpoint,
+            headers=headers,
         )
 
     @staticmethod

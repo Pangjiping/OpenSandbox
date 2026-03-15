@@ -30,7 +30,15 @@ log_level = "INFO"
 
 [runtime]
 type = "kubernetes"
-execd_image = "opensandbox/execd:latest"
+execd_image = "opensandbox/execd:v1.0.6"
+
+[storage]
+# Volume and storage configuration
+# -----------------------------------------------------------------
+# Allowlist of host path prefixes permitted for bind mounts.
+# If empty, all host paths are allowed (not recommended for production).
+# Example: allowed_host_paths = ["/data/opensandbox", "/tmp/sandbox"]
+allowed_host_paths = []
 
 [kubernetes]
 # Path to kubeconfig file. Leave as null to use in-cluster configuration
@@ -40,6 +48,12 @@ kubeconfig_path = "~/.kube/config"
 # Namespace for sandbox workloads
 namespace = "opensandbox"
 
+# [Beta] Enable informer-backed cache to reduce API calls.
+# Set to false to disable the watch-based cache.
+informer_enabled = true
+informer_resync_seconds = 300
+informer_watch_timeout_seconds = 60
+
 # Workload provider type: available providers are registered in the provider factory
 # If not specified, uses the first registered provider (typically "batchsandbox")
 workload_provider = "batchsandbox"
@@ -47,3 +61,7 @@ workload_provider = "batchsandbox"
 # Path to the BatchSandbox template file
 # Replace with your path
 batchsandbox_template_file = "~/batchsandbox-template.yaml"
+
+[ingress]
+# Ingress exposure mode: direct (default) or gateway
+mode = "direct"

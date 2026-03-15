@@ -49,7 +49,7 @@ const config = new ConnectionConfig({
 // 2. Create a Sandbox with the code-interpreter image + runtime versions
 const sandbox = await Sandbox.create({
   connectionConfig: config,
-  image: "opensandbox/code-interpreter:latest",
+  image: "opensandbox/code-interpreter:v1.0.1",
   entrypoint: ["/opt/opensandbox/code-interpreter.sh"],
   env: {
     PYTHON_VERSION: "3.11",
@@ -76,6 +76,7 @@ console.log(result.result[0]?.text);
 
 // 7. Cleanup remote instance (optional but recommended)
 await sandbox.kill();
+await sandbox.close();
 ```
 
 ## Runtime Configuration
@@ -98,7 +99,7 @@ You can specify the desired version of a programming language by setting the cor
 ```ts
 const sandbox = await Sandbox.create({
   connectionConfig: config,
-  image: "opensandbox/code-interpreter:latest",
+  image: "opensandbox/code-interpreter:v1.0.1",
   entrypoint: ["/opt/opensandbox/code-interpreter.sh"],
   env: {
     JAVA_VERSION: "17",
@@ -182,6 +183,6 @@ await ci.codes.run("import time\nfor i in range(5):\n    print(i)\n    time.slee
 
 ## Notes
 
-- **Lifecycle**: `CodeInterpreter` wraps an existing `Sandbox` instance and reuses its connection configuration.
+- **Lifecycle**: `CodeInterpreter` wraps an existing `Sandbox` instance and reuses its connection configuration. Each sandbox instance clones the transport via `ConnectionConfig.withTransportIfMissing()`, so call `sandbox.close()` when you are finished to release the Node.js keep-alive agent and avoid leak.
 - **Default context**: `codes.run(..., { language })` uses a language default context (state can persist across runs).
 

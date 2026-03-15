@@ -218,6 +218,286 @@ class SandboxImageAuth private constructor(
 }
 
 /**
+ * Egress rule for matching network targets.
+ *
+ * @property action Whether to allow or deny matching targets.
+ * @property target FQDN or wildcard domain (e.g., "example.com", "*.example.com")
+ */
+class NetworkRule private constructor(
+    val action: Action,
+    val target: String,
+) {
+    enum class Action {
+        ALLOW,
+        DENY,
+    }
+
+    companion object {
+        @JvmStatic
+        fun builder(): Builder = Builder()
+    }
+
+    class Builder {
+        private var action: Action? = null
+        private var target: String? = null
+
+        fun action(action: Action): Builder {
+            this.action = action
+            return this
+        }
+
+        fun target(target: String): Builder {
+            require(target.isNotBlank()) { "Target cannot be blank" }
+            this.target = target
+            return this
+        }
+
+        fun build(): NetworkRule {
+            val actionValue = action ?: throw IllegalArgumentException("Action must be specified")
+            val targetValue = target ?: throw IllegalArgumentException("Target must be specified")
+            return NetworkRule(
+                action = actionValue,
+                target = targetValue,
+            )
+        }
+    }
+}
+
+/**
+ * Egress network policy matching the sidecar `/policy` request body.
+ *
+ * @property defaultAction Default action when no egress rule matches. Defaults to "deny".
+ * @property egress Egress rules evaluated in order
+ */
+class NetworkPolicy private constructor(
+    val defaultAction: DefaultAction?,
+    val egress: List<NetworkRule>?,
+) {
+    enum class DefaultAction {
+        ALLOW,
+        DENY,
+    }
+
+    companion object {
+        @JvmStatic
+        fun builder(): Builder = Builder()
+    }
+
+    class Builder {
+        private var defaultAction: DefaultAction = DefaultAction.DENY
+        private val egress = mutableListOf<NetworkRule>()
+
+        fun defaultAction(action: DefaultAction): Builder {
+            this.defaultAction = action
+            return this
+        }
+
+        fun addEgress(rule: NetworkRule): Builder {
+            egress.add(rule)
+            return this
+        }
+
+        fun egress(rules: List<NetworkRule>): Builder {
+            egress.clear()
+            egress.addAll(rules)
+            return this
+        }
+
+        fun build(): NetworkPolicy {
+            return NetworkPolicy(
+                defaultAction = defaultAction,
+                egress = if (egress.isEmpty()) null else egress.toList(),
+            )
+        }
+    }
+}
+
+// ============================================================================
+// Volume Models
+// ============================================================================
+
+/**
+ * Host path bind mount backend.
+ *
+ * Maps a directory on the host filesystem into the container.
+ * Only available when the runtime supports host mounts.
+ *
+ * @property path Absolute path on the host filesystem to mount
+ */
+class Host private constructor(
+    val path: String,
+) {
+    companion object {
+        @JvmStatic
+        fun builder(): Builder = Builder()
+
+        @JvmStatic
+        fun of(path: String): Host = builder().path(path).build()
+    }
+
+    class Builder {
+        private var path: String? = null
+
+        fun path(path: String): Builder {
+            require(path.startsWith("/")) { "Host path must be an absolute path starting with '/'" }
+            this.path = path
+            return this
+        }
+
+        fun build(): Host {
+            val pathValue = path ?: throw IllegalArgumentException("Path must be specified")
+            return Host(path = pathValue)
+        }
+    }
+}
+
+/**
+ * Kubernetes PersistentVolumeClaim mount backend.
+ *
+ * References an existing PVC in the same namespace as the sandbox pod.
+ * Only available in Kubernetes runtime.
+ *
+ * @property claimName Name of the PersistentVolumeClaim in the same namespace
+ */
+class PVC private constructor(
+    val claimName: String,
+) {
+    companion object {
+        @JvmStatic
+        fun builder(): Builder = Builder()
+
+        @JvmStatic
+        fun of(claimName: String): PVC = builder().claimName(claimName).build()
+    }
+
+    class Builder {
+        private var claimName: String? = null
+
+        fun claimName(claimName: String): Builder {
+            require(claimName.isNotBlank()) { "Claim name cannot be blank" }
+            this.claimName = claimName
+            return this
+        }
+
+        fun build(): PVC {
+            val claimNameValue = claimName ?: throw IllegalArgumentException("Claim name must be specified")
+            return PVC(claimName = claimNameValue)
+        }
+    }
+}
+
+/**
+ * Storage mount definition for a sandbox.
+ *
+ * Each volume entry contains:
+ * - A unique name identifier
+ * - Exactly one backend (host, pvc) with backend-specific fields
+ * - Common mount settings (mountPath, readOnly, subPath)
+ *
+ * Example usage:
+ * ```kotlin
+ * // Host path mount (read-write by default)
+ * val volume = Volume.builder()
+ *     .name("workdir")
+ *     .host(Host.of("/data/opensandbox"))
+ *     .mountPath("/mnt/work")
+ *     .build()
+ *
+ * // PVC mount (read-only)
+ * val volume = Volume.builder()
+ *     .name("models")
+ *     .pvc(PVC.of("shared-models-pvc"))
+ *     .mountPath("/mnt/models")
+ *     .readOnly(true)
+ *     .build()
+ * ```
+ *
+ * @property name Unique identifier for the volume within the sandbox
+ * @property host Host path bind mount backend (mutually exclusive with pvc)
+ * @property pvc Kubernetes PVC mount backend (mutually exclusive with host)
+ * @property mountPath Absolute path inside the container where the volume is mounted
+ * @property readOnly If true, the volume is mounted as read-only. Defaults to false (read-write).
+ * @property subPath Optional subdirectory under the backend path to mount
+ */
+class Volume private constructor(
+    val name: String,
+    val host: Host?,
+    val pvc: PVC?,
+    val mountPath: String,
+    val readOnly: Boolean,
+    val subPath: String?,
+) {
+    companion object {
+        @JvmStatic
+        fun builder(): Builder = Builder()
+    }
+
+    class Builder {
+        private var name: String? = null
+        private var host: Host? = null
+        private var pvc: PVC? = null
+        private var mountPath: String? = null
+        private var readOnly: Boolean = false
+        private var subPath: String? = null
+
+        fun name(name: String): Builder {
+            require(name.isNotBlank()) { "Volume name cannot be blank" }
+            this.name = name
+            return this
+        }
+
+        fun host(host: Host): Builder {
+            this.host = host
+            return this
+        }
+
+        fun pvc(pvc: PVC): Builder {
+            this.pvc = pvc
+            return this
+        }
+
+        fun mountPath(mountPath: String): Builder {
+            require(mountPath.startsWith("/")) { "Mount path must be an absolute path starting with '/'" }
+            this.mountPath = mountPath
+            return this
+        }
+
+        fun readOnly(readOnly: Boolean): Builder {
+            this.readOnly = readOnly
+            return this
+        }
+
+        fun subPath(subPath: String): Builder {
+            this.subPath = subPath
+            return this
+        }
+
+        fun build(): Volume {
+            val nameValue = name ?: throw IllegalArgumentException("Name must be specified")
+            val mountPathValue = mountPath ?: throw IllegalArgumentException("Mount path must be specified")
+
+            // Validate exactly one backend is specified
+            val backendsSpecified = listOfNotNull(host, pvc).size
+            if (backendsSpecified == 0) {
+                throw IllegalArgumentException("Exactly one backend (host, pvc) must be specified, but none was provided")
+            }
+            if (backendsSpecified > 1) {
+                throw IllegalArgumentException("Exactly one backend (host, pvc) must be specified, but multiple were provided")
+            }
+
+            return Volume(
+                name = nameValue,
+                host = host,
+                pvc = pvc,
+                mountPath = mountPathValue,
+                readOnly = readOnly,
+                subPath = subPath,
+            )
+        }
+    }
+}
+
+/**
  * Detailed information about a sandbox instance.
  *
  * @property id Unique identifier of the sandbox
@@ -275,9 +555,11 @@ class SandboxRenewResponse(
  * Connection endpoint information for a sandbox.
  *
  * @property endpoint Sandbox endpoint
+ * @property headers Headers that must be included on every request targeting this endpoint (e.g. when the server requires them for routing or auth). Empty if not required.
  */
 class SandboxEndpoint(
     val endpoint: String,
+    val headers: Map<String, String> = emptyMap(),
 )
 
 /**

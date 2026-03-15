@@ -42,14 +42,77 @@ Intelligent resource management features:
 - Pool-wide capacity limits to prevent resource exhaustion
 - Automatic scaling based on demand
 
+## Runtime API Support Notes
+
+- `pause` / `resume` lifecycle APIs are currently **not supported** by the Kubernetes runtime.
+- Calling these APIs against Kubernetes runtime returns `501 Not Implemented`.
+- Pause/resume semantics in OpenSandbox mean preserving in-memory process state (container-level suspend/resume). Kubernetes provider currently focuses on create/get/list/delete/renew workflows.
+
+
+## Relationship with [kubernates-sigs/agent-sandbox](kubernates-sigs/agent-sandbox)
+
+BatchSandbox does not duplicate the basic functionality of Agent-Sandbox, but rather complements it with additional enhanced capabilities:
+
+1. **Batch Sandbox Semantics**: Significantly improves Sandbox delivery throughput in scenarios such as Reinforcement Learning (RL) training
+2. **Task Scheduling Capability**: Enables differentiated Sandbox delivery through Task scheduling, such as injecting custom processes into containers before Sandbox delivery
+
+Therefore, you can choose the appropriate project as your Sandbox underlying runtime based on your specific application scenarios.
+
+### Performance Testing
+
+Performance comparison test of BatchSandbox and Sig Agent-Sandbox in terms of throughput.
+
+**Test Environment**
+
+**Controller Component Configuration**
+- Resource Specifications: request: 12C32G, limit: 16C64G
+- Concurrency Configuration:
+  - **Sig Agent-Sandbox**: 3 controllers (sandbox, sandboxclaim, sandboxwarmppool), no concurrency configuration provided in the code, default value is 1
+  - **BatchSandbox**: 2 controllers, batchsandbox controller concurrency is 32, pool controller concurrency is 1
+
+**Pool Configuration**
+- Image: busybox:latest
+- Resource Specifications: 0.1C256MB
+
+> **Additional Note**: Although the batchsandbox-controller of BatchSandbox has a concurrency of 32, only one BatchSandbox object was created in the test cases, which is actually equivalent to a concurrency of 1. Therefore, in terms of concurrency, BatchSandbox is consistent with SIG Agent-Sandbox.
+
+**Performance Comparison Results**
+
+When both use resource pools, the total time comparison for delivering 100 Sandboxes:
+
+| Test Scenario | Total Time (seconds) |
+|---------------|---------------------|
+| SIG Agent-Sandbox (concurrency=1) | 76.35 |
+| SIG Agent-Sandbox (concurrency=10) | 23.17 |
+| SIG Agent-Sandbox (concurrency=50) | 33.85 |
+| BatchSandbox | 0.92 |
+
+**Analysis**
+
+Core Difference: The time complexity of Sig Agent-Sandbox and BatchSandbox for batch delivery of N Sandboxes is O(N) and O(1) respectively.
+
+**Sig Agent-Sandbox Architecture**
+- Each Sandbox delivery process requires the following write operations (total write operations are proportional to Sandbox scale):
+  1. Create a SandboxClaim
+  2. Create a Sandbox
+  3. Update Pod once (adopt Pod from resource pool)
+  4. Update Sandbox Status once
+  5. Update SandboxClaim Status once
+
+**BatchSandbox Architecture**
+- Each batch Sandbox delivery process requires the following write operations (total write operations are independent of Sandbox scale):
+  1. Create a BatchSandbox
+  2. Update BatchSandbox annotation once (write batch allocation results)
+  3. Update BatchSandbox status once
+
 ## Getting Started
 ![](images/deploy-example.gif)
 
 ### Prerequisites
 - go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.22.4+ cluster.
+- docker version 17.03+
+- kubectl version v1.11.3+
+- Access to a Kubernetes v1.21.1+ cluster
 
 If you don't have access to a Kubernetes cluster, you can use [kind](https://kind.sigs.k8s.io/) to create a local Kubernetes cluster for testing purposes. Kind runs Kubernetes nodes in Docker containers, making it easy to set up a local development environment.
 
@@ -90,13 +153,145 @@ For more detailed instructions on using kind, please refer to the [official kind
 
 This project requires two separate images - one for the controller and another for the task-executor component.
 
+#### Option 1: Deploy with Helm (Recommended)
+
+**Install from GitHub Release:**
+
+You can install OpenSandbox Controller directly from GitHub Releases. Check the [Releases page](https://github.com/alibaba/OpenSandbox/releases?q=helm%2Fopensandbox-controller&expanded=true) for all available versions.
+
+```sh
+# Replace <version> with the desired version (e.g., 0.1.0)
+helm install opensandbox-controller \
+  https://github.com/alibaba/OpenSandbox/releases/download/helm/opensandbox-controller/<version>/opensandbox-controller-<version>.tgz \
+  --namespace opensandbox-system \
+  --create-namespace
+```
+
+Example with specific version:
+```sh
+helm install opensandbox-controller \
+  https://github.com/alibaba/OpenSandbox/releases/download/helm/opensandbox-controller/0.1.0/opensandbox-controller-0.1.0.tgz \
+  --namespace opensandbox-system \
+  --create-namespace
+```
+
+You can also download the chart first and then install:
+```sh
+# Download the chart
+wget https://github.com/alibaba/OpenSandbox/releases/download/helm/opensandbox-controller/<version>/opensandbox-controller-<version>.tgz
+
+# Install from local file
+helm install opensandbox-controller ./opensandbox-controller-<version>.tgz \
+  --namespace opensandbox-system \
+  --create-namespace
+```
+
+**Customize Installation:**
+
+Use `--set` flags to customize the configuration:
+
+```sh
+# Example: Custom resource limits
+helm install opensandbox-controller \
+  https://github.com/alibaba/OpenSandbox/releases/download/helm/opensandbox-controller/0.1.0/opensandbox-controller-0.1.0.tgz \
+  --namespace opensandbox-system \
+  --create-namespace \
+  --set controller.replicaCount=2 \
+  --set controller.resources.limits.cpu=1000m \
+  --set controller.resources.limits.memory=512Mi
+
+# Example: Custom log level
+helm install opensandbox-controller \
+  https://github.com/alibaba/OpenSandbox/releases/download/helm/opensandbox-controller/0.1.0/opensandbox-controller-0.1.0.tgz \
+  --namespace opensandbox-system \
+  --create-namespace \
+  --set controller.logLevel=debug
+```
+
+Or use a values file for complex configurations:
+
+```sh
+# Create a custom values file
+cat > custom-values.yaml <<EOF
+controller:
+  replicaCount: 2
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  logLevel: debug
+EOF
+
+# Install with custom values
+helm install opensandbox-controller \
+  https://github.com/alibaba/OpenSandbox/releases/download/helm/opensandbox-controller/0.1.0/opensandbox-controller-0.1.0.tgz \
+  --namespace opensandbox-system \
+  --create-namespace \
+  -f custom-values.yaml
+```
+
+**Install from source (for development):**
+
+If you're developing or need to customize the chart:
+
 1. **Build and push your images:**
    ```sh
    # Build and push the controller image
    make docker-build docker-push IMG=<some-registry>/opensandbox-controller:tag
    
    # Build and push the task-executor image
-   make docker-build-task-executor docker-push-task-executor IMG=<some-registry>/opensandbox-task-executor:tag
+   make docker-build-task-executor docker-push-task-executor TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
+   ```
+
+2. **Install with Helm:**
+   ```sh
+   helm install opensandbox-controller ./charts/opensandbox-controller \
+     --set controller.image.repository=<some-registry>/opensandbox-controller \
+     --set controller.image.tag=<tag> \
+     --namespace opensandbox-system \
+     --create-namespace
+   ```
+
+**Verify Installation:**
+
+Check the controller is running:
+```sh
+kubectl get pods -n opensandbox-system
+kubectl get deployment -n opensandbox-system
+
+# Check logs
+kubectl logs -n opensandbox-system -l control-plane=controller-manager -f
+```
+
+**Upgrade:**
+
+```sh
+# Upgrade to a new version
+helm upgrade opensandbox-controller \
+  https://github.com/alibaba/OpenSandbox/releases/download/helm/opensandbox-controller/<new-version>/opensandbox-controller-<new-version>.tgz \
+  --namespace opensandbox-system
+```
+
+**Uninstall:**
+
+```sh
+helm uninstall opensandbox-controller -n opensandbox-system
+```
+
+For more configuration options and advanced usage, see the [Helm Chart README](charts/opensandbox-controller/README.md).
+
+#### Option 2: Deploy with Kustomize
+
+1. **Build and push your images:**
+   ```sh
+   # Build and push the controller image
+   make docker-build docker-push IMG=<some-registry>/opensandbox-controller:tag
+   
+   # Build and push the task-executor image
+   make docker-build-task-executor docker-push-task-executor TASK_EXECUTOR_IMG=<some-registry>/opensandbox-task-executor:tag
    ```
 
    **NOTE:** These images ought to be published in the personal registry you specified. And it is required to have access to pull the images from the working environment. Make sure you have the proper permission to the registry if the above commands don't work.

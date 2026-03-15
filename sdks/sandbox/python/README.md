@@ -183,7 +183,7 @@ await sandbox.files.write_files([
     WriteEntry(
         path="/tmp/hello.txt",
         data="Hello World",
-        mode=0o644
+        mode=644
     )
 ])
 
@@ -210,7 +210,7 @@ await sandbox.files.delete_files(["/tmp/hello.txt"])
 Use `SandboxManager` for administrative tasks and finding existing sandboxes.
 
 ```python
-from opensandbox.sandbox import SandboxManager
+from opensandbox.manager import SandboxManager
 from opensandbox.models.sandboxes import SandboxFilter
 
 # Create manager using async context manager
@@ -244,7 +244,8 @@ The `ConnectionConfig` class manages API server connection settings.
 | `request_timeout` | Timeout for API requests                   | 30 seconds                   | -                      |
 | `debug`           | Enable debug logging for HTTP requests     | `False`                      | -                      |
 | `headers`         | Custom HTTP headers                        | Empty                        | -                      |
-| `transport`       | Shared httpx transport (pool/proxy/retry)  | Default AsyncHTTPTransport   | -                      |
+| `transport`       | Shared httpx transport (pool/proxy/retry)  | SDK-created per instance     | -                      |
+| `use_server_proxy` | Use sandbox server as proxy for execd/endpoint requests (e.g. when client cannot reach the sandbox directly) | `False` | -                      |
 
 ```python
 from datetime import timedelta
@@ -258,6 +259,7 @@ config = ConnectionConfig(
 
 # 2. Advanced: Custom headers and custom transport
 # If you create many Sandbox instances, configuring a shared transport is recommended to optimize resource usage.
+# SDK default keep-alive is 30 seconds for its own transports.
 import httpx
 
 config = ConnectionConfig(
@@ -268,7 +270,7 @@ config = ConnectionConfig(
         limits=httpx.Limits(
             max_connections=100,
             max_keepalive_connections=50,
-            keepalive_expiry=120.0,
+        keepalive_expiry=30.0,
         )
     ),
 )
@@ -289,10 +291,13 @@ The `Sandbox.create()` allows configuring the sandbox environment.
 | `resource`      | CPU and memory limits                    | `{"cpu": "1", "memory": "2Gi"}` |
 | `env`           | Environment variables                    | Empty                           |
 | `metadata`      | Custom metadata tags                     | Empty                           |
+| `network_policy` | Optional outbound network policy (egress) | -                             |
 | `ready_timeout` | Max time to wait for sandbox to be ready | 30 seconds                      |
 
 ```python
 from datetime import timedelta
+
+from opensandbox.models.sandboxes import NetworkPolicy, NetworkRule
 
 sandbox = await Sandbox.create(
     "python:3.11",
@@ -300,6 +305,10 @@ sandbox = await Sandbox.create(
     timeout=timedelta(minutes=30),
     resource={"cpu": "2", "memory": "4Gi"},
     env={"PYTHONPATH": "/app"},
-    metadata={"project": "demo"}
+    metadata={"project": "demo"},
+    network_policy=NetworkPolicy(
+        defaultAction="deny",
+        egress=[NetworkRule(action="allow", target="pypi.org")],
+    ),
 )
 ```

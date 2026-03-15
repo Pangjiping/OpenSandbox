@@ -22,6 +22,7 @@ from src.services.k8s.provider_factory import (
     register_provider,
     list_available_providers,
     PROVIDER_TYPE_BATCHSANDBOX,
+    PROVIDER_TYPE_AGENT_SANDBOX,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "register_provider",
     "list_available_providers",
     "PROVIDER_TYPE_BATCHSANDBOX",
+    "PROVIDER_TYPE_AGENT_SANDBOX",
 ]

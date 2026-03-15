@@ -16,47 +16,126 @@ package main
 
 import (
 	"context"
-	"log"
+	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/dnsproxy"
+	"github.com/alibaba/opensandbox/egress/pkg/events"
 	"github.com/alibaba/opensandbox/egress/pkg/iptables"
+	"github.com/alibaba/opensandbox/egress/pkg/log"
+	slogger "github.com/alibaba/opensandbox/internal/logger"
+	"github.com/alibaba/opensandbox/internal/version"
 )
 
-// Linux MVP: DNS proxy + iptables REDIRECT. No nftables/full isolation yet.
 func main() {
+	version.EchoVersion("OpenSandbox Egress")
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	policy, err := dnsproxy.LoadPolicyFromEnv()
+	ctx = withLogger(ctx)
+	defer log.Logger.Sync()
+
+	initialRules, err := dnsproxy.LoadPolicyFromEnvVar(constants.EnvEgressRules)
 	if err != nil {
-		log.Fatalf("failed to parse network policy: %v", err)
-	}
-	if policy == nil {
-		log.Println("OPENSANDBOX_NETWORK_POLICY empty; skip egress control")
-		// Block here to avoid infinite container restart loop in Kubernetes
-		// when restartPolicy is Always. As a sidecar, we should keep running.
-		<-ctx.Done()
-		return
+		log.Fatalf("failed to parse %s: %v", constants.EnvEgressRules, err)
 	}
 
-	proxy, err := dnsproxy.New(policy, "")
+	allowIPs := AllowIPsForNft("/etc/resolv.conf")
+	// Merge nameserver exempt IPs into nft allow set so proxy traffic to them (no SO_MARK) is allowed in dns+nft mode.
+	for _, addr := range dnsproxy.ParseNameserverExemptList() {
+		if !containsAddr(allowIPs, addr) {
+			allowIPs = append(allowIPs, addr)
+		}
+	}
+
+	mode := parseMode()
+	log.Infof("enforcement mode: %s", mode)
+	nftMgr := createNftManager(mode)
+	proxy, err := dnsproxy.New(initialRules, "")
 	if err != nil {
 		log.Fatalf("failed to init dns proxy: %v", err)
 	}
 	if err := proxy.Start(ctx); err != nil {
 		log.Fatalf("failed to start dns proxy: %v", err)
 	}
-	log.Println("dns proxy started on 127.0.0.1:15353")
+	log.Infof("dns proxy started on 127.0.0.1:15353")
 
-	if err := iptables.SetupRedirect(15353); err != nil {
+	if blockWebhookURL := strings.TrimSpace(os.Getenv(constants.EnvBlockedWebhook)); blockWebhookURL != "" {
+		blockedBroadcaster := events.NewBroadcaster(ctx, events.BroadcasterConfig{QueueSize: 256})
+		blockedBroadcaster.AddSubscriber(events.NewWebhookSubscriber(blockWebhookURL))
+		proxy.SetBlockedBroadcaster(blockedBroadcaster)
+		defer blockedBroadcaster.Close()
+		log.Infof("denied hostname webhook enabled")
+	}
+
+	exemptDst := dnsproxy.ParseNameserverExemptList()
+	if len(exemptDst) > 0 {
+		log.Infof("nameserver exempt list: %v (proxy upstream in this list will not set SO_MARK)", exemptDst)
+	}
+	if err := iptables.SetupRedirect(15353, exemptDst); err != nil {
 		log.Fatalf("failed to install iptables redirect: %v", err)
 	}
-	log.Printf("iptables redirect configured (OUTPUT 53 -> 15353) with SO_MARK bypass for proxy upstream traffic")
+	log.Infof("iptables redirect configured (OUTPUT 53 -> 15353) with SO_MARK bypass for proxy upstream traffic")
+
+	setupNft(ctx, nftMgr, initialRules, proxy, allowIPs)
+
+	// start policy server
+	httpAddr := envOrDefault(constants.EnvEgressHTTPAddr, constants.DefaultEgressServerAddr)
+	if err = startPolicyServer(ctx, proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs); err != nil {
+		log.Fatalf("failed to start policy server: %v", err)
+	}
+	log.Infof("policy server listening on %s (POST /policy)", httpAddr)
 
 	<-ctx.Done()
-	log.Println("received shutdown signal; exiting")
+	log.Infof("received shutdown signal; exiting")
 	_ = os.Stderr.Sync()
+}
+
+func withLogger(ctx context.Context) context.Context {
+	level := envOrDefault(constants.EnvEgressLogLevel, "info")
+	logger := slogger.MustNew(slogger.Config{Level: level}).Named("opensandbox.egress")
+	return log.WithLogger(ctx, logger)
+}
+
+func envOrDefault(key, defaultVal string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return defaultVal
+}
+
+func isTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsAddr(addrs []netip.Addr, a netip.Addr) bool {
+	for _, x := range addrs {
+		if x == a {
+			return true
+		}
+	}
+	return false
+}
+
+func parseMode() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv(constants.EnvEgressMode)))
+	switch mode {
+	case "", constants.PolicyDnsOnly:
+		return constants.PolicyDnsOnly
+	case constants.PolicyDnsNft:
+		return constants.PolicyDnsNft
+	default:
+		log.Warnf("invalid %s=%s, falling back to dns", constants.EnvEgressMode, mode)
+		return constants.PolicyDnsOnly
+	}
 }

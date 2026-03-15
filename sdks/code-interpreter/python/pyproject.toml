@@ -42,14 +42,14 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "pydantic>=2.0.0,<3.0",
+    "pydantic>=2.4.2,<3.0",
     "opensandbox>=0.1.1,<0.2.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/alibaba/OpenSandbox"
+Homepage = "https://open-sandbox.ai"
 Repository = "https://github.com/alibaba/OpenSandbox"
-Documentation = "https://docs.opensandbox.io"
+Documentation = "https://open-sandbox.ai"
 Issues = "https://github.com/alibaba/OpenSandbox/issues"
 
 [tool.hatch.version]

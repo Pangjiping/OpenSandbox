@@ -4,7 +4,11 @@ on:
   pull_request:
     branches: [ main ]
     paths:
-      - 'server/**'
+      - 'server/src/**'
+      - 'server/tests/**'
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -12,13 +16,20 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 
@@ -40,10 +51,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 
@@ -71,8 +82,12 @@ jobs:
           [runtime]
           type = "docker"
           execd_image = "opensandbox/execd:latest"
+          [egress]
+          image = "opensandbox/egress:latest"
           [docker]
           network_mode = "${{ matrix.network }}"
+          [storage]
+          allowed_host_paths = ["/tmp/opensandbox-e2e"]
           EOF
 
           # Start server in background
@@ -81,12 +96,10 @@ jobs:
           # Wait for server to start
           sleep 10
 
-          # Show server logs for debugging
-          cat app.log
-
           # Run smoke test
           chmod +x tests/smoke.sh
           ./tests/smoke.sh
-
-          # Show final logs
-          cat app.log
+      - name: Show logs
+        if: always()
+        run: |
+          cat server/app.log

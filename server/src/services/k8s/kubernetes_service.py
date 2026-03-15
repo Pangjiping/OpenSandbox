@@ -30,6 +30,7 @@ from src.api.schema import (
     CreateSandboxRequest,
     CreateSandboxResponse,
     Endpoint,
+    ImageSpec,
     ListSandboxesRequest,
     ListSandboxesResponse,
     PaginationInfo,
@@ -47,8 +48,10 @@ from src.services.helpers import matches_filter
 from src.services.sandbox_service import SandboxService
 from src.services.validators import (
     ensure_entrypoint,
+    ensure_egress_configured,
     ensure_future_expiration,
     ensure_metadata_labels,
+    ensure_volumes_valid,
 )
 from src.services.k8s.client import K8sClient
 from src.services.k8s.provider_factory import create_workload_provider
@@ -82,9 +85,11 @@ class KubernetesSandboxService(SandboxService):
         if not self.app_config.kubernetes:
             raise ValueError("Kubernetes configuration is required")
         
+        # Ingress configuration (direct/gateway) if provided
+        self.ingress_config = self.app_config.ingress
+
         self.namespace = self.app_config.kubernetes.namespace
         self.execd_image = runtime_config.execd_image
-        self.service_account = self.app_config.kubernetes.service_account
         
         # Initialize Kubernetes client
         try:
@@ -106,7 +111,7 @@ class KubernetesSandboxService(SandboxService):
             self.workload_provider = create_workload_provider(
                 provider_type=provider_type,
                 k8s_client=self.k8s_client,
-                k8s_config=self.app_config.kubernetes,
+                app_config=self.app_config,
             )
             logger.info(
                 f"Initialized workload provider: {self.workload_provider.__class__.__name__}"
@@ -181,18 +186,8 @@ class KubernetesSandboxService(SandboxService):
                     last_state = current_state
                     last_message = current_message
                 
-                # Check if Failed
-                if current_state == "Failed":
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail={
-                            "code": SandboxErrorCodes.K8S_POD_FAILED,
-                            "message": f"Pod failed: {current_message}",
-                        },
-                    )
-                
-                # Check if Running
-                if current_state == "Running":
+                # Check if Running or Allocated (IP assigned)
+                if current_state in ("Running", "Allocated"):
                     return workload
                 
             except HTTPException:
@@ -219,6 +214,36 @@ class KubernetesSandboxService(SandboxService):
             },
         )
     
+    def _ensure_network_policy_support(self, request: CreateSandboxRequest) -> None:
+        """
+        Validate that network policy can be honored under the current runtime config.
+        
+        This validates that egress.image is configured when network_policy is provided.
+        """
+        # Common validation: egress.image must be configured
+        ensure_egress_configured(request.network_policy, self.app_config.egress)
+
+    def _ensure_image_auth_support(self, request: CreateSandboxRequest) -> None:
+        """
+        Validate image auth support for the current workload provider.
+
+        Raises HTTP 400 if the provider does not support per-request image auth.
+        """
+        if request.image.auth is None:
+            return
+        if self.workload_provider.supports_image_auth():
+            return
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": SandboxErrorCodes.INVALID_PARAMETER,
+                "message": (
+                    "image.auth is not supported by the current workload provider. "
+                    "Use imagePullSecrets via Kubernetes ServiceAccount or sandbox template."
+                ),
+            },
+        )
+
     def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         """
         Create a new sandbox using Kubernetes Pod.
@@ -237,6 +262,8 @@ class KubernetesSandboxService(SandboxService):
         # Validate request
         ensure_entrypoint(request.entrypoint)
         ensure_metadata_labels(request.metadata)
+        self._ensure_network_policy_support(request)
+        self._ensure_image_auth_support(request)
         
         # Generate sandbox ID
         sandbox_id = self.generate_sandbox_id()
@@ -260,6 +287,17 @@ class KubernetesSandboxService(SandboxService):
             resource_limits = request.resource_limits.root
         
         try:
+            # Get egress image if network policy is provided
+            egress_image = None
+            if request.network_policy:
+                egress_image = self.app_config.egress.image if self.app_config.egress else None
+            
+            # Validate volumes before creating workload
+            ensure_volumes_valid(
+                request.volumes,
+                self.app_config.storage.allowed_host_paths or None,
+            )
+            
             # Create workload
             workload_info = self.workload_provider.create_workload(
                 sandbox_id=sandbox_id,
@@ -272,6 +310,9 @@ class KubernetesSandboxService(SandboxService):
                 expires_at=expires_at,
                 execd_image=self.execd_image,
                 extensions=request.extensions,
+                network_policy=request.network_policy,
+                egress_image=egress_image,
+                volumes=request.volumes,
             )
             
             logger.info(
@@ -284,8 +325,8 @@ class KubernetesSandboxService(SandboxService):
             try:
                 workload = self._wait_for_sandbox_ready(
                     sandbox_id=sandbox_id,
-                    timeout_seconds=60,
-                    poll_interval_seconds=1.0,
+                    timeout_seconds=self.app_config.kubernetes.sandbox_create_timeout_seconds,
+                    poll_interval_seconds=self.app_config.kubernetes.sandbox_create_poll_interval_seconds,
                 )
                 
                 # Get final status
@@ -620,9 +661,8 @@ class KubernetesSandboxService(SandboxService):
                     },
                 )
             
-            endpoint_str = self.workload_provider.get_endpoint_info(workload, port)
-            
-            if not endpoint_str:
+            endpoint = self.workload_provider.get_endpoint_info(workload, port, sandbox_id)
+            if not endpoint:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail={
@@ -630,8 +670,7 @@ class KubernetesSandboxService(SandboxService):
                         "message": "Pod IP is not yet available. The Pod may still be starting.",
                     },
                 )
-            
-            return Endpoint(endpoint=endpoint_str)
+            return endpoint
             
         except HTTPException:
             raise
@@ -687,7 +726,7 @@ class KubernetesSandboxService(SandboxService):
         
         if isinstance(workload, dict):
             # For CRD, extract from template
-            template = spec.get("template", {})
+            template = spec.get("template") or spec.get("podTemplate") or {}
             pod_spec = template.get("spec", {})
             containers = pod_spec.get("containers", [])
             if containers:
@@ -701,8 +740,6 @@ class KubernetesSandboxService(SandboxService):
                 image_uri = container.image or ""
                 entrypoint = container.command or []
         
-        # Create ImageSpec object
-        from src.api.schema import ImageSpec
         image_spec = ImageSpec(uri=image_uri) if image_uri else ImageSpec(uri="unknown")
         
         return Sandbox(

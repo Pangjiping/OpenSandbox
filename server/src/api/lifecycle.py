@@ -21,8 +21,10 @@ All business logic is delegated to the service layer that backs each operation.
 
 from typing import List, Optional
 
-from fastapi import APIRouter,Header, Query, status
-from fastapi.responses import Response
+import httpx
+from fastapi import APIRouter, Header, Query, Request, status
+from fastapi.exceptions import HTTPException
+from fastapi.responses import Response, StreamingResponse
 
 from src.api.schema import (
     CreateSandboxRequest,
@@ -38,6 +40,24 @@ from src.api.schema import (
     SandboxFilter,
 )
 from src.services.factory import create_sandbox_service
+
+# RFC 2616 Section 13.5.1
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+}
+
+# Headers that shouldn't be forwarded to untrusted/internal backends
+SENSITIVE_HEADERS = {
+    "authorization",
+    "cookie",
+}
 
 # Initialize router
 router = APIRouter(tags=["Sandboxes"])
@@ -65,7 +85,7 @@ sandbox_service = create_sandbox_service()
 )
 async def create_sandbox(
     request: CreateSandboxRequest,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    x_request_id: Optional[str] = Header(None, alias="X-Request-ID", description="Unique request identifier for tracing"),
 ) -> CreateSandboxResponse:
     """
     Create a sandbox from a container image.
@@ -76,7 +96,7 @@ async def create_sandbox(
 
     Args:
         request: Sandbox creation request
-        x_request_id: Unique request identifier for tracing
+        x_request_id: Unique request identifier for tracing (optional; server generates if omitted).
 
     Returns:
         CreateSandboxResponse: Accepted sandbox creation request
@@ -105,7 +125,7 @@ async def list_sandboxes(
     metadata: Optional[str] = Query(None, description="Arbitrary metadata key-value pairs for filtering (URL encoded)."),
     page: int = Query(1, ge=1, description="Page number for pagination"),
     page_size: int = Query(20, ge=1, le=200, alias="pageSize", description="Number of items per page"),
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    x_request_id: Optional[str] = Header(None, alias="X-Request-ID", description="Unique request identifier for tracing"),
 ) -> ListSandboxesResponse:
     """
     List sandboxes with optional filtering and pagination.
@@ -118,7 +138,7 @@ async def list_sandboxes(
         metadata: Arbitrary metadata key-value pairs for filtering.
         page: Page number for pagination.
         page_size: Number of items per page.
-        x_request_id: Unique request identifier for tracing.
+        x_request_id: Unique request identifier for tracing (optional; server generates if omitted).
 
     Returns:
         ListSandboxesResponse: Paginated list of sandboxes
@@ -129,7 +149,8 @@ async def list_sandboxes(
         from urllib.parse import parse_qsl
         try:
             # Parse query string format: key=value&key2=value2
-            parsed = parse_qsl(metadata)
+            # strict_parsing=True rejects malformed segments like "a=1&broken"
+            parsed = parse_qsl(metadata, keep_blank_values=True, strict_parsing=True)
             metadata_dict = dict(parsed)
         except Exception as e:
             from fastapi import HTTPException
@@ -166,7 +187,7 @@ async def list_sandboxes(
 )
 async def get_sandbox(
     sandbox_id: str,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    x_request_id: Optional[str] = Header(None, alias="X-Request-ID", description="Unique request identifier for tracing"),
 ) -> Sandbox:
     """
     Fetch a sandbox by id.
@@ -176,7 +197,7 @@ async def get_sandbox(
 
     Args:
         sandbox_id: Unique sandbox identifier
-        x_request_id: Unique request identifier for tracing
+        x_request_id: Unique request identifier for tracing (optional; server generates if omitted).
 
     Returns:
         Sandbox: Complete sandbox information
@@ -202,7 +223,7 @@ async def get_sandbox(
 )
 async def delete_sandbox(
     sandbox_id: str,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    x_request_id: Optional[str] = Header(None, alias="X-Request-ID", description="Unique request identifier for tracing"),
 ) -> Response:
     """
     Delete a sandbox.
@@ -211,7 +232,7 @@ async def delete_sandbox(
 
     Args:
         sandbox_id: Unique sandbox identifier
-        x_request_id: Unique request identifier for tracing
+        x_request_id: Unique request identifier for tracing (optional; server generates if omitted).
 
     Returns:
         Response: 204 No Content
@@ -242,7 +263,7 @@ async def delete_sandbox(
 )
 async def pause_sandbox(
     sandbox_id: str,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    x_request_id: Optional[str] = Header(None, alias="X-Request-ID", description="Unique request identifier for tracing"),
 ) -> Response:
     """
     Pause execution while retaining state.
@@ -252,7 +273,7 @@ async def pause_sandbox(
 
     Args:
         sandbox_id: Unique sandbox identifier
-        x_request_id: Unique request identifier for tracing
+        x_request_id: Unique request identifier for tracing (optional; server generates if omitted).
 
     Returns:
         Response: 202 Accepted
@@ -279,7 +300,7 @@ async def pause_sandbox(
 )
 async def resume_sandbox(
     sandbox_id: str,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    x_request_id: Optional[str] = Header(None, alias="X-Request-ID", description="Unique request identifier for tracing"),
 ) -> Response:
     """
     Resume a paused sandbox.
@@ -289,7 +310,7 @@ async def resume_sandbox(
 
     Args:
         sandbox_id: Unique sandbox identifier
-        x_request_id: Unique request identifier for tracing
+        x_request_id: Unique request identifier for tracing (optional; server generates if omitted).
 
     Returns:
         Response: 202 Accepted
@@ -319,7 +340,7 @@ async def resume_sandbox(
 async def renew_sandbox_expiration(
     sandbox_id: str,
     request: RenewSandboxExpirationRequest,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    x_request_id: Optional[str] = Header(None, alias="X-Request-ID", description="Unique request identifier for tracing"),
 ) -> RenewSandboxExpirationResponse:
     """
     Renew sandbox expiration.
@@ -330,7 +351,7 @@ async def renew_sandbox_expiration(
     Args:
         sandbox_id: Unique sandbox identifier
         request: Renewal request with new expiration time
-        x_request_id: Unique request identifier for tracing
+        x_request_id: Unique request identifier for tracing (optional; server generates if omitted).
 
     Returns:
         RenewSandboxExpirationResponse: Updated expiration time
@@ -359,9 +380,11 @@ async def renew_sandbox_expiration(
     },
 )
 async def get_sandbox_endpoint(
+    request: Request,
     sandbox_id: str,
     port: int,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    use_server_proxy: bool = Query(False, description="Whether to return a server-proxied URL"),
+    x_request_id: Optional[str] = Header(None, alias="X-Request-ID", description="Unique request identifier for tracing"),
 ) -> Endpoint:
     """
     Get sandbox access endpoint.
@@ -371,9 +394,11 @@ async def get_sandbox_endpoint(
     for the endpoint to be available.
 
     Args:
+        request: FastAPI request object
         sandbox_id: Unique sandbox identifier
         port: Port number where the service is listening inside the sandbox (1-65535)
-        x_request_id: Unique request identifier for tracing
+        use_server_proxy: Whether to return a server-proxied URL
+        x_request_id: Unique request identifier for tracing (optional; server generates if omitted).
 
     Returns:
         Endpoint: Public endpoint URL
@@ -382,4 +407,100 @@ async def get_sandbox_endpoint(
         HTTPException: If sandbox not found or endpoint not available
     """
     # Delegate to the service layer for endpoint resolution
-    return sandbox_service.get_endpoint(sandbox_id, port)
+    endpoint = sandbox_service.get_endpoint(sandbox_id, port)
+
+    if use_server_proxy:
+        # Construct proxy URL
+        base_url = str(request.base_url).rstrip("/")
+        base_url = base_url.replace("https://", "").replace("http://", "")
+        endpoint.endpoint = f"{base_url}/sandboxes/{sandbox_id}/proxy/{port}"
+
+    return endpoint
+
+
+@router.api_route(
+    "/sandboxes/{sandbox_id}/proxy/{port}/{full_path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+)
+async def proxy_sandbox_endpoint_request(request: Request, sandbox_id: str, port: int, full_path: str):
+    """
+    Receives all incoming requests, determines the target sandbox from path parameter,
+    and asynchronously proxies the request to it.
+    """
+
+    endpoint = sandbox_service.get_endpoint(sandbox_id, port, resolve_internal=True)
+
+    target_host = endpoint.endpoint
+    query_string = request.url.query
+    target_url = (
+        f"http://{target_host}/{full_path}?{query_string}"
+        if query_string
+        else f"http://{target_host}/{full_path}"
+    )
+
+    client: httpx.AsyncClient = request.app.state.http_client
+
+    try:
+        upgrade_header = request.headers.get("Upgrade", "")
+        if upgrade_header.lower() == "websocket":
+            raise HTTPException(status_code=400, detail="Websocket upgrade is not supported yet")
+
+        # Filter headers
+        hop_by_hop = set(HOP_BY_HOP_HEADERS)
+        connection_header = request.headers.get("connection")
+        if connection_header:
+            hop_by_hop.update(
+                header.strip().lower()
+                for header in connection_header.split(",")
+                if header.strip()
+            )
+        headers = {}
+        for key, value in request.headers.items():
+            key_lower = key.lower()
+            if (
+                key_lower != "host"
+                and key_lower not in hop_by_hop
+                and key_lower not in SENSITIVE_HEADERS
+            ):
+                headers[key] = value
+
+        req = client.build_request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            content=request.stream(),
+        )
+
+        resp = await client.send(req, stream=True)
+
+        hop_by_hop = set(HOP_BY_HOP_HEADERS)
+        connection_header = resp.headers.get("connection")
+        if connection_header:
+            hop_by_hop.update(
+                header.strip().lower()
+                for header in connection_header.split(",")
+                if header.strip()
+            )
+        response_headers = {
+            key: value
+            for key, value in resp.headers.items()
+            if key.lower() not in hop_by_hop
+        }
+
+        return StreamingResponse(
+            content=resp.aiter_bytes(),
+            status_code=resp.status_code,
+            headers=response_headers,
+        )
+    except httpx.ConnectError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not connect to the backend sandbox {endpoint}: {e}",
+        )
+    except HTTPException:
+        # Preserve explicit HTTP exceptions raised above (e.g. websocket upgrade not supported).
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"An internal error occurred in the proxy: {e}"
+        )

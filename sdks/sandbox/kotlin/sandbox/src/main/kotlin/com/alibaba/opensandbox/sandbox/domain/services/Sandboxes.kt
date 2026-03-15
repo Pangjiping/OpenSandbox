@@ -16,6 +16,7 @@
 
 package com.alibaba.opensandbox.sandbox.domain.services
 
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxCreateResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
@@ -23,6 +24,7 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Volume
 import java.time.Duration
 import java.time.OffsetDateTime
 
@@ -42,7 +44,9 @@ interface Sandboxes {
      * @param metadata User-defined metadata used for management and filtering
      * @param timeout Sandbox lifetime. The server may terminate the sandbox when it expires
      * @param resource Runtime resource limits (e.g. cpu/memory). Exact semantics are server-defined
+     * @param networkPolicy Optional outbound network policy (egress)
      * @param extensions Opaque extension parameters passed through to the server as-is. Prefer namespaced keys
+     * @param volumes Optional list of volume mounts for persistent storage
      * @return Sandbox creation response containing the sandbox id
      */
     fun createSandbox(
@@ -52,7 +56,9 @@ interface Sandboxes {
         metadata: Map<String, String>,
         timeout: Duration,
         resource: Map<String, String>,
+        networkPolicy: NetworkPolicy?,
         extensions: Map<String, String>,
+        volumes: List<Volume>?,
     ): SandboxCreateResponse
 
     /**
@@ -81,6 +87,20 @@ interface Sandboxes {
     fun getSandboxEndpoint(
         sandboxId: String,
         port: Int,
+    ): SandboxEndpoint
+
+    /**
+     * Get sandbox endpoint
+     *
+     * @param sandboxId sandbox id
+     * @param port endpoint port number
+     * @param useServerProxy whether to use server proxy for endpoint (default false)
+     * @return Target sandbox endpoint
+     */
+    fun getSandboxEndpoint(
+        sandboxId: String,
+        port: Int,
+        useServerProxy: Boolean,
     ): SandboxEndpoint
 
     /**

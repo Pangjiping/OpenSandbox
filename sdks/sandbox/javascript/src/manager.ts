@@ -20,14 +20,32 @@ import type { ListSandboxesResponse, SandboxId, SandboxInfo } from "./models/san
 import type { Sandboxes } from "./services/sandboxes.js";
 
 export interface SandboxManagerOptions {
+  /**
+   * Connection configuration for calling the OpenSandbox Lifecycle API.
+   */
   connectionConfig?: ConnectionConfig | ConnectionConfigOptions;
+  /**
+   * Advanced override: inject a custom adapter factory (custom transports, dependency injection).
+   */
   adapterFactory?: AdapterFactory;
 }
 
 export interface SandboxFilter {
+  /**
+   * Filter by sandbox lifecycle states.
+   */
   states?: string[];
+  /**
+   * Filter by metadata key-value pairs.
+   */
   metadata?: Record<string, string>;
+  /**
+   * Pagination page number (1-indexed).
+   */
   page?: number;
+  /**
+   * Number of items per page.
+   */
   pageSize?: number;
 }
 
@@ -38,19 +56,31 @@ export interface SandboxFilter {
  */
 export class SandboxManager {
   private readonly sandboxes: Sandboxes;
+  private readonly connectionConfig: ConnectionConfig;
 
-  private constructor(opts: { sandboxes: Sandboxes }) {
+  private constructor(opts: { sandboxes: Sandboxes; connectionConfig: ConnectionConfig }) {
     this.sandboxes = opts.sandboxes;
+    this.connectionConfig = opts.connectionConfig;
   }
 
   static create(opts: SandboxManagerOptions = {}): SandboxManager {
-    const connectionConfig = opts.connectionConfig instanceof ConnectionConfig
+    const baseConnectionConfig = opts.connectionConfig instanceof ConnectionConfig
       ? opts.connectionConfig
       : new ConnectionConfig(opts.connectionConfig);
+    const connectionConfig = baseConnectionConfig.withTransportIfMissing();
     const lifecycleBaseUrl = connectionConfig.getBaseUrl();
     const adapterFactory = opts.adapterFactory ?? createDefaultAdapterFactory();
-    const { sandboxes } = adapterFactory.createLifecycleStack({ connectionConfig, lifecycleBaseUrl });
-    return new SandboxManager({ sandboxes });
+    let sandboxes: Sandboxes;
+    try {
+      sandboxes = adapterFactory.createLifecycleStack({
+        connectionConfig,
+        lifecycleBaseUrl,
+      }).sandboxes;
+    } catch (err) {
+      void connectionConfig.closeTransport().catch(() => undefined);
+      throw err;
+    }
+    return new SandboxManager({ sandboxes, connectionConfig });
   }
 
   listSandboxInfos(filter: SandboxFilter = {}): Promise<ListSandboxesResponse> {
@@ -87,12 +117,13 @@ export class SandboxManager {
   }
 
   /**
-   * No-op for now (fetch-based implementation doesn't own a pooled transport).
+   * Release the HTTP agent resources allocated for this manager instance.
    *
-   * This method exists so callers can consistently release resources when using
-   * a custom {@link AdapterFactory} implementation.
+   * Each manager clone owns a scoped `ConnectionConfig` clone.
+   *
+   * This mirrors the Python SDK's default transport lifecycle.
    */
   async close(): Promise<void> {
-    // no-op
+    await this.connectionConfig.closeTransport();
   }
 }

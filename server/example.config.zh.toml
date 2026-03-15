@@ -21,18 +21,28 @@
 # -----------------------------------------------------------------
 host = "127.0.0.1"
 port = 8080
-
 log_level = "INFO"
-
-# Shared API key for the OPEN-SANDBOX-API-KEY header (leave empty only for dev)
-api_key = ""
-
+# api_key = "your-secret-api-key"  # Optional: Uncomment to enable API key authentication
 
 [runtime]
 # Runtime selection (docker | kubernetes)
 # -----------------------------------------------------------------
 type = "docker"
-execd_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:latest"
+execd_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:v1.0.6"
+
+[egress]
+# Egress configuration
+# -----------------------------------------------------------------
+image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress:v1.0.3"
+
+[storage]
+# 卷存储配置
+# -----------------------------------------------------------------
+# 允许进行 bind mount 的宿主机路径前缀白名单。
+# 仅匹配这些前缀的路径才能被挂载到沙箱中。
+# 如果为空，则允许所有路径（不建议在生产环境使用）。
+# 示例：allowed_host_paths = ["/data/opensandbox", "/tmp/sandbox"]
+allowed_host_paths = []
 
 [docker]
 # Docker-specific knobs
@@ -48,3 +58,7 @@ apparmor_profile = ""
 pids_limit = 512
 # Seccomp profile: empty string uses Docker default; set to an absolute path for a custom profile
 seccomp_profile = ""
+
+[ingress]
+# Ingress exposure mode: direct (default) or gateway
+mode = "direct"

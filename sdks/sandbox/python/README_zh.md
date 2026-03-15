@@ -183,7 +183,7 @@ await sandbox.files.write_files([
     WriteEntry(
         path="/tmp/hello.txt",
         data="Hello World",
-        mode=0o644
+        mode=644
     )
 ])
 
@@ -210,7 +210,7 @@ await sandbox.files.delete_files(["/tmp/hello.txt"])
 使用 `SandboxManager` 进行管理操作，如查询现有沙箱列表。
 
 ```python
-from opensandbox.sandbox import SandboxManager
+from opensandbox.manager import SandboxManager
 from opensandbox.models.sandboxes import SandboxFilter
 
 # 使用异步上下文管理器创建管理器
@@ -244,7 +244,8 @@ async with await SandboxManager.create(connection_config=config) as manager:
 | `request_timeout` | API 请求超时时间                         | 30 秒                    | -                      |
 | `debug`           | 是否开启 HTTP 请求的调试日志             | `False`                  | -                      |
 | `headers`         | 自定义 HTTP 请求头                       | 空                       | -                      |
-| `transport`       | 共享 httpx transport（连接池/代理/重试） | 默认 AsyncHTTPTransport  | -                      |
+| `transport`       | 共享 httpx transport（连接池/代理/重试） | SDK 每实例创建           | -                      |
+| `use_server_proxy` | 是否通过沙箱服务代理访问 execd/endpoint（适用于客户端无法直连沙箱的场景） | `False` | -                      |
 
 ```python
 from datetime import timedelta
@@ -258,6 +259,7 @@ config = ConnectionConfig(
 
 # 2. 进阶配置：自定义请求头和 transport
 # 如果你需要创建大量 Sandbox 实例，建议配置共享 transport 以优化资源使用。
+# SDK 默认连接保活时间为 30 秒。
 import httpx
 
 config = ConnectionConfig(
@@ -268,7 +270,7 @@ config = ConnectionConfig(
         limits=httpx.Limits(
             max_connections=100,
             max_keepalive_connections=50,
-            keepalive_expiry=120.0,
+        keepalive_expiry=30.0,
         )
     ),
 )
@@ -289,10 +291,13 @@ config = ConnectionConfig(
 | `resource`      | CPU 和内存限制        | `{"cpu": "1", "memory": "2Gi"}` |
 | `env`           | 环境变量             | 空                              |
 | `metadata`      | 自定义元数据标签       | 空                              |
+| `network_policy` | 可选的出站网络策略（egress） | -                         |
 | `ready_timeout` | 等待沙箱就绪的最大时间 | 30 秒                           |
 
 ```python
 from datetime import timedelta
+
+from opensandbox.models.sandboxes import NetworkPolicy, NetworkRule
 
 sandbox = await Sandbox.create(
     "python:3.11",
@@ -300,6 +305,10 @@ sandbox = await Sandbox.create(
     timeout=timedelta(minutes=30),
     resource={"cpu": "2", "memory": "4Gi"},
     env={"PYTHONPATH": "/app"},
-    metadata={"project": "demo"}
+    metadata={"project": "demo"},
+    network_policy=NetworkPolicy(
+        defaultAction="deny",
+        egress=[NetworkRule(action="allow", target="pypi.org")],
+    ),
 )
 ```

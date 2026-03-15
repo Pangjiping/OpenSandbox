@@ -22,11 +22,13 @@ import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxInternalException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutException
 import com.alibaba.opensandbox.sandbox.domain.models.execd.DEFAULT_EXECD_PORT
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxMetrics
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Volume
 import com.alibaba.opensandbox.sandbox.domain.services.Commands
 import com.alibaba.opensandbox.sandbox.domain.services.Filesystem
 import com.alibaba.opensandbox.sandbox.domain.services.Health
@@ -187,7 +189,12 @@ class Sandbox internal constructor(
 
                 val sandboxId = initResult.id
 
-                val execdEndpoint = sandboxService.getSandboxEndpoint(sandboxId, DEFAULT_EXECD_PORT)
+                val execdEndpoint =
+                    sandboxService.getSandboxEndpoint(
+                        sandboxId,
+                        DEFAULT_EXECD_PORT,
+                        connectionConfig.useServerProxy,
+                    )
                 val fileSystemService = factory.createFilesystem(execdEndpoint)
                 val commandService = factory.createCommands(execdEndpoint)
                 val metricsService = factory.createMetrics(execdEndpoint)
@@ -255,10 +262,12 @@ class Sandbox internal constructor(
          * @param timeout Sandbox timeout (automatic termination time)
          * @param readyTimeout Timeout for waiting for sandbox readiness
          * @param resource Resource limits (optional)
+         * @param networkPolicy Optional outbound network policy (egress)
          * @param connectionConfig Connection configuration
          * @param healthCheck Custom health check function (optional)
          * @param healthCheckPollingInterval Polling interval for readiness/health check
          * @param extensions Optional extension parameters for server-side customized behaviors
+         * @param volumes Optional list of volume mounts for persistent storage
          * @return Fully configured and ready Sandbox instance
          * @throws SandboxException if sandbox creation or initialization fails
          */
@@ -270,11 +279,13 @@ class Sandbox internal constructor(
             timeout: Duration,
             readyTimeout: Duration,
             resource: Map<String, String>,
+            networkPolicy: NetworkPolicy?,
             connectionConfig: ConnectionConfig,
             healthCheck: ((Sandbox) -> Boolean)? = null,
             healthCheckPollingInterval: Duration,
             extensions: Map<String, String>,
             skipHealthCheck: Boolean,
+            volumes: List<Volume>?,
         ): Sandbox {
             return initializeSandbox(
                 operationName = "create sandbox with image ${imageSpec.image} (timeout: ${timeout.seconds}s)",
@@ -292,7 +303,9 @@ class Sandbox internal constructor(
                         metadata,
                         timeout,
                         resource,
+                        networkPolicy,
                         extensions,
+                        volumes,
                     )
                 InitializationResult.NewSandbox(response.id)
             }
@@ -384,7 +397,7 @@ class Sandbox internal constructor(
      * @throws SandboxException if status cannot be retrieved
      */
     fun getEndpoint(port: Int): SandboxEndpoint {
-        return sandboxService.getSandboxEndpoint(id, port)
+        return sandboxService.getSandboxEndpoint(id, port, httpClientProvider.config.useServerProxy)
     }
 
     /**
@@ -503,7 +516,16 @@ class Sandbox internal constructor(
                 "Check returned false continuously"
             }
 
-        val finalMessage = "Sandbox health check timed out after ${timeout.seconds}s ($attempt attempts). $errorDetail"
+        val context = "domain=${httpClientProvider.config.getDomain()}, useServerProxy=${httpClientProvider.config.useServerProxy}"
+        var suggestion =
+            "If this sandbox runs in Docker bridge or remote-network mode, consider enabling useServerProxy=true."
+        if (!httpClientProvider.config.useServerProxy) {
+            suggestion += " You can also configure server-side [docker].host_ip for direct endpoint access."
+        }
+
+        val finalMessage =
+            "Sandbox health check timed out after ${timeout.seconds}s ($attempt attempts). $errorDetail " +
+                "Connection context: $context. $suggestion"
 
         logger.error(finalMessage, lastException)
 
@@ -737,6 +759,16 @@ class Sandbox internal constructor(
         private val extensions = mutableMapOf<String, String>()
 
         /**
+         * Optional outbound network policy (egress).
+         */
+        private var networkPolicy: NetworkPolicy? = null
+
+        /**
+         * Optional list of volume mounts for persistent storage.
+         */
+        private val volumes = mutableListOf<Volume>()
+
+        /**
          * Lifecycle config
          */
         private var timeout: Duration = Duration.ofSeconds(600)
@@ -917,6 +949,59 @@ class Sandbox internal constructor(
         }
 
         /**
+         * Sets a sandbox outbound network policy (egress).
+         */
+        fun networkPolicy(networkPolicy: NetworkPolicy): Builder {
+            this.networkPolicy = networkPolicy
+            return this
+        }
+
+        /**
+         * Configures a sandbox outbound network policy (egress).
+         */
+        fun networkPolicy(configure: NetworkPolicy.Builder.() -> Unit): Builder {
+            val builder = NetworkPolicy.builder()
+            builder.configure()
+            this.networkPolicy = builder.build()
+            return this
+        }
+
+        /**
+         * Adds a single volume mount.
+         *
+         * @param volume Volume configuration
+         * @return This builder for method chaining
+         */
+        fun volume(volume: Volume): Builder {
+            this.volumes.add(volume)
+            return this
+        }
+
+        /**
+         * Adds multiple volume mounts.
+         *
+         * @param volumes List of volume configurations to add
+         * @return This builder for method chaining
+         */
+        fun volumes(volumes: List<Volume>): Builder {
+            this.volumes.addAll(volumes)
+            return this
+        }
+
+        /**
+         * Configures a volume mount using a fluent configuration block.
+         *
+         * @param configure Configuration block for Volume.Builder
+         * @return This builder for method chaining
+         */
+        fun volume(configure: Volume.Builder.() -> Unit): Builder {
+            val builder = Volume.builder()
+            builder.configure()
+            this.volumes.add(builder.build())
+            return this
+        }
+
+        /**
          * Adds a single extension parameter.
          *
          * Extensions are opaque client-side and are passed through to the server.
@@ -1058,11 +1143,13 @@ class Sandbox internal constructor(
                 timeout = timeout,
                 readyTimeout = readyTimeout,
                 resource = resource,
+                networkPolicy = networkPolicy,
                 extensions = extensions,
                 connectionConfig = connectionConfig ?: ConnectionConfig.builder().build(),
                 healthCheckPollingInterval = healthCheckPollingInterval,
                 healthCheck = healthCheck,
                 skipHealthCheck = skipHealthCheck,
+                volumes = if (volumes.isEmpty()) null else volumes.toList(),
             )
         }
     }

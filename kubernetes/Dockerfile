@@ -27,7 +27,7 @@ RUN GOPROXY=https://goproxy.cn,direct go mod download
 
 # Copy the go source
 COPY cmd/ cmd/
-COPY api/ api/
+COPY apis/ apis/
 COPY pkg/ pkg/
 COPY internal/ internal/
 

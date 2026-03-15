@@ -34,11 +34,13 @@ from opensandbox.exceptions import (
     SandboxReadyTimeoutException,
 )
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
     SandboxEndpoint,
     SandboxImageSpec,
     SandboxInfo,
     SandboxMetrics,
     SandboxRenewResponse,
+    Volume,
 )
 from opensandbox.services import (
     Commands,
@@ -181,7 +183,9 @@ class Sandbox:
         Raises:
             SandboxException: if endpoint cannot be retrieved
         """
-        return await self._sandbox_service.get_sandbox_endpoint(self.id, port)
+        return await self._sandbox_service.get_sandbox_endpoint(
+            self.id, port, self.connection_config.use_server_proxy
+        )
 
     async def get_metrics(self) -> SandboxMetrics:
         """
@@ -337,10 +341,26 @@ class Sandbox:
             if last_exception
             else "Health check returned false continuously"
         )
+        connection_detail = (
+            f"ConnectionConfig(domain={self.connection_config.get_domain()}, "
+            f"use_server_proxy={self.connection_config.use_server_proxy})"
+        )
+        if self.connection_config.use_server_proxy:
+            hint = (
+                "Hint: server proxy mode is enabled. Check server-to-sandbox connectivity "
+                "and server API key/auth configuration."
+            )
+        else:
+            hint = (
+                "Hint: direct sandbox endpoint access is enabled. If the SDK cannot directly "
+                "reach sandbox network/ports, set ConnectionConfig(use_server_proxy=True). "
+                "For Docker bridge deployments where server runs in a container, also configure "
+                "server [docker].host_ip to a host-reachable address."
+            )
 
         final_message = (
             f"Sandbox health check timed out after {timeout.total_seconds()}s "
-            f"({attempt} attempts). {error_detail}"
+            f"({attempt} attempts). {error_detail}. {connection_detail}. {hint}"
         )
 
         logger.error(final_message)
@@ -356,8 +376,10 @@ class Sandbox:
         env: dict[str, str] | None = None,
         metadata: dict[str, str] | None = None,
         resource: dict[str, str] | None = None,
+        network_policy: NetworkPolicy | None = None,
         extensions: dict[str, str] | None = None,
         entrypoint: list[str] | None = None,
+        volumes: list[Volume] | None = None,
         connection_config: ConnectionConfig | None = None,
         health_check: Callable[["Sandbox"], Awaitable[bool]] | None = None,
         health_check_polling_interval: timedelta = timedelta(milliseconds=200),
@@ -373,9 +395,12 @@ class Sandbox:
             env: Environment variables for the sandbox
             metadata: Custom metadata for the sandbox
             resource: Resource limits (CPU, memory, etc.)
+            network_policy: Optional outbound network policy (egress).
             extensions: Opaque extension parameters passed through to the server as-is.
                 Prefer namespaced keys (e.g. ``storage.id``).
             entrypoint: Command to run as entrypoint
+            volumes: Optional list of volume mounts for persistent storage.
+                Each volume specifies a backend (host path or PVC) and mount configuration.
             connection_config: Connection configuration
             health_check: Custom async health check function
             health_check_polling_interval: Time between health check attempts
@@ -387,7 +412,7 @@ class Sandbox:
         Raises:
             SandboxException: if sandbox creation or initialization fails
         """
-        config = connection_config or ConnectionConfig()
+        config = (connection_config or ConnectionConfig()).with_transport_if_missing()
         entrypoint = entrypoint or ["tail", "-f", "/dev/null"]
         env = env or {}
         metadata = metadata or {}
@@ -413,12 +438,14 @@ class Sandbox:
                 metadata,
                 timeout,
                 resource,
+                network_policy,
                 extensions,
+                volumes,
             )
             sandbox_id = response.id
 
             execd_endpoint = await sandbox_service.get_sandbox_endpoint(
-                response.id, DEFAULT_EXECD_PORT
+                response.id, DEFAULT_EXECD_PORT, config.use_server_proxy
             )
 
             sandbox = cls(
@@ -498,7 +525,7 @@ class Sandbox:
         # Accept any string identifier.
         sandbox_id = str(sandbox_id)
 
-        config = connection_config or ConnectionConfig()
+        config = (connection_config or ConnectionConfig()).with_transport_if_missing()
 
         logger.info(f"Connecting to sandbox: {sandbox_id}")
         factory = AdapterFactory(config)
@@ -506,7 +533,7 @@ class Sandbox:
         try:
             sandbox_service = factory.create_sandbox_service()
             execd_endpoint = await sandbox_service.get_sandbox_endpoint(
-                sandbox_id, DEFAULT_EXECD_PORT
+                sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
             )
 
             sandbox = cls(
@@ -567,7 +594,7 @@ class Sandbox:
         # Accept any string identifier.
         sandbox_id = str(sandbox_id)
 
-        config = connection_config or ConnectionConfig()
+        config = (connection_config or ConnectionConfig()).with_transport_if_missing()
 
         logger.info("Resuming sandbox: %s", sandbox_id)
         factory = AdapterFactory(config)
@@ -577,7 +604,7 @@ class Sandbox:
             await sandbox_service.resume_sandbox(sandbox_id)
 
             execd_endpoint = await sandbox_service.get_sandbox_endpoint(
-                sandbox_id, DEFAULT_EXECD_PORT
+                sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
             )
 
             sandbox = cls(

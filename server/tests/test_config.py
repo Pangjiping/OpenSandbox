@@ -17,7 +17,15 @@ import textwrap
 import pytest
 
 from src import config as config_module
-from src.config import AppConfig, RouterConfig, RuntimeConfig, ServerConfig
+from src.config import (
+    AppConfig,
+    GatewayConfig,
+    GatewayRouteModeConfig,
+    IngressConfig,
+    RuntimeConfig,
+    ServerConfig,
+    StorageConfig
+)
 
 
 def _reset_config(monkeypatch):
@@ -36,11 +44,13 @@ def test_load_config_from_file(tmp_path, monkeypatch):
         api_key = "secret"
 
         [runtime]
-        type = "docker"
-        execd_image = "ghcr.io/opensandbox/platform:test"
+        type = "kubernetes"
+        execd_image = "opensandbox/execd:test"
 
-        [router]
-        domain = "opensandbox.io"
+        [ingress]
+        mode = "gateway"
+        gateway.address = "*.opensandbox.io"
+        gateway.route.mode = "wildcard"
         """
     )
     config_path = tmp_path / "config.toml"
@@ -51,11 +61,14 @@ def test_load_config_from_file(tmp_path, monkeypatch):
     assert loaded.server.port == 9000
     assert loaded.server.log_level == "DEBUG"
     assert loaded.server.api_key == "secret"
-    assert loaded.runtime.type == "docker"
-    assert loaded.runtime.execd_image == "ghcr.io/opensandbox/platform:test"
-    assert loaded.router is not None
-    assert loaded.router.domain == "opensandbox.io"
-    assert loaded.docker.network_mode == "host"
+    assert loaded.runtime.type == "kubernetes"
+    assert loaded.runtime.execd_image == "opensandbox/execd:test"
+    assert loaded.ingress is not None
+    assert loaded.ingress.mode == "gateway"
+    assert loaded.ingress.gateway is not None
+    assert loaded.ingress.gateway.address == "*.opensandbox.io"
+    assert loaded.ingress.gateway.route.mode == "wildcard"
+    assert loaded.kubernetes is not None
 
 
 def test_docker_runtime_disallows_kubernetes_block():
@@ -68,15 +81,516 @@ def test_docker_runtime_disallows_kubernetes_block():
 
 def test_kubernetes_runtime_fills_missing_block():
     server_cfg = ServerConfig()
-    runtime_cfg = RuntimeConfig(type="kubernetes", execd_image="ghcr.io/opensandbox/platform:latest")
+    runtime_cfg = RuntimeConfig(type="kubernetes", execd_image="opensandbox/execd:latest")
     app_cfg = AppConfig(server=server_cfg, runtime=runtime_cfg)
     assert app_cfg.kubernetes is not None
 
 
-def test_router_requires_exactly_one_domain():
+def test_ingress_gateway_requires_gateway_block():
     with pytest.raises(ValueError):
-        RouterConfig(domain=None, wildcard_domain=None)
+        IngressConfig(mode="gateway")
+    cfg = IngressConfig(
+        mode="gateway",
+        gateway=GatewayConfig(
+            address="gateway.opensandbox.io",
+            route=GatewayRouteModeConfig(mode="uri"),
+        ),
+    )
+    assert cfg.gateway.route.mode == "uri"
+
+
+def test_gateway_address_validation_for_wildcard_mode():
     with pytest.raises(ValueError):
-        RouterConfig(domain="opensandbox.io", wildcard_domain="*.opensandbox.io")
-    cfg = RouterConfig(domain="opensandbox.io")
-    assert cfg.domain == "opensandbox.io"
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="gateway.opensandbox.io",
+                route=GatewayRouteModeConfig(mode="wildcard"),
+            ),
+        )
+    cfg = IngressConfig(
+        mode="gateway",
+        gateway=GatewayConfig(
+            address="*.opensandbox.io",
+            route=GatewayRouteModeConfig(mode="wildcard"),
+        ),
+    )
+    assert cfg.gateway.address == "*.opensandbox.io"
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="10.0.0.1",
+                route=GatewayRouteModeConfig(mode="wildcard"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="http://10.0.0.1:8080",
+                route=GatewayRouteModeConfig(mode="wildcard"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="10.0.0.1:8080",
+                route=GatewayRouteModeConfig(mode="wildcard"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="https://*.opensandbox.io",
+                route=GatewayRouteModeConfig(mode="wildcard"),
+            ),
+        )
+
+
+def test_gateway_route_mode_allows_wildcard_alias():
+    cfg = IngressConfig(
+        mode="gateway",
+        gateway=GatewayConfig(
+            address="*.opensandbox.io",
+            route=GatewayRouteModeConfig(mode="wildcard"),
+        ),
+    )
+    assert cfg.gateway.route.mode == "wildcard"
+
+
+def test_gateway_address_validation_for_non_wildcard_mode():
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="*.opensandbox.io",
+                route=GatewayRouteModeConfig(mode="header"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="not a host",
+                route=GatewayRouteModeConfig(mode="uri"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="gateway.opensandbox.io:8080",
+                route=GatewayRouteModeConfig(mode="header"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="10.0.0.1:70000",
+                route=GatewayRouteModeConfig(mode="header"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="ftp://gateway.opensandbox.io",
+                route=GatewayRouteModeConfig(mode="header"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="http://",
+                route=GatewayRouteModeConfig(mode="header"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="http://user:pass@gateway.opensandbox.io",
+                route=GatewayRouteModeConfig(mode="header"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="http://gateway.opensandbox.io:8080",
+                route=GatewayRouteModeConfig(mode="header"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="10.0.0.1:0",
+                route=GatewayRouteModeConfig(mode="uri"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="10.0.0.1:abc",
+                route=GatewayRouteModeConfig(mode="uri"),
+            ),
+        )
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="http://[::1]",
+                route=GatewayRouteModeConfig(mode="header"),
+            ),
+        )
+    cfg = IngressConfig(
+        mode="gateway",
+        gateway=GatewayConfig(
+            address="gateway.opensandbox.io",
+            route=GatewayRouteModeConfig(mode="uri"),
+        ),
+    )
+    assert cfg.gateway.address == "gateway.opensandbox.io"
+    cfg_ip = IngressConfig(
+        mode="gateway",
+        gateway=GatewayConfig(
+            address="10.0.0.1",
+            route=GatewayRouteModeConfig(mode="header"),
+        ),
+    )
+    assert cfg_ip.gateway.address == "10.0.0.1"
+    cfg_ip_port = IngressConfig(
+        mode="gateway",
+        gateway=GatewayConfig(
+            address="10.0.0.1:8080",
+            route=GatewayRouteModeConfig(mode="header"),
+        ),
+    )
+    assert cfg_ip_port.gateway.address == "10.0.0.1:8080"
+
+
+def test_gateway_address_allows_scheme_less_defaults():
+    cfg = IngressConfig(
+        mode="gateway",
+        gateway=GatewayConfig(
+            address="*.example.com",
+            route=GatewayRouteModeConfig(mode="wildcard"),
+        ),
+    )
+    assert cfg.gateway.address == "*.example.com"
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="gateway",
+            gateway=GatewayConfig(
+                address="https://*.example.com",
+                route=GatewayRouteModeConfig(mode="wildcard"),
+            ),
+        )
+
+
+def test_direct_mode_rejects_gateway_block():
+    with pytest.raises(ValueError):
+        IngressConfig(
+            mode="direct",
+            gateway=GatewayConfig(
+                address="gateway.opensandbox.io",
+                route=GatewayRouteModeConfig(mode="header"),
+            ),
+        )
+
+
+def test_docker_runtime_rejects_gateway_ingress():
+    server_cfg = ServerConfig()
+    runtime_cfg = RuntimeConfig(type="docker", execd_image="busybox:latest")
+    with pytest.raises(ValueError):
+        AppConfig(
+            server=server_cfg,
+            runtime=runtime_cfg,
+            ingress=IngressConfig(
+                mode="gateway",
+                gateway=GatewayConfig(
+                    address="gateway.opensandbox.io",
+                    route=GatewayRouteModeConfig(mode="header"),
+                ),
+            ),
+        )
+    # direct remains valid
+    app_cfg = AppConfig(
+        server=server_cfg,
+        runtime=runtime_cfg,
+        ingress=IngressConfig(mode="direct"),
+    )
+    assert app_cfg.ingress.mode == "direct"
+
+
+# ============================================================================
+# StorageConfig Tests
+# ============================================================================
+
+
+def test_storage_config_defaults():
+    """StorageConfig should default to empty allowed_host_paths list."""
+    cfg = StorageConfig()
+    assert cfg.allowed_host_paths == []
+
+
+def test_storage_config_with_paths():
+    """StorageConfig should accept explicit allowed_host_paths."""
+    cfg = StorageConfig(allowed_host_paths=["/data/opensandbox", "/tmp/sandbox"])
+    assert cfg.allowed_host_paths == ["/data/opensandbox", "/tmp/sandbox"]
+
+
+def test_app_config_default_storage():
+    """AppConfig should include default StorageConfig when not specified."""
+    server_cfg = ServerConfig()
+    runtime_cfg = RuntimeConfig(type="docker", execd_image="busybox:latest")
+    app_cfg = AppConfig(server=server_cfg, runtime=runtime_cfg)
+    assert app_cfg.storage is not None
+    assert app_cfg.storage.allowed_host_paths == []
+
+
+def test_load_config_with_storage_block(tmp_path, monkeypatch):
+    """StorageConfig should be loaded from [storage] TOML block."""
+    _reset_config(monkeypatch)
+    toml = textwrap.dedent(
+        """
+        [server]
+        host = "127.0.0.1"
+        port = 9000
+
+        [runtime]
+        type = "docker"
+        execd_image = "ghcr.io/opensandbox/platform:test"
+
+        [router]
+        domain = "opensandbox.io"
+
+        [storage]
+        allowed_host_paths = ["/data/opensandbox", "/tmp/sandbox"]
+        """
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml)
+
+    loaded = config_module.load_config(config_path)
+    assert loaded.storage is not None
+    assert loaded.storage.allowed_host_paths == ["/data/opensandbox", "/tmp/sandbox"]
+
+
+def test_load_config_without_storage_block_uses_defaults(tmp_path, monkeypatch):
+    """AppConfig should use default StorageConfig when [storage] is not in TOML."""
+    _reset_config(monkeypatch)
+    toml = textwrap.dedent(
+        """
+        [server]
+        host = "127.0.0.1"
+        port = 9000
+
+        [runtime]
+        type = "docker"
+        execd_image = "ghcr.io/opensandbox/platform:test"
+
+        [router]
+        domain = "opensandbox.io"
+        """
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml)
+
+    loaded = config_module.load_config(config_path)
+    assert loaded.storage is not None
+    assert loaded.storage.allowed_host_paths == []
+
+
+# ============================================================================
+# SecureRuntimeConfig Tests
+# ============================================================================
+
+
+def test_secure_runtime_empty_type_is_valid():
+    """Empty type (default runc) should be valid."""
+    cfg = config_module.SecureRuntimeConfig(type="")
+    assert cfg.type == ""
+    assert cfg.docker_runtime is None
+    assert cfg.k8s_runtime_class is None
+
+
+def test_secure_runtime_gvisor_with_docker_runtime_is_valid():
+    """gVisor with docker_runtime should be valid."""
+    cfg = config_module.SecureRuntimeConfig(
+        type="gvisor",
+        docker_runtime="runsc",
+        k8s_runtime_class="gvisor",
+    )
+    assert cfg.type == "gvisor"
+    assert cfg.docker_runtime == "runsc"
+    assert cfg.k8s_runtime_class == "gvisor"
+
+
+def test_secure_runtime_gvisor_with_k8s_runtime_class_is_valid():
+    """gVisor with only k8s_runtime_class should be valid."""
+    cfg = config_module.SecureRuntimeConfig(
+        type="gvisor",
+        docker_runtime=None,
+        k8s_runtime_class="gvisor",
+    )
+    assert cfg.type == "gvisor"
+    assert cfg.docker_runtime is None
+    assert cfg.k8s_runtime_class == "gvisor"
+
+
+def test_secure_runtime_kata_with_runtimes_is_valid():
+    """Kata with both runtimes should be valid."""
+    cfg = config_module.SecureRuntimeConfig(
+        type="kata",
+        docker_runtime="kata-runtime",
+        k8s_runtime_class="kata-qemu",
+    )
+    assert cfg.type == "kata"
+    assert cfg.docker_runtime == "kata-runtime"
+    assert cfg.k8s_runtime_class == "kata-qemu"
+
+
+def test_secure_runtime_firecracker_with_k8s_runtime_is_valid():
+    """Firecracker with k8s_runtime_class should be valid."""
+    cfg = config_module.SecureRuntimeConfig(
+        type="firecracker",
+        docker_runtime="",
+        k8s_runtime_class="kata-fc",
+    )
+    assert cfg.type == "firecracker"
+    assert cfg.docker_runtime == ""
+    assert cfg.k8s_runtime_class == "kata-fc"
+
+
+def test_secure_runtime_firecracker_without_k8s_runtime_raises_error():
+    """Firecracker without k8s_runtime_class should raise error."""
+    with pytest.raises(ValueError) as exc:
+        config_module.SecureRuntimeConfig(
+            type="firecracker",
+            docker_runtime="",
+            k8s_runtime_class=None,
+        )
+    assert "k8s_runtime_class" in str(exc.value).lower()
+
+
+def test_secure_runtime_gvisor_without_any_runtime_raises_error():
+    """gVisor without any runtime configured should raise error."""
+    with pytest.raises(ValueError) as exc:
+        config_module.SecureRuntimeConfig(
+            type="gvisor",
+            docker_runtime=None,
+            k8s_runtime_class=None,
+        )
+    assert "docker_runtime" in str(exc.value).lower() or "k8s_runtime_class" in str(exc.value).lower()
+
+
+def test_secure_runtime_kata_without_any_runtime_raises_error():
+    """Kata without any runtime configured should raise error."""
+    with pytest.raises(ValueError) as exc:
+        config_module.SecureRuntimeConfig(
+            type="kata",
+            docker_runtime=None,
+            k8s_runtime_class=None,
+        )
+    assert "docker_runtime" in str(exc.value).lower() or "k8s_runtime_class" in str(exc.value).lower()
+
+
+def test_secure_runtime_invalid_type_raises_error():
+    """Invalid type should raise ValidationError."""
+    with pytest.raises(Exception):
+        config_module.SecureRuntimeConfig(type="invalid_runtime")
+
+
+def test_app_config_with_secure_runtime():
+    """AppConfig should parse secure_runtime section."""
+    cfg = AppConfig(
+        runtime={"type": "docker", "execd_image": "execd:v1"},
+        secure_runtime={
+            "type": "gvisor",
+            "docker_runtime": "runsc",
+            "k8s_runtime_class": "gvisor",
+        },
+    )
+    assert cfg.secure_runtime is not None
+    assert cfg.secure_runtime.type == "gvisor"
+    assert cfg.secure_runtime.docker_runtime == "runsc"
+
+
+def test_app_config_without_secure_runtime():
+    """AppConfig without secure_runtime should have None."""
+    cfg = AppConfig(
+        runtime={"type": "docker", "execd_image": "execd:v1"},
+    )
+    assert cfg.secure_runtime is None
+
+
+def test_load_config_with_secure_runtime(tmp_path, monkeypatch):
+    """SecureRuntimeConfig should be loaded from [secure_runtime] TOML block."""
+    _reset_config(monkeypatch)
+    toml = textwrap.dedent(
+        """
+        [server]
+        host = "127.0.0.1"
+        port = 9000
+
+        [runtime]
+        type = "docker"
+        execd_image = "ghcr.io/opensandbox/platform:test"
+
+        [secure_runtime]
+        type = "gvisor"
+        docker_runtime = "runsc"
+        k8s_runtime_class = "gvisor"
+        """
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml)
+
+    loaded = config_module.load_config(config_path)
+    assert loaded.secure_runtime is not None
+    assert loaded.secure_runtime.type == "gvisor"
+    assert loaded.secure_runtime.docker_runtime == "runsc"
+    assert loaded.secure_runtime.k8s_runtime_class == "gvisor"
+
+
+def test_docker_runtime_with_firecracker_raises_error():
+    """Docker runtime with Firecracker secure runtime should raise error.
+
+    Firecracker (kata-fc) is only available as a Kubernetes RuntimeClass,
+    not as a Docker OCI runtime. This test prevents the silent fallback
+    to runc which would bypass the intended microVM isolation.
+    """
+    with pytest.raises(ValueError) as exc:
+        AppConfig(
+            runtime={"type": "docker", "execd_image": "execd:v1"},
+            secure_runtime={
+                "type": "firecracker",
+                "k8s_runtime_class": "kata-fc",
+            },
+        )
+    assert "firecracker" in str(exc.value).lower()
+    assert "kubernetes" in str(exc.value).lower()
+
+
+def test_kubernetes_runtime_with_firecracker_is_valid():
+    """Kubernetes runtime with Firecracker should be valid."""
+    cfg = AppConfig(
+        runtime={"type": "kubernetes", "execd_image": "execd:v1"},
+        kubernetes={"namespace": "default"},
+        secure_runtime={
+            "type": "firecracker",
+            "k8s_runtime_class": "kata-fc",
+        },
+    )
+    assert cfg.runtime.type == "kubernetes"
+    assert cfg.secure_runtime is not None
+    assert cfg.secure_runtime.type == "firecracker"
+    assert cfg.secure_runtime.k8s_runtime_class == "kata-fc"

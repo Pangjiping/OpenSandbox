@@ -35,6 +35,7 @@ from opensandbox.adapters.converter.sandbox_model_converter import (
 from opensandbox.api.lifecycle.types import UNSET
 from opensandbox.config.connection_sync import ConnectionConfigSync
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
     PagedSandboxInfos,
     SandboxCreateResponse,
     SandboxEndpoint,
@@ -42,6 +43,7 @@ from opensandbox.models.sandboxes import (
     SandboxImageSpec,
     SandboxInfo,
     SandboxRenewResponse,
+    Volume,
 )
 from opensandbox.sync.services.sandbox import SandboxesSync
 
@@ -91,7 +93,9 @@ class SandboxesAdapterSync(SandboxesSync):
         metadata: dict[str, str],
         timeout: timedelta,
         resource: dict[str, str],
+        network_policy: NetworkPolicy | None,
         extensions: dict[str, str],
+        volumes: list[Volume] | None,
     ) -> SandboxCreateResponse:
         logger.info("Creating sandbox with image: %s", spec.image)
         try:
@@ -107,7 +111,9 @@ class SandboxesAdapterSync(SandboxesSync):
                 metadata=metadata,
                 timeout=timeout,
                 resource=resource,
+                network_policy=network_policy,
                 extensions=extensions,
+                volumes=volumes,
             )
             response_obj = post_sandboxes.sync_detailed(client=self._get_client(), body=create_request)
             handle_api_error(response_obj, "Create sandbox")
@@ -170,7 +176,9 @@ class SandboxesAdapterSync(SandboxesSync):
             logger.error("Failed to list sandboxes", exc_info=e)
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
-    def get_sandbox_endpoint(self, sandbox_id: str, port: int) -> SandboxEndpoint:
+    def get_sandbox_endpoint(
+        self, sandbox_id: str, port: int, use_server_proxy: bool = False
+    ) -> SandboxEndpoint:
         try:
             from opensandbox.api.lifecycle.api.sandboxes import (
                 get_sandboxes_sandbox_id_endpoints_port,
@@ -181,6 +189,7 @@ class SandboxesAdapterSync(SandboxesSync):
                 sandbox_id=sandbox_id,
                 port=port,
                 client=self._get_client(),
+                use_server_proxy=use_server_proxy,
             )
             handle_api_error(response_obj, f"Get endpoint for sandbox {sandbox_id} port {port}")
             parsed = require_parsed(response_obj, ApiEndpoint, "Get endpoint")

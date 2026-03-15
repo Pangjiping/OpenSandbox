@@ -32,9 +32,11 @@ import type { ExecdMetrics } from "./services/execdMetrics.js";
 import type {
   CreateSandboxRequest,
   Endpoint,
+  NetworkPolicy,
   RenewSandboxExpirationResponse,
   SandboxId,
   SandboxInfo,
+  Volume,
 } from "./models/sandboxes.js";
 import { SandboxReadyTimeoutException } from "./core/exceptions.js";
 
@@ -55,9 +57,31 @@ export interface SandboxCreateOptions {
     | string
     | { uri: string; auth?: { username: string; password: string } };
 
+  /**
+   * Entrypoint command for the sandbox (defaults to tail -f /dev/null).
+   */
   entrypoint?: string[];
+  /**
+   * Environment variables to inject into the sandbox runtime.
+   */
   env?: Record<string, string>;
+  /**
+   * Custom metadata tags (used for filtering/management).
+   */
   metadata?: Record<string, string>;
+  /**
+   * Optional outbound network policy for the sandbox.
+   * If provided without defaultAction, defaults to "deny".
+   */
+  networkPolicy?: NetworkPolicy;
+  /**
+   * Optional list of volume mounts for persistent storage.
+   * Each volume specifies a backend (host path or PVC) and mount configuration.
+   */
+  volumes?: Volume[];
+  /**
+   * Opaque extension parameters passed through to the server as-is.
+   */
   extensions?: Record<string, string>;
 
   /**
@@ -90,13 +114,34 @@ export interface SandboxCreateOptions {
 }
 
 export interface SandboxConnectOptions {
+  /**
+   * Connection configuration for calling the OpenSandbox APIs.
+   */
   connectionConfig?: ConnectionConfig | ConnectionConfigOptions;
+  /**
+   * Advanced override: inject a custom adapter factory (custom transports, dependency injection).
+   */
   adapterFactory?: AdapterFactory;
+  /**
+   * ID of the existing sandbox to connect to.
+   */
   sandboxId: SandboxId;
 
+  /**
+   * Skip readiness checks after connecting.
+   */
   skipHealthCheck?: boolean;
+  /**
+   * Optional custom readiness check used by {@link Sandbox.waitUntilReady}.
+   */
   healthCheck?: (sbx: Sandbox) => boolean | Promise<boolean>;
+  /**
+   * Max time to wait for readiness.
+   */
   readyTimeoutSeconds?: number;
+  /**
+   * Polling interval for readiness checks (milliseconds).
+   */
   healthCheckPollingInterval?: number;
 }
 
@@ -173,16 +218,41 @@ export class Sandbox {
   }
 
   static async create(opts: SandboxCreateOptions): Promise<Sandbox> {
-    const connectionConfig =
+    const baseConnectionConfig =
       opts.connectionConfig instanceof ConnectionConfig
         ? opts.connectionConfig
         : new ConnectionConfig(opts.connectionConfig);
+    const connectionConfig = baseConnectionConfig.withTransportIfMissing();
     const lifecycleBaseUrl = connectionConfig.getBaseUrl();
     const adapterFactory = opts.adapterFactory ?? createDefaultAdapterFactory();
-    const { sandboxes } = adapterFactory.createLifecycleStack({
-      connectionConfig,
-      lifecycleBaseUrl,
-    });
+
+    let sandboxes: Sandboxes;
+    try {
+      sandboxes = adapterFactory.createLifecycleStack({
+        connectionConfig,
+        lifecycleBaseUrl,
+      }).sandboxes;
+    } catch (err) {
+      await connectionConfig.closeTransport();
+      throw err;
+    }
+
+    // Validate volumes: exactly one backend must be specified per volume
+    if (opts.volumes) {
+      for (const vol of opts.volumes) {
+        const backendsSpecified = [vol.host, vol.pvc].filter((b) => b !== undefined).length;
+        if (backendsSpecified === 0) {
+          throw new Error(
+            `Volume '${vol.name}' must specify exactly one backend (host, pvc), but none was provided.`
+          );
+        }
+        if (backendsSpecified > 1) {
+          throw new Error(
+            `Volume '${vol.name}' must specify exactly one backend (host, pvc), but multiple were provided.`
+          );
+        }
+      }
+    }
 
     const req: CreateSandboxRequest = {
       image: toImageSpec(opts.image),
@@ -191,6 +261,13 @@ export class Sandbox {
       resourceLimits: opts.resource ?? DEFAULT_RESOURCE_LIMITS,
       env: opts.env ?? {},
       metadata: opts.metadata ?? {},
+      networkPolicy: opts.networkPolicy
+        ? {
+            ...opts.networkPolicy,
+            defaultAction: opts.networkPolicy.defaultAction ?? "deny",
+          }
+        : undefined,
+      volumes: opts.volumes,
       extensions: opts.extensions ?? {},
     };
 
@@ -201,7 +278,8 @@ export class Sandbox {
 
       const endpoint = await sandboxes.getSandboxEndpoint(
         sandboxId,
-        DEFAULT_EXECD_PORT
+        DEFAULT_EXECD_PORT,
+        connectionConfig.useServerProxy
       );
       const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
 
@@ -209,6 +287,7 @@ export class Sandbox {
         adapterFactory.createExecdStack({
           connectionConfig,
           execdBaseUrl,
+          endpointHeaders: endpoint.headers,
         });
 
       const sbx = new Sandbox({
@@ -244,58 +323,74 @@ export class Sandbox {
           // Ignore cleanup failure; surface original error.
         }
       }
+      await connectionConfig.closeTransport();
       throw err;
     }
   }
 
   static async connect(opts: SandboxConnectOptions): Promise<Sandbox> {
-    const connectionConfig =
+    const baseConnectionConfig =
       opts.connectionConfig instanceof ConnectionConfig
         ? opts.connectionConfig
         : new ConnectionConfig(opts.connectionConfig);
+    const connectionConfig = baseConnectionConfig.withTransportIfMissing();
     const adapterFactory = opts.adapterFactory ?? createDefaultAdapterFactory();
     const lifecycleBaseUrl = connectionConfig.getBaseUrl();
-    const { sandboxes } = adapterFactory.createLifecycleStack({
-      connectionConfig,
-      lifecycleBaseUrl,
-    });
 
-    const endpoint = await sandboxes.getSandboxEndpoint(
-      opts.sandboxId,
-      DEFAULT_EXECD_PORT
-    );
-    const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
-    const { commands, files, health, metrics } =
-      adapterFactory.createExecdStack({
+    let sandboxes: Sandboxes;
+    try {
+      sandboxes = adapterFactory.createLifecycleStack({
         connectionConfig,
-        execdBaseUrl,
-      });
-
-    const sbx = new Sandbox({
-      id: opts.sandboxId,
-      connectionConfig,
-      adapterFactory,
-      lifecycleBaseUrl,
-      execdBaseUrl,
-      sandboxes,
-      commands,
-      files,
-      health,
-      metrics,
-    });
-
-    if (!(opts.skipHealthCheck ?? false)) {
-      await sbx.waitUntilReady({
-        readyTimeoutSeconds:
-          opts.readyTimeoutSeconds ?? DEFAULT_READY_TIMEOUT_SECONDS,
-        pollingIntervalMillis:
-          opts.healthCheckPollingInterval ??
-          DEFAULT_HEALTH_CHECK_POLLING_INTERVAL_MILLIS,
-        healthCheck: opts.healthCheck,
-      });
+        lifecycleBaseUrl,
+      }).sandboxes;
+    } catch (err) {
+      await connectionConfig.closeTransport();
+      throw err;
     }
 
-    return sbx;
+    try {
+      const endpoint = await sandboxes.getSandboxEndpoint(
+        opts.sandboxId,
+        DEFAULT_EXECD_PORT,
+        connectionConfig.useServerProxy
+      );
+      const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
+      const { commands, files, health, metrics } =
+        adapterFactory.createExecdStack({
+          connectionConfig,
+          execdBaseUrl,
+          endpointHeaders: endpoint.headers,
+        });
+
+      const sbx = new Sandbox({
+        id: opts.sandboxId,
+        connectionConfig,
+        adapterFactory,
+        lifecycleBaseUrl,
+        execdBaseUrl,
+        sandboxes,
+        commands,
+        files,
+        health,
+        metrics,
+      });
+
+      if (!(opts.skipHealthCheck ?? false)) {
+        await sbx.waitUntilReady({
+          readyTimeoutSeconds:
+            opts.readyTimeoutSeconds ?? DEFAULT_READY_TIMEOUT_SECONDS,
+          pollingIntervalMillis:
+            opts.healthCheckPollingInterval ??
+            DEFAULT_HEALTH_CHECK_POLLING_INTERVAL_MILLIS,
+          healthCheck: opts.healthCheck,
+        });
+      }
+
+      return sbx;
+    } catch (err) {
+      await connectionConfig.closeTransport();
+      throw err;
+    }
   }
 
   async getInfo(): Promise<SandboxInfo> {
@@ -346,22 +441,39 @@ export class Sandbox {
    * Resume a paused sandbox by id, then connect to its execd endpoint.
    */
   static async resume(opts: SandboxConnectOptions): Promise<Sandbox> {
-    const connectionConfig =
+    const baseConnectionConfig =
       opts.connectionConfig instanceof ConnectionConfig
         ? opts.connectionConfig
         : new ConnectionConfig(opts.connectionConfig);
     const adapterFactory = opts.adapterFactory ?? createDefaultAdapterFactory();
-    const lifecycleBaseUrl = connectionConfig.getBaseUrl();
-    const { sandboxes } = adapterFactory.createLifecycleStack({
-      connectionConfig,
-      lifecycleBaseUrl,
-    });
-    await sandboxes.resumeSandbox(opts.sandboxId);
-    return await Sandbox.connect({ ...opts, connectionConfig, adapterFactory });
+    const resumeConnectionConfig = baseConnectionConfig.withTransportIfMissing();
+    const lifecycleBaseUrl = resumeConnectionConfig.getBaseUrl();
+
+    let sandboxes: Sandboxes;
+    try {
+      sandboxes = adapterFactory.createLifecycleStack({
+        connectionConfig: resumeConnectionConfig,
+        lifecycleBaseUrl,
+      }).sandboxes;
+      await sandboxes.resumeSandbox(opts.sandboxId);
+    } catch (err) {
+      await resumeConnectionConfig.closeTransport();
+      throw err;
+    }
+
+    await resumeConnectionConfig.closeTransport();
+    return await Sandbox.connect({ ...opts, connectionConfig: baseConnectionConfig, adapterFactory });
   }
 
   async kill(): Promise<void> {
     await this.sandboxes.deleteSandbox(this.id);
+  }
+
+  /**
+   * Release any client-side resources (e.g. Node.js HTTP agents) owned by this Sandbox instance.
+   */
+  async close(): Promise<void> {
+    await this.connectionConfig.closeTransport();
   }
 
   /**
@@ -378,7 +490,11 @@ export class Sandbox {
    * Get sandbox endpoint for a port (STRICT: no scheme), e.g. "localhost:44772" or "domain/route/.../44772".
    */
   async getEndpoint(port: number): Promise<Endpoint> {
-    return await this.sandboxes.getSandboxEndpoint(this.id, port);
+    return await this.sandboxes.getSandboxEndpoint(
+      this.id,
+      port,
+      this.connectionConfig.useServerProxy
+    );
   }
 
   /**
@@ -395,24 +511,43 @@ export class Sandbox {
     healthCheck?: (sbx: Sandbox) => boolean | Promise<boolean>;
   }): Promise<void> {
     const deadline = Date.now() + opts.readyTimeoutSeconds * 1000;
+    let attempt = 0;
+    let errorDetail = "Health check returned false continuously.";
+
+    const buildTimeoutMessage = () => {
+      const context = `domain=${this.connectionConfig.domain}, useServerProxy=${this.connectionConfig.useServerProxy}`;
+      let suggestion =
+        "If this sandbox runs in Docker bridge or remote-network mode, consider enabling useServerProxy=true.";
+      if (!this.connectionConfig.useServerProxy) {
+        suggestion += " You can also configure server-side [docker].host_ip for direct endpoint access.";
+      }
+      return `Sandbox health check timed out after ${opts.readyTimeoutSeconds}s (${attempt} attempts). ${errorDetail} Connection context: ${context}. ${suggestion}`;
+    };
 
     // Wait until execd becomes reachable and passes health check.
     while (true) {
       if (Date.now() > deadline) {
         throw new SandboxReadyTimeoutException({
-          message: `Sandbox not ready: timed out waiting for health check (timeoutSeconds=${opts.readyTimeoutSeconds})`,
+          message: buildTimeoutMessage(),
         });
       }
+      attempt++;
       try {
         if (opts.healthCheck) {
           const ok = await opts.healthCheck(this);
-          if (ok) return;
+          if (ok) {
+            return;
+          }
         } else {
           const ok = await this.health.ping();
-          if (ok) return;
+          if (ok) {
+            return;
+          }
         }
-      } catch {
-        // ignore and retry
+        errorDetail = "Health check returned false continuously.";
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errorDetail = `Last health check error: ${message}`;
       }
       await sleep(opts.pollingIntervalMillis);
     }

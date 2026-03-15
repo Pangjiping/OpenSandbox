@@ -48,7 +48,8 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.Dir = request.Cwd
-	cmd.Env = mergeEnvs(os.Environ(), loadExtraEnvFromFile())
+	extraEnv := mergeExtraEnvs(loadExtraEnvFromFile(), request.Envs)
+	cmd.Env = mergeEnvs(os.Environ(), extraEnv)
 
 	done := make(chan struct{}, 1)
 	safego.Go(func() {
@@ -103,7 +104,7 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 }
 
 // runBackgroundCommand executes shell commands in detached mode on Windows.
-func (c *Controller) runBackgroundCommand(_ context.Context, request *ExecuteCodeRequest) error {
+func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.CancelFunc, request *ExecuteCodeRequest) error {
 	session := c.newContextID()
 	request.Hooks.OnExecuteInit(session)
 
@@ -116,12 +117,13 @@ func (c *Controller) runBackgroundCommand(_ context.Context, request *ExecuteCod
 
 	startAt := time.Now()
 	log.Info("received command: %v", request.Code)
-	cmd := exec.CommandContext(context.Background(), "cmd", "/C", request.Code)
+	cmd := exec.CommandContext(ctx, "cmd", "/C", request.Code)
 
 	cmd.Dir = request.Cwd
 	cmd.Stdout = pipe
 	cmd.Stderr = pipe
-	cmd.Env = mergeEnvs(os.Environ(), loadExtraEnvFromFile())
+	extraEnv := mergeExtraEnvs(loadExtraEnvFromFile(), request.Envs)
+	cmd.Env = mergeEnvs(os.Environ(), extraEnv)
 
 	devNull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0) // best-effort, ignore error
 	cmd.Stdin = devNull
@@ -131,6 +133,7 @@ func (c *Controller) runBackgroundCommand(_ context.Context, request *ExecuteCod
 		if err != nil {
 			log.Error("CommandExecError: error starting commands: %v", err)
 			pipe.Close() // best-effort
+			cancel()
 			return
 		}
 
@@ -145,7 +148,15 @@ func (c *Controller) runBackgroundCommand(_ context.Context, request *ExecuteCod
 		}
 		c.storeCommandKernel(session, kernel)
 
+		safego.Go(func() {
+			<-ctx.Done()
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill() // best-effort
+			}
+		})
+
 		err = cmd.Wait()
+		cancel()
 		pipe.Close()    // best-effort
 		devNull.Close() // best-effort
 

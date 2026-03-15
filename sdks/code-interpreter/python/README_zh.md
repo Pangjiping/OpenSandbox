@@ -48,7 +48,7 @@ async def main() -> None:
 
     # 2. 创建 Sandbox（必须使用 code-interpreter 镜像），并指定语言版本
     sandbox = await Sandbox.create(
-        "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest",
+        "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.1",
         connection_config=config,
         entrypoint=["/opt/opensandbox/code-interpreter.sh"],
         env={
@@ -108,7 +108,7 @@ config = ConnectionConfigSync(
 )
 
 sandbox = SandboxSync.create(
-    "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest",
+    "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.1",
     connection_config=config,
     entrypoint=["/opt/opensandbox/code-interpreter.sh"],
     env={"PYTHON_VERSION": "3.11"},
@@ -119,6 +119,14 @@ with sandbox:
     if result.result:
         print(result.result[0].text)
     sandbox.kill()
+```
+
+### 运行时安装 Python 依赖
+
+可以直接通过 `sandbox.commands.run(...)` 安装依赖：
+
+```python
+execution = await sandbox.commands.run("pip install pandas numpy")
 ```
 
 ## 运行时配置

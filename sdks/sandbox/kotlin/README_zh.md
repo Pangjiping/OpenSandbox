@@ -218,7 +218,8 @@ sandboxes.getSandboxInfos().forEach(info -> {
 | `requestTimeout` | API 请求超时时间             | 30 秒                    | -                      |
 | `debug`          | 是否开启 HTTP 请求的调试日志 | `false`                  | -                      |
 | `headers`        | 自定义 HTTP 请求头           | 空                       | -                      |
-| `connectionPool` | 共享 OKHttp 连接池           | 新实例                   | -                      |
+| `connectionPool` | 共享 OKHttp 连接池           | SDK 每实例创建            | -                      |
+| `useServerProxy` | 是否通过沙箱服务代理访问 execd/endpoint（适用于客户端无法直连沙箱的场景） | `false` | -                      |
 
 ```java
 // 1. 基础配置
@@ -230,7 +231,8 @@ ConnectionConfig config = ConnectionConfig.builder()
 
 // 2. 进阶配置：共享连接池 (Shared Connection Pool)
 // 如果你需要创建大量 Sandbox 实例，建议共享连接池以节省资源。
-ConnectionPool sharedPool = new ConnectionPool(50, 5, TimeUnit.MINUTES);
+// SDK 默认连接保活时间为 30 秒。
+ConnectionPool sharedPool = new ConnectionPool(50, 30, TimeUnit.SECONDS);
 
 ConnectionConfig sharedConfig = ConnectionConfig.builder()
     .apiKey("your-key")
@@ -251,9 +253,13 @@ ConnectionConfig sharedConfig = ConnectionConfig.builder()
 | `resource`     | CPU 和内存限制         | `{"cpu": "1", "memory": "2Gi"}` |
 | `env`          | 环境变量               | 空                              |
 | `metadata`     | 自定义元数据标签       | 空                              |
+| `networkPolicy` | 可选的出站网络策略（egress） | -                         |
 | `readyTimeout` | 等待沙箱就绪的最大时间 | 30 秒                           |
 
 ```java
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy;
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkRule;
+
 Sandbox sandbox = Sandbox.builder()
     .connectionConfig(config)
     .image("python:3.11")
@@ -264,5 +270,16 @@ Sandbox sandbox = Sandbox.builder()
     })
     .env("PYTHONPATH", "/app")
     .metadata("project", "demo")
+    .networkPolicy(
+        NetworkPolicy.builder()
+            .defaultAction(NetworkPolicy.DefaultAction.DENY)
+            .addEgress(
+                NetworkRule.builder()
+                    .action(NetworkRule.Action.ALLOW)
+                    .target("pypi.org")
+                    .build()
+            )
+            .build()
+    )
     .build();
 ```

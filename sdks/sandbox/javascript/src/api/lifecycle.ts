@@ -394,7 +394,10 @@ export interface paths {
          */
         get: {
             parameters: {
-                query?: never;
+                query?: {
+                    /** @description Whether to return a server-proxied URL */
+                    use_server_proxy?: boolean;
+                };
                 header?: never;
                 path: {
                     /** @description Unique sandbox identifier */
@@ -637,6 +640,18 @@ export interface components {
              */
             entrypoint: string[];
             /**
+             * @description Optional outbound network policy for the sandbox.
+             *     Shape matches the sidecar `/policy` endpoint. If omitted or empty,
+             *     the sidecar starts in allow-all mode until updated.
+             */
+            networkPolicy?: components["schemas"]["NetworkPolicy"];
+            /**
+             * @description Storage mounts for the sandbox. Each volume entry specifies a named backend-specific
+             *     storage source and common mount settings. Exactly one backend type must be specified
+             *     per volume entry.
+             */
+            volumes?: components["schemas"]["Volume"][];
+            /**
              * @description Opaque container for provider-specific or transient parameters not supported by the core API.
              *
              *     **Note**: This field is reserved for internal features, experimental flags, or temporary behaviors. Standard parameters should be proposed as core API fields.
@@ -709,6 +724,93 @@ export interface components {
              *     Example: endpoint.opensandbox.io/sandboxes/abc123/port/8080
              */
             endpoint: string;
+            /** @description Requests targeting the sandbox must include the corresponding header(s). */
+            headers?: {
+                [key: string]: string;
+            };
+        };
+        /**
+         * @description Egress network policy matching the sidecar `/policy` request body.
+         *     If `defaultAction` is omitted, the sidecar defaults to "deny"; passing an empty
+         *     object or null results in allow-all behavior at startup.
+         */
+        NetworkPolicy: {
+            /**
+             * @description Default action when no egress rule matches. Defaults to "deny".
+             * @enum {string}
+             */
+            defaultAction?: "allow" | "deny";
+            /** @description List of egress rules evaluated in order. */
+            egress?: components["schemas"]["NetworkRule"][];
+        };
+        NetworkRule: {
+            /**
+             * @description Whether to allow or deny matching targets.
+             * @enum {string}
+             */
+            action: "allow" | "deny";
+            /**
+             * @description FQDN or wildcard domain (e.g., "example.com", "*.example.com").
+             *     IP/CIDR not yet supported in the egress MVP.
+             */
+            target: string;
+        };
+        /**
+         * @description Storage mount definition for a sandbox. Each volume entry contains:
+         *     - A unique name identifier
+         *     - Exactly one backend struct (host, pvc, etc.) with backend-specific fields
+         *     - Common mount settings (mountPath, readOnly, subPath)
+         */
+        Volume: {
+            /**
+             * @description Unique identifier for the volume within the sandbox.
+             *     Must be a valid DNS label (lowercase alphanumeric, hyphens allowed, max 63 chars).
+             */
+            name: string;
+            host?: components["schemas"]["Host"];
+            pvc?: components["schemas"]["PVC"];
+            /**
+             * @description Absolute path inside the container where the volume is mounted.
+             *     Must start with '/'.
+             */
+            mountPath: string;
+            /**
+             * @description If true, the volume is mounted as read-only. Defaults to false (read-write).
+             * @default false
+             */
+            readOnly: boolean;
+            /**
+             * @description Optional subdirectory under the backend path to mount.
+             *     Must be a relative path without '..' components.
+             */
+            subPath?: string;
+        };
+        /**
+         * @description Host path bind mount backend. Maps a directory on the host filesystem
+         *     into the container. Only available when the runtime supports host mounts.
+         *
+         *     Security note: Host paths are restricted by server-side allowlist.
+         *     Users must specify paths under permitted prefixes.
+         */
+        Host: {
+            /**
+             * @description Absolute path on the host filesystem to mount.
+             *     Must start with '/' and be under an allowed prefix.
+             */
+            path: string;
+        };
+        /**
+         * @description Kubernetes PersistentVolumeClaim mount backend. References an existing
+         *     PVC in the same namespace as the sandbox pod.
+         *
+         *     Only available in Kubernetes runtime.
+         */
+        PVC: {
+            /**
+             * @description Name of the PersistentVolumeClaim in the same namespace.
+             *     Must be a valid Kubernetes resource name.
+             */
+            claimName: string;
         };
     };
     responses: {

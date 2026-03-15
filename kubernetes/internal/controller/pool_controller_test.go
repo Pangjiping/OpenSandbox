@@ -33,7 +33,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	sandboxv1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/api/v1alpha1"
+	sandboxv1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/apis/sandbox/v1alpha1"
 )
 
 var _ = Describe("Pool scale", func() {
@@ -521,3 +521,122 @@ func getPoolAllocation(pool *sandboxv1alpha1.Pool) (*PoolAllocation, error) {
 	}
 	return allocation, nil
 }
+
+var _ = Describe("Pool deletion and recreation", func() {
+	var (
+		timeout  = 10 * time.Second
+		interval = 1 * time.Second
+	)
+	Context("When deleting and recreating a Pool with same name", func() {
+		const resourceName = "pool-recreate-test"
+
+		ctx := context.Background()
+
+		typeNamespacedName := types.NamespacedName{
+			Name:      resourceName,
+			Namespace: "default",
+		}
+
+		BeforeEach(func() {
+			By("creating the custom resource for the Kind Pool")
+			typeNamespacedName.Name = resourceName + "-" + rand.String(8)
+			resource := &sandboxv1alpha1.Pool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      typeNamespacedName.Name,
+					Namespace: typeNamespacedName.Namespace,
+				},
+				Spec: sandboxv1alpha1.PoolSpec{
+					Template: &v1.PodTemplateSpec{
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name:  "main",
+									Image: "example.com",
+								},
+							},
+						},
+					},
+					CapacitySpec: sandboxv1alpha1.CapacitySpec{
+						PoolMin:   0,
+						PoolMax:   2,
+						BufferMin: 1,
+						BufferMax: 1,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			Eventually(func(g Gomega) {
+				pool := &sandboxv1alpha1.Pool{}
+				err := k8sClient.Get(ctx, typeNamespacedName, pool)
+				g.Expect(err).NotTo(HaveOccurred())
+				cnt := min(pool.Spec.CapacitySpec.PoolMax, pool.Spec.CapacitySpec.BufferMin)
+				g.Expect(pool.Status.ObservedGeneration).To(Equal(pool.Generation))
+				g.Expect(pool.Status.Total).To(Equal(cnt))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		AfterEach(func() {
+			resource := &sandboxv1alpha1.Pool{}
+			err := k8sClient.Get(ctx, typeNamespacedName, resource)
+			if err != nil {
+				if !errors.IsNotFound(err) {
+					Expect(err).NotTo(HaveOccurred())
+				}
+			} else {
+				By("Cleanup the specific resource instance Pool")
+				Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			}
+		})
+
+		It("should allow recreating a Pool with the same name after deletion", func() {
+			By("deleting the existing Pool")
+			pool := &sandboxv1alpha1.Pool{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, pool)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, pool)).To(Succeed())
+
+			By("waiting for the Pool to be fully deleted")
+			Eventually(func(g Gomega) {
+				pool := &sandboxv1alpha1.Pool{}
+				err := k8sClient.Get(ctx, typeNamespacedName, pool)
+				g.Expect(errors.IsNotFound(err)).To(BeTrue(), "Pool should be deleted")
+			}, timeout, interval).Should(Succeed())
+
+			By("recreating a Pool with the same name")
+			newPool := &sandboxv1alpha1.Pool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      typeNamespacedName.Name,
+					Namespace: typeNamespacedName.Namespace,
+				},
+				Spec: sandboxv1alpha1.PoolSpec{
+					Template: &v1.PodTemplateSpec{
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name:  "main",
+									Image: "example.com",
+								},
+							},
+						},
+					},
+					CapacitySpec: sandboxv1alpha1.CapacitySpec{
+						PoolMin:   0,
+						PoolMax:   2,
+						BufferMin: 1,
+						BufferMax: 1,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, newPool)).To(Succeed())
+
+			By("verifying the new Pool is successfully reconciled and creates expected pods")
+			Eventually(func(g Gomega) {
+				pool := &sandboxv1alpha1.Pool{}
+				err := k8sClient.Get(ctx, typeNamespacedName, pool)
+				g.Expect(err).NotTo(HaveOccurred())
+				cnt := min(pool.Spec.CapacitySpec.PoolMax, pool.Spec.CapacitySpec.BufferMin)
+				g.Expect(pool.Status.ObservedGeneration).To(Equal(pool.Generation))
+				g.Expect(pool.Status.Total).To(Equal(cnt), "new Pool should have correct total pod count")
+			}, timeout, interval).Should(Succeed())
+		})
+	})
+})

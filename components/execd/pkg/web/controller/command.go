@@ -48,7 +48,7 @@ func (c *CodeInterpretingController) RunCommand() {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(c.ctx.Request.Context())
 	defer cancel()
 
 	runCodeRequest := c.buildExecuteCommandRequest(request)
@@ -126,17 +126,26 @@ func (c *CodeInterpretingController) GetBackgroundCommandOutput() {
 }
 
 func (c *CodeInterpretingController) buildExecuteCommandRequest(request model.RunCommandRequest) *runtime.ExecuteCodeRequest {
+	timeout := time.Duration(request.TimeoutMs) * time.Millisecond
 	if request.Background {
 		return &runtime.ExecuteCodeRequest{
 			Language: runtime.BackgroundCommand,
 			Code:     request.Command,
 			Cwd:      request.Cwd,
+			Timeout:  timeout,
+			Gid:      request.Gid,
+			Uid:      request.Uid,
+			Envs:     request.Envs,
 		}
 	} else {
 		return &runtime.ExecuteCodeRequest{
 			Language: runtime.Command,
 			Code:     request.Command,
 			Cwd:      request.Cwd,
+			Timeout:  timeout,
+			Gid:      request.Gid,
+			Uid:      request.Uid,
+			Envs:     request.Envs,
 		}
 	}
 }

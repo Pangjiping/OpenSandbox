@@ -20,6 +20,8 @@ Core Pydantic models for sandbox operations.
 """
 
 from opensandbox.models.execd import (
+    CommandLogs,
+    CommandStatus,
     Execution,
     ExecutionComplete,
     ExecutionError,
@@ -37,6 +39,10 @@ from opensandbox.models.filesystem import (
     WriteEntry,
 )
 from opensandbox.models.sandboxes import (
+    PVC,
+    Host,
+    NetworkPolicy,
+    NetworkRule,
     PagedSandboxInfos,
     PaginationInfo,
     SandboxCreateResponse,
@@ -48,6 +54,7 @@ from opensandbox.models.sandboxes import (
     SandboxMetrics,
     SandboxState,
     SandboxStatus,
+    Volume,
 )
 
 __all__ = [
@@ -59,6 +66,8 @@ __all__ = [
     "ExecutionError",
     "ExecutionComplete",
     "ExecutionInit",
+    "CommandStatus",
+    "CommandLogs",
     # Filesystem models
     "EntryInfo",
     "WriteEntry",
@@ -70,6 +79,8 @@ __all__ = [
     "SandboxInfo",
     "SandboxStatus",
     "SandboxState",
+    "NetworkPolicy",
+    "NetworkRule",
     "SandboxCreateResponse",
     "SandboxEndpoint",
     "SandboxImageSpec",
@@ -78,4 +89,8 @@ __all__ = [
     "SandboxMetrics",
     "PagedSandboxInfos",
     "PaginationInfo",
+    # Volume models
+    "Volume",
+    "Host",
+    "PVC",
 ]

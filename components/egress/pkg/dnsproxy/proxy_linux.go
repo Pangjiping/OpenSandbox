@@ -18,21 +18,36 @@ package dnsproxy
 
 import (
 	"net"
+	"sync"
 	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/alibaba/opensandbox/egress/pkg/constants"
+	"github.com/alibaba/opensandbox/egress/pkg/log"
 )
 
+var exemptDialerLogOnce sync.Once
+
 // dialerWithMark sets SO_MARK so iptables can RETURN marked packets (bypass
-// redirect for proxy's own upstream DNS queries).
+// redirect for proxy's own upstream DNS queries). When upstream is in the nameserver
+// exempt list, returns a plain dialer (no mark) so upstream traffic follows normal
+// routing (e.g. via tun); iptables still does not redirect by destination exempt.
 func (p *Proxy) dialerWithMark() *net.Dialer {
+	if UpstreamInExemptList(p.UpstreamHost()) {
+		exemptDialerLogOnce.Do(func() {
+			log.Infof("[dns] upstream %s in nameserver exempt list, not setting SO_MARK", p.UpstreamHost())
+		})
+		return &net.Dialer{Timeout: 5 * time.Second}
+	}
+
 	return &net.Dialer{
 		Timeout: 5 * time.Second,
 		Control: func(network, address string, c syscall.RawConn) error {
 			var opErr error
 			if err := c.Control(func(fd uintptr) {
-				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, 0x1)
+				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, constants.MarkValue)
 			}); err != nil {
 				return err
 			}

@@ -16,29 +16,26 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"strings"
 
-	"go.uber.org/zap"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/client-go/informers"
-	listerv1 "k8s.io/client-go/listers/core/v1"
-	kubeclient "knative.dev/pkg/client/injection/kube/client"
-	"knative.dev/pkg/controller"
-
-	"github.com/alibaba/opensandbox/ingress/pkg/flag"
+	"github.com/alibaba/opensandbox/ingress/pkg/sandbox"
+	slogger "github.com/alibaba/opensandbox/internal/logger"
 )
 
 type Proxy struct {
-	lister listerv1.PodLister
+	sandboxProvider sandbox.Provider
+	mode            Mode
 }
 
-func NewProxy(ctx context.Context) *Proxy {
-	proxy := &Proxy{}
-	proxy.watchSandboxPods(ctx)
+func NewProxy(_ context.Context, sandboxProvider sandbox.Provider, mode Mode) *Proxy {
+	proxy := &Proxy{
+		sandboxProvider: sandboxProvider,
+		mode:            mode,
+	}
 
 	return proxy
 }
@@ -46,7 +43,7 @@ func NewProxy(ctx context.Context) *Proxy {
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
-			Logger.Errorw("Proxy: proxy causes panic", "error", err)
+			Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("Proxy: proxy causes panic")
 			var errMsg string
 			if e, ok := err.(error); ok {
 				errMsg = e.Error()
@@ -57,39 +54,33 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// parse backend pod metadata from Header 'OPEN-SANDBOX-INGRESS'
-	targetHost := r.Header.Get(SandboxIngress)
-	if targetHost == "" {
-		Logger.Warnw("Proxy: proxy target host from header 'OPEN-SANDBOX-INGRESS' is empty. Try parse from 'Host'", zap.String("host", r.Host))
-		targetHost = r.Host
-		if targetHost == "" {
-			Logger.Errorw("Proxy: proxy target host is empty", zap.Any("request", *r))
-			http.Error(w, "missing header 'OPEN-SANDBOX-INGRESS' or 'Host'", http.StatusBadRequest)
-			return
-		}
-	}
-
-	host, err := p.parseSandboxHost(targetHost)
-	if err != nil || host.ingressKey == "" || host.port == "" {
-		http.Error(w, fmt.Sprintf("Proxy: invalid host: %s", targetHost), http.StatusNotAcceptable)
-		return
-	}
-
-	targetHost, err, code := p.fetchRealHost(host)
+	host, err := p.getSandboxHostDefinition(r)
 	if err != nil {
-		if code == http.StatusNotFound {
-			Logger.Warnw("Proxy: no pod found for ingress rule", "ingress", host.ingressKey)
-		}
-		http.Error(w, fmt.Sprintf("Proxy: %v", err), code)
+		http.Error(w, fmt.Sprintf("OpenSandbox Ingress: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	Logger.Infow("proxy requested", "target", targetHost, "client", p.getClientIP(r), "headers", r.Header, "uri", r.RequestURI, "method", r.Method)
+	targetHost, err, code := p.resolveRealHost(host)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("OpenSandbox Ingress: %v", err), code)
+		return
+	}
+
+	// modify if requestURI is not empty
+	if host.requestURI != "" {
+		r.URL.Path = host.requestURI
+	}
 
 	r.Host = targetHost
 	r.URL.Host = targetHost
 	r.Header.Del(SandboxIngress)
 
+	Logger.With(
+		slogger.Field{Key: "target", Value: targetHost},
+		slogger.Field{Key: "client", Value: p.getClientIP(r)},
+		slogger.Field{Key: "uri", Value: r.RequestURI},
+		slogger.Field{Key: "method", Value: r.Method},
+	).Infof("ingress requested")
 	p.serve(w, r)
 }
 
@@ -133,43 +124,24 @@ func (p *Proxy) isWebSocketRequest(r *http.Request) bool {
 	return true
 }
 
-type sandboxHost struct {
-	ingressKey string
-	port       string
-}
-
-func (p *Proxy) parseSandboxHost(s string) (sandboxHost, error) {
-	domain := strings.Split(strings.TrimPrefix(strings.TrimPrefix(s, "https://"), "http://"), ".")
-	if len(domain) < 1 {
-		return sandboxHost{}, fmt.Errorf("invalid host: %s", s)
-	}
-
-	ingressAndPort := strings.Split(domain[0], "-")
-	if len(ingressAndPort) <= 1 || ingressAndPort[0] == "" {
-		return sandboxHost{}, fmt.Errorf("invalid host: %s", s)
-	}
-
-	port := ingressAndPort[len(ingressAndPort)-1]
-	ingress := strings.Join(ingressAndPort[:len(ingressAndPort)-1], "-")
-	return sandboxHost{ingress, port}, nil
-}
-
-func (p *Proxy) fetchRealHost(host sandboxHost) (string, error, int) {
-	pods, err := p.lister.List(labels.Set{
-		flag.IngressLabelKey: host.ingressKey,
-	}.AsSelector())
+func (p *Proxy) resolveRealHost(host *sandboxHost) (string, error, int) {
+	// Get endpoint IP from sandbox provider
+	endpointIP, err := p.sandboxProvider.GetEndpoint(host.ingressKey)
 	if err != nil {
-		return "", err, http.StatusBadGateway
+		// Map sandbox errors to HTTP status codes
+		switch {
+		case errors.Is(err, sandbox.ErrSandboxNotFound):
+			return "", err, http.StatusNotFound
+		case errors.Is(err, sandbox.ErrSandboxNotReady):
+			return "", err, http.StatusServiceUnavailable
+		default:
+			return "", err, http.StatusBadGateway
+		}
 	}
 
-	switch {
-	case len(pods) == 1 && pods[0].Status.PodIP != "":
-		return pods[0].Status.PodIP + ":" + host.port, nil, 0
-	case len(pods) > 1:
-		return "", fmt.Errorf("multiple sandboxes found for host: %s", host.ingressKey), http.StatusConflict
-	default:
-		return "", fmt.Errorf("no sandboxes found for host: %s", host.ingressKey), http.StatusNotFound
-	}
+	// Construct target host with port
+	targetHost := fmt.Sprintf("%s:%d", endpointIP, host.port)
+	return targetHost, nil, 0
 }
 
 func (p *Proxy) getClientIP(r *http.Request) string {
@@ -186,21 +158,4 @@ func (p *Proxy) getClientIP(r *http.Request) string {
 	}
 
 	return clientIP
-}
-
-func (p *Proxy) watchSandboxPods(ctx context.Context) {
-	factory := informers.NewSharedInformerFactoryWithOptions(
-		kubeclient.Get(ctx),
-		controller.GetResyncPeriod(ctx),
-		informers.WithNamespace(flag.Namespace),
-		informers.WithTweakListOptions(func(options *v1.ListOptions) {
-			options.LabelSelector = flag.IngressLabelKey
-		}),
-	)
-
-	podInformer := factory.Core().V1().Pods()
-	p.lister = podInformer.Lister()
-
-	factory.Start(ctx.Done())
-	factory.WaitForCacheSync(ctx.Done())
 }

@@ -15,11 +15,13 @@
 """Sandbox service implementations."""
 
 from src.services.docker import DockerSandboxService
+from src.services.k8s.kubernetes_service import KubernetesSandboxService
 from src.services.factory import create_sandbox_service
 from src.services.sandbox_service import SandboxService
 
 __all__ = [
     "SandboxService",
     "DockerSandboxService",
+    "KubernetesSandboxService",
     "create_sandbox_service",
 ]

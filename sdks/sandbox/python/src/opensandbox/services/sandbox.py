@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from typing import Protocol
 
 from opensandbox.models.sandboxes import (
+    NetworkPolicy,
     PagedSandboxInfos,
     SandboxCreateResponse,
     SandboxEndpoint,
@@ -30,6 +31,7 @@ from opensandbox.models.sandboxes import (
     SandboxImageSpec,
     SandboxInfo,
     SandboxRenewResponse,
+    Volume,
 )
 
 
@@ -49,7 +51,9 @@ class Sandboxes(Protocol):
         metadata: dict[str, str],
         timeout: timedelta,
         resource: dict[str, str],
+        network_policy: NetworkPolicy | None,
         extensions: dict[str, str],
+        volumes: list[Volume] | None,
     ) -> SandboxCreateResponse:
         """
         Create a new sandbox with the specified configuration.
@@ -61,8 +65,10 @@ class Sandboxes(Protocol):
             metadata: User-defined metadata used for management and filtering.
             timeout: Sandbox lifetime. The server may terminate the sandbox when it expires.
             resource: Runtime resource limits (e.g. cpu/memory). Exact semantics are server-defined.
+            network_policy: Optional outbound network policy (egress).
             extensions: Opaque extension parameters passed through to the server as-is.
                 Prefer namespaced keys (e.g. ``storage.id``).
+            volumes: Optional list of volume mounts for persistent storage.
 
         Returns:
             Sandbox create response
@@ -103,7 +109,7 @@ class Sandboxes(Protocol):
         ...
 
     async def get_sandbox_endpoint(
-        self, sandbox_id: str, port: int
+        self, sandbox_id: str, port: int, use_server_proxy: bool = False
     ) -> SandboxEndpoint:
         """
         Get sandbox endpoint.
@@ -111,6 +117,7 @@ class Sandboxes(Protocol):
         Args:
             sandbox_id: Sandbox ID
             port: Endpoint port number
+            use_server_proxy: Whether to use server proxy for endpoint
 
         Returns:
             Target sandbox endpoint

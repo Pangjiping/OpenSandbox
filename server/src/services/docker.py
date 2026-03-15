@@ -23,22 +23,24 @@ from __future__ import annotations
 
 import inspect
 import io
-import math
+import json
 import logging
+import math
 import os
+import posixpath
+import random
+import socket
 import tarfile
 import time
-import socket
-import random
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from threading import Lock, Timer
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
 import docker
-from docker.errors import DockerException, ImageNotFound
+from docker.errors import DockerException, ImageNotFound, NotFound as DockerNotFound
 from fastapi import HTTPException, status
 
 from src.api.schema import (
@@ -48,6 +50,7 @@ from src.api.schema import (
     ImageSpec,
     ListSandboxesRequest,
     ListSandboxesResponse,
+    NetworkPolicy,
     PaginationInfo,
     RenewSandboxExpirationRequest,
     RenewSandboxExpirationResponse,
@@ -56,10 +59,10 @@ from src.api.schema import (
 )
 from src.config import AppConfig, get_config
 from src.services.constants import (
-    SANDBOX_EXPIRES_AT_LABEL,
-    SANDBOX_ID_LABEL,
     SANDBOX_EMBEDDING_PROXY_PORT_LABEL,
+    SANDBOX_EXPIRES_AT_LABEL,
     SANDBOX_HTTP_PORT_LABEL,
+    SANDBOX_ID_LABEL,
     SandboxErrorCodes,
 )
 from src.services.helpers import (
@@ -69,32 +72,35 @@ from src.services.helpers import (
     parse_timestamp,
 )
 from src.services.sandbox_service import SandboxService
-from src.services.validators import ensure_entrypoint, ensure_future_expiration, ensure_metadata_labels
+from src.services.runtime_resolver import SecureRuntimeResolver
+from src.services.validators import (
+    ensure_egress_configured,
+    ensure_entrypoint,
+    ensure_future_expiration,
+    ensure_metadata_labels,
+    ensure_valid_host_path,
+    ensure_volumes_valid,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_docker_timeout(default: int = 180) -> int:
-    env_value = os.environ.get("DOCKER_API_TIMEOUT")
-    if not env_value:
-        return default
-    try:
-        timeout = int(env_value)
-        if timeout <= 0:
-            raise ValueError
-        return timeout
-    except ValueError:
-        logger.warning("Invalid DOCKER_API_TIMEOUT='%s'; falling back to %s seconds.", env_value, default)
-        return default
+def _running_inside_docker_container() -> bool:
+    """Return True if the current process is running inside a Docker container."""
+    return os.path.exists("/.dockerenv")
+
 
 OPENSANDBOX_DIR = "/opt/opensandbox"
-EXECED_INSTALL_PATH = os.path.join(OPENSANDBOX_DIR, "execd")
-BOOTSTRAP_PATH = os.path.join(OPENSANDBOX_DIR, "bootstrap.sh")
+# Use posixpath for container-internal paths so they always use forward slashes,
+# even when the server runs on Windows.
+EXECED_INSTALL_PATH = posixpath.join(OPENSANDBOX_DIR, "execd")
+BOOTSTRAP_PATH = posixpath.join(OPENSANDBOX_DIR, "bootstrap.sh")
 
 HOST_NETWORK_MODE = "host"
 BRIDGE_NETWORK_MODE = "bridge"
 PENDING_FAILURE_TTL_SECONDS = int(os.environ.get("PENDING_FAILURE_TTL", "3600"))
-DOCKER_CLIENT_TIMEOUT = _resolve_docker_timeout()
+EGRESS_RULES_ENV = "OPENSANDBOX_EGRESS_RULES"
+EGRESS_SIDECAR_LABEL = "opensandbox.io/egress-sidecar-for"
 
 
 @dataclass
@@ -103,6 +109,7 @@ class PendingSandbox:
     created_at: datetime
     expires_at: datetime
     status: SandboxStatus
+
 
 class DockerSandboxService(SandboxService):
     """
@@ -131,22 +138,23 @@ class DockerSandboxService(SandboxService):
 
         self.execd_image = runtime_config.execd_image
         self.network_mode = (self.app_config.docker.network_mode or HOST_NETWORK_MODE).lower()
-        if self.network_mode not in {HOST_NETWORK_MODE, BRIDGE_NETWORK_MODE}:
-            raise ValueError(f"Unsupported Docker network_mode '{self.network_mode}'.")
         self._execd_archive_cache: Optional[bytes] = None
+        self._api_timeout = self._resolve_api_timeout()
         try:
             # Initialize Docker service from environment variables
             client_kwargs = {}
             try:
                 signature = inspect.signature(docker.from_env)
                 if "timeout" in signature.parameters:
-                    client_kwargs["timeout"] = DOCKER_CLIENT_TIMEOUT
+                    client_kwargs["timeout"] = self._api_timeout
             except (ValueError, TypeError):
-                logger.debug("Unable to introspect docker.from_env signature; using default parameters.")
+                logger.debug(
+                    "Unable to introspect docker.from_env signature; using default parameters."
+                )
             self.docker_client = docker.from_env(**client_kwargs)
             if not client_kwargs:
                 try:
-                    self.docker_client.api.timeout = DOCKER_CLIENT_TIMEOUT
+                    self.docker_client.api.timeout = self._api_timeout
                 except AttributeError:
                     logger.debug("Docker client API does not expose timeout attribute.")
             logger.info("Docker service initialized from environment")
@@ -179,6 +187,17 @@ class DockerSandboxService(SandboxService):
         self._pending_cleanup_timers: Dict[str, Timer] = {}
         self._restore_existing_sandboxes()
 
+        # Initialize secure runtime resolver
+        self.resolver = SecureRuntimeResolver(self.app_config)
+        self.docker_runtime = self.resolver.get_docker_runtime()
+
+    def _resolve_api_timeout(self) -> int:
+        """Docker API timeout in seconds: [docker].api_timeout if set, else default 180."""
+        cfg = self.app_config.docker.api_timeout
+        if cfg is not None and cfg >= 1:
+            return cfg
+        return 180
+
     @contextmanager
     def _docker_operation(self, action: str, sandbox_id: Optional[str] = None):
         """Context manager to log duration for Docker API calls."""
@@ -209,7 +228,9 @@ class DockerSandboxService(SandboxService):
         """Helper to fetch the Docker container associated with a sandbox ID."""
         label_selector = f"{SANDBOX_ID_LABEL}={sandbox_id}"
         try:
-            containers = self.docker_client.containers.list(all=True, filters={"label": label_selector})
+            containers = self.docker_client.containers.list(
+                all=True, filters={"label": label_selector}
+            )
         except DockerException as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -275,7 +296,9 @@ class DockerSandboxService(SandboxService):
             container = self._get_container_by_sandbox_id(sandbox_id)
         except HTTPException as exc:
             if exc.status_code != status.HTTP_404_NOT_FOUND:
-                logger.warning("Failed to fetch sandbox %s for expiration: %s", sandbox_id, exc.detail)
+                logger.warning(
+                    "Failed to fetch sandbox %s for expiration: %s", sandbox_id, exc.detail
+                )
             self._remove_expiration_tracking(sandbox_id)
             return
 
@@ -292,26 +315,31 @@ class DockerSandboxService(SandboxService):
             logger.warning("Failed to remove expired sandbox %s: %s", sandbox_id, exc)
 
         self._remove_expiration_tracking(sandbox_id)
+        # Ensure sidecar is also cleaned up on expiration
+        self._cleanup_egress_sidecar(sandbox_id)
 
     def _restore_existing_sandboxes(self) -> None:
         """On startup, rebuild expiration timers for containers already running."""
         try:
-            containers = self.docker_client.containers.list(
-                all=True,
-                filters={"label": [SANDBOX_ID_LABEL]},
-            )
+            containers = self.docker_client.containers.list(all=True)
         except DockerException as exc:
             logger.warning("Failed to restore existing sandboxes: %s", exc)
             return
 
         restored = 0
+        seen_sidecars: set[str] = set()
         now = datetime.now(timezone.utc)
         for container in containers:
             labels = container.attrs.get("Config", {}).get("Labels") or {}
+            # Sidecar only
+            sidecar_for = labels.get(EGRESS_SIDECAR_LABEL)
+            if sidecar_for:
+                seen_sidecars.add(sidecar_for)
+                continue
+
             sandbox_id = labels.get(SANDBOX_ID_LABEL)
             if not sandbox_id:
                 continue
-            # Sandbox IDs now follow standard UUID4 format (hyphenated strings)
             expires_label = labels.get(SANDBOX_EXPIRES_AT_LABEL)
             if expires_label:
                 expires_at = parse_timestamp(expires_label)
@@ -330,6 +358,18 @@ class DockerSandboxService(SandboxService):
             self._schedule_expiration(sandbox_id, expires_at)
             restored += 1
 
+        # Cleanup orphan sidecars (no matching sandbox container)
+        for orphan_id in seen_sidecars:
+            try:
+                self._get_container_by_sandbox_id(orphan_id)
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_404_NOT_FOUND:
+                    self._cleanup_egress_sidecar(orphan_id)
+                else:
+                    logger.warning(
+                        "Failed to check sandbox %s for orphan sidecar cleanup: %s", orphan_id, exc
+                    )
+
         if restored:
             logger.info("Restored expiration timers for %d sandbox(es).", restored)
 
@@ -345,11 +385,16 @@ class DockerSandboxService(SandboxService):
 
             container = None
             try:
-                with self._docker_operation(
-                    f"pull execd image {self.execd_image}",
-                    "execd-cache",
-                ):
-                    self.docker_client.images.pull(self.execd_image)
+                try:
+                    # Prefer a locally built image (e.g., opensandbox/execd:local); pull only if missing.
+                    self.docker_client.images.get(self.execd_image)
+                    logger.info("Found execd image %s locally; skipping pull", self.execd_image)
+                except ImageNotFound:
+                    with self._docker_operation(
+                        f"pull execd image {self.execd_image}",
+                        "execd-cache",
+                    ):
+                        self.docker_client.images.pull(self.execd_image)
 
                 with self._docker_operation("execd cache create container", "execd-cache"):
                     container = self.docker_client.containers.create(
@@ -390,7 +435,9 @@ class DockerSandboxService(SandboxService):
                         with self._docker_operation("execd cache cleanup container", "execd-cache"):
                             container.remove(force=True)
                     except DockerException as cleanup_exc:
-                        logger.warning("Failed to cleanup temporary execd container: %s", cleanup_exc)
+                        logger.warning(
+                            "Failed to cleanup temporary execd container: %s", cleanup_exc
+                        )
 
             self._execd_archive_cache = data
             logger.info("Dumped execd archive to memory")
@@ -460,7 +507,9 @@ class DockerSandboxService(SandboxService):
 
         created_at = parse_timestamp(container.attrs.get("Created"))
         last_transition_at = (
-            parse_timestamp(finished_at) if finished_at and finished_at != "0001-01-01T00:00:00Z" else created_at
+            parse_timestamp(finished_at)
+            if finished_at and finished_at != "0001-01-01T00:00:00Z"
+            else created_at
         )
         expires_at = self._get_tracked_expiration(resolved_id, labels, created_at)
 
@@ -511,7 +560,7 @@ class DockerSandboxService(SandboxService):
     def _copy_execd_to_container(self, container, sandbox_id: str) -> None:
         """Copy execd artifacts from the platform container into the sandbox."""
         archive = self._fetch_execd_archive()
-        target_parent = os.path.dirname(EXECED_INSTALL_PATH.rstrip("/")) or "/"
+        target_parent = posixpath.dirname(EXECED_INSTALL_PATH.rstrip("/")) or "/"
         self._ensure_directory(container, target_parent, sandbox_id)
         try:
             with self._docker_operation("copy execd archive to sandbox", sandbox_id):
@@ -528,7 +577,7 @@ class DockerSandboxService(SandboxService):
     def _install_bootstrap_script(self, container, sandbox_id: str) -> None:
         """Install the bootstrap launcher that starts execd then chains to user command."""
         script_path = BOOTSTRAP_PATH
-        script_dir = os.path.dirname(script_path)
+        script_dir = posixpath.dirname(script_path)
         self._ensure_directory(container, script_dir, sandbox_id)
         execd_binary = EXECED_INSTALL_PATH
         script_content = "\n".join(
@@ -576,7 +625,9 @@ class DockerSandboxService(SandboxService):
         return sandbox_id, created_at, expires_at
 
     @staticmethod
-    def _allocate_host_port(min_port: int = 40000, max_port: int = 60000, attempts: int = 50) -> Optional[int]:
+    def _allocate_host_port(
+        min_port: int = 40000, max_port: int = 60000, attempts: int = 50
+    ) -> Optional[int]:
         """Find an available TCP port on the host within the given range."""
         for _ in range(attempts):
             port = random.randint(min_port, max_port)
@@ -604,8 +655,11 @@ class DockerSandboxService(SandboxService):
         """
         ensure_entrypoint(request.entrypoint)
         ensure_metadata_labels(request.metadata)
+        self._ensure_network_policy_support(request)
+        self._validate_network_exists()
+        pvc_inspect_cache = self._validate_volumes(request)
         sandbox_id, created_at, expires_at = self._prepare_creation_context(request)
-        return self._provision_sandbox(sandbox_id, request, created_at, expires_at)
+        return self._provision_sandbox(sandbox_id, request, created_at, expires_at, pvc_inspect_cache)
 
     def _async_provision_worker(
         self,
@@ -613,9 +667,10 @@ class DockerSandboxService(SandboxService):
         request: CreateSandboxRequest,
         created_at: datetime,
         expires_at: datetime,
+        pvc_inspect_cache: Optional[dict[str, dict]] = None,
     ) -> None:
         try:
-            self._provision_sandbox(sandbox_id, request, created_at, expires_at)
+            self._provision_sandbox(sandbox_id, request, created_at, expires_at, pvc_inspect_cache)
         except HTTPException as exc:
             message = exc.detail.get("message") if isinstance(exc.detail, dict) else str(exc)
             self._mark_pending_failed(sandbox_id, message or "Sandbox provisioning failed.")
@@ -647,9 +702,12 @@ class DockerSandboxService(SandboxService):
         """
         label_selector = f"{SANDBOX_ID_LABEL}={sandbox_id}"
         try:
-            containers = self.docker_client.containers.list(all=True, filters={"label": label_selector})
+            containers = self.docker_client.containers.list(
+                all=True, filters={"label": label_selector}
+            )
         except DockerException as exc:
             logger.warning("sandbox=%s | cleanup listing failed containers: %s", sandbox_id, exc)
+            self._cleanup_egress_sidecar(sandbox_id)
             return
 
         for container in containers:
@@ -657,7 +715,14 @@ class DockerSandboxService(SandboxService):
                 with self._docker_operation("cleanup failed sandbox container", sandbox_id):
                     container.remove(force=True)
             except DockerException as exc:
-                logger.warning("sandbox=%s | failed to remove leftover container %s: %s", sandbox_id, container.id, exc)
+                logger.warning(
+                    "sandbox=%s | failed to remove leftover container %s: %s",
+                    sandbox_id,
+                    container.id,
+                    exc,
+                )
+        # Always attempt to cleanup sidecar as well
+        self._cleanup_egress_sidecar(sandbox_id)
 
     def _remove_pending_sandbox(self, sandbox_id: str) -> None:
         with self._pending_lock:
@@ -758,149 +823,79 @@ class DockerSandboxService(SandboxService):
         request: CreateSandboxRequest,
         created_at: datetime,
         expires_at: datetime,
+        pvc_inspect_cache: Optional[dict[str, dict]] = None,
     ) -> CreateSandboxResponse:
-        metadata = request.metadata or {}
-        labels = {key: str(value) for key, value in metadata.items()}
-        labels[SANDBOX_ID_LABEL] = sandbox_id
+        labels, environment = self._build_labels_and_env(sandbox_id, request, expires_at)
+        image_uri, auth_config = self._resolve_image_auth(request, sandbox_id)
+        mem_limit, nano_cpus = self._resolve_resource_limits(request)
 
-        env_dict = request.env or {}
-        environment = []
-        for key, value in env_dict.items():
-            if value is None:
-                continue
-            environment.append(f"{key}={value}")
+        # Build volume bind mounts from request volumes.
+        # pvc_inspect_cache carries Docker volume inspect data from the
+        # validation phase, avoiding a redundant API call.
+        volume_binds = self._build_volume_binds(request.volumes, pvc_inspect_cache)
 
-        image_uri = request.image.uri
-        auth_config = None
-        if request.image.auth:
-            auth_config = {
-                "username": request.image.auth.username,
-                "password": request.image.auth.password,
-            }
-
-        self._ensure_image_available(image_uri, auth_config, sandbox_id)
-
-        resource_limits = request.resource_limits.root or {}
-        mem_limit = parse_memory_limit(resource_limits.get("memory"))
-        nano_cpus = parse_nano_cpus(resource_limits.get("cpu"))
-
-        host_config_kwargs: Dict[str, Any] = {"network_mode": self.network_mode}
-        security_opts: list[str] = []
-        docker_cfg = self.app_config.docker
-        if docker_cfg.no_new_privileges:
-            security_opts.append("no-new-privileges:true")
-        if docker_cfg.apparmor_profile:
-            security_opts.append(f"apparmor={docker_cfg.apparmor_profile}")
-        if docker_cfg.seccomp_profile:
-            security_opts.append(f"seccomp={docker_cfg.seccomp_profile}")
-        if security_opts:
-            host_config_kwargs["security_opt"] = security_opts
-        if docker_cfg.drop_capabilities:
-            host_config_kwargs["cap_drop"] = docker_cfg.drop_capabilities
-        if docker_cfg.pids_limit is not None:
-            host_config_kwargs["pids_limit"] = docker_cfg.pids_limit
-        if mem_limit:
-            host_config_kwargs["mem_limit"] = mem_limit
-        if nano_cpus:
-            host_config_kwargs["nano_cpus"] = nano_cpus
-
+        sidecar_container = None
+        host_config_kwargs: Dict[str, Any]
         exposed_ports: Optional[list[str]] = None
-        if self.network_mode == BRIDGE_NETWORK_MODE:
-            host_execd_port = self._allocate_host_port()
-            host_http_port = self._allocate_host_port()
-            if host_execd_port is None or host_http_port is None:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={
-                        "code": SandboxErrorCodes.CONTAINER_START_FAILED,
-                        "message": "Failed to allocate host ports for sandbox container.",
-                    },
-                )
-            # ensure distinct ports
-            while host_http_port == host_execd_port:
-                host_http_port = self._allocate_host_port()
-                if host_http_port is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail={
-                            "code": SandboxErrorCodes.CONTAINER_START_FAILED,
-                            "message": "Failed to allocate distinct host ports for sandbox container.",
-                        },
-                    )
 
-            port_bindings = {
-                "44772": ("0.0.0.0", host_execd_port),
-                "8080": ("0.0.0.0", host_http_port),
-            }
-            host_config_kwargs["port_bindings"] = port_bindings
-            exposed_ports = list(port_bindings.keys())
+        if request.network_policy:
+            host_execd_port, host_http_port = self._allocate_distinct_host_ports()
+            sidecar_container = self._start_egress_sidecar(
+                sandbox_id=sandbox_id,
+                network_policy=request.network_policy,
+                host_execd_port=host_execd_port,
+                host_http_port=host_http_port,
+            )
             labels[SANDBOX_EMBEDDING_PROXY_PORT_LABEL] = str(host_execd_port)
             labels[SANDBOX_HTTP_PORT_LABEL] = str(host_http_port)
+            host_config_kwargs = self._base_host_config_kwargs(
+                mem_limit, nano_cpus, f"container:{sidecar_container.id}"
+            )
+            # Drop NET_ADMIN for the main container; only the sidecar should keep it
+            cap_drop = set(host_config_kwargs.get("cap_drop") or [])
+            cap_drop.add("NET_ADMIN")
+            if cap_drop:
+                host_config_kwargs["cap_drop"] = list(cap_drop)
+        else:
+            host_config_kwargs = self._base_host_config_kwargs(
+                mem_limit, nano_cpus, self.network_mode
+            )
+            if self.network_mode != HOST_NETWORK_MODE:
+                host_execd_port, host_http_port = self._allocate_distinct_host_ports()
+                port_bindings = {
+                    "44772": ("0.0.0.0", host_execd_port),
+                    "8080": ("0.0.0.0", host_http_port),
+                }
+                host_config_kwargs["port_bindings"] = port_bindings
+                exposed_ports = list(port_bindings.keys())
+                labels[SANDBOX_EMBEDDING_PROXY_PORT_LABEL] = str(host_execd_port)
+                labels[SANDBOX_HTTP_PORT_LABEL] = str(host_http_port)
 
-        labels[SANDBOX_EXPIRES_AT_LABEL] = expires_at.isoformat()
+        # Inject volume bind mounts into Docker host config
+        if volume_binds:
+            host_config_kwargs["binds"] = volume_binds
 
-        container_name = f"sandbox-{sandbox_id}"
-
-        # Keep user command in CMD and override container ENTRYPOINT with our bootstrap.
-        # This avoids relying on the base image ENTRYPOINT (which may be a non-shell binary).
-        bootstrap_command = request.entrypoint
-
-        host_config = self.docker_client.api.create_host_config(**host_config_kwargs)
-        container_id: Optional[str] = None
-        container = None
         try:
-            with self._docker_operation("create sandbox container", sandbox_id):
-                response = self.docker_client.api.create_container(
-                    image=image_uri,
-                    entrypoint=[BOOTSTRAP_PATH],
-                    command=bootstrap_command,
-                    ports=exposed_ports,
-                    name=container_name,
-                    environment=environment,
-                    labels=labels,
-                    host_config=host_config,
-                )
-            container_id = response.get("Id")
-            if not container_id:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail={
-                        "code": SandboxErrorCodes.CONTAINER_START_FAILED,
-                        "message": "Docker did not return a container ID.",
-                    },
-                )
-            container = self.docker_client.containers.get(container_id)
-            self._prepare_sandbox_runtime(container, sandbox_id)
-            with self._docker_operation("start sandbox container", sandbox_id):
-                container.start()
-        except DockerException as exc:
-            if container is not None:
+            self._create_and_start_container(
+                sandbox_id,
+                image_uri,
+                request.entrypoint,
+                labels,
+                environment,
+                host_config_kwargs,
+                exposed_ports,
+            )
+        except Exception:
+            if sidecar_container is not None:
                 try:
-                    with self._docker_operation("cleanup sandbox container", sandbox_id):
-                        container.remove(force=True)
+                    sidecar_container.remove(force=True)
                 except DockerException as cleanup_exc:
                     logger.warning(
-                        "Failed to cleanup container for sandbox %s: %s",
+                        "Failed to cleanup egress sidecar for sandbox %s: %s",
                         sandbox_id,
                         cleanup_exc,
                     )
-            elif container_id:
-                try:
-                    with self._docker_operation("cleanup sandbox container (API)", sandbox_id):
-                        self.docker_client.api.remove_container(container_id, force=True)
-                except DockerException as cleanup_exc:
-                    logger.warning(
-                        "Failed to cleanup container for sandbox %s: %s",
-                        sandbox_id,
-                        cleanup_exc,
-                    )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    "code": SandboxErrorCodes.CONTAINER_START_FAILED,
-                    "message": f"Failed to create or start container: {str(exc)}",
-                },
-            ) from exc
+            raise
 
         status_info = SandboxStatus(
             state="Running",
@@ -909,7 +904,6 @@ class DockerSandboxService(SandboxService):
             last_transition_at=created_at,
         )
 
-        # Track timeout so the sandbox is cleaned up automatically
         self._schedule_expiration(sandbox_id, expires_at)
 
         return CreateSandboxResponse(
@@ -920,6 +914,384 @@ class DockerSandboxService(SandboxService):
             createdAt=created_at,
             entrypoint=request.entrypoint,
         )
+
+    def _is_user_defined_network(self) -> bool:
+        """Return True when network_mode is a named user-defined network (not host/bridge/none/container:*)."""
+        return (
+            self.network_mode not in {HOST_NETWORK_MODE, BRIDGE_NETWORK_MODE, "none"}
+            and not self.network_mode.startswith("container:")
+        )
+
+    def _validate_network_exists(self) -> None:
+        """Verify the configured user-defined Docker network exists before creating a sandbox."""
+        if not self._is_user_defined_network():
+            return
+        try:
+            self.docker_client.networks.get(self.network_mode)
+        except DockerNotFound:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.INVALID_PARAMETER,
+                    "message": (
+                        f"Docker network '{self.network_mode}' does not exist. "
+                        "Create it first with 'docker network create <name>'."
+                    ),
+                },
+            )
+        except DockerException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.CONTAINER_START_FAILED,
+                    "message": f"Failed to inspect Docker network '{self.network_mode}': {exc}",
+                },
+            ) from exc
+
+    def _ensure_network_policy_support(self, request: CreateSandboxRequest) -> None:
+        """
+        Validate that network policy can be honored under the current runtime config.
+
+        This includes Docker-specific checks (network_mode) and common checks (egress.image).
+        """
+        if not request.network_policy:
+            return
+
+        # Docker-specific validation: network_mode must be bridge
+        if self.network_mode == HOST_NETWORK_MODE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.INVALID_PARAMETER,
+                    "message": "networkPolicy is not supported when docker network_mode=host.",
+                },
+            )
+
+        # User-defined networks cannot be combined with networkPolicy: the egress sidecar
+        # always runs on the default bridge, which would silently discard the configured network.
+        if self._is_user_defined_network():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.INVALID_PARAMETER,
+                    "message": (
+                        f"networkPolicy is not supported when docker network_mode='{self.network_mode}' "
+                        "(user-defined network). Use network_mode='bridge' to enable network policy enforcement."
+                    ),
+                },
+            )
+
+        # Common validation: egress.image must be configured
+        ensure_egress_configured(request.network_policy, self.app_config.egress)
+
+    def _validate_volumes(self, request: CreateSandboxRequest) -> dict[str, dict]:
+        """
+        Validate volume definitions for Docker runtime.
+
+        Performs comprehensive validation:
+        - Calls shared volume validation (name, mount path, sub path, backend count)
+        - Delegates to backend-specific validators for Docker-level checks
+
+        Args:
+            request: Sandbox creation request.
+
+        Returns:
+            A dict mapping PVC volume names (``pvc.claimName``) to their
+            ``docker volume inspect`` results.  Empty when there are no PVC
+            volumes.  This data is passed to ``_build_volume_binds`` so that
+            bind generation does not need a second API call.
+
+        Raises:
+            HTTPException: When any validation fails.
+        """
+        if not request.volumes:
+            return {}
+
+        # Shared validation: names, mount paths, sub paths, backend count, host path allowlist
+        allowed_prefixes = self.app_config.storage.allowed_host_paths or None
+        ensure_volumes_valid(request.volumes, allowed_host_prefixes=allowed_prefixes)
+
+        pvc_inspect_cache: dict[str, dict] = {}
+        for volume in request.volumes:
+            if volume.host is not None:
+                self._validate_host_volume(volume, allowed_prefixes)
+            elif volume.pvc is not None:
+                vol_info = self._validate_pvc_volume(volume)
+                pvc_inspect_cache[volume.pvc.claim_name] = vol_info
+
+        return pvc_inspect_cache
+
+    @staticmethod
+    def _validate_host_volume(volume, allowed_prefixes: Optional[list[str]]) -> None:
+        """
+        Docker-specific validation for host bind mount volumes.
+
+        Validates that the resolved host path (host.path + optional subPath)
+        remains within allowed prefixes, then ensures the directory exists on
+        the filesystem — creating it automatically if it does not.
+
+        Args:
+            volume: Volume with host backend.
+            allowed_prefixes: Optional allowlist of host path prefixes.
+
+        Raises:
+            HTTPException: When the resolved path is invalid or cannot be created.
+        """
+        resolved_path = volume.host.path
+        if volume.sub_path:
+            resolved_path = os.path.normpath(os.path.join(resolved_path, volume.sub_path))
+
+        # Defense in depth: re-validate the resolved path against the
+        # allowlist.  Even though sub_path traversal (../) is blocked by
+        # ensure_valid_sub_path(), normalizing and re-checking prevents
+        # any edge-case bypass.
+        if allowed_prefixes and resolved_path != volume.host.path:
+            ensure_valid_host_path(resolved_path, allowed_prefixes)
+
+        try:
+            os.makedirs(resolved_path, exist_ok=True)
+        except OSError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.HOST_PATH_CREATE_FAILED,
+                    "message": (
+                        f"Volume '{volume.name}': could not ensure host path "
+                        f"directory exists at '{resolved_path}': {type(e).__name__}"
+                    ),
+                },
+            )
+
+    def _validate_pvc_volume(self, volume) -> dict:
+        """
+        Docker-specific validation for PVC (named volume) backend.
+
+        In Docker runtime, the ``pvc`` backend maps to a Docker named volume.
+        ``pvc.claimName`` is used as the Docker volume name.  The volume must
+        already exist (created via ``docker volume create``).
+
+        When ``subPath`` is specified, the volume must use the ``local`` driver
+        so that the host-side ``Mountpoint`` is a real filesystem path.  The
+        resolved path (``Mountpoint + subPath``) is validated for path-traversal
+        safety but *not* for existence, because the Mountpoint directory is
+        typically owned by root and may not be stat-able by the server process.
+
+        Args:
+            volume: Volume with pvc backend.
+
+        Returns:
+            The ``docker volume inspect`` result dict for the named volume.
+
+        Raises:
+            HTTPException: When the named volume does not exist, inspection
+                fails, or subPath constraints are violated.
+        """
+        volume_name = volume.pvc.claim_name
+        try:
+            vol_info = self.docker_client.api.inspect_volume(volume_name)
+        except DockerNotFound:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.PVC_VOLUME_NOT_FOUND,
+                    "message": (
+                        f"Volume '{volume.name}': Docker named volume '{volume_name}' "
+                        "does not exist. Named volumes must be created before sandbox "
+                        "creation (e.g., 'docker volume create <name>')."
+                    ),
+                },
+            )
+        except DockerException as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.PVC_VOLUME_INSPECT_FAILED,
+                    "message": (
+                        f"Volume '{volume.name}': failed to inspect Docker named volume "
+                        f"'{volume_name}': {exc}"
+                    ),
+                },
+            ) from exc
+
+        # --- subPath validation for Docker named volumes ---
+        if volume.sub_path:
+            driver = vol_info.get("Driver", "")
+            if driver != "local":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.PVC_SUBPATH_UNSUPPORTED_DRIVER,
+                        "message": (
+                            f"Volume '{volume.name}': subPath is only supported for "
+                            f"Docker named volumes using the 'local' driver, but "
+                            f"volume '{volume_name}' uses driver '{driver}'."
+                        ),
+                    },
+                )
+
+            mountpoint = vol_info.get("Mountpoint", "")
+            if not mountpoint:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.PVC_SUBPATH_UNSUPPORTED_DRIVER,
+                        "message": (
+                            f"Volume '{volume.name}': cannot resolve subPath because "
+                            f"Docker named volume '{volume_name}' has no Mountpoint."
+                        ),
+                    },
+                )
+
+            resolved_path = posixpath.normpath(
+                posixpath.join(mountpoint, volume.sub_path)
+            )
+
+            # ── Path-escape check (lexical + symlink) ──
+            #
+            # 1. Lexical check via normpath + path-boundary-aware startswith.
+            #    Use mountpoint + "/" to avoid false positives when one
+            #    mountpoint is a prefix of another (e.g., …/_data vs …/_data2).
+            #    Docker Mountpoint paths are always POSIX, so use "/" directly.
+            mountpoint_prefix = (
+                mountpoint if mountpoint.endswith("/") else mountpoint + "/"
+            )
+            if resolved_path != mountpoint and not resolved_path.startswith(
+                mountpoint_prefix
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.INVALID_SUB_PATH,
+                        "message": (
+                            f"Volume '{volume.name}': resolved subPath escapes the "
+                            f"volume mountpoint."
+                        ),
+                    },
+                )
+
+            # 2. Symlink-aware check (best-effort).
+            #    Docker volume Mountpoint dirs are typically root-owned and not
+            #    readable by the server process.  Using strict=True so that
+            #    realpath raises OSError when it cannot traverse a directory
+            #    instead of silently returning the unresolved lexical path
+            #    (which would make this check a no-op).  When the path IS
+            #    accessible, this detects symlink-escape attacks (e.g., a
+            #    malicious symlink datasets -> /).
+            try:
+                canonical_mountpoint = os.path.realpath(
+                    mountpoint, strict=True
+                )
+                canonical_resolved = os.path.realpath(
+                    resolved_path, strict=True
+                )
+                # os.path.realpath returns OS-native separators, so use
+                # os.sep here (unlike the lexical check above which operates
+                # on POSIX-normalised Docker Mountpoint strings).
+                canonical_prefix = (
+                    canonical_mountpoint
+                    if canonical_mountpoint.endswith(os.sep)
+                    else canonical_mountpoint + os.sep
+                )
+                if (
+                    canonical_resolved != canonical_mountpoint
+                    and not canonical_resolved.startswith(canonical_prefix)
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "code": SandboxErrorCodes.INVALID_SUB_PATH,
+                            "message": (
+                                f"Volume '{volume.name}': resolved subPath escapes "
+                                f"the volume mountpoint after symlink resolution."
+                            ),
+                        },
+                    )
+            except OSError:
+                # Cannot access volume paths (expected for non-root server).
+                # Lexical validation above is still enforced; the symlink
+                # check is skipped because we cannot resolve the real paths.
+                pass
+
+            # NOTE: We intentionally do NOT check os.path.exists(resolved_path)
+            # here.  Docker volume Mountpoint directories (e.g.,
+            # /var/lib/docker/volumes/…/_data) are typically owned by root and
+            # not readable by the server process.  os.path.exists() returns
+            # False when the process lacks permission to stat the path, causing
+            # false-negative rejections.  If the subPath does not actually
+            # exist, Docker will report the error at container creation time.
+
+        return vol_info
+
+    def _build_volume_binds(
+        self,
+        volumes: Optional[list],
+        pvc_inspect_cache: Optional[dict[str, dict]] = None,
+    ) -> list[str]:
+        """
+        Convert Volume definitions into Docker bind/volume mount specs.
+
+        Supported backends:
+        - ``host``: host path bind mount.
+          Format: ``/host/path:/container/path:ro|rw``
+        - ``pvc``: Docker named volume mount.
+          Format (no subPath): ``volume-name:/container/path:ro|rw``
+          Docker recognises non-absolute-path sources as named volume references.
+          Format (with subPath): ``/var/lib/docker/volumes/…/subdir:/container/path:ro|rw``
+          When subPath is specified, the volume's host Mountpoint (obtained from
+          ``pvc_inspect_cache``) is used to produce a standard bind mount.
+
+        Each mount string uses ``:ro`` for read-only and ``:rw`` for read-write
+        (default).
+
+        Args:
+            volumes: List of Volume objects from the creation request.
+            pvc_inspect_cache: Dict mapping PVC claimNames to their
+                ``docker volume inspect`` results, populated by
+                ``_validate_volumes``.  Avoids a redundant API call and
+                eliminates the race window between validation and bind
+                generation.
+
+        Returns:
+            List of Docker bind/volume mount strings.
+        """
+        if not volumes:
+            return []
+
+        cache = pvc_inspect_cache or {}
+        binds: list[str] = []
+        for volume in volumes:
+            container_path = volume.mount_path
+            mode = "ro" if volume.read_only else "rw"
+
+            if volume.host is not None:
+                # Resolve the concrete host path (host.path + optional subPath)
+                host_path = volume.host.path
+                if volume.sub_path:
+                    host_path = os.path.normpath(
+                        os.path.join(host_path, volume.sub_path)
+                    )
+                binds.append(f"{host_path}:{container_path}:{mode}")
+
+            elif volume.pvc is not None:
+                if volume.sub_path:
+                    # Resolve the named volume's host-side Mountpoint and append
+                    # the subPath to produce a regular bind mount.  Validation
+                    # has already ensured the driver is "local" and the resolved
+                    # path is safe.  Reuse cached inspect data to avoid a
+                    # redundant Docker API call and potential race condition.
+                    vol_info = cache.get(volume.pvc.claim_name, {})
+                    mountpoint = vol_info.get("Mountpoint", "")
+                    resolved = posixpath.normpath(
+                        posixpath.join(mountpoint, volume.sub_path)
+                    )
+                    binds.append(f"{resolved}:{container_path}:{mode}")
+                else:
+                    # No subPath: use claimName directly as Docker volume ref.
+                    binds.append(
+                        f"{volume.pvc.claim_name}:{container_path}:{mode}"
+                    )
+
+        return binds
 
     def list_sandboxes(self, request: ListSandboxesRequest) -> ListSandboxesResponse:
         """
@@ -1043,6 +1415,7 @@ class DockerSandboxService(SandboxService):
             ) from exc
         finally:
             self._remove_expiration_tracking(sandbox_id)
+            self._cleanup_egress_sidecar(sandbox_id)
 
     def pause_sandbox(self, sandbox_id: str) -> None:
         """
@@ -1179,54 +1552,56 @@ class DockerSandboxService(SandboxService):
         if self.network_mode == HOST_NETWORK_MODE:
             return Endpoint(endpoint=f"{public_host}:{port}")
 
-        if self.network_mode == BRIDGE_NETWORK_MODE:
-            container = self._get_container_by_sandbox_id(sandbox_id)
-            labels = container.attrs.get("Config", {}).get("Labels") or {}
-            execd_host_port = self._parse_host_port_label(
-                labels.get(SANDBOX_EMBEDDING_PROXY_PORT_LABEL),
-                SANDBOX_EMBEDDING_PROXY_PORT_LABEL,
-            )
-            http_host_port = self._parse_host_port_label(
-                labels.get(SANDBOX_HTTP_PORT_LABEL),
-                SANDBOX_HTTP_PORT_LABEL,
-            )
+        # non-host mode (bridge / user-defined network)
+        container = self._get_container_by_sandbox_id(sandbox_id)
+        labels = container.attrs.get("Config", {}).get("Labels") or {}
+        execd_host_port = self._parse_host_port_label(
+            labels.get(SANDBOX_EMBEDDING_PROXY_PORT_LABEL),
+            SANDBOX_EMBEDDING_PROXY_PORT_LABEL,
+        )
+        http_host_port = self._parse_host_port_label(
+            labels.get(SANDBOX_HTTP_PORT_LABEL),
+            SANDBOX_HTTP_PORT_LABEL,
+        )
 
-            if port == 8080:
-                if http_host_port is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail={
-                            "code": SandboxErrorCodes.NETWORK_MODE_ENDPOINT_UNAVAILABLE,
-                            "message": "Missing host port mapping for container port 8080.",
-                        },
-                    )
-                return Endpoint(endpoint=f"{public_host}:{http_host_port}")
-
-            if execd_host_port is None:
+        if port == 8080:
+            if http_host_port is None:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail={
                         "code": SandboxErrorCodes.NETWORK_MODE_ENDPOINT_UNAVAILABLE,
-                        "message": "Missing host port mapping for execd proxy port 44772.",
+                        "message": "Missing host port mapping for container port 8080.",
                     },
                 )
-            return Endpoint(endpoint=f"{public_host}:{execd_host_port}/proxy/{port}")
+            return Endpoint(endpoint=f"{public_host}:{http_host_port}")
 
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail={
-                "code": SandboxErrorCodes.NETWORK_MODE_ENDPOINT_UNAVAILABLE,
-                "message": (
-                    f"Endpoint resolution for Docker network mode '{self.network_mode}' "
-                    "is not implemented yet."
-                ),
-            },
-        )
+        if execd_host_port is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.NETWORK_MODE_ENDPOINT_UNAVAILABLE,
+                    "message": "Missing host port mapping for execd proxy port 44772.",
+                },
+            )
+        return Endpoint(endpoint=f"{public_host}:{execd_host_port}/proxy/{port}")
+
+    def _get_docker_host_ip(self) -> Optional[str]:
+        """When running inside a container, return [docker].host_ip for endpoint URLs (if set)."""
+        ip = (self.app_config.docker.host_ip or "").strip()
+        return ip or None
 
     def _resolve_public_host(self) -> str:
+        """Resolve the host used in endpoint URLs. If [server].eip is set, use it directly without resolving host."""
+        eip_cfg = (self.app_config.server.eip or "").strip()
+        if eip_cfg:
+            return eip_cfg
         host_cfg = (self.app_config.server.host or "").strip()
         host_key = host_cfg.lower()
         if host_key in {"", "0.0.0.0", "::"}:
+            if _running_inside_docker_container():
+                host_ip = self._get_docker_host_ip()
+                if host_ip:
+                    return host_ip
             return self._resolve_bind_ip(socket.AF_INET)
         return host_cfg
 
@@ -1237,6 +1612,307 @@ class DockerSandboxService(SandboxService):
 
         ip_address = self._extract_bridge_ip(container)
         return Endpoint(endpoint=f"{ip_address}:{port}")
+
+    # ---------------------------
+    # Common helpers for creation
+    # ---------------------------
+    def _build_labels_and_env(
+        self,
+        sandbox_id: str,
+        request: CreateSandboxRequest,
+        expires_at: datetime,
+    ) -> tuple[dict[str, str], list[str]]:
+        metadata = request.metadata or {}
+        labels = {key: str(value) for key, value in metadata.items()}
+        labels[SANDBOX_ID_LABEL] = sandbox_id
+        labels[SANDBOX_EXPIRES_AT_LABEL] = expires_at.isoformat()
+
+        env_dict = request.env or {}
+        environment = []
+        for key, value in env_dict.items():
+            if value is None:
+                continue
+            environment.append(f"{key}={value}")
+        return labels, environment
+
+    def _resolve_image_auth(
+        self, request: CreateSandboxRequest, sandbox_id: str
+    ) -> tuple[str, Optional[dict]]:
+        image_uri = request.image.uri
+        auth_config = None
+        if request.image.auth:
+            auth_config = {
+                "username": request.image.auth.username,
+                "password": request.image.auth.password,
+            }
+        self._ensure_image_available(image_uri, auth_config, sandbox_id)
+        return image_uri, auth_config
+
+    def _resolve_resource_limits(
+        self, request: CreateSandboxRequest
+    ) -> tuple[Optional[int], Optional[int]]:
+        resource_limits = request.resource_limits.root or {}
+        mem_limit = parse_memory_limit(resource_limits.get("memory"))
+        nano_cpus = parse_nano_cpus(resource_limits.get("cpu"))
+        return mem_limit, nano_cpus
+
+    def _base_host_config_kwargs(
+        self,
+        mem_limit: Optional[int],
+        nano_cpus: Optional[int],
+        network_mode: str,
+    ) -> Dict[str, Any]:
+        host_config_kwargs: Dict[str, Any] = {"network_mode": network_mode}
+        security_opts: list[str] = []
+        docker_cfg = self.app_config.docker
+        if docker_cfg.no_new_privileges:
+            security_opts.append("no-new-privileges:true")
+        if docker_cfg.apparmor_profile:
+            security_opts.append(f"apparmor={docker_cfg.apparmor_profile}")
+        if docker_cfg.seccomp_profile:
+            security_opts.append(f"seccomp={docker_cfg.seccomp_profile}")
+        if security_opts:
+            host_config_kwargs["security_opt"] = security_opts
+        if docker_cfg.drop_capabilities:
+            host_config_kwargs["cap_drop"] = docker_cfg.drop_capabilities
+        if docker_cfg.pids_limit is not None:
+            host_config_kwargs["pids_limit"] = docker_cfg.pids_limit
+        if mem_limit:
+            host_config_kwargs["mem_limit"] = mem_limit
+        if nano_cpus:
+            host_config_kwargs["nano_cpus"] = nano_cpus
+        # Inject secure runtime into host_config
+        if self.docker_runtime:
+            logger.info(
+                "Using Docker runtime '%s' for container creation",
+                self.docker_runtime,
+            )
+            host_config_kwargs["runtime"] = self.docker_runtime
+        return host_config_kwargs
+
+    def _allocate_distinct_host_ports(self) -> tuple[int, int]:
+        host_execd_port = self._allocate_host_port()
+        host_http_port = self._allocate_host_port()
+        if host_execd_port is None or host_http_port is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.CONTAINER_START_FAILED,
+                    "message": "Failed to allocate host ports for sandbox container.",
+                },
+            )
+        while host_http_port == host_execd_port:
+            host_http_port = self._allocate_host_port()
+            if host_http_port is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "code": SandboxErrorCodes.CONTAINER_START_FAILED,
+                        "message": "Failed to allocate distinct host ports for sandbox container.",
+                    },
+                )
+        return host_execd_port, host_http_port
+
+    def _cleanup_egress_sidecar(self, sandbox_id: str) -> None:
+        """
+        Remove egress sidecar associated with sandbox_id (best effort).
+        """
+        try:
+            containers = self.docker_client.containers.list(
+                all=True, filters={"label": f"{EGRESS_SIDECAR_LABEL}={sandbox_id}"}
+            )
+        except DockerException as exc:
+            logger.warning("sandbox=%s | failed to list egress sidecar: %s", sandbox_id, exc)
+            return
+
+        for container in containers:
+            try:
+                with self._docker_operation("cleanup egress sidecar", sandbox_id):
+                    container.remove(force=True)
+            except DockerException as exc:
+                logger.warning(
+                    "sandbox=%s | failed to remove egress sidecar %s: %s",
+                    sandbox_id,
+                    container.id,
+                    exc,
+                )
+
+    def _start_egress_sidecar(
+        self,
+        sandbox_id: str,
+        network_policy: NetworkPolicy,
+        host_execd_port: int,
+        host_http_port: int,
+    ):
+        sidecar_name = f"sandbox-egress-{sandbox_id}"
+        sidecar_labels = {
+            EGRESS_SIDECAR_LABEL: sandbox_id,
+        }
+
+        # Ensure sidecar image is available before create/start.
+        egress_image = self.app_config.egress.image if self.app_config.egress else None
+        if not egress_image:
+            raise ValueError("egress.image must be configured when networkPolicy is provided.")
+        self._ensure_image_available(egress_image, None, sandbox_id)
+
+        policy_payload = json.dumps(network_policy.model_dump(by_alias=True, exclude_none=True))
+        sidecar_env = [f"{EGRESS_RULES_ENV}={policy_payload}"]
+
+        sidecar_host_config_kwargs: dict[str, Any] = {
+            "network_mode": BRIDGE_NETWORK_MODE,
+            "cap_add": ["NET_ADMIN"],
+            "port_bindings": {
+                "44772": ("0.0.0.0", host_execd_port),
+                "8080": ("0.0.0.0", host_http_port),
+            },
+            # FIXME(Pangjiping): Disable IPv6 in the shared namespace to keep policy enforcement consistent.
+            "sysctls": {
+                "net.ipv6.conf.all.disable_ipv6": 1,
+                "net.ipv6.conf.default.disable_ipv6": 1,
+                "net.ipv6.conf.lo.disable_ipv6": 1,
+            },
+        }
+
+        sidecar_host_config = self.docker_client.api.create_host_config(
+            **sidecar_host_config_kwargs
+        )
+
+        sidecar_container = None
+        sidecar_container_id: Optional[str] = None
+        try:
+            with self._docker_operation("create egress sidecar", sandbox_id):
+                sidecar_resp = self.docker_client.api.create_container(
+                    image=egress_image,
+                    name=sidecar_name,
+                    host_config=sidecar_host_config,
+                    labels=sidecar_labels,
+                    environment=sidecar_env,
+                    # Expose the ports that have host bindings so Docker publishes them in bridge mode.
+                    ports=["44772", "8080"],
+                )
+            sidecar_container_id = sidecar_resp.get("Id")
+            if not sidecar_container_id:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "code": SandboxErrorCodes.CONTAINER_START_FAILED,
+                        "message": "Docker did not return an egress sidecar container ID.",
+                    },
+                )
+            sidecar_container = self.docker_client.containers.get(sidecar_container_id)
+            with self._docker_operation("start egress sidecar", sandbox_id):
+                sidecar_container.start()
+            return sidecar_container
+        except Exception as exc:
+            if sidecar_container is not None:
+                try:
+                    with self._docker_operation("cleanup egress sidecar", sandbox_id):
+                        sidecar_container.remove(force=True)
+                except DockerException as cleanup_exc:
+                    logger.warning(
+                        "Failed to cleanup egress sidecar for sandbox %s: %s",
+                        sandbox_id,
+                        cleanup_exc,
+                    )
+            elif sidecar_container_id:
+                try:
+                    with self._docker_operation("cleanup egress sidecar (API)", sandbox_id):
+                        self.docker_client.api.remove_container(sidecar_container_id, force=True)
+                except DockerException as cleanup_exc:
+                    logger.warning(
+                        "Failed to cleanup egress sidecar for sandbox %s: %s",
+                        sandbox_id,
+                        cleanup_exc,
+                    )
+            if isinstance(exc, HTTPException):
+                raise exc
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.CONTAINER_START_FAILED,
+                    "message": "Egress sidecar container failed to start.",
+                },
+            ) from exc
+
+    def _create_and_start_container(
+        self,
+        sandbox_id: str,
+        image_uri: str,
+        bootstrap_command: list[str],
+        labels: dict[str, str],
+        environment: list[str],
+        host_config_kwargs: Dict[str, Any],
+        exposed_ports: Optional[list[str]],
+    ):
+        # Normalize single-string entrypoint containing spaces to avoid shell path issues in bootstrap.
+        if len(bootstrap_command) == 1 and " " in bootstrap_command[0]:
+            import shlex
+
+            bootstrap_command = shlex.split(bootstrap_command[0])
+
+        host_config = self.docker_client.api.create_host_config(**host_config_kwargs)
+        container = None
+        container_id: Optional[str] = None
+        try:
+            with self._docker_operation("create sandbox container", sandbox_id):
+                container_kwargs = {
+                    "image": image_uri,
+                    "entrypoint": [BOOTSTRAP_PATH],
+                    "command": bootstrap_command,
+                    "ports": exposed_ports,
+                    "name": f"sandbox-{sandbox_id}",
+                    "environment": environment,
+                    "labels": labels,
+                    "host_config": host_config,
+                }
+
+                response = self.docker_client.api.create_container(**container_kwargs)
+            container_id = response.get("Id")
+            if not container_id:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "code": SandboxErrorCodes.CONTAINER_START_FAILED,
+                        "message": "Docker did not return a container ID.",
+                    },
+                )
+            container = self.docker_client.containers.get(container_id)
+            self._prepare_sandbox_runtime(container, sandbox_id)
+            with self._docker_operation("start sandbox container", sandbox_id):
+                container.start()
+            return container
+        except Exception as exc:
+            if container is not None:
+                try:
+                    with self._docker_operation("cleanup sandbox container", sandbox_id):
+                        container.remove(force=True)
+                except DockerException as cleanup_exc:
+                    logger.warning(
+                        "Failed to cleanup container for sandbox %s: %s",
+                        sandbox_id,
+                        cleanup_exc,
+                    )
+            elif container_id:
+                try:
+                    with self._docker_operation("cleanup sandbox container (API)", sandbox_id):
+                        self.docker_client.api.remove_container(container_id, force=True)
+                except DockerException as cleanup_exc:
+                    logger.warning(
+                        "Failed to cleanup container for sandbox %s: %s",
+                        sandbox_id,
+                        cleanup_exc,
+                    )
+
+            if isinstance(exc, HTTPException):
+                raise exc
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.CONTAINER_START_FAILED,
+                    "message": f"Failed to create or start container: {str(exc)}",
+                },
+            ) from exc
 
     @staticmethod
     def _parse_host_port_label(value: Optional[str], label_name: str) -> Optional[int]:
@@ -1251,14 +1927,29 @@ class DockerSandboxService(SandboxService):
             logger.warning("Invalid port label %s=%s", label_name, value)
             return None
 
-    @staticmethod
-    def _extract_bridge_ip(container) -> str:
-        """Extract the IP address assigned to a container on a bridge network."""
+    def _extract_bridge_ip(self, container) -> str:
+        """Extract the IP address assigned to a container on a bridge or user-defined network.
+
+        For user-defined networks, the top-level ``NetworkSettings.IPAddress`` is empty;
+        the IP lives under ``NetworkSettings.Networks[<network-name>].IPAddress``.
+        This method prefers the configured ``network_mode`` entry when it is a user-defined
+        network, then falls back to any non-empty entry for robustness.
+        """
         network_settings = container.attrs.get("NetworkSettings", {}) or {}
-        ip_address = network_settings.get("IPAddress")
+        networks = network_settings.get("Networks", {}) or {}
+        ip_address: Optional[str] = None
+
+        if self._is_user_defined_network():
+            # Prefer the explicit network entry for the configured named network.
+            net_conf = networks.get(self.network_mode) or {}
+            ip_address = net_conf.get("IPAddress") or None
 
         if not ip_address:
-            networks = network_settings.get("Networks", {}) or {}
+            # Default bridge path (or fallback): check the top-level IPAddress first.
+            ip_address = network_settings.get("IPAddress") or None
+
+        if not ip_address:
+            # Last resort: iterate all network entries and take the first populated IP.
             for net_conf in networks.values():
                 if net_conf and net_conf.get("IPAddress"):
                     ip_address = net_conf.get("IPAddress")

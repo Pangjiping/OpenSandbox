@@ -16,33 +16,53 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRunCodeRequestValidate(t *testing.T) {
 	req := RunCodeRequest{
 		Code: "print('hi')",
 	}
-	if err := req.Validate(); err != nil {
-		t.Fatalf("expected validation success: %v", err)
-	}
+	require.NoError(t, req.Validate())
 
 	req.Code = ""
-	if err := req.Validate(); err == nil {
-		t.Fatalf("expected validation error when code is empty")
-	}
+	require.Error(t, req.Validate(), "expected validation error when code is empty")
 }
 
 func TestRunCommandRequestValidate(t *testing.T) {
 	req := RunCommandRequest{Command: "ls"}
-	if err := req.Validate(); err != nil {
-		t.Fatalf("expected command validation success: %v", err)
-	}
+	require.NoError(t, req.Validate(), "expected command validation success")
 
+	req.TimeoutMs = -100
+	require.Error(t, req.Validate(), "expected validation error when timeout is negative")
+
+	req.TimeoutMs = 0
+	req.Command = "ls"
+	require.NoError(t, req.Validate(), "expected success when timeout is omitted/zero")
+
+	req.TimeoutMs = 10
 	req.Command = ""
-	if err := req.Validate(); err == nil {
-		t.Fatalf("expected validation error when command is empty")
-	}
+	require.Error(t, req.Validate(), "expected validation error when command is empty")
+}
+
+func ptr32(v uint32) *uint32 { return &v }
+
+func TestRunCommandRequestValidateUidGid(t *testing.T) {
+	// uid-only: valid
+	req := RunCommandRequest{Command: "id", Uid: ptr32(1000)}
+	require.NoError(t, req.Validate(), "expected success with uid only")
+
+	// uid + gid: valid
+	req = RunCommandRequest{Command: "id", Uid: ptr32(1000), Gid: ptr32(1000)}
+	require.NoError(t, req.Validate(), "expected success with uid and gid")
+
+	// gid-only: must be rejected
+	req = RunCommandRequest{Command: "id", Gid: ptr32(1000)}
+	require.Error(t, req.Validate(), "expected validation error when gid is set without uid")
 }
 
 func TestServerStreamEventToJSON(t *testing.T) {
@@ -54,10 +74,49 @@ func TestServerStreamEventToJSON(t *testing.T) {
 
 	data := event.ToJSON()
 	var decoded ServerStreamEvent
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("failed to unmarshal event: %v", err)
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.Equal(t, event.Type, decoded.Type)
+	require.Equal(t, event.Text, decoded.Text)
+	require.Equal(t, event.ExecutionCount, decoded.ExecutionCount)
+}
+
+func TestServerStreamEventSummary(t *testing.T) {
+	longText := strings.Repeat("a", 120)
+	tests := []struct {
+		name     string
+		event    ServerStreamEvent
+		contains []string
+	}{
+		{
+			name: "basic stdout",
+			event: ServerStreamEvent{
+				Type:           StreamEventTypeStdout,
+				Text:           "hello",
+				ExecutionCount: 2,
+			},
+			contains: []string{"type=stdout", "text=hello"},
+		},
+		{
+			name: "truncated text and error",
+			event: ServerStreamEvent{
+				Type:  StreamEventTypeError,
+				Text:  longText,
+				Error: &execute.ErrorOutput{EName: "ValueError", EValue: "boom"},
+			},
+			contains: []string{
+				"type=error",
+				"text=" + strings.Repeat("a", 100) + "...",
+				"error=ValueError: boom",
+			},
+		},
 	}
-	if decoded.Type != event.Type || decoded.Text != event.Text || decoded.ExecutionCount != event.ExecutionCount {
-		t.Fatalf("unexpected decoded event: %#v", decoded)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			summary := tt.event.Summary()
+			for _, want := range tt.contains {
+				require.Containsf(t, summary, want, "summary missing %q", want)
+			}
+		})
 	}
 }

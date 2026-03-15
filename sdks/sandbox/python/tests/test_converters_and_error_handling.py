@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import pytest
+from httpx import HTTPStatusError, Request, Response
 
 from opensandbox.adapters.converter.exception_converter import (
     ExceptionConverter,
@@ -36,13 +37,14 @@ from opensandbox.adapters.converter.response_handler import handle_api_error
 from opensandbox.adapters.converter.sandbox_model_converter import (
     SandboxModelConverter,
 )
+from opensandbox.api.lifecycle.errors import UnexpectedStatus
 from opensandbox.exceptions import (
     InvalidArgumentException,
     SandboxApiException,
     SandboxInternalException,
 )
 from opensandbox.models.execd import RunCommandOpts
-from opensandbox.models.sandboxes import SandboxImageSpec
+from opensandbox.models.sandboxes import NetworkPolicy, NetworkRule, SandboxImageSpec
 
 
 def test_parse_sandbox_error_from_json_bytes() -> None:
@@ -57,6 +59,14 @@ def test_parse_sandbox_error_from_plain_text_string() -> None:
     assert err is not None
     assert err.code == "UNEXPECTED_RESPONSE"
     assert err.message == "not-json"
+
+
+def test_parse_sandbox_error_from_invalid_utf8_bytes_fallback_message() -> None:
+    err = parse_sandbox_error(b"\xff\xfe")
+    assert err is not None
+    assert err.code == "UNEXPECTED_RESPONSE"
+    assert err.message is not None
+    assert "\ufffd" in err.message
 
 
 def test_handle_api_error_raises_with_parsed_message() -> None:
@@ -88,6 +98,34 @@ def test_exception_converter_maps_common_types() -> None:
     assert isinstance(se2, SandboxInternalException)
 
 
+def test_exception_converter_maps_generated_unexpected_status_to_api_exception() -> (
+    None
+):
+    err = UnexpectedStatus(400, b'{"code":"X","message":"bad"}')
+
+    converted = ExceptionConverter.to_sandbox_exception(err)
+
+    assert isinstance(converted, SandboxApiException)
+    assert converted.status_code == 400
+    assert converted.error is not None
+    assert converted.error.code == "X"
+
+
+def test_exception_converter_maps_httpx_status_error_to_api_exception() -> None:
+    request = Request("GET", "https://example.test")
+    response = Response(
+        502, request=request, content=b'{"code":"UPSTREAM","message":"gateway"}'
+    )
+    err = HTTPStatusError("bad gateway", request=request, response=response)
+
+    converted = ExceptionConverter.to_sandbox_exception(err)
+
+    assert isinstance(converted, SandboxApiException)
+    assert converted.status_code == 502
+    assert converted.error is not None
+    assert converted.error.code == "UPSTREAM"
+
+
 def test_execution_converter_to_api_run_command_request() -> None:
     from opensandbox.api.execd.types import UNSET
 
@@ -104,6 +142,23 @@ def test_execution_converter_to_api_run_command_request() -> None:
     assert d2["cwd"] == "/tmp"
     # background defaults to False in domain opts; when False we omit it from the API request.
     assert d2.get("background", UNSET) is UNSET
+
+    from datetime import timedelta
+
+    api3 = ExecutionConverter.to_api_run_command_request(
+        "sleep 10",
+        RunCommandOpts(timeout=timedelta(seconds=60)),
+    )
+    d3 = api3.to_dict()
+    assert d3["command"] == "sleep 10"
+    assert d3["timeout"] == 60_000
+    # timeout omitted when not set (backward compat)
+    assert (
+        "timeout"
+        not in ExecutionConverter.to_api_run_command_request(
+            "x", RunCommandOpts()
+        ).to_dict()
+    )
 
 
 def test_filesystem_and_metrics_converters() -> None:
@@ -123,7 +178,13 @@ def test_filesystem_and_metrics_converters() -> None:
     entry = FilesystemModelConverter.to_entry_info(fi)
     assert entry.path == "/a"
 
-    api_metrics = Metrics(cpu_count=1.0, cpu_used_pct=2.0, mem_total_mib=3.0, mem_used_mib=4.0, timestamp=5)
+    api_metrics = Metrics(
+        cpu_count=1.0,
+        cpu_used_pct=2.0,
+        mem_total_mib=3.0,
+        mem_used_mib=4.0,
+        timestamp=5,
+    )
     m = MetricsModelConverter.to_sandbox_metrics(api_metrics)
     assert m.cpu_used_percentage == 2.0
 
@@ -139,13 +200,20 @@ def test_sandbox_model_converter_to_api_create_request_and_renew_tz() -> None:
         metadata={},
         timeout=timedelta(seconds=3),
         resource={"cpu": "100m"},
+        network_policy=NetworkPolicy(
+            defaultAction="deny",
+            egress=[NetworkRule(action="allow", target="pypi.org")],
+        ),
         extensions={},
+        volumes=None,
     )
     d = req.to_dict()
     assert d["image"]["uri"] == "python:3.11"
     assert d["timeout"] == 3
     assert "env" not in d
     assert "metadata" not in d
+    assert d["networkPolicy"]["defaultAction"] == "deny"
+    assert d["networkPolicy"]["egress"] == [{"action": "allow", "target": "pypi.org"}]
 
     renew = SandboxModelConverter.to_api_renew_request(datetime(2025, 1, 1))
     assert renew.expires_at.tzinfo is timezone.utc

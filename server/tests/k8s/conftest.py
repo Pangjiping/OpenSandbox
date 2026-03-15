@@ -17,4 +17,36 @@ Pytest configuration for K8s runtime tests.
 """
 
 # Import fixtures directly to avoid using pytest_plugins
+import pytest
 from tests.k8s.fixtures.k8s_fixtures import *  # noqa: F401, F403
+
+
+@pytest.fixture(autouse=True)
+def stub_workload_informer(monkeypatch):
+    """
+    Prevent real informer threads in unit tests.
+    
+    Stubs the WorkloadInformer used inside K8sClient so that watch threads are
+    not started during unit tests. Cache is always empty (has_synced=False),
+    so get_custom_object falls through to the mocked API call.
+    """
+
+    class _FakeInformer:
+        def __init__(self, *args, **kwargs):
+            self.has_synced = False
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+        def get(self, name):
+            return None
+
+        def update_cache(self, obj):
+            return None
+
+    monkeypatch.setattr(
+        "src.services.k8s.client.WorkloadInformer", _FakeInformer
+    )

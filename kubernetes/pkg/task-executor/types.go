@@ -41,6 +41,8 @@ type Process struct {
 	Env []corev1.EnvVar `json:"env,omitempty"`
 	// WorkingDir process working directory.
 	WorkingDir string `json:"workingDir,omitempty"`
+	// TimeoutSeconds process timeout seconds.
+	TimeoutSeconds *int64 `json:"timeoutSeconds,omitempty"`
 }
 
 // ProcessStatus holds a possible state of process.

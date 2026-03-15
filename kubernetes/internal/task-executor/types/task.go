@@ -31,12 +31,19 @@ const (
 	TaskStateSucceeded TaskState = "Succeeded"
 	TaskStateFailed    TaskState = "Failed"
 	TaskStateUnknown   TaskState = "Unknown"
+	TaskStateNotFound  TaskState = "NotFound"
+	TaskStateTimeout   TaskState = "Timeout"
 )
 
 // Status represents the internal status of a task.
 // This is decoupled from the Kubernetes API status.
 type Status struct {
-	State      TaskState  `json:"state"`
+	State       TaskState   `json:"state"`
+	SubStatuses []SubStatus `json:"subStatuses,omitempty"`
+}
+
+type SubStatus struct {
+	Name       string     `json:"name,omitempty"` // for process it's empty, for PodTemplateSpec is container name
 	Reason     string     `json:"reason,omitempty"`
 	Message    string     `json:"message,omitempty"`
 	ExitCode   int        `json:"exitCode,omitempty"`

@@ -7,10 +7,10 @@ Complete demonstration of running Python code using the Code Interpreter SDK.
 Pull the prebuilt image from a registry:
 
 ```shell
-docker pull sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest
+docker pull sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.1
 
 # use docker hub
-# docker pull opensandbox/code-interpreter:latest
+# docker pull opensandbox/code-interpreter:v1.0.1
 ```
 
 ## Start OpenSandbox server [local]
@@ -18,11 +18,9 @@ docker pull sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-int
 Start the local OpenSandbox server:
 
 ```shell
-git clone git@github.com:alibaba/OpenSandbox.git
-cd OpenSandbox/server
-cp example.config.toml ~/.sandbox.toml
-uv sync
-uv run python -m src.main
+uv pip install opensandbox-server
+opensandbox-server init-config ~/.sandbox.toml --example docker
+opensandbox-server
 ```
 
 ## Create and access the Code Interpreter Sandbox
@@ -41,7 +39,7 @@ The script creates a Sandbox + CodeInterpreter, runs a Python code snippet and p
 
 - `SANDBOX_DOMAIN`: Sandbox service address (default: `localhost:8080`)
 - `SANDBOX_API_KEY`: API key if your server requires authentication
-- `SANDBOX_IMAGE`: Sandbox image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest`)
+- `SANDBOX_IMAGE`: Sandbox image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.1`)
 
 ## Example output
 
@@ -96,7 +94,7 @@ spec:
           emptyDir: { }
       initContainers:
         - name: task-executor-installer
-          image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/task-executor:latest
+          image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/task-executor:v0.1.0
           command: [ "/bin/sh", "-c" ]
           args:
             - |
@@ -106,7 +104,7 @@ spec:
             - name: opensandbox-bin
               mountPath: /opt/opensandbox/bin
         - name: execd-installer
-          image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:latest
+          image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd:v1.0.6
           command: [ "/bin/sh", "-c" ]
           args:
             - |
@@ -119,7 +117,7 @@ spec:
               mountPath: /opt/opensandbox/bin
       containers:
         - name: sandbox
-          image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest
+          image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.1
           command:
           - "/bin/sh"
           - "-c"
@@ -149,15 +147,13 @@ spec:
 Start the k8s OpenSandbox server:
 
 ```shell
-git clone git@github.com:alibaba/OpenSandbox.git
-cd OpenSandbox/server
+uv pip install opensandbox-server
 
 # replace with your k8s cluster config, kubeconfig etc.
-cp example.config.k8s.toml ~/.sandbox.toml
-cp example.batchsandbox-template.yaml ~/batchsandbox-template.yaml
+opensandbox-server init-config ~/.sandbox.toml --example k8s
+curl -o ~/batchsandbox-template.yaml https://raw.githubusercontent.com/alibaba/OpenSandbox/main/server/example.batchsandbox-template.yaml
 
-uv sync
-uv run python -m src.main
+opensandbox-server
 ```
 
 ## Create and access the Code Interpreter Sandbox
@@ -176,7 +172,7 @@ The script creates a Sandbox + CodeInterpreter, runs a Python code snippet and p
 
 - `SANDBOX_DOMAIN`: Sandbox service address (default: `localhost:8080`)
 - `SANDBOX_API_KEY`: API key if your server requires authentication
-- `SANDBOX_IMAGE`: Sandbox image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:latest`)
+- `SANDBOX_IMAGE`: Sandbox image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.1`)
 
 ## Example output
 

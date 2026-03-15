@@ -108,7 +108,7 @@ func (c *CodeInterpretingController) RunCode() {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(c.ctx.Request.Context())
 	defer cancel()
 	runCodeRequest := c.buildExecuteCodeRequest(request)
 	eventsHandler := c.setServerEventsHandler(ctx)
@@ -137,9 +137,26 @@ func (c *CodeInterpretingController) GetContext() {
 			model.ErrorCodeMissingQuery,
 			"missing path parameter 'contextId'",
 		)
+		return
 	}
 
-	codeContext := codeRunner.GetContext(contextID)
+	codeContext, err := codeRunner.GetContext(contextID)
+	if err != nil {
+		if errors.Is(err, runtime.ErrContextNotFound) {
+			c.RespondError(
+				http.StatusNotFound,
+				model.ErrorCodeContextNotFound,
+				fmt.Sprintf("context %s not found", contextID),
+			)
+			return
+		}
+		c.RespondError(
+			http.StatusInternalServerError,
+			model.ErrorCodeRuntimeError,
+			fmt.Sprintf("error getting code context %s. %v", contextID, err),
+		)
+		return
+	}
 	c.RespondSuccess(codeContext)
 }
 

@@ -15,9 +15,9 @@
 package strategy
 
 import (
-	sandboxv1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/api/v1alpha1"
+	sandboxv1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/apis/sandbox/v1alpha1"
 )
 
 func NewPoolStrategy(batchSbx *sandboxv1alpha1.BatchSandbox) PoolStrategy {
-	return NewDefaultPoolStrategy()
+	return NewDefaultPoolStrategy(batchSbx)
 }
