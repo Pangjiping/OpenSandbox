@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -237,9 +238,10 @@ func (c *CodeInterpretingController) DeleteContext() {
 }
 
 // CreateSession creates a new bash session (create_session API).
+// An empty body is allowed and is treated as default options (no cwd override).
 func (c *CodeInterpretingController) CreateSession() {
 	var request model.CreateSessionRequest
-	if err := c.bindJSON(&request); err != nil {
+	if err := c.bindJSON(&request); err != nil && !errors.Is(err, io.EOF) {
 		c.RespondError(
 			http.StatusBadRequest,
 			model.ErrorCodeInvalidRequest,
