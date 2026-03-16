@@ -101,6 +101,7 @@ type bashSession struct {
 	config  *bashSessionConfig
 	mu      sync.Mutex
 	started bool
+	closing bool
 	env     map[string]string
 	cwd     string
 
