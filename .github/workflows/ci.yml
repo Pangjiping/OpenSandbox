@@ -1,0 +1,28 @@
+name: CI
+on:
+  push:
+    branches: [feat/paop-steering, main]
+  pull_request:
+    branches: [feat/paop-steering, main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go: ["1.21", "1.22"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+      - name: Build
+        working-directory: components/execd
+        run: go build ./...
+      - name: Vet
+        working-directory: components/execd
+        run: go vet ./...
+      - name: Test
+        working-directory: components/execd
+        run: go test ./... -race -timeout 60s
