@@ -27,8 +27,8 @@ import (
 
 func TestListContextsAndNewIpynbPath(t *testing.T) {
 	c := NewController("http://example", "token")
-	c.jupyterClientMap["session-python"] = &jupyterKernel{language: Python}
-	c.defaultLanguageJupyterSessions[Go] = "session-go-default"
+	c.jupyterClientMap.Store("session-python", &jupyterKernel{language: Python})
+	c.defaultLanguageSessions.Store(Go, "session-go-default")
 
 	pyContexts, err := c.listLanguageContexts(Python)
 	require.NoError(t, err)
@@ -107,13 +107,13 @@ func TestDeleteContext_RemovesCacheOnSuccess(t *testing.T) {
 	defer server.Close()
 
 	c := NewController(server.URL, "token")
-	c.jupyterClientMap[sessionID] = &jupyterKernel{language: Python}
-	c.defaultLanguageJupyterSessions[Python] = sessionID
+	c.jupyterClientMap.Store(sessionID, &jupyterKernel{language: Python})
+	c.defaultLanguageSessions.Store(Python, sessionID)
 
 	require.NoError(t, c.DeleteContext(sessionID))
 
 	require.Nil(t, c.getJupyterKernel(sessionID), "expected cache to be cleared")
-	_, ok := c.defaultLanguageJupyterSessions[Python]
+	_, ok := c.defaultLanguageSessions.Load(Python)
 	require.False(t, ok, "expected default session entry to be removed")
 }
 
@@ -138,17 +138,17 @@ func TestDeleteLanguageContext_RemovesCacheOnSuccess(t *testing.T) {
 	defer server.Close()
 
 	c := NewController(server.URL, "token")
-	c.jupyterClientMap[session1] = &jupyterKernel{language: lang}
-	c.jupyterClientMap[session2] = &jupyterKernel{language: lang}
-	c.defaultLanguageJupyterSessions[lang] = session2
+	c.jupyterClientMap.Store(session1, &jupyterKernel{language: lang})
+	c.jupyterClientMap.Store(session2, &jupyterKernel{language: lang})
+	c.defaultLanguageSessions.Store(lang, session2)
 
 	require.NoError(t, c.DeleteLanguageContext(lang))
 
-	_, ok := c.jupyterClientMap[session1]
+	_, ok := c.jupyterClientMap.Load(session1)
 	require.False(t, ok, "expected session1 removed from cache")
-	_, ok = c.jupyterClientMap[session2]
+	_, ok = c.jupyterClientMap.Load(session2)
 	require.False(t, ok, "expected session2 removed from cache")
-	_, ok = c.defaultLanguageJupyterSessions[lang]
+	_, ok = c.defaultLanguageSessions.Load(lang)
 	require.False(t, ok, "expected default entry removed")
 	require.Equal(t, 1, deleteCalls[session1])
 	require.Equal(t, 1, deleteCalls[session2])

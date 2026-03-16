@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -231,6 +232,123 @@ func (c *CodeInterpretingController) DeleteContext() {
 			)
 			return
 		}
+	}
+
+	c.RespondSuccess(nil)
+}
+
+// CreateSession creates a new bash session (create_session API).
+// An empty body is allowed and is treated as default options (no cwd override).
+func (c *CodeInterpretingController) CreateSession() {
+	var request model.CreateSessionRequest
+	if err := c.bindJSON(&request); err != nil && !errors.Is(err, io.EOF) {
+		c.RespondError(
+			http.StatusBadRequest,
+			model.ErrorCodeInvalidRequest,
+			fmt.Sprintf("error parsing request. %v", err),
+		)
+		return
+	}
+
+	sessionID, err := codeRunner.CreateBashSession(&runtime.CreateContextRequest{
+		Cwd: request.Cwd,
+	})
+	if err != nil {
+		c.RespondError(
+			http.StatusInternalServerError,
+			model.ErrorCodeRuntimeError,
+			fmt.Sprintf("error creating session. %v", err),
+		)
+		return
+	}
+
+	c.RespondSuccess(model.CreateSessionResponse{SessionID: sessionID})
+}
+
+// RunInSession runs code in an existing bash session and streams output via SSE (run_in_session API).
+func (c *CodeInterpretingController) RunInSession() {
+	sessionID := c.ctx.Param("sessionId")
+	if sessionID == "" {
+		c.RespondError(
+			http.StatusBadRequest,
+			model.ErrorCodeMissingQuery,
+			"missing path parameter 'sessionId'",
+		)
+		return
+	}
+
+	var request model.RunInSessionRequest
+	if err := c.bindJSON(&request); err != nil {
+		c.RespondError(
+			http.StatusBadRequest,
+			model.ErrorCodeInvalidRequest,
+			fmt.Sprintf("error parsing request. %v", err),
+		)
+		return
+	}
+	if err := request.Validate(); err != nil {
+		c.RespondError(
+			http.StatusBadRequest,
+			model.ErrorCodeInvalidRequest,
+			fmt.Sprintf("invalid request. %v", err),
+		)
+		return
+	}
+
+	timeout := time.Duration(request.TimeoutMs) * time.Millisecond
+	runReq := &runtime.ExecuteCodeRequest{
+		Language: runtime.Bash,
+		Context:  sessionID,
+		Code:     request.Code,
+		Cwd:      request.Cwd,
+		Timeout:  timeout,
+	}
+	ctx, cancel := context.WithCancel(c.ctx.Request.Context())
+	defer cancel()
+	runReq.Hooks = c.setServerEventsHandler(ctx)
+
+	c.setupSSEResponse()
+	err := codeRunner.RunInBashSession(ctx, runReq)
+	if err != nil {
+		c.RespondError(
+			http.StatusInternalServerError,
+			model.ErrorCodeRuntimeError,
+			fmt.Sprintf("error running in session. %v", err),
+		)
+		return
+	}
+
+	time.Sleep(flag.ApiGracefulShutdownTimeout)
+}
+
+// DeleteSession deletes a bash session (delete_session API).
+func (c *CodeInterpretingController) DeleteSession() {
+	sessionID := c.ctx.Param("sessionId")
+	if sessionID == "" {
+		c.RespondError(
+			http.StatusBadRequest,
+			model.ErrorCodeMissingQuery,
+			"missing path parameter 'sessionId'",
+		)
+		return
+	}
+
+	err := codeRunner.DeleteBashSession(sessionID)
+	if err != nil {
+		if errors.Is(err, runtime.ErrContextNotFound) {
+			c.RespondError(
+				http.StatusNotFound,
+				model.ErrorCodeContextNotFound,
+				fmt.Sprintf("session %s not found", sessionID),
+			)
+			return
+		}
+		c.RespondError(
+			http.StatusInternalServerError,
+			model.ErrorCodeRuntimeError,
+			fmt.Sprintf("error deleting session %s. %v", sessionID, err),
+		)
+		return
 	}
 
 	c.RespondSuccess(nil)

@@ -62,6 +62,13 @@ func NewRouter(accessToken string) *gin.Engine {
 		code.GET("/contexts/:contextId", withCode(func(c *controller.CodeInterpretingController) { c.GetContext() }))
 	}
 
+	session := r.Group("/session")
+	{
+		session.POST("", withCode(func(c *controller.CodeInterpretingController) { c.CreateSession() }))
+		session.POST("/:sessionId/run", withCode(func(c *controller.CodeInterpretingController) { c.RunInSession() }))
+		session.DELETE("/:sessionId", withCode(func(c *controller.CodeInterpretingController) { c.DeleteSession() }))
+	}
+
 	command := r.Group("/command")
 	{
 		command.POST("", withCode(func(c *controller.CodeInterpretingController) { c.RunCommand() }))
