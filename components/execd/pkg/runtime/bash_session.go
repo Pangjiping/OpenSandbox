@@ -27,6 +27,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -131,6 +132,18 @@ func (s *bashSession) start() error {
 	return nil
 }
 
+func (s *bashSession) trackCurrentProcess(pid int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentProcessPid = pid
+}
+
+func (s *bashSession) untrackCurrentProcess() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentProcessPid = 0
+}
+
 //nolint:gocognit
 func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) error {
 	s.mu.Lock()
@@ -177,6 +190,7 @@ func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) erro
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", "--noprofile", "--norc", scriptPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Do not pass envSnapshot via cmd.Env to avoid "argument list too long" when session env is large.
 	// Child inherits parent env (nil => default in Go). The script file already has "export K=V" for
 	// all session vars at the top, so the session environment is applied when the script runs.
@@ -190,6 +204,8 @@ func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) erro
 		log.Error("start bash session failed: %v (command: %q)", err, request.Code)
 		return fmt.Errorf("start bash: %w", err)
 	}
+	defer s.untrackCurrentProcess()
+	s.trackCurrentProcess(cmd.Process.Pid)
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -428,12 +444,17 @@ func (s *bashSession) close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.started {
-		return nil
-	}
+	pid := s.currentProcessPid
+	s.currentProcessPid = 0
 	s.started = false
 	s.env = nil
 	s.cwd = ""
+
+	if pid != 0 {
+		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
+			log.Warning("kill session process group %d: %v (process may have already exited)", pid, err)
+		}
+	}
 	return nil
 }
 

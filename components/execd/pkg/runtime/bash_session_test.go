@@ -502,3 +502,98 @@ func containsLine(lines []string, target string) bool {
 	}
 	return false
 }
+
+// TestBashSession_CloseKillsRunningProcess verifies that session.close() kills the active
+// process group so that a long-running command (e.g. sleep) does not keep running after close.
+func TestBashSession_CloseKillsRunningProcess(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not found in PATH")
+	}
+
+	session := newBashSession("")
+	require.NoError(t, session.start())
+
+	runDone := make(chan error, 1)
+	req := &ExecuteCodeRequest{
+		Code:    "sleep 30",
+		Timeout: 60 * time.Second,
+		Hooks:   ExecuteResultHook{},
+	}
+	go func() {
+		runDone <- session.run(context.Background(), req)
+	}()
+
+	// Give the child process time to start.
+	time.Sleep(200 * time.Millisecond)
+
+	// Close should kill the process group; run() should return soon (it may return nil
+	// because the code path treats non-zero exit as success after calling OnExecuteError).
+	require.NoError(t, session.close())
+
+	select {
+	case <-runDone:
+		// run() returned; process was killed so we did not wait 30s
+	case <-time.After(3 * time.Second):
+		require.Fail(t, "run did not return within 3s after close (process was not killed)")
+	}
+}
+
+// TestBashSession_DeleteBashSessionKillsRunningProcess verifies that DeleteBashSession
+// (close path) kills the active run and removes the session from the controller.
+func TestBashSession_DeleteBashSessionKillsRunningProcess(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not found in PATH")
+	}
+
+	c := NewController("", "")
+	sessionID, err := c.CreateBashSession(&CreateContextRequest{})
+	require.NoError(t, err)
+
+	runDone := make(chan error, 1)
+	req := &ExecuteCodeRequest{
+		Language: Bash,
+		Context:  sessionID,
+		Code:     "sleep 30",
+		Timeout:  60 * time.Second,
+		Hooks:    ExecuteResultHook{},
+	}
+	go func() {
+		runDone <- c.RunInBashSession(context.Background(), req)
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, c.DeleteBashSession(sessionID))
+
+	select {
+	case <-runDone:
+		// RunInBashSession returned; process was killed
+	case <-time.After(3 * time.Second):
+		require.Fail(t, "RunInBashSession did not return within 3s after DeleteBashSession")
+	}
+
+	// Session should be gone; deleting again should return ErrContextNotFound.
+	err = c.DeleteBashSession(sessionID)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrContextNotFound)
+}
+
+// TestBashSession_CloseWithNoActiveRun verifies that close() with no running command
+// completes without error and does not hang.
+func TestBashSession_CloseWithNoActiveRun(t *testing.T) {
+	session := newBashSession("")
+	require.NoError(t, session.start())
+
+	done := make(chan struct{}, 1)
+	go func() {
+		_ = session.close()
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+		// close() returned
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "close() did not return within 2s when no run was active")
+	}
+}
