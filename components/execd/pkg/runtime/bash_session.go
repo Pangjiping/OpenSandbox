@@ -31,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/creack/pty"
 	"github.com/google/uuid"
 
 	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
@@ -266,6 +267,74 @@ func (s *bashSession) Start() error {
 	return nil
 }
 
+// StartPTY launches an interactive bash process using a PTY instead of pipes.
+// stdout and stderr arrive merged on the PTY master fd.
+// It is idempotent: if the process is already running, it returns nil.
+func (s *bashSession) StartPTY() error {
+	s.mu.Lock()
+	if s.currentProcessPid != 0 {
+		s.mu.Unlock()
+		return nil // already running
+	}
+	if s.closing {
+		s.mu.Unlock()
+		return errors.New("session is closing")
+	}
+	s.mu.Unlock()
+
+	cmd := exec.Command("bash", "--noprofile", "--norc")
+	if s.cwd != "" {
+		cmd.Dir = s.cwd
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLUMNS=80", "LINES=24")
+
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+	if err != nil {
+		return fmt.Errorf("pty start: %w", err)
+	}
+
+	doneCh := make(chan struct{})
+
+	s.mu.Lock()
+	s.ptmx = ptmx
+	s.isPTY = true
+	s.stdoutPipe = ptmx // PTY merges stdout+stderr
+	s.stderrPipe = nil  // not used in PTY mode
+	s.doneCh = doneCh
+	s.currentProcessPid = cmd.Process.Pid
+	s.started = true
+	s.mu.Unlock()
+
+	go func() {
+		_ = cmd.Wait()
+		code := -1
+		if cmd.ProcessState != nil {
+			code = cmd.ProcessState.ExitCode()
+		}
+		_ = ptmx.Close()
+		s.mu.Lock()
+		s.lastExitCode = code
+		s.currentProcessPid = 0
+		s.mu.Unlock()
+		close(doneCh)
+	}()
+
+	return nil
+}
+
+// ResizePTY sends a TIOCSWINSZ ioctl to the PTY master.
+// No-op if not in PTY mode.
+func (s *bashSession) ResizePTY(cols, rows uint16) error {
+	s.mu.Lock()
+	ptmx := s.ptmx
+	s.mu.Unlock()
+	if ptmx == nil {
+		return nil
+	}
+	return pty.Setsize(ptmx, &pty.Winsize{Rows: rows, Cols: cols})
+}
+
 // SendSignal sends a named OS signal (e.g. "SIGINT") to the session's process group.
 // No-op if the session is not running or the signal name is unknown.
 func (s *bashSession) SendSignal(name string) {
@@ -301,16 +370,26 @@ func signalByName(name string) syscall.Signal {
 	}
 }
 
-// WriteStdin writes p to the session's stdin pipe.
+// WriteStdin writes p to the session's stdin.
+// In PTY mode it writes to the PTY master fd; in pipe mode it writes to the stdin pipe.
 // Returns error if the session has not started or the pipe is closed.
 func (s *bashSession) WriteStdin(p []byte) (int, error) {
 	s.mu.Lock()
-	w := s.stdin
+	isPTY := s.isPTY
+	ptmx := s.ptmx
+	stdin := s.stdin
 	s.mu.Unlock()
-	if w == nil {
+
+	if isPTY {
+		if ptmx == nil {
+			return 0, errors.New("PTY not started")
+		}
+		return ptmx.Write(p)
+	}
+	if stdin == nil {
 		return 0, errors.New("session not started")
 	}
-	return w.Write(p)
+	return stdin.Write(p)
 }
 
 // LockWS atomically acquires exclusive WebSocket access.
@@ -689,6 +768,7 @@ func (s *bashSession) close() error {
 
 	s.closing = true
 	pid := s.currentProcessPid
+	ptmx := s.ptmx
 	s.currentProcessPid = 0
 	s.started = false
 	s.env = nil
@@ -698,6 +778,10 @@ func (s *bashSession) close() error {
 		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil {
 			log.Warning("kill session process group %d: %v (process may have already exited)", pid, err)
 		}
+	}
+	if ptmx != nil {
+		_ = ptmx.Close()
+		s.ptmx = nil
 	}
 	return nil
 }

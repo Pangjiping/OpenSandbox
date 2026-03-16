@@ -17,6 +17,7 @@ package runtime
 import (
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -94,6 +95,8 @@ type BashSession interface {
 	UnlockWS()
 	// Start launches the underlying bash process (idempotent: no-op if already running).
 	Start() error
+	// StartPTY launches the bash process with a PTY instead of pipes (idempotent).
+	StartPTY() error
 	// IsRunning reports whether the bash process is currently alive.
 	IsRunning() bool
 	// ExitCode returns the exit code of the most recently completed process (-1 if not exited).
@@ -108,6 +111,8 @@ type BashSession interface {
 	Done() <-chan struct{}
 	// SendSignal sends a named signal (e.g. "SIGINT") to the process group.
 	SendSignal(name string)
+	// ResizePTY sends a TIOCSWINSZ ioctl to the PTY master. No-op if not in PTY mode.
+	ResizePTY(cols, rows uint16) error
 }
 
 // bashSessionConfig holds bash session configuration.
@@ -139,10 +144,14 @@ type bashSession struct {
 	replay *replayBuffer
 
 	// WS mode fields — set by start() when a WebSocket client connects.
-	wsConnected  atomic.Bool  // true while a WS connection holds the session
-	lastExitCode int          // stored on process exit; -1 if not yet exited
+	wsConnected  atomic.Bool    // true while a WS connection holds the session
+	lastExitCode int            // stored on process exit; -1 if not yet exited
 	stdin        io.WriteCloser // write end of bash's stdin pipe (WS mode)
-	stdoutPipe   io.Reader    // stdout reader (WS mode)
-	stderrPipe   io.Reader    // stderr reader (WS mode)
-	doneCh       chan struct{} // closed when WS-mode bash process exits
+	stdoutPipe   io.Reader      // stdout reader (WS mode)
+	stderrPipe   io.Reader      // stderr reader (WS mode)
+	doneCh       chan struct{}   // closed when WS-mode bash process exits
+
+	// PTY mode fields — non-nil only when started via StartPTY().
+	isPTY bool     // true when session uses a PTY instead of pipes
+	ptmx  *os.File // PTY master fd (read=stdout+stderr merged, write=stdin)
 }

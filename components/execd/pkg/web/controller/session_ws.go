@@ -69,9 +69,17 @@ func (c *CodeInterpretingController) SessionWebSocket() {
 		return conn.WriteJSON(v)
 	}
 
+	usePTY := c.ctx.Query("pty") == "1"
+
 	// 4. Start bash if not already running.
 	if !session.IsRunning() {
-		if startErr := session.Start(); startErr != nil {
+		var startErr error
+		if usePTY {
+			startErr = session.StartPTY()
+		} else {
+			startErr = session.Start()
+		}
+		if startErr != nil {
 			_ = writeJSON(model.ServerFrame{
 				Type:  "error",
 				Error: "failed to start bash",
@@ -95,11 +103,15 @@ func (c *CodeInterpretingController) SessionWebSocket() {
 		}
 	}
 
-	// 6. Send connected frame.
+	// 6. Send connected frame — mode reflects actual session type.
+	mode := "pipe"
+	if usePTY {
+		mode = "pty"
+	}
 	_ = writeJSON(model.ServerFrame{
 		Type:      "connected",
 		SessionID: sessionID,
-		Mode:      "pipe",
+		Mode:      mode,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -156,31 +168,33 @@ func (c *CodeInterpretingController) SessionWebSocket() {
 		}
 	}()
 
-	// 9. Write pump — stderr scanner.
-	go func() {
-		stderr := session.StderrPipe()
-		if stderr == nil {
-			return
-		}
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			line := scanner.Text() + "\n"
-			// Write to replay buffer so reconnecting clients can catch up.
-			codeRunner.WriteSessionOutput(sessionID, []byte(line))
-			if writeErr := writeJSON(model.ServerFrame{
-				Type:      "stderr",
-				Data:      line,
-				Timestamp: time.Now().UnixMilli(),
-			}); writeErr != nil {
+	// 9. Write pump — stderr scanner (pipe mode only; PTY merges stderr into ptmx).
+	if !usePTY {
+		go func() {
+			stderr := session.StderrPipe()
+			if stderr == nil {
 				return
 			}
-		}
-	}()
+			scanner := bufio.NewScanner(stderr)
+			for scanner.Scan() {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				line := scanner.Text() + "\n"
+				// Write to replay buffer so reconnecting clients can catch up.
+				codeRunner.WriteSessionOutput(sessionID, []byte(line))
+				if writeErr := writeJSON(model.ServerFrame{
+					Type:      "stderr",
+					Data:      line,
+					Timestamp: time.Now().UnixMilli(),
+				}); writeErr != nil {
+					return
+				}
+			}
+		}()
+	}
 
 	// 10. Exit watcher — sends exit frame when bash process ends.
 	go func() {
@@ -224,6 +238,9 @@ func (c *CodeInterpretingController) SessionWebSocket() {
 		case "signal":
 			session.SendSignal(frame.Signal)
 		case "resize":
+			if usePTY {
+				_ = session.ResizePTY(uint16(frame.Cols), uint16(frame.Rows))
+			}
 			// Silently ignored in pipe mode; accepted to avoid client errors.
 		case "ping":
 			_ = writeJSON(model.ServerFrame{Type: "pong"})
