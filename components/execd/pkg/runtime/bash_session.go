@@ -53,36 +53,13 @@ func (c *Controller) createBashSession(_ *CreateContextRequest) (string, error) 
 	return session.config.Session, nil
 }
 
-func (c *Controller) runBashSession(_ context.Context, request *ExecuteCodeRequest) error {
-	if request.Context == "" {
-		if c.getDefaultLanguageSession(request.Language) == "" {
-			if err := c.createDefaultBashSession(); err != nil {
-				return err
-			}
-		}
-	}
-
-	targetSessionID := request.Context
-	if targetSessionID == "" {
-		targetSessionID = c.getDefaultLanguageSession(request.Language)
-	}
-
-	session := c.getBashSession(targetSessionID)
+func (c *Controller) runBashSession(ctx context.Context, request *ExecuteCodeRequest) error {
+	session := c.getBashSession(request.Context)
 	if session == nil {
 		return ErrContextNotFound
 	}
 
-	return session.run(request)
-}
-
-func (c *Controller) createDefaultBashSession() error {
-	session, err := c.createBashSession(&CreateContextRequest{})
-	if err != nil {
-		return err
-	}
-
-	c.setDefaultLanguageSession(Bash, session)
-	return nil
+	return session.run(ctx, request)
 }
 
 func (c *Controller) getBashSession(sessionId string) *bashSession {
@@ -109,18 +86,14 @@ func (c *Controller) closeBashSession(sessionId string) error {
 	return nil
 }
 
-// CreateBashSession creates a pipe-based bash session for the session API only (POST /session).
-// It is separate from CreateContext; Bash language context still uses Jupyter kernel.
 func (c *Controller) CreateBashSession(req *CreateContextRequest) (string, error) {
 	return c.createBashSession(req)
 }
 
-// RunInBashSession runs code in an existing bash session for the session API only (POST /session/:id/run).
 func (c *Controller) RunInBashSession(ctx context.Context, req *ExecuteCodeRequest) error {
 	return c.runBashSession(ctx, req)
 }
 
-// DeleteBashSession deletes a pipe-based bash session for the session API only (DELETE /session/:id).
 func (c *Controller) DeleteBashSession(sessionID string) error {
 	return c.closeBashSession(sessionID)
 }
@@ -172,7 +145,7 @@ func (s *bashSession) start() error {
 }
 
 //nolint:gocognit
-func (s *bashSession) run(request *ExecuteCodeRequest) error {
+func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) error {
 	s.mu.Lock()
 	if !s.started {
 		s.mu.Unlock()
@@ -199,7 +172,7 @@ func (s *bashSession) run(request *ExecuteCodeRequest) error {
 		wait = 24 * 3600 * time.Second // max to 24 hours
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
 	script := buildWrappedScript(request.Code, envSnapshot, cwd)

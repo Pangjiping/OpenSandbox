@@ -115,7 +115,7 @@ func TestBashSession_envAndExitCode(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	}
-	require.NoError(t, session.run(request))
+	require.NoError(t, session.run(context.Background(), request))
 	exportStdoutCount := len(stdoutLines)
 
 	// 2) verify env is persisted
@@ -124,7 +124,7 @@ func TestBashSession_envAndExitCode(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	}
-	require.NoError(t, session.run(request))
+	require.NoError(t, session.run(context.Background(), request))
 	echoLines := stdoutLines[exportStdoutCount:]
 	foundHello := false
 	for _, line := range echoLines {
@@ -142,7 +142,7 @@ func TestBashSession_envAndExitCode(t *testing.T) {
 		Timeout: 3 * time.Second,
 	}
 	prevCount := len(stdoutLines)
-	require.NoError(t, session.run(request))
+	require.NoError(t, session.run(context.Background(), request))
 	exitLines := stdoutLines[prevCount:]
 	foundExit := false
 	for _, line := range exitLines {
@@ -189,7 +189,7 @@ func TestBashSession_envLargeOutputChained(t *testing.T) {
 			Hooks:   hooks,
 			Timeout: 10 * time.Second,
 		}
-		require.NoError(t, session.run(request))
+		require.NoError(t, session.run(context.Background(), request))
 		return append([]string(nil), stdoutLines[start:]...)
 	}
 
@@ -225,7 +225,7 @@ func TestBashSession_cwdPersistsWithoutOverride(t *testing.T) {
 
 	runAndCollect := func(req *ExecuteCodeRequest) []string {
 		start := len(stdoutLines)
-		require.NoError(t, session.run(req))
+		require.NoError(t, session.run(context.Background(), req))
 		return append([]string(nil), stdoutLines[start:]...)
 	}
 
@@ -267,7 +267,7 @@ func TestBashSession_requestCwdOverridesAfterCd(t *testing.T) {
 
 	runAndCollect := func(req *ExecuteCodeRequest) []string {
 		start := len(stdoutLines)
-		require.NoError(t, session.run(req))
+		require.NoError(t, session.run(context.Background(), req))
 		return append([]string(nil), stdoutLines[start:]...)
 	}
 
@@ -312,7 +312,7 @@ func TestBashSession_envDumpNotLeakedWhenNoTrailingNewline(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	}
-	require.NoError(t, session.run(request))
+	require.NoError(t, session.run(context.Background(), request))
 
 	require.Len(t, stdoutLines, 1, "expected exactly one stdout line")
 	require.Equal(t, `{"foo":1}`, strings.TrimSpace(stdoutLines[0]))
@@ -340,7 +340,7 @@ func TestBashSession_envDumpNotLeakedWhenNoOutput(t *testing.T) {
 		Hooks:   hooks,
 		Timeout: 3 * time.Second,
 	}
-	require.NoError(t, session.run(request))
+	require.NoError(t, session.run(context.Background(), request))
 
 	require.LessOrEqual(t, len(stdoutLines), 1, "expected at most one stdout line, got %v", stdoutLines)
 	if len(stdoutLines) == 1 {
@@ -432,7 +432,7 @@ exec /tmp/exec_child.sh
 		Hooks:   hooks,
 		Timeout: 5 * time.Second,
 	}
-	require.NoError(t, session.run(request), "expected exec to complete without killing the session")
+	require.NoError(t, session.run(context.Background(), request), "expected exec to complete without killing the session")
 	require.True(t, containsLine(stdoutLines, "child says hi"), "expected child output, got %v", stdoutLines)
 
 	// Subsequent run should still work because we restart bash per run.
@@ -442,7 +442,7 @@ exec /tmp/exec_child.sh
 		Timeout: 2 * time.Second,
 	}
 	stdoutLines = nil
-	require.NoError(t, session.run(request), "expected run to succeed after exec replaced the shell")
+	require.NoError(t, session.run(context.Background(), request), "expected run to succeed after exec replaced the shell")
 	require.True(t, containsLine(stdoutLines, "still-alive"), "expected follow-up output, got %v", stdoutLines)
 }
 
@@ -476,7 +476,7 @@ echo "after-restore"
 		Hooks:   hooks,
 		Timeout: 5 * time.Second,
 	}
-	require.NoError(t, session.run(request), "expected complex exec to finish")
+	require.NoError(t, session.run(context.Background(), request), "expected complex exec to finish")
 	require.True(t, containsLine(stdoutLines, "from-complex-exec") && containsLine(stdoutLines, "after-restore"), "expected exec outputs, got %v", stdoutLines)
 
 	// Session should still be usable.
@@ -486,7 +486,7 @@ echo "after-restore"
 		Timeout: 2 * time.Second,
 	}
 	stdoutLines = nil
-	require.NoError(t, session.run(request), "expected run to succeed after complex exec")
+	require.NoError(t, session.run(context.Background(), request), "expected run to succeed after complex exec")
 	require.True(t, containsLine(stdoutLines, "still-alive"), "expected follow-up output, got %v", stdoutLines)
 }
 
