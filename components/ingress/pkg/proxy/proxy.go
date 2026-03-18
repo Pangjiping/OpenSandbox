@@ -22,22 +22,23 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/alibaba/opensandbox/ingress/pkg/renewintent"
 	"github.com/alibaba/opensandbox/ingress/pkg/sandbox"
 	slogger "github.com/alibaba/opensandbox/internal/logger"
 )
 
 type Proxy struct {
-	sandboxProvider sandbox.Provider
-	mode            Mode
+	sandboxProvider      sandbox.Provider
+	mode                 Mode
+	renewIntentPublisher renewintent.Publisher
 }
 
-func NewProxy(_ context.Context, sandboxProvider sandbox.Provider, mode Mode) *Proxy {
-	proxy := &Proxy{
-		sandboxProvider: sandboxProvider,
-		mode:            mode,
+func NewProxy(_ context.Context, sandboxProvider sandbox.Provider, mode Mode, renewIntentPublisher renewintent.Publisher) *Proxy {
+	return &Proxy{
+		sandboxProvider:      sandboxProvider,
+		mode:                 mode,
+		renewIntentPublisher: renewIntentPublisher,
 	}
-
-	return proxy
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +65,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, fmt.Sprintf("OpenSandbox Ingress: %v", err), code)
 		return
+	}
+
+	if p.renewIntentPublisher != nil {
+		p.renewIntentPublisher.PublishIntent(host.ingressKey, host.port, host.requestURI)
 	}
 
 	// modify if requestURI is not empty

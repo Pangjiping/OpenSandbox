@@ -73,7 +73,7 @@ func httpProxyWithHeaderMode(t *testing.T) {
 
 	ctx := context.Background()
 	Logger = slogger.MustNew(slogger.Config{Level: "debug"})
-	proxy := NewProxy(ctx, provider, ModeHeader)
+	proxy := NewProxy(ctx, provider, ModeHeader, nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/", proxy)
@@ -147,7 +147,7 @@ func httpProxyWithURIMode(t *testing.T) {
 
 	ctx := context.Background()
 	Logger = slogger.MustNew(slogger.Config{Level: "debug"})
-	proxy := NewProxy(ctx, provider, ModeURI)
+	proxy := NewProxy(ctx, provider, ModeURI, nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/", proxy)

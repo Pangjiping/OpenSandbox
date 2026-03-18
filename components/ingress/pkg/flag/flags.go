@@ -29,4 +29,10 @@ var (
 
 	// Mode specifies the sandbox service discovery mode (e.g., header, uri).
 	Mode string
+
+	RenewIntentEnabled        bool
+	RenewIntentRedisDSN       string
+	RenewIntentQueueKey       string
+	RenewIntentQueueMaxLen    int
+	RenewIntentMinIntervalSec int
 )
