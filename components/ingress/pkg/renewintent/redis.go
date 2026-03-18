@@ -47,20 +47,24 @@ type intentReq struct {
 }
 
 type RedisPublisher struct {
-	client      *redis.Client
-	cfg         RedisPublisherConfig
-	lastSent    sync.Map
-	ch          chan intentReq
-	stopped     atomic.Bool
-	closeChOnce sync.Once
+	client   *redis.Client
+	cfg      RedisPublisherConfig
+	lastSent sync.Map
+	ch       chan intentReq
+	stopped  atomic.Bool
 }
 
 func NewRedisPublisher(ctx context.Context, client *redis.Client, cfg RedisPublisherConfig) *RedisPublisher {
 	p := &RedisPublisher{client: client, cfg: cfg, ch: make(chan intentReq, publishChanCap)}
 	for i := 0; i < publishWorkers; i++ {
 		go func() {
-			for req := range p.ch {
-				p.doPublish(req.sandboxID, req.port, req.requestURI)
+			for {
+				select {
+				case req := <-p.ch:
+					p.doPublish(req.sandboxID, req.port, req.requestURI)
+				case <-ctx.Done():
+					return
+				}
 			}
 		}()
 	}
@@ -68,8 +72,8 @@ func NewRedisPublisher(ctx context.Context, client *redis.Client, cfg RedisPubli
 	go func() {
 		<-ctx.Done()
 		p.stopped.Store(true)
-		p.closeChOnce.Do(func() { close(p.ch) })
 	}()
+
 	if cfg.MinInterval > 0 {
 		go wait.UntilWithContext(ctx, p.runCleanupThrottle, cfg.MinInterval*2)
 	}
@@ -94,7 +98,6 @@ func (p *RedisPublisher) PublishIntent(sandboxID string, port int, requestURI st
 	if p.stopped.Load() {
 		return
 	}
-
 	select {
 	case p.ch <- intentReq{sandboxID: sandboxID, port: port, requestURI: requestURI}:
 	default:
