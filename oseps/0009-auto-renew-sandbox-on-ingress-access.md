@@ -136,26 +136,28 @@ This feature uses explicit "three-party handshake" activation.
    - `server.auto_renew_on_access.enabled = true` must be set (stored under `ServerConfig`).
 2. **Ingress-side capability switch** (ingress mode only)
    - ingress must be configured to publish renew-intents (`server.auto_renew_on_access.redis.enabled = true` and ingress integration enabled).
-3. **Sandbox-level opt-in**
-   - sandbox must declare auto-renew-on-access in `CreateSandboxRequest.extensions`.
+3. **Sandbox-level opt-in and duration**
+   - sandbox must declare in `CreateSandboxRequest.extensions` how long each automatic renewal extends expiration (see below). Presence of a valid value opts the sandbox in.
 
 If any condition is missing, access events are ignored for renewal.
 
-Given current API schema (`extensions: Dict[str, str]`), this OSEP proposes string-based keys:
+Given current API schema (`extensions: Dict[str, str]`), this OSEP proposes:
 
-- `extensions["auto_renew_on_access"] = "true" | "false"` (required opt-in key)
+- `extensions["access.renew.extend.seconds"]` = positive integer string (e.g. `"1800"`)
 
-Behavior rules:
+**Meaning:** When auto-renew on access is triggered for this sandbox, each renewal extends expiration by this many seconds. The key thus both opts the sandbox in and defines the per-renewal extension duration.
 
-- Missing key or `"false"` means no auto-renew for that sandbox.
-- `"true"` enables auto-renew subject to policy gating; trigger source is inferred from the actual request path (server-proxy or ingress).
+**Behavior rules:**
+
+- Missing key or invalid value (non-positive integer string) means no auto-renew on access for that sandbox.
+- Valid value (e.g. `"1800"`) enables auto-renew subject to policy gating; each successful renewal uses `new_expires_at = now + (value of access.renew.extend.seconds)`.
 - Invalid values are rejected at sandbox creation time with 4xx validation error.
 
 ### Control Strategy to Prevent Renewal Storms
 
 Both modes share the same strict control policy. An access event triggers renewal only when all checks pass:
 
-1. **Opt-in check**: sandbox declares `auto_renew_on_access=true`.
+1. **Opt-in check**: sandbox has a valid positive `access.renew.extend.seconds` in extensions.
 2. **Sandbox state check**: sandbox must be `Running`.
 3. **Renew window check**: remaining TTL must be below `before_expiration_seconds`.
 4. **Cooldown check**: no successful renewal for this sandbox within `min_interval_seconds`.
@@ -165,7 +167,7 @@ If any check fails, the event is acknowledged and dropped without a renewal call
 
 Renew target time:
 
-- `new_expires_at = now + extension_seconds`
+- `new_expires_at = now + (value of extensions["access.renew.extend.seconds"])`; server may enforce a cap or default.
 - must also satisfy `new_expires_at > current_expires_at` before calling renew API
 
 This guarantees bounded renewal frequency even for very hot sandboxes.
@@ -307,7 +309,7 @@ Configuration rules:
 - `server.auto_renew_on_access.enabled=false` means feature fully disabled.
 - Ingress path renewal requires Redis block enabled and reachable on the server; the **ingress component** uses its own config (e.g. CLI flags: `--renew-intent-enabled`, `--renew-intent-redis-dsn`, `--renew-intent-queue-key`, `--renew-intent-queue-max-len`, `--renew-intent-min-interval`) to connect to Redis and publish intents. Queue key and default list name should match what the server consumer expects (e.g. `opensandbox:renew:intent`).
 - Server proxy path can run without Redis.
-- Feature is applied per sandbox only when `extensions["auto_renew_on_access"]="true"`.
+- Feature is applied per sandbox only when `extensions["access.renew.extend.seconds"]` is present and a valid positive integer string.
 - Docker runtime direct mode remains unsupported regardless of this config.
 
 Create request example:
@@ -318,7 +320,7 @@ Create request example:
   "entrypoint": ["python", "-m", "http.server", "8000"],
   "timeout": 3600,
   "extensions": {
-    "auto_renew_on_access": "true"
+    "access.renew.extend.seconds": "1800"
   }
 }
 ```
