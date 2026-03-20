@@ -200,7 +200,7 @@ execd 可通过 **seccomp** 让 `clone3` 返回 **`ENOSYS`**，迫使 libc 与 G
 
 ```python
 sandbox = await Sandbox.create(
-    "opensandbox/code-interpreter:v1.0.2",
+    "opensandbox/code-interpreter:v1.0.2.clone3.fix1",
     entrypoint=["/opt/opensandbox/code-interpreter.sh"],
     env={"EXECD_CLONE3_COMPAT": "1"},
 )

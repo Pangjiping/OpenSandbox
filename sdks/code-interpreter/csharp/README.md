@@ -40,7 +40,7 @@ try
     await using var sandbox = await Sandbox.CreateAsync(new SandboxCreateOptions
     {
         ConnectionConfig = config,
-        Image = "opensandbox/code-interpreter:v1.0.2",
+        Image = "opensandbox/code-interpreter:v1.0.2.clone3.fix1",
         Entrypoint = new[] { "/opt/opensandbox/code-interpreter.sh" },
         Env = new Dictionary<string, string>
         {
@@ -88,7 +88,7 @@ using var loggerFactory = LoggerFactory.Create(builder =>
 await using var sandbox = await Sandbox.CreateAsync(new SandboxCreateOptions
 {
     ConnectionConfig = new ConnectionConfig(),
-    Image = "opensandbox/code-interpreter:v1.0.2",
+    Image = "opensandbox/code-interpreter:v1.0.2.clone3.fix1",
     Entrypoint = new[] { "/opt/opensandbox/code-interpreter.sh" },
     Diagnostics = new SdkDiagnosticsOptions
     {

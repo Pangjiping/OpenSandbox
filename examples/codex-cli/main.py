@@ -44,7 +44,7 @@ async def main() -> None:
     openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     image = os.getenv(
         "SANDBOX_IMAGE",
-        "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2",
+        "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2.clone3.fix1",
     )
 
     config = ConnectionConfig(

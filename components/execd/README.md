@@ -200,7 +200,7 @@ Set `EXECD_CLONE3_COMPAT` in `Sandbox.create` `env` so execd sees it when the sa
 
 ```python
 sandbox = await Sandbox.create(
-    "opensandbox/code-interpreter:v1.0.2",
+    "opensandbox/code-interpreter:v1.0.2.clone3.fix1",
     entrypoint=["/opt/opensandbox/code-interpreter.sh"],
     env={"EXECD_CLONE3_COMPAT": "1"},
 )

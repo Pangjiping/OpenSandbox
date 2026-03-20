@@ -47,7 +47,7 @@ var config = new ConnectionConfig(new ConnectionConfigOptions
 await using var sandbox = await Sandbox.CreateAsync(new SandboxCreateOptions
 {
     ConnectionConfig = config,
-    Image = "opensandbox/code-interpreter:v1.0.2",
+    Image = "opensandbox/code-interpreter:v1.0.2.clone3.fix1",
     Entrypoint = new[] { "/opt/opensandbox/code-interpreter.sh" },
     Env = new Dictionary<string, string>
     {
@@ -94,7 +94,7 @@ using var loggerFactory = LoggerFactory.Create(builder =>
 
 await using var sandbox = await Sandbox.CreateAsync(new SandboxCreateOptions
 {
-    Image = "opensandbox/code-interpreter:v1.0.2",
+    Image = "opensandbox/code-interpreter:v1.0.2.clone3.fix1",
     Diagnostics = new SdkDiagnosticsOptions
     {
         LoggerFactory = loggerFactory
@@ -131,7 +131,7 @@ Code Interpreter SDK 依赖于专门的环境。请确保您的沙箱提供者�
 await using var sandbox = await Sandbox.CreateAsync(new SandboxCreateOptions
 {
     ConnectionConfig = config,
-    Image = "opensandbox/code-interpreter:v1.0.2",
+    Image = "opensandbox/code-interpreter:v1.0.2.clone3.fix1",
     Entrypoint = new[] { "/opt/opensandbox/code-interpreter.sh" },
     Env = new Dictionary<string, string>
     {
