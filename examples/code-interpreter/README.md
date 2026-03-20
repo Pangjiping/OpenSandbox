@@ -7,10 +7,10 @@ Complete demonstration of running Python code using the Code Interpreter SDK.
 Pull the prebuilt image from a registry:
 
 ```shell
-docker pull sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2
+docker pull sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2.clone3.fix1
 
 # use docker hub
-# docker pull opensandbox/code-interpreter:v1.0.2
+# docker pull opensandbox/code-interpreter:v1.0.2.clone3.fix1
 ```
 
 ## Start OpenSandbox server [local]
@@ -39,7 +39,7 @@ The script creates a Sandbox + CodeInterpreter, runs a Python code snippet and p
 
 - `SANDBOX_DOMAIN`: Sandbox service address (default: `localhost:8080`)
 - `SANDBOX_API_KEY`: API key if your server requires authentication
-- `SANDBOX_IMAGE`: Sandbox image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2`)
+- `SANDBOX_IMAGE`: Sandbox image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2.clone3.fix1`)
 
 ## Example output
 
@@ -117,7 +117,7 @@ spec:
               mountPath: /opt/opensandbox/bin
       containers:
         - name: sandbox
-          image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2
+          image: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2.clone3.fix1
           command:
           - "/bin/sh"
           - "-c"
@@ -172,7 +172,7 @@ The script creates a Sandbox + CodeInterpreter, runs a Python code snippet and p
 
 - `SANDBOX_DOMAIN`: Sandbox service address (default: `localhost:8080`)
 - `SANDBOX_API_KEY`: API key if your server requires authentication
-- `SANDBOX_IMAGE`: Sandbox image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2`)
+- `SANDBOX_IMAGE`: Sandbox image to use (default: `sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2.clone3.fix1`)
 
 ## Example output
 

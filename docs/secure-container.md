@@ -546,7 +546,7 @@ spec:
       runtimeClassName: gvisor
       containers:
         - name: sandbox-container
-          image: opensandbox/code-interpreter:v1.0.2
+          image: opensandbox/code-interpreter:v1.0.2.clone3.fix1
   capacitySpec:
     bufferMax: 10
     bufferMin: 2

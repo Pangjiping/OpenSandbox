@@ -44,7 +44,7 @@ async def main() -> None:
     kimi_model_name = os.getenv("KIMI_MODEL_NAME", "kimi-k2.5")
     image = os.getenv(
         "SANDBOX_IMAGE",
-        "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2",
+        "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2.clone3.fix1",
     )
 
     config = ConnectionConfig(

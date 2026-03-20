@@ -44,7 +44,7 @@ async def main() -> None:
     gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     image = os.getenv(
         "SANDBOX_IMAGE",
-        "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2",
+        "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2.clone3.fix1",
     )
 
     config = ConnectionConfig(
