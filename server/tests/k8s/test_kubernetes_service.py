@@ -227,7 +227,8 @@ class TestKubernetesSandboxServiceCreate:
         assert kwargs["expires_at"] is None
         assert kwargs["labels"].get(SANDBOX_MANUAL_CLEANUP_LABEL) == "true"
 
-    def test_create_sandbox_with_network_policy_passes_egress_token_and_annotations(
+    @pytest.mark.asyncio
+    async def test_create_sandbox_with_network_policy_passes_egress_token_and_annotations(
         self, k8s_service, create_sandbox_request
     ):
         create_sandbox_request.network_policy = NetworkPolicy(default_action="deny", egress=[])
@@ -245,14 +246,15 @@ class TestKubernetesSandboxServiceCreate:
             "src.services.k8s.kubernetes_service.generate_egress_token",
             return_value="egress-token",
         ):
-            k8s_service.create_sandbox(create_sandbox_request)
+            await k8s_service.create_sandbox(create_sandbox_request)
 
         _, kwargs = k8s_service.workload_provider.create_workload.call_args
         assert kwargs["egress_auth_token"] == "egress-token"
         assert kwargs["egress_mode"] == EGRESS_MODE_DNS
         assert kwargs["annotations"][SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY] == "egress-token"
 
-    def test_create_sandbox_with_network_policy_passes_egress_mode_dns_nft_from_config(
+    @pytest.mark.asyncio
+    async def test_create_sandbox_with_network_policy_passes_egress_mode_dns_nft_from_config(
         self, k8s_service, create_sandbox_request
     ):
         create_sandbox_request.network_policy = NetworkPolicy(default_action="deny", egress=[])
@@ -273,7 +275,7 @@ class TestKubernetesSandboxServiceCreate:
             "src.services.k8s.kubernetes_service.generate_egress_token",
             return_value="egress-token",
         ):
-            k8s_service.create_sandbox(create_sandbox_request)
+            await k8s_service.create_sandbox(create_sandbox_request)
 
         _, kwargs = k8s_service.workload_provider.create_workload.call_args
         assert kwargs["egress_mode"] == EGRESS_MODE_DNS_NFT
