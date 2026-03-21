@@ -10,7 +10,6 @@ Examples for common OpenSandbox use cases. Each subdirectory contains runnable c
 - ☁️ [**docker-ossfs-volume-mount**](docker-ossfs-volume-mount): Mount OSSFS volumes in Docker runtime (inline credentials, subpath, sharing)
 - 🎯 [**rl-training**](rl-training): Reinforcement learning training loop inside a sandbox
 - <img src="https://img.shields.io/badge/-%20-D97757?logo=claude&logoColor=white&style=flat-square" alt="Claude" width="16" height="16" style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px;" /> [**claude-code**](claude-code): Call Claude (Anthropic) API/CLI within the sandbox
-- <img src="https://cli.iflow.cn/img/favicon.ico" alt="iFlow" width="16" height="16" style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px;" /> [**iflow-cli**](iflow-cli): CLI invocation template for iFlow/custom HTTP LLM services
 - <img src="https://geminicli.com/favicon.ico" alt="Google Gemini" width="16" height="16" style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px;" /> [**gemini-cli**](gemini-cli): Call Google Gemini within the sandbox
 - <img src="https://developers.openai.com/favicon.png" alt="OpenAI" width="16" height="16" style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px;" /> [**codex-cli**](codex-cli): Call OpenAI/Codex-like models within the sandbox
 - <img src="https://www.kimi.com/favicon.ico" alt="Kimi" width="16" height="16" style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px;" /> [**kimi-cli**](kimi-cli): Call Kimi Code CLI (Moonshot AI) within the sandbox
@@ -25,7 +24,7 @@ Examples for common OpenSandbox use cases. Each subdirectory contains runnable c
 
 ## How to Run
 - Set basic environment variables (e.g., `export SANDBOX_DOMAIN=...`, `export SANDBOX_API_KEY=...`)
-- Add provider-specific variables as needed (e.g., `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `KIMI_API_KEY`, `IFLOW_API_KEY`/`IFLOW_ENDPOINT`, etc.; model selection is optional)
+- Add provider-specific variables as needed (e.g., `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `KIMI_API_KEY`, etc.; model selection is optional)
 - Navigate to the example directory and install dependencies: `pip install -r requirements.txt` (or refer to the Dockerfile in the directory)
 - Then execute: `python main.py`
 - To run in a container, build and run using the `Dockerfile` in the directory
