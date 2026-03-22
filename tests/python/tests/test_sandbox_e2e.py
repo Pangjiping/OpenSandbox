@@ -211,10 +211,12 @@ class TestSandboxE2E:
         assert info.entrypoint[-3:] == ["tail", "-f", "/dev/null"], info.entrypoint
 
         duration = info.expires_at - info.created_at
+        # Matches Sandbox.create(..., timeout=timedelta(minutes=5)); allow skew across runtimes.
         min_duration = timedelta(minutes=1)
-        max_duration = timedelta(minutes=3)
-        assert min_duration <= duration <= max_duration, \
-            f"Duration {duration} should be between 1 and 3 minutes"
+        max_duration = timedelta(minutes=6)
+        assert min_duration <= duration <= max_duration, (
+            f"Duration {duration} should be between {min_duration} and {max_duration}"
+        )
 
         assert info.metadata is not None
         assert info.metadata.get("tag") == "e2e-test"

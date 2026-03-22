@@ -41,6 +41,10 @@ from tests.base_e2e_test import create_connection_config_sync, get_sandbox_image
 
 logger = logging.getLogger(__name__)
 
+# Kubernetes may use Pending / Allocated during lifecycle; narrow filters omit them and list E2E flakes.
+_STATES_OR_BROAD = ["Pending", "Allocated", "Running", "Paused"]
+_STATES_NOT_PAUSED = ["Pending", "Allocated", "Running"]
+
 
 class TestSandboxManagerE2ESync:
     @pytest.mark.timeout(600)
@@ -107,9 +111,9 @@ class TestSandboxManagerE2ESync:
                 else:
                     raise
 
-            # OR states
+            # OR states (broad: K8s lifecycle is not only Running/Paused)
             both = manager.list_sandbox_infos(
-                SandboxFilter(states=["Running", "Paused"], metadata={"tag": tag}, page_size=50)
+                SandboxFilter(states=_STATES_OR_BROAD, metadata={"tag": tag}, page_size=50)
             )
             ids = {info.id for info in both.sandbox_infos}
             assert {s1.id, s2.id, s3.id}.issubset(ids)
@@ -119,7 +123,7 @@ class TestSandboxManagerE2ESync:
             )
             paused_ids = {info.id for info in paused_only.sandbox_infos}
             running_only = manager.list_sandbox_infos(
-                SandboxFilter(states=["Running"], metadata={"tag": tag}, page_size=50)
+                SandboxFilter(states=_STATES_NOT_PAUSED, metadata={"tag": tag}, page_size=50)
             )
             running_ids = {info.id for info in running_only.sandbox_infos}
 

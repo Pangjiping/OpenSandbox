@@ -42,6 +42,10 @@ from tests.base_e2e_test import create_connection_config, get_sandbox_image
 
 logger = logging.getLogger(__name__)
 
+# Kubernetes may use Pending / Allocated during lifecycle; narrow filters omit them and list E2E flakes.
+_STATES_OR_BROAD = ["Pending", "Allocated", "Running", "Paused"]
+_STATES_NOT_PAUSED = ["Pending", "Allocated", "Running"]
+
 
 async def _create_sandbox(
     *,
@@ -189,7 +193,11 @@ class TestSandboxManagerE2E:
 
         # states filter is OR: should return sandboxes in ANY of the requested states.
         result = await manager.list_sandbox_infos(
-            SandboxFilter(states=["Running", "Paused"], metadata={"tag": TestSandboxManagerE2E.tag}, page_size=50)
+            SandboxFilter(
+                states=_STATES_OR_BROAD,
+                metadata={"tag": TestSandboxManagerE2E.tag},
+                page_size=50,
+            )
         )
         ids = {info.id for info in result.sandbox_infos}
         assert {TestSandboxManagerE2E.s1.id, TestSandboxManagerE2E.s2.id, TestSandboxManagerE2E.s3.id}.issubset(ids)
@@ -199,7 +207,11 @@ class TestSandboxManagerE2E:
         )
         paused_ids = {info.id for info in paused_only.sandbox_infos}
         running_only = await manager.list_sandbox_infos(
-            SandboxFilter(states=["Running"], metadata={"tag": TestSandboxManagerE2E.tag}, page_size=50)
+            SandboxFilter(
+                states=_STATES_NOT_PAUSED,
+                metadata={"tag": TestSandboxManagerE2E.tag},
+                page_size=50,
+            )
         )
         running_ids = {info.id for info in running_only.sandbox_infos}
 
