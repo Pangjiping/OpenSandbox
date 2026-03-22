@@ -377,7 +377,7 @@ class KubernetesSandboxService(SandboxService):
                 
             except HTTPException as e:
                 try:
-                    logger.error(f"Creation failed, cleaning up sandbox: {sandbox_id}", e)
+                    logger.error(f"Creation failed, cleaning up sandbox {sandbox_id}: {e}")
                     self.workload_provider.delete_workload(sandbox_id, self.namespace)
                 except Exception as cleanup_ex:
                     logger.error(f"Failed to cleanup sandbox {sandbox_id}", exc_info=cleanup_ex)
