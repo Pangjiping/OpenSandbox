@@ -287,6 +287,9 @@ class TestSandboxE2ESync:
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
     def test_01a_network_policy_create(self) -> None:
+        if is_kubernetes_runtime():
+            pytest.skip("Network policy is not covered in the Kubernetes runtime suite")
+
         logger.info("=" * 80)
         logger.info("TEST 1a: Creating sandbox with networkPolicy (sync)")
         logger.info("=" * 80)
@@ -322,6 +325,9 @@ class TestSandboxE2ESync:
     @pytest.mark.timeout(180)
     @pytest.mark.order(1)
     def test_01aa_network_policy_get_and_patch(self) -> None:
+        if is_kubernetes_runtime():
+            pytest.skip("Network policy is not covered in the Kubernetes runtime suite")
+
         logger.info("=" * 80)
         logger.info("TEST 1aa: networkPolicy get/patch (sync)")
         logger.info("=" * 80)

@@ -324,6 +324,9 @@ class TestSandboxE2E:
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
     async def test_01a_network_policy_create(self):
+        if is_kubernetes_runtime():
+            pytest.skip("Network policy is not covered in the Kubernetes runtime suite")
+
         logger.info("=" * 80)
         logger.info("TEST 1a: Creating sandbox with networkPolicy (async)")
         logger.info("=" * 80)
@@ -355,6 +358,9 @@ class TestSandboxE2E:
     @pytest.mark.timeout(180)
     @pytest.mark.order(1)
     async def test_01aa_network_policy_get_and_patch(self):
+        if is_kubernetes_runtime():
+            pytest.skip("Network policy is not covered in the Kubernetes runtime suite")
+
         logger.info("=" * 80)
         logger.info("TEST 1aa: networkPolicy get/patch (async)")
         logger.info("=" * 80)
@@ -420,6 +426,9 @@ class TestSandboxE2E:
     @pytest.mark.timeout(180)
     @pytest.mark.order(1)
     async def test_01ab_network_policy_get_and_patch_with_server_proxy(self):
+        if is_kubernetes_runtime():
+            pytest.skip("Network policy is not covered in the Kubernetes runtime suite")
+
         logger.info("=" * 80)
         logger.info("TEST 1ab: networkPolicy get/patch with server proxy (async)")
         logger.info("=" * 80)
