@@ -17,6 +17,7 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/netip"
 	"strings"
 )
@@ -150,7 +151,11 @@ func (p *NetworkPolicy) WithExtraAllowIPs(ips []netip.Addr) *NetworkPolicy {
 		return p
 	}
 	out := *p
-	out.Egress = make([]EgressRule, len(p.Egress), len(p.Egress)+len(ips))
+	n, m := len(p.Egress), len(ips)
+	if m > math.MaxInt-n {
+		panic("policy: egress rule slice capacity overflow")
+	}
+	out.Egress = make([]EgressRule, n, n+m)
 	copy(out.Egress, p.Egress)
 	for _, ip := range ips {
 		out.Egress = append(out.Egress, EgressRule{

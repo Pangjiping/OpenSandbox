@@ -23,6 +23,8 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,8 +58,22 @@ type nftApplier interface {
 //
 // nameserverIPs are merged into every applied policy so system DNS stays allowed (e.g. private DNS).
 func startPolicyServer(ctx context.Context, proxy policyUpdater, nft nftApplier, enforcementMode string, addr string, token string, nameserverIPs []netip.Addr, policyFile string) error {
+	maxEgressRules := maxEgressRulesFromEnv()
+	if maxEgressRules > 0 {
+		log.Infof("policy API: max egress rules per policy (POST/PATCH) = %d (set %s=0 to disable)", maxEgressRules, constants.EnvMaxEgressRules)
+	}
+
 	mux := http.NewServeMux()
-	handler := &policyServer{proxy: proxy, nft: nft, token: token, enforcementMode: enforcementMode, nameserverIPs: nameserverIPs, policyFile: strings.TrimSpace(policyFile)}
+	handler := &policyServer{
+		proxy:           proxy,
+		nft:             nft,
+		token:           token,
+		enforcementMode: enforcementMode,
+		nameserverIPs:   nameserverIPs,
+		policyFile:      strings.TrimSpace(policyFile),
+		maxEgressRules:  maxEgressRules,
+	}
+
 	mux.HandleFunc("/policy", handler.handlePolicy)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -106,6 +122,7 @@ type policyServer struct {
 	enforcementMode string
 	nameserverIPs   []netip.Addr
 	policyFile      string     // if set, successful policy changes are persisted here
+	maxEgressRules  int        // 0 = unlimited; >0 = max len(Egress) for POST/PATCH
 	mu              sync.Mutex // serializes read-merge-apply to avoid lost updates across POST/PATCH
 }
 
@@ -188,6 +205,9 @@ func (s *policyServer) handlePost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid policy: %v", err), http.StatusBadRequest)
 		return
 	}
+	if !s.enforceEgressRuleLimit(w, len(pol.Egress)) {
+		return
+	}
 	mode := modeFromPolicy(pol)
 	log.Infof("policy API: updating policy to mode=%s, enforcement=%s", mode, s.enforcementMode)
 	if s.nft != nil {
@@ -260,6 +280,9 @@ func (s *policyServer) handlePatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid merged policy: %v", err), http.StatusBadRequest)
 		return
 	}
+	if !s.enforceEgressRuleLimit(w, len(newPolicy.Egress)) {
+		return
+	}
 
 	mode := modeFromPolicy(newPolicy)
 	log.Infof("policy API: patching policy with %d new rule(s), mode=%s, enforcement=%s", len(patchRules), mode, s.enforcementMode)
@@ -297,6 +320,32 @@ func (s *policyServer) authorize(r *http.Request) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(s.token)) == 1
+}
+
+func maxEgressRulesFromEnv() int {
+	s := strings.TrimSpace(os.Getenv(constants.EnvMaxEgressRules))
+	if s == "" {
+		return constants.DefaultMaxEgressRules
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return constants.DefaultMaxEgressRules
+	}
+	if n == 0 {
+		return 0
+	}
+	return n
+}
+
+func (s *policyServer) enforceEgressRuleLimit(w http.ResponseWriter, egressCount int) bool {
+	if s.maxEgressRules <= 0 {
+		return true
+	}
+	if egressCount > s.maxEgressRules {
+		http.Error(w, fmt.Sprintf("egress rule total count %d exceeds limit %d", egressCount, s.maxEgressRules), http.StatusRequestEntityTooLarge)
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

@@ -23,6 +23,7 @@ const (
 	EnvEgressRules      = "OPENSANDBOX_EGRESS_RULES"
 	EnvEgressPolicyFile = "OPENSANDBOX_EGRESS_POLICY_FILE" // optional JSON snapshot; if present and valid, overrides EnvEgressRules at startup
 	EnvEgressLogLevel   = "OPENSANDBOX_EGRESS_LOG_LEVEL"
+	EnvMaxEgressRules   = "OPENSANDBOX_EGRESS_MAX_RULES" // max egress rules for POST/PATCH; 0 = unlimited; empty = default
 	EnvMaxNameservers   = "OPENSANDBOX_EGRESS_MAX_NS"
 	EnvBlockedWebhook   = "OPENSANDBOX_EGRESS_DENY_WEBHOOK"
 	ENVSandboxID        = "OPENSANDBOX_EGRESS_SANDBOX_ID"
@@ -39,4 +40,5 @@ const (
 const (
 	DefaultEgressServerAddr = ":18080"
 	DefaultMaxNameservers   = 3
+	DefaultMaxEgressRules   = 4096
 )
