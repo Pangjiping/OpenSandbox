@@ -11,6 +11,7 @@ English | [中文](README_zh.md)
 - [Architecture](#architecture)
 - [Getting Started](#getting-started)
 - [Configuration](#configuration)
+  - [Linux `clone3` compatibility inside sandboxes](#linux-clone3-compatibility-inside-sandboxes)
 - [API Reference](#api-reference)
 - [Supported Languages](#supported-languages)
 - [Development](#development)
@@ -82,6 +83,7 @@ English | [中文](README_zh.md)
 | `pkg/jupyter/execute/` | Execution result types and stream parsers            |
 | `pkg/jupyter/session/` | Session management and lifecycle                     |
 | `pkg/util/`            | Utilities (safe goroutine helpers, glob helpers)     |
+| `pkg/clone3compat/`    | Optional seccomp shim for `clone3` → `ENOSYS` on Linux |
 | `tests/`               | Test scripts and tools                               |
 
 ## Getting Started
@@ -168,6 +170,43 @@ export JUPYTER_TOKEN=your-token
 ```
 
 Environment variables override defaults but are superseded by explicit CLI flags.
+
+| Variable | Description |
+|----------|-------------|
+| `EXECD_CLONE3_COMPAT` | Linux only. See [below](#linux-clone3-compatibility-inside-sandboxes). |
+
+### Linux `clone3` compatibility inside sandboxes
+
+Some sandbox images ship **glibc ≥ 2.34**, which prefers the `clone3(2)` syscall. On **older container engines** (for example Docker **before 20.10.10** and matching containerd CRI versions), or wherever `clone3` is not handled correctly, **process creation can fail**. That affects anything that forks or execs: **Go `os/exec`** inside execd, shell commands, package managers (`apt`, `dnf`), and language runtimes that start subprocesses.
+
+Typical symptoms are errors mentioning **`clone3`**, **`Function not implemented`**, or **`Operation not permitted`** when running commands or code **inside the sandbox**—not necessarily when starting the OpenSandbox server on the host.
+
+#### Enabling the built-in workaround
+
+execd can install a **seccomp** rule so `clone3` returns **`ENOSYS`**, forcing libc and the Go runtime to fall back to `clone(2)`—the same idea as [AkihiroSuda/clone3-workaround](https://github.com/AkihiroSuda/clone3-workaround). Implementation: [`pkg/clone3compat/`](pkg/clone3compat/).
+
+Set the variable **in the sandbox container environment** (where execd is PID 1 or otherwise started):
+
+| Value | Behavior |
+|-------|----------|
+| `1`, `true`, `yes`, `on` | Load the filter at the beginning of `main` (after Go runtime `init`). |
+| `reexec` | Load the filter, then `exec` the same binary again so subsequent `init` runs already under seccomp (closest to wrapping with the external workaround binary). |
+
+Unset, empty, or `0` / `false` / `off` / `no` disables the feature.
+
+#### SDK
+
+Set `EXECD_CLONE3_COMPAT` in `Sandbox.create` `env` so execd sees it when the sandbox starts:
+
+```python
+sandbox = await Sandbox.create(
+    "opensandbox/code-interpreter:v1.0.2",
+    entrypoint=["/opt/opensandbox/code-interpreter.sh"],
+    env={"EXECD_CLONE3_COMPAT": "1"},
+)
+```
+
+The sandbox must allow **seccomp** and **`PR_SET_NO_NEW_PRIVS`** for the filter to load. Upgrading the host container engine/kernel is the long-term fix when possible.
 
 ## API Reference
 

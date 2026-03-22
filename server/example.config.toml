@@ -31,7 +31,7 @@ max_sandbox_timeout_seconds = 86400
 # Runtime selection (docker | kubernetes)
 # -----------------------------------------------------------------
 type = "docker"
-execd_image = "opensandbox/execd:v1.0.7"
+execd_image = "opensandbox/execd:v1.0.8.clone3.fix1"
 
 [egress]
 # Egress configuration

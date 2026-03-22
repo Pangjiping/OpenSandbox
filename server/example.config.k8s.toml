@@ -30,7 +30,7 @@ log_level = "INFO"
 
 [runtime]
 type = "kubernetes"
-execd_image = "opensandbox/execd:v1.0.7"
+execd_image = "opensandbox/execd:v1.0.8.clone3.fix1"
 
 [storage]
 # Volume and storage configuration
