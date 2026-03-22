@@ -45,22 +45,6 @@ func TestProxyUpdatePolicy(t *testing.T) {
 	require.Equal(t, policy.ActionDeny, proxy.CurrentPolicy().Evaluate("example.com."), "expected default deny after clearing")
 }
 
-func TestLoadPolicyFromEnvVar(t *testing.T) {
-	const envName = "TEST_EGRESS_POLICY"
-	t.Setenv(envName, `{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
-
-	pol, err := LoadPolicyFromEnvVar(envName)
-	require.NoError(t, err, "unexpected error")
-	require.NotNil(t, pol, "expected parsed policy")
-	require.Equal(t, policy.ActionAllow, pol.Evaluate("example.com."), "expected parsed policy to allow example.com")
-
-	t.Setenv(envName, "")
-	pol, err = LoadPolicyFromEnvVar(envName)
-	require.NoError(t, err, "unexpected error on empty env")
-	require.NotNil(t, pol, "expected default deny policy when env is empty")
-	require.Equal(t, policy.ActionDeny, pol.DefaultAction, "expected default deny when env is empty")
-}
-
 func TestExtractResolvedIPs(t *testing.T) {
 	msg := new(dns.Msg)
 	msg.Answer = []dns.RR{

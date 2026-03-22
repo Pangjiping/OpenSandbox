@@ -15,16 +15,17 @@
 package constants
 
 const (
-	EnvBlockDoH443    = "OPENSANDBOX_EGRESS_BLOCK_DOH_443"
-	EnvDoHBlocklist   = "OPENSANDBOX_EGRESS_DOH_BLOCKLIST" // comma-separated IP/CIDR
-	EnvEgressMode     = "OPENSANDBOX_EGRESS_MODE"          // dns | dns+nft
-	EnvEgressHTTPAddr = "OPENSANDBOX_EGRESS_HTTP_ADDR"
-	EnvEgressToken    = "OPENSANDBOX_EGRESS_TOKEN"
-	EnvEgressRules    = "OPENSANDBOX_EGRESS_RULES"
-	EnvEgressLogLevel = "OPENSANDBOX_EGRESS_LOG_LEVEL"
-	EnvMaxNameservers = "OPENSANDBOX_EGRESS_MAX_NS"
-	EnvBlockedWebhook = "OPENSANDBOX_EGRESS_DENY_WEBHOOK"
-	ENVSandboxID      = "OPENSANDBOX_EGRESS_SANDBOX_ID"
+	EnvBlockDoH443      = "OPENSANDBOX_EGRESS_BLOCK_DOH_443"
+	EnvDoHBlocklist     = "OPENSANDBOX_EGRESS_DOH_BLOCKLIST" // comma-separated IP/CIDR
+	EnvEgressMode       = "OPENSANDBOX_EGRESS_MODE"          // dns | dns+nft
+	EnvEgressHTTPAddr   = "OPENSANDBOX_EGRESS_HTTP_ADDR"
+	EnvEgressToken      = "OPENSANDBOX_EGRESS_TOKEN"
+	EnvEgressRules      = "OPENSANDBOX_EGRESS_RULES"
+	EnvEgressPolicyFile = "OPENSANDBOX_EGRESS_POLICY_FILE" // optional JSON snapshot; if present and valid, overrides EnvEgressRules at startup
+	EnvEgressLogLevel   = "OPENSANDBOX_EGRESS_LOG_LEVEL"
+	EnvMaxNameservers   = "OPENSANDBOX_EGRESS_MAX_NS"
+	EnvBlockedWebhook   = "OPENSANDBOX_EGRESS_DENY_WEBHOOK"
+	ENVSandboxID        = "OPENSANDBOX_EGRESS_SANDBOX_ID"
 
 	// EnvNameserverExempt comma-separated IPs; proxy upstream to these is not marked and is allowed in nft allow set
 	EnvNameserverExempt = "OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT"

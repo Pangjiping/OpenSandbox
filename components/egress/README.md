@@ -34,7 +34,9 @@ The egress control is implemented as a **Sidecar** that shares the network names
 ## Configuration
 
 - Policy bootstrap & runtime:
-  - Default deny-all. Seed initial policy via `OPENSANDBOX_EGRESS_RULES` (JSON, same shape as `/policy`); empty/`{}`/`null` stays deny-all.
+  - Default deny-all. Initial policy comes from **`OPENSANDBOX_EGRESS_RULES`** (JSON, same shape as `/policy`) unless a policy file wins; empty/`{}`/`null` in env stays deny-all.
+  - **`OPENSANDBOX_EGRESS_POLICY_FILE`** (optional): path to a JSON policy file on disk. **Startup order:** if this variable is set, the file **exists**, is **non-empty**, and parses as valid policy, that file is used; **otherwise** initial policy is loaded from `OPENSANDBOX_EGRESS_RULES` (same as when the variable is unset, or the file is missing, empty, or invalid—in the last cases egress logs a warning and falls back to env). Use a **writable** mount if you rely on runtime persistence (see below).
+  - **Runtime persistence:** when `OPENSANDBOX_EGRESS_POLICY_FILE` is set, every successful **`POST`**, **`PATCH`**, or **empty-body reset** on `/policy` writes the resulting policy to that path (atomic replace). If the path is unset, nothing is written to disk.
   - `/policy` at runtime; empty body resets to default deny-all.
 - HTTP service:
   - Listen address: `OPENSANDBOX_EGRESS_HTTP_ADDR` (default `:18080`).

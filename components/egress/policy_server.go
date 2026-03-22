@@ -55,9 +55,9 @@ type nftApplier interface {
 //   - POST /policy : replace the policy; empty body resets to default deny-all.
 //
 // nameserverIPs are merged into every applied policy so system DNS stays allowed (e.g. private DNS).
-func startPolicyServer(ctx context.Context, proxy policyUpdater, nft nftApplier, enforcementMode string, addr string, token string, nameserverIPs []netip.Addr) error {
+func startPolicyServer(ctx context.Context, proxy policyUpdater, nft nftApplier, enforcementMode string, addr string, token string, nameserverIPs []netip.Addr, policyFile string) error {
 	mux := http.NewServeMux()
-	handler := &policyServer{proxy: proxy, nft: nft, token: token, enforcementMode: enforcementMode, nameserverIPs: nameserverIPs}
+	handler := &policyServer{proxy: proxy, nft: nft, token: token, enforcementMode: enforcementMode, nameserverIPs: nameserverIPs, policyFile: strings.TrimSpace(policyFile)}
 	mux.HandleFunc("/policy", handler.handlePolicy)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -105,6 +105,7 @@ type policyServer struct {
 	token           string
 	enforcementMode string
 	nameserverIPs   []netip.Addr
+	policyFile      string     // if set, successful policy changes are persisted here
 	mu              sync.Mutex // serializes read-merge-apply to avoid lost updates across POST/PATCH
 }
 
@@ -168,6 +169,11 @@ func (s *policyServer) handlePost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.proxy.UpdatePolicy(def)
+		if err := s.persistPolicy(def); err != nil {
+			log.Errorf("policy API: persist policy failed: %v", err)
+			http.Error(w, fmt.Sprintf("failed to persist policy: %v", err), http.StatusInternalServerError)
+			return
+		}
 		log.Infof("policy API: proxy and nftables updated to deny_all")
 		writeJSON(w, http.StatusOK, policyStatusResponse{
 			Status: "ok",
@@ -193,6 +199,11 @@ func (s *policyServer) handlePost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.proxy.UpdatePolicy(pol)
+	if err := s.persistPolicy(pol); err != nil {
+		log.Errorf("policy API: persist policy failed: %v", err)
+		http.Error(w, fmt.Sprintf("failed to persist policy: %v", err), http.StatusInternalServerError)
+		return
+	}
 	log.Infof("policy API: proxy and nftables updated successfully")
 	writeJSON(w, http.StatusOK, policyStatusResponse{
 		Status:          "ok",
@@ -261,6 +272,11 @@ func (s *policyServer) handlePatch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.proxy.UpdatePolicy(newPolicy)
+	if err := s.persistPolicy(newPolicy); err != nil {
+		log.Errorf("policy API: persist policy failed: %v", err)
+		http.Error(w, fmt.Sprintf("failed to persist policy: %v", err), http.StatusInternalServerError)
+		return
+	}
 	log.Infof("policy API: patch applied successfully")
 	writeJSON(w, http.StatusOK, policyStatusResponse{
 		Status:          "ok",
@@ -337,4 +353,11 @@ func mergeKey(r policy.EgressRule) string {
 		return r.Target
 	}
 	return strings.ToLower(r.Target)
+}
+
+func (s *policyServer) persistPolicy(p *policy.NetworkPolicy) error {
+	if s.policyFile == "" {
+		return nil
+	}
+	return policy.SavePolicyFile(s.policyFile, p)
 }

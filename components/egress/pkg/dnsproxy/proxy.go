@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -286,15 +285,6 @@ func ResolvNameserverIPs(resolvPath string) ([]netip.Addr, error) {
 		out = append(out, ip)
 	}
 	return out, nil
-}
-
-// LoadPolicyFromEnvVar reads the given env var and parses a policy; empty falls back to default deny-all.
-func LoadPolicyFromEnvVar(envName string) (*policy.NetworkPolicy, error) {
-	raw := os.Getenv(envName)
-	if raw == "" {
-		return policy.DefaultDenyPolicy(), nil
-	}
-	return policy.ParsePolicy(raw)
 }
 
 func ensurePolicyDefaults(p *policy.NetworkPolicy) *policy.NetworkPolicy {
