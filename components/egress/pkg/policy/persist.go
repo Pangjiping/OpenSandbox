@@ -16,15 +16,15 @@ package policy
 
 import (
 	"encoding/json"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 )
 
-// LoadPolicyFromEnvVar parses policy from envName; empty → default deny.
-func LoadPolicyFromEnvVar(envName string) (*NetworkPolicy, error) {
+// loadPolicyFromEnvVar parses policy from envName; empty → default deny.
+func loadPolicyFromEnvVar(envName string) (*NetworkPolicy, error) {
 	raw := os.Getenv(envName)
 	if raw == "" {
 		return DefaultDenyPolicy(), nil
@@ -32,17 +32,17 @@ func LoadPolicyFromEnvVar(envName string) (*NetworkPolicy, error) {
 	return ParsePolicy(raw)
 }
 
-// LoadInitialPolicy prefers policyFile when present and valid; else envName (see LoadPolicyFromEnvVar).
+// LoadInitialPolicy prefers policyFile when present and valid; else envName (see loadPolicyFromEnvVar).
 func LoadInitialPolicy(policyFile, envName string) (*NetworkPolicy, error) {
 	policyFile = strings.TrimSpace(policyFile)
 	if policyFile == "" {
-		return LoadPolicyFromEnvVar(envName)
+		return loadPolicyFromEnvVar(envName)
 	}
 
 	data, err := os.ReadFile(policyFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return LoadPolicyFromEnvVar(envName)
+			return loadPolicyFromEnvVar(envName)
 		}
 		return nil, err
 	}
@@ -50,20 +50,20 @@ func LoadInitialPolicy(policyFile, envName string) (*NetworkPolicy, error) {
 	raw := strings.TrimSpace(string(data))
 	if raw == "" {
 		log.Warnf("egress policy file %s is empty; falling back to %s", policyFile, envName)
-		return LoadPolicyFromEnvVar(envName)
+		return loadPolicyFromEnvVar(envName)
 	}
 
 	pol, err := ParsePolicy(raw)
 	if err != nil {
 		log.Warnf("egress policy file %s is invalid: %v; falling back to %s", policyFile, err, envName)
-		return LoadPolicyFromEnvVar(envName)
+		return loadPolicyFromEnvVar(envName)
 	}
 
 	log.Infof("loaded egress policy from %s", policyFile)
 	return pol, nil
 }
 
-// SavePolicyFile writes JSON atomically; empty path is a no-op.
+// SavePolicyFile overwrites path with the full serialized policy (truncate + write + fsync).
 func SavePolicyFile(path string, p *NetworkPolicy) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -78,30 +78,17 @@ func SavePolicyFile(path string, p *NetworkPolicy) error {
 	}
 	data = append(data, '\n')
 
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".egress-policy-*.tmp")
+	mode := fs.FileMode(0o600)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode() & fs.ModePerm
+	}
+	if err := os.WriteFile(path, data, mode); err != nil {
+		return err
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	tmpName := f.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		cleanup()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		cleanup()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		cleanup()
-		return err
-	}
-	return nil
+	defer f.Close()
+	return f.Sync()
 }

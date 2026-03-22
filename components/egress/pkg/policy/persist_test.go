@@ -15,6 +15,7 @@
 package policy
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,13 +27,13 @@ func TestLoadPolicyFromEnvVar(t *testing.T) {
 	const envName = "TEST_EGRESS_POLICY"
 	t.Setenv(envName, `{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
 
-	pol, err := LoadPolicyFromEnvVar(envName)
+	pol, err := loadPolicyFromEnvVar(envName)
 	require.NoError(t, err, "unexpected error")
 	require.NotNil(t, pol, "expected parsed policy")
 	require.Equal(t, ActionAllow, pol.Evaluate("example.com."), "expected parsed policy to allow example.com")
 
 	t.Setenv(envName, "")
-	pol, err = LoadPolicyFromEnvVar(envName)
+	pol, err = loadPolicyFromEnvVar(envName)
 	require.NoError(t, err, "unexpected error on empty env")
 	require.NotNil(t, pol, "expected default deny policy when env is empty")
 	require.Equal(t, ActionDeny, pol.DefaultAction, "expected default deny when env is empty")
@@ -108,4 +109,19 @@ func TestSavePolicyFile_NilWritesDefaultDeny(t *testing.T) {
 
 func TestSavePolicyFile_EmptyPathNoOp(t *testing.T) {
 	require.NoError(t, SavePolicyFile("", DefaultDenyPolicy()))
+}
+
+func TestSavePolicyFile_PreservesMode(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "policy.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{}`), 0o640))
+
+	pol, err := ParsePolicy(`{"defaultAction":"deny","egress":[]}`)
+	require.NoError(t, err)
+	require.NoError(t, SavePolicyFile(path, pol))
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o640), info.Mode()&fs.ModePerm)
 }
