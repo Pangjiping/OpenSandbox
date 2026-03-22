@@ -338,6 +338,7 @@ class TestSandboxE2E:
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
+            resource={"cpu": "100m", "memory": "64Mi"},
             timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             network_policy=NetworkPolicy(
@@ -361,9 +362,6 @@ class TestSandboxE2E:
     @pytest.mark.timeout(180)
     @pytest.mark.order(1)
     async def test_01aa_network_policy_get_and_patch(self):
-        if is_kubernetes_runtime():
-            pytest.skip("Network policy is not covered in the Kubernetes runtime suite")
-
         logger.info("=" * 80)
         logger.info("TEST 1aa: networkPolicy get/patch (async)")
         logger.info("=" * 80)
@@ -372,6 +370,7 @@ class TestSandboxE2E:
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
+            resource={"cpu": "100m", "memory": "64Mi"},
             timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             network_policy=NetworkPolicy(
@@ -440,6 +439,7 @@ class TestSandboxE2E:
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
+            resource={"cpu": "100m", "memory": "64Mi"},
             timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             network_policy=NetworkPolicy(

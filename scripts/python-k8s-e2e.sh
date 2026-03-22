@@ -251,4 +251,4 @@ export OPENSANDBOX_TEST_PVC_NAME="${PVC_NAME}"
 
 cd tests/python
 uv sync --all-extras --refresh
-make test-kubernetes-mini
+make test-network-policy
