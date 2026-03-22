@@ -1,4 +1,4 @@
-.PHONY: sync sync-dev test test-sandbox test-manager test-code lint fmt
+.PHONY: sync sync-dev test test-k8s test-sandbox test-manager test-code lint fmt
 
 sync:
 	uv sync
@@ -8,6 +8,11 @@ sync-dev:
 
 test:
 	uv run pytest
+
+test-kubernetes-mini:
+	uv run pytest \
+		--ignore=tests/test_code_interpreter_e2e.py \
+		--ignore=tests/test_code_interpreter_e2e_sync.py
 
 test-sandbox:
 	uv run pytest tests/test_sandbox_e2e.py

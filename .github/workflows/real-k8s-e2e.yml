@@ -1,31 +1,15 @@
-name: Real K8s E2E Tests
+name: Real Kubernetes E2E Tests (nightly build)
 
 permissions:
   contents: read
 
 on:
-  pull_request:
-    branches: [ main ]
-    paths:
-      - 'server/src/**'
-      - 'server/Dockerfile'
-      - 'server/pyproject.toml'
-      - 'server/uv.lock'
-      - 'server/example.config.toml'
-      - 'server/example.config.k8s.toml'
-      - 'server/example.batchsandbox-template.yaml'
-      - 'components/execd/**'
-      - 'components/egress/**'
-      - 'sdks/sandbox/python/**'
-      - 'sdks/code-interpreter/python/**'
-      - 'tests/python/**'
-      - 'scripts/python-k8s-e2e.sh'
-      - 'kubernetes/**'
-  push:
-    branches: [ main ]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 20 * * *"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

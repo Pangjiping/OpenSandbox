@@ -28,10 +28,10 @@ CONTROLLER_IMG="${CONTROLLER_IMG:-opensandbox/controller:e2e-local}"
 SERVER_IMG="${SERVER_IMG:-opensandbox/server:e2e-local}"
 EXECD_IMG="${EXECD_IMG:-opensandbox/execd:e2e-local}"
 EGRESS_IMG="${EGRESS_IMG:-opensandbox/egress:e2e-local}"
-CODE_INTERPRETER_IMG="${CODE_INTERPRETER_IMG:-opensandbox/code-interpreter:latest}"
 SERVER_RELEASE="${SERVER_RELEASE:-opensandbox-server}"
 SERVER_VALUES_FILE="${SERVER_VALUES_FILE:-/tmp/opensandbox-server-values.yaml}"
 PORT_FORWARD_LOG="${PORT_FORWARD_LOG:-/tmp/opensandbox-server-port-forward.log}"
+SANDBOX_TEST_IMAGE="${SANDBOX_TEST_IMAGE:-ubuntu:latest}"
 
 SERVER_IMG_REPOSITORY="${SERVER_IMG%:*}"
 SERVER_IMG_TAG="${SERVER_IMG##*:}"
@@ -57,12 +57,12 @@ cd "${REPO_ROOT}"
 docker build -f server/Dockerfile -t "${SERVER_IMG}" server
 docker build -f components/execd/Dockerfile -t "${EXECD_IMG}" "${REPO_ROOT}"
 docker build -f components/egress/Dockerfile -t "${EGRESS_IMG}" "${REPO_ROOT}"
-docker pull "${CODE_INTERPRETER_IMG}"
+docker pull "${SANDBOX_TEST_IMAGE}"
 
 kind load docker-image --name "${KIND_CLUSTER}" "${SERVER_IMG}"
 kind load docker-image --name "${KIND_CLUSTER}" "${EXECD_IMG}"
 kind load docker-image --name "${KIND_CLUSTER}" "${EGRESS_IMG}"
-kind load docker-image --name "${KIND_CLUSTER}" "${CODE_INTERPRETER_IMG}"
+kind load docker-image --name "${KIND_CLUSTER}" "${SANDBOX_TEST_IMAGE}"
 
 kubectl get namespace "${E2E_NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${E2E_NAMESPACE}"
 
@@ -244,11 +244,11 @@ cd ../../..
 export OPENSANDBOX_TEST_DOMAIN="localhost:8080"
 export OPENSANDBOX_TEST_PROTOCOL="http"
 export OPENSANDBOX_TEST_API_KEY=""
-export OPENSANDBOX_SANDBOX_DEFAULT_IMAGE="${CODE_INTERPRETER_IMG}"
+export OPENSANDBOX_SANDBOX_DEFAULT_IMAGE="${SANDBOX_TEST_IMAGE}"
 export OPENSANDBOX_E2E_RUNTIME="kubernetes"
 export OPENSANDBOX_TEST_USE_SERVER_PROXY="true"
 export OPENSANDBOX_TEST_PVC_NAME="${PVC_NAME}"
 
 cd tests/python
 uv sync --all-extras --refresh
-make test
+make test-kubernetes-mini
