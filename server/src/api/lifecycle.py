@@ -19,6 +19,7 @@ This module defines FastAPI routes that map to the OpenAPI specification endpoin
 All business logic is delegated to the service layer that backs each operation.
 """
 
+import logging
 from typing import List, Optional
 
 import httpx
@@ -40,6 +41,8 @@ from src.api.schema import (
     SandboxFilter,
 )
 from src.services.factory import create_sandbox_service
+
+logger = logging.getLogger(__name__)
 
 # RFC 2616 Section 13.5.1
 HOP_BY_HOP_HEADERS = {
@@ -424,11 +427,29 @@ async def proxy_sandbox_endpoint_request(request: Request, sandbox_id: str, port
     Receives all incoming requests, determines the target sandbox from path parameter,
     and asynchronously proxies the request to it.
     """
+    client_host = getattr(request.client, "host", None)
+    logger.info(
+        "proxy inbound: method=%s sandbox_id=%s port=%s subpath=%s query=%s client=%s",
+        request.method,
+        sandbox_id,
+        port,
+        full_path,
+        request.url.query or "-",
+        client_host,
+    )
 
     endpoint = sandbox_service.get_endpoint(sandbox_id, port, resolve_internal=True)
 
     target_host = endpoint.endpoint
     query_string = request.url.query
+
+    logger.info(
+        "proxy resolved: sandbox_id=%s port=%s upstream_host=%s subpath=%s",
+        sandbox_id,
+        port,
+        target_host,
+        full_path,
+    )
 
     client: httpx.AsyncClient = request.app.state.http_client
 
@@ -456,15 +477,32 @@ async def proxy_sandbox_endpoint_request(request: Request, sandbox_id: str, port
             ):
                 headers[key] = value
 
+        upstream_url = f"http://{target_host}/{full_path}"
         req = client.build_request(
             method=request.method,
-            url=f"http://{target_host}/{full_path}",
+            url=upstream_url,
             params=query_string if query_string else None,
             headers=headers,
             content=request.stream() if request.method in ("POST", "PUT", "PATCH", "DELETE") else None,
         )
 
+        logger.info(
+            "proxy forward: method=%s upstream_url=%s stream_body=%s",
+            request.method,
+            upstream_url,
+            request.method in ("POST", "PUT", "PATCH", "DELETE"),
+        )
+
         resp = await client.send(req, stream=True)
+
+        logger.info(
+            "proxy upstream headers: status=%s sandbox_id=%s port=%s subpath=%s content_length=%s",
+            resp.status_code,
+            sandbox_id,
+            port,
+            full_path,
+            resp.headers.get("content-length", "-"),
+        )
 
         hop_by_hop = set(HOP_BY_HOP_HEADERS)
         connection_header = resp.headers.get("connection")
@@ -486,6 +524,15 @@ async def proxy_sandbox_endpoint_request(request: Request, sandbox_id: str, port
             headers=response_headers,
         )
     except httpx.ConnectError as e:
+        logger.warning(
+            "proxy connect error: sandbox_id=%s port=%s upstream_host=%s subpath=%s err=%s",
+            sandbox_id,
+            port,
+            target_host,
+            full_path,
+            e,
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=502,
             detail=f"Could not connect to the backend sandbox {endpoint}: {e}",
@@ -494,6 +541,13 @@ async def proxy_sandbox_endpoint_request(request: Request, sandbox_id: str, port
         # Preserve explicit HTTP exceptions raised above (e.g. websocket upgrade not supported).
         raise
     except Exception as e:
+        logger.exception(
+            "proxy unexpected error: sandbox_id=%s port=%s upstream_host=%s subpath=%s",
+            sandbox_id,
+            port,
+            target_host,
+            full_path,
+        )
         raise HTTPException(
             status_code=500, detail=f"An internal error occurred in the proxy: {e}"
         )

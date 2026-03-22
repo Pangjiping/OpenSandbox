@@ -303,16 +303,16 @@ class TestSandboxE2ESync:
             timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             network_policy=NetworkPolicy(
-                defaultAction="deny",
-                egress=[NetworkRule(action="allow", target="pypi.org")],
+                defaultAction="allow",
+                egress=[NetworkRule(action="deny", target="pypi.org")],
             ),
         )
         try:
             time.sleep(5)
             result = sandbox.commands.run("curl -I https://www.github.com")
-            assert result.error is not None
-            result = sandbox.commands.run("curl -I https://pypi.org")
             assert result.error is None
+            result = sandbox.commands.run("curl -I https://pypi.org")
+            assert result.error is not None
         finally:
             try:
                 sandbox.kill()

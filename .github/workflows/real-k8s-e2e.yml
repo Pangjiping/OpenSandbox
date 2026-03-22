@@ -10,8 +10,9 @@ on:
   pull_request:
     branches: [ main ]
     paths:
-      - 'workflows/real-k8s-e2e.yml'
+      - '.github/workflows/real-k8s-e2e.yml'
       - 'scripts/python-k8s-e2e.sh'
+      - 'scripts/k8s-dump-e2e-diagnostics.sh'
       - 'kubernetes/charts/**'
 
 concurrency:
@@ -61,13 +62,7 @@ jobs:
 
       - name: Dump kind diagnostics
         if: always()
-        run: |
-          kubectl get pods -A -o wide || true
-          kubectl get batchsandboxes -A || true
-          kubectl get pv,pvc -A || true
-          kubectl describe deployment -n opensandbox-system opensandbox-controller-manager || true
-          kubectl describe deployment -n opensandbox-system opensandbox-server || true
-          kubectl get svc -n opensandbox-system opensandbox-server || true
+        run: bash ./scripts/dump-k8s-e2e-diagnostics.sh
 
       - name: Eval in-cluster server logs
         if: always()

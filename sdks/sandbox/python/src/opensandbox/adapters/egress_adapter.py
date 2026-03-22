@@ -26,6 +26,7 @@ from opensandbox.adapters.converter.response_handler import (
     handle_api_error,
     require_parsed,
 )
+from opensandbox.adapters.egress_http_log import format_egress_http_response
 from opensandbox.config import ConnectionConfig
 from opensandbox.models.sandboxes import NetworkPolicy, NetworkRule, SandboxEndpoint
 from opensandbox.services.egress import Egress
@@ -41,7 +42,7 @@ class EgressAdapter(Egress):
         self.endpoint = endpoint
         from opensandbox.api.egress import Client
 
-        base_url = f"{self.connection_config.protocol}://{self.endpoint.endpoint}"
+        base_url = f"{self.connection_config.protocol}://{self.endpoint.endpoint}".rstrip("/")
         timeout_seconds = self.connection_config.request_timeout.total_seconds()
         timeout = httpx.Timeout(timeout_seconds)
         headers = {
@@ -61,8 +62,11 @@ class EgressAdapter(Egress):
             transport=self.connection_config.transport,
         )
         self._client.set_async_httpx_client(self._httpx_client)
+        # Do not use URL.join("/policy"): a leading "/" replaces the entire path (→ http://host/policy).
+        self._policy_url = base_url.rstrip("/") + "/policy"
 
     async def get_policy(self) -> NetworkPolicy:
+        response_obj = None
         try:
             from opensandbox.api.egress.api.policy import get_policy
             from opensandbox.api.egress.models.network_policy import (
@@ -74,6 +78,11 @@ class EgressAdapter(Egress):
             from opensandbox.api.egress.types import Unset
 
             response_obj = await get_policy.asyncio_detailed(client=self._client)
+            logger.info(
+                "Egress GET policy: request_url=%s %s",
+                self._policy_url,
+                format_egress_http_response(response_obj),
+            )
             handle_api_error(response_obj, "Get egress policy")
             parsed = require_parsed(response_obj, PolicyStatusResponse, "Get egress policy")
             policy = parsed.policy
@@ -83,10 +92,24 @@ class EgressAdapter(Egress):
                 raise TypeError(f"Expected NetworkPolicy, got {type(policy).__name__}")
             return NetworkPolicy.model_validate(policy.to_dict())
         except Exception as e:
-            logger.error("Failed to get egress policy from endpoint %s", self.endpoint.endpoint, exc_info=e)
+            if response_obj is not None:
+                logger.error(
+                    "Egress GET policy failed: request_url=%s %s",
+                    self._policy_url,
+                    format_egress_http_response(response_obj),
+                    exc_info=True,
+                )
+            else:
+                logger.error(
+                    "Egress GET policy failed: request_url=%s (no HTTP response received) error=%s",
+                    self._policy_url,
+                    e,
+                    exc_info=True,
+                )
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
     async def patch_rules(self, rules: list[NetworkRule]) -> None:
+        response_obj = None
         try:
             from opensandbox.api.egress.api.policy import patch_policy
             from opensandbox.api.egress.models.network_rule import (
@@ -106,7 +129,29 @@ class EgressAdapter(Egress):
                     for rule in rules
                 ],
             )
+            logger.info(
+                "Egress PATCH policy: request_url=%s rules_count=%s %s",
+                self._policy_url,
+                len(rules),
+                format_egress_http_response(response_obj),
+            )
             handle_api_error(response_obj, "Patch egress rules")
         except Exception as e:
-            logger.error("Failed to patch egress policy via endpoint %s", self.endpoint.endpoint, exc_info=e)
+            if response_obj is not None:
+                logger.error(
+                    "Egress PATCH policy failed: request_url=%s rules_count=%s %s",
+                    self._policy_url,
+                    len(rules),
+                    format_egress_http_response(response_obj),
+                    exc_info=True,
+                )
+            else:
+                logger.error(
+                    "Egress PATCH policy failed: request_url=%s rules_count=%s "
+                    "(no HTTP response received) error=%s",
+                    self._policy_url,
+                    len(rules),
+                    e,
+                    exc_info=True,
+                )
             raise ExceptionConverter.to_sandbox_exception(e) from e
