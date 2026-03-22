@@ -13,12 +13,18 @@
 # limitations under the License.
 
 import asyncio
+import json
 import os
 from datetime import timedelta
 
 from opensandbox import Sandbox
 from opensandbox.config import ConnectionConfig
-from opensandbox.models.sandboxes import SandboxImageSpec
+from opensandbox.models.filesystem import WriteEntry
+
+
+QWEN_PROJECT_DIR = "/tmp/qwen-code-example"
+QWEN_SETTINGS_DIR = f"{QWEN_PROJECT_DIR}/.qwen"
+QWEN_SETTINGS_PATH = f"{QWEN_SETTINGS_DIR}/settings.json"
 
 
 def _required_env(name: str) -> str:
@@ -26,6 +32,31 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"{name} is required")
     return value
+
+
+def _build_qwen_settings(base_url: str, model_name: str) -> str:
+    settings = {
+        "modelProviders": {
+            "openai": [
+                {
+                    "id": model_name,
+                    "name": model_name,
+                    "baseUrl": base_url,
+                    "description": "Qwen Code via OpenAI-compatible API in OpenSandbox",
+                    "envKey": "API_KEY",
+                }
+            ]
+        },
+        "security": {
+            "auth": {
+                "selectedType": "openai",
+            }
+        },
+        "model": {
+            "name": model_name,
+        },
+    }
+    return json.dumps(settings, indent=2)
 
 
 async def _print_execution_logs(execution) -> None:
@@ -40,9 +71,9 @@ async def _print_execution_logs(execution) -> None:
 async def main() -> None:
     domain = os.getenv("SANDBOX_DOMAIN", "localhost:8080")
     api_key = os.getenv("SANDBOX_API_KEY")
-    iflow_api_key = _required_env("IFLOW_API_KEY")
-    iflow_base_url = os.getenv("IFLOW_BASE_URL", "https://apis.iflow.cn/v1")
-    iflow_model_name = os.getenv("IFLOW_MODEL_NAME", "qwen3-coder-plus")
+    qwen_api_key = _required_env("API_KEY")
+    qwen_base_url = os.getenv("BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    qwen_model_name = os.getenv("MODEL_NAME", "qwen3-coder-plus")
     image = os.getenv(
         "SANDBOX_IMAGE",
         "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/code-interpreter:v1.0.2",
@@ -57,22 +88,32 @@ async def main() -> None:
     sandbox = await Sandbox.create(
         image,
         connection_config=config,
-        env={
-            "IFLOW_apiKey": iflow_api_key,
-            "IFLOW_baseUrl": iflow_base_url,
-            "IFLOW_modelName": iflow_model_name,
-        },
+        env={"API_KEY": qwen_api_key},
     )
 
     async with sandbox:
-        # Install iFlow CLI (Node.js is already in the code-interpreter image)
+        await sandbox.files.create_directories(
+            [
+                WriteEntry(path=QWEN_PROJECT_DIR, mode=755),
+                WriteEntry(path=QWEN_SETTINGS_DIR, mode=755),
+            ]
+        )
+        await sandbox.files.write_file(
+            QWEN_SETTINGS_PATH,
+            _build_qwen_settings(qwen_base_url, qwen_model_name),
+            mode=644,
+        )
+
+        # Install Qwen Code CLI (Node.js is already in the code-interpreter image).
         install_exec = await sandbox.commands.run(
-            "npm install -g @iflow-ai/iflow-cli@latest"
+            "npm install -g @qwen-code/qwen-code@latest"
         )
         await _print_execution_logs(install_exec)
 
-        # Send a simple request via iFlow CLI
-        run_exec = await sandbox.commands.run('iflow "Compute 1+1=?."')
+        # Run Qwen Code in headless mode using the project-local config.
+        run_exec = await sandbox.commands.run(
+            'cd /tmp/qwen-code-example && qwen -p "Compute 1+1 and reply with only the final number."'
+        )
         await _print_execution_logs(run_exec)
 
         await sandbox.kill()

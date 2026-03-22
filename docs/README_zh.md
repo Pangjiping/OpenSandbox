@@ -28,6 +28,9 @@
   <a href="https://github.com/alibaba/OpenSandbox/actions">
     <img src="https://github.com/alibaba/OpenSandbox/actions/workflows/real-e2e.yml/badge.svg?branch=main" alt="E2E Status" />
   </a>
+  <a href="https://github.com/alibaba/OpenSandbox/actions">
+    <img src="https://github.com/alibaba/OpenSandbox/actions/workflows/real-k8s-e2e.yml/badge.svg?branch=main" alt="E2E Status" />
+  </a>
 </p>
 
   <hr />
@@ -167,7 +170,6 @@ OpenSandbox 提供了丰富的示例来演示不同场景下的沙箱使用方�
 - **[gemini-cli](../examples/gemini-cli/README.md)** - 在 OpenSandbox 中运行 Google Gemini CLI。
 - **[codex-cli](../examples/codex-cli/README.md)** - 在 OpenSandbox 中运行 OpenAI Codex CLI。
 - **[kimi-cli](../examples/kimi-cli/README.md)** - 在 OpenSandbox 中运行 [Kimi CLI](https://github.com/MoonshotAI/kimi-cli)（Moonshot AI）。
-- **[iflow-cli](../examples/iflow-cli/README.md)** - 在 OpenSandbox 中运行 iFlow CLI。
 - **[langgraph](../examples/langgraph/README.md)** - 基于 LangGraph 状态机编排沙箱任务与回退重试。
 - **[google-adk](../examples/google-adk/README.md)** - 使用 Google ADK 通过 OpenSandbox 工具读写文件并执行命令。
 - **[nullclaw](../examples/nullclaw/README.md)** - 在沙箱中启动 Nullclaw Gateway。

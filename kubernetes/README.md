@@ -44,7 +44,7 @@ Intelligent resource management features:
 
 ## Runtime API Support Notes
 
-- `pause` / `resume` lifecycle APIs are currently **not supported** by the Kubernetes runtime.
+- `pause` / `resume` lifecycle APIs are currently **NOT SUPPORTED** by the Kubernetes runtime.
 - Calling these APIs against Kubernetes runtime returns `501 Not Implemented`.
 - Pause/resume semantics in OpenSandbox mean preserving in-memory process state (container-level suspend/resume). Kubernetes provider currently focuses on create/get/list/delete/renew workflows.
 

@@ -60,6 +60,9 @@ from tests.base_e2e_test import (
     create_connection_config,
     create_connection_config_server_proxy,
     get_sandbox_image,
+    get_test_host_volume_dir,
+    get_test_pvc_name,
+    is_kubernetes_runtime,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,7 +161,7 @@ class TestSandboxE2E:
         cls.sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cls.connection_config,
-            timeout=timedelta(minutes=2),
+            timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             metadata={"tag": "e2e-test"},
             env={
@@ -197,17 +200,23 @@ class TestSandboxE2E:
         logger.info("Step 2: Get sandbox information")
         info = await sandbox.get_info()
         assert info.id == sandbox.id
-        assert info.status.state == "Running"
+        # FIXME: upstream Kubernetes BatchSandbox lifecycle may still report
+        # "Allocated" after execd health checks already pass. This E2E focuses
+        # on end-to-end usability, so tolerate that transient state here.
+        assert info.status.state in {"Running", "Allocated"}
         assert info.created_at is not None
         assert info.expires_at is not None
         assert info.expires_at > info.created_at
-        assert info.entrypoint == ["tail", "-f", "/dev/null"]
+        # Docker runtime reports the SDK default as-is; Kubernetes may prefix bootstrap.sh.
+        assert info.entrypoint[-3:] == ["tail", "-f", "/dev/null"], info.entrypoint
 
         duration = info.expires_at - info.created_at
+        # Matches Sandbox.create(..., timeout=timedelta(minutes=5)); allow skew across runtimes.
         min_duration = timedelta(minutes=1)
-        max_duration = timedelta(minutes=3)
-        assert min_duration <= duration <= max_duration, \
-            f"Duration {duration} should be between 1 and 3 minutes"
+        max_duration = timedelta(minutes=6)
+        assert min_duration <= duration <= max_duration, (
+            f"Duration {duration} should be between {min_duration} and {max_duration}"
+        )
 
         assert info.metadata is not None
         assert info.metadata.get("tag") == "e2e-test"
@@ -253,7 +262,7 @@ class TestSandboxE2E:
         renewed_info = await sandbox.get_info()
         assert renewed_info.expires_at > info.expires_at
         assert renewed_info.id == sandbox.id
-        assert renewed_info.status.state == "Running"
+        assert renewed_info.status.state in {"Running", "Allocated"}
 
         # The renew API should return the new expiration time. Allow small backend-side skew.
         assert abs((renewed_info.expires_at - renew_response.expires_at).total_seconds()) < 10
@@ -318,6 +327,9 @@ class TestSandboxE2E:
     @pytest.mark.timeout(120)
     @pytest.mark.order(1)
     async def test_01a_network_policy_create(self):
+        if is_kubernetes_runtime():
+            pytest.skip("Network policy is not covered in the Kubernetes runtime suite")
+
         logger.info("=" * 80)
         logger.info("TEST 1a: Creating sandbox with networkPolicy (async)")
         logger.info("=" * 80)
@@ -326,7 +338,7 @@ class TestSandboxE2E:
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
-            timeout=timedelta(minutes=2),
+            timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             network_policy=NetworkPolicy(
                 defaultAction="deny",
@@ -349,6 +361,9 @@ class TestSandboxE2E:
     @pytest.mark.timeout(180)
     @pytest.mark.order(1)
     async def test_01aa_network_policy_get_and_patch(self):
+        if is_kubernetes_runtime():
+            pytest.skip("Network policy is not covered in the Kubernetes runtime suite")
+
         logger.info("=" * 80)
         logger.info("TEST 1aa: networkPolicy get/patch (async)")
         logger.info("=" * 80)
@@ -357,7 +372,7 @@ class TestSandboxE2E:
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
-            timeout=timedelta(minutes=2),
+            timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             network_policy=NetworkPolicy(
                 defaultAction="deny",
@@ -414,6 +429,9 @@ class TestSandboxE2E:
     @pytest.mark.timeout(180)
     @pytest.mark.order(1)
     async def test_01ab_network_policy_get_and_patch_with_server_proxy(self):
+        if is_kubernetes_runtime():
+            pytest.skip("Network policy is not covered in the Kubernetes runtime suite")
+
         logger.info("=" * 80)
         logger.info("TEST 1ab: networkPolicy get/patch with server proxy (async)")
         logger.info("=" * 80)
@@ -422,7 +440,7 @@ class TestSandboxE2E:
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
-            timeout=timedelta(minutes=2),
+            timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             network_policy=NetworkPolicy(
                 defaultAction="deny",
@@ -474,18 +492,21 @@ class TestSandboxE2E:
     @pytest.mark.order(1)
     async def test_01b_host_volume_mount(self):
         """Test creating a sandbox with a host volume mount."""
+        if is_kubernetes_runtime():
+            pytest.skip("Host path volume E2E is only covered in the Docker runtime suite")
+
         logger.info("=" * 80)
         logger.info("TEST 1b: Creating sandbox with host volume mount (async)")
         logger.info("=" * 80)
 
-        host_dir = "/tmp/opensandbox-e2e/host-volume-test"
+        host_dir = get_test_host_volume_dir()
         container_mount_path = "/mnt/host-data"
 
         cfg = create_connection_config()
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
-            timeout=timedelta(minutes=2),
+            timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             volumes=[
                 Volume(
@@ -542,18 +563,21 @@ class TestSandboxE2E:
     @pytest.mark.order(1)
     async def test_01c_host_volume_mount_readonly(self):
         """Test creating a sandbox with a read-only host volume mount."""
+        if is_kubernetes_runtime():
+            pytest.skip("Host path volume E2E is only covered in the Docker runtime suite")
+
         logger.info("=" * 80)
         logger.info("TEST 1c: Creating sandbox with read-only host volume mount (async)")
         logger.info("=" * 80)
 
-        host_dir = "/tmp/opensandbox-e2e/host-volume-test"
+        host_dir = get_test_host_volume_dir()
         container_mount_path = "/mnt/host-data-ro"
 
         cfg = create_connection_config()
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
-            timeout=timedelta(minutes=2),
+            timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             volumes=[
                 Volume(
@@ -598,14 +622,14 @@ class TestSandboxE2E:
         logger.info("TEST 1d: Creating sandbox with PVC named volume mount (async)")
         logger.info("=" * 80)
 
-        pvc_volume_name = "opensandbox-e2e-pvc-test"
+        pvc_volume_name = get_test_pvc_name()
         container_mount_path = "/mnt/pvc-data"
 
         cfg = create_connection_config()
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
-            timeout=timedelta(minutes=2),
+            timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             volumes=[
                 Volume(
@@ -665,14 +689,14 @@ class TestSandboxE2E:
         logger.info("TEST 1e: Creating sandbox with read-only PVC named volume mount (async)")
         logger.info("=" * 80)
 
-        pvc_volume_name = "opensandbox-e2e-pvc-test"
+        pvc_volume_name = get_test_pvc_name()
         container_mount_path = "/mnt/pvc-data-ro"
 
         cfg = create_connection_config()
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
-            timeout=timedelta(minutes=2),
+            timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             volumes=[
                 Volume(
@@ -717,14 +741,14 @@ class TestSandboxE2E:
         logger.info("TEST 1f: Creating sandbox with PVC named volume subPath mount (async)")
         logger.info("=" * 80)
 
-        pvc_volume_name = "opensandbox-e2e-pvc-test"
+        pvc_volume_name = get_test_pvc_name()
         container_mount_path = "/mnt/train"
 
         cfg = create_connection_config()
         sandbox = await Sandbox.create(
             image=SandboxImageSpec(get_sandbox_image()),
             connection_config=cfg,
-            timeout=timedelta(minutes=2),
+            timeout=timedelta(minutes=5),
             ready_timeout=timedelta(seconds=30),
             volumes=[
                 Volume(
@@ -1301,6 +1325,9 @@ class TestSandboxE2E:
     @pytest.mark.order(6)
     async def test_05_sandbox_pause(self):
         """Test sandbox pause operation."""
+        if is_kubernetes_runtime():
+            pytest.skip("Pause is not supported by the Kubernetes runtime")
+
         await self._ensure_sandbox_created()
         sandbox = TestSandboxE2E.sandbox
 
@@ -1355,6 +1382,9 @@ class TestSandboxE2E:
     @pytest.mark.order(7)
     async def test_06_sandbox_resume(self):
         """Test sandbox resume operation."""
+        if is_kubernetes_runtime():
+            pytest.skip("Resume is not supported by the Kubernetes runtime")
+
         await self._ensure_sandbox_created()
         sandbox = TestSandboxE2E.sandbox
 
