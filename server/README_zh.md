@@ -143,6 +143,8 @@ curl -H "OPEN-SANDBOX-API-KEY: your-secret-api-key" \
 可参考 Compose 运行示例：
 - `server/docker-compose.example.yaml`
 
+**实验性**生命周期能力（例如按访问自动续期）见文末 [实验性功能](#实验性功能) 一节（位于 [配置参考](#配置参考) 之后）。
+
 **安全加固（适用于所有 Docker 模式）**
    ```toml
    [docker]
@@ -538,6 +540,35 @@ curl -X DELETE \
 | `SANDBOX_CONFIG_PATH` | 覆盖配置文件位置 |
 | `DOCKER_HOST` | Docker 守护进程 URL（例如 `unix:///var/run/docker.sock`）|
 | `PENDING_FAILURE_TTL` | 失败的待处理沙箱的 TTL（秒，默认：3600）|
+
+## 实验性功能
+
+以下为**可选**的 **🧪 实验性**能力；在 `server/example.config.toml` 与各 `example.config.*.toml` 中**默认关闭**。生产启用前请阅读 **[OSEP-0009](../oseps/0009-auto-renew-sandbox-on-ingress-access.md)** 与发版说明。
+
+### 按访问自动续期
+
+在观测到访问时延长沙箱 TTL（经 Lifecycle **服务端代理** 和/或 **Ingress**）。设计、数据流与调参见 **[OSEP-0009](../oseps/0009-auto-renew-sandbox-on-ingress-access.md)**。
+
+**服务端开关**
+
+| 目的 | 操作 |
+|------|------|
+| **关闭（默认）** | `~/.sandbox.toml` 中保持 `[renew_intent] enabled = false`（见 `example.config.zh.toml`）。 |
+| **开启** | 设置 `[renew_intent] enabled = true`。若使用 **Ingress + Redis** 模式，按 OSEP 打开 `[renew_intent.redis]` 并配置 `dsn`。 |
+| **其它配置项** | `min_interval_seconds`、`queue_key`、`consumer_concurrency` 等见 OSEP 与 `example.config.zh.toml` 的 `[renew_intent]`。 |
+
+**按沙箱接入**
+
+**创建**沙箱时在 `extensions` 中设置 `access.renew.extend.seconds`，值为 **300～86400** 的**字符串**整数（秒）。不设该键（或未开 renew_intent）则该沙箱不按访问续期。
+
+**客户端（SDK / HTTP）**
+
+- **走 Lifecycle 服务端代理**，使请求经过 `/v1/sandboxes/{id}/proxy/{port}/...`：
+  - **REST**：获取端点时加 `use_server_proxy=true`，例如 `GET /v1/sandboxes/{id}/endpoints/{port}?use_server_proxy=true`。
+  - **SDK**：`ConnectionConfig(use_server_proxy=True)` 或 `ConnectionConfigSync(use_server_proxy=True)`（详见 SDK 文档中的 `use_server_proxy`）。
+- **Ingress / 网关** 模式：按 OSEP 部署网关与路由，客户端按网关方式访问即可。
+
+**延伸阅读**：[OSEP-0009](../oseps/0009-auto-renew-sandbox-on-ingress-access.md)；配置样例见 `server/example.config.zh.toml` → `[renew_intent]`。
 
 ## 开发
 

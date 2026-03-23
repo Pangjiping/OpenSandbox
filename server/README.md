@@ -149,6 +149,8 @@ The returned endpoint is rewritten to the server proxy route:
 Reference runtime compose file:
 - `server/docker-compose.example.yaml`
 
+For **experimental** lifecycle options (e.g. auto-renew on access), see [Experimental features](#experimental-features) (after [Configuration reference](#configuration-reference)).
+
 **Sandbox TTL configuration**
 
 - `timeout` requests must be at least 60 seconds.
@@ -563,6 +565,35 @@ curl -X DELETE \
 | `SANDBOX_CONFIG_PATH` | Override config file location |
 | `DOCKER_HOST` | Docker daemon URL (e.g., `unix:///var/run/docker.sock`) |
 | `PENDING_FAILURE_TTL` | TTL for failed pending sandboxes in seconds (default: 3600) |
+
+## Experimental features
+
+Optional **🧪 experimental** capabilities; **off by default** in `server/example.config.toml` and `example.config.*.toml`. Check release notes before production.
+
+### Auto-renew on access
+
+Extends sandbox TTL when access is observed (via the lifecycle **server proxy** and/or **ingress**). Architecture, data flow, and tuning are in **[OSEP-0009](../oseps/0009-auto-renew-sandbox-on-ingress-access.md)**.
+
+**Server on/off**
+
+| Goal | What to do |
+|------|------------|
+| **Off (default)** | Keep `[renew_intent] enabled = false` in `~/.sandbox.toml` (see `example.config.toml`). |
+| **On** | Set `[renew_intent] enabled = true`. For **ingress + Redis** mode, also enable `[renew_intent.redis]` and set `dsn` as described in OSEP-0009. |
+| **Other keys** | `min_interval_seconds`, `queue_key`, `consumer_concurrency` — see OSEP-0009 and `[renew_intent]` in `example.config.toml`. |
+
+**Per sandbox**
+
+On **create**, set `extensions["access.renew.extend.seconds"]` to a string integer between **300** and **86400** (seconds). Omit the key to opt that sandbox out of renew-on-access (or leave renew_intent disabled globally).
+
+**Clients (SDK / HTTP)**
+
+- **Use the lifecycle server as proxy** so traffic goes to `/v1/sandboxes/{id}/proxy/{port}/...`:
+  - **REST**: request endpoints with `use_server_proxy=true`, e.g. `GET /v1/sandboxes/{id}/endpoints/{port}?use_server_proxy=true`.
+  - **SDK**: `ConnectionConfig(use_server_proxy=True)` or `ConnectionConfigSync(use_server_proxy=True)` (see SDK docs for `use_server_proxy`).
+- **Ingress / gateway** path: deploy and route per OSEP-0009; clients use the gateway as usual.
+
+**Further reading**: [OSEP-0009](../oseps/0009-auto-renew-sandbox-on-ingress-access.md); sample keys under `[renew_intent]` in `server/example.config.toml`.
 
 ## Development
 
