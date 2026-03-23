@@ -4,7 +4,7 @@ authors:
   - "@Pangjiping"
 creation-date: 2026-03-15
 last-updated: 2026-03-23
-status: implementing
+status: implemented
 ---
 
 # OSEP-0009: Auto-Renew Sandbox on Ingress Access
