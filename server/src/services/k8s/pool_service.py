@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Kubernetes Pool service for managing pre-warmed sandbox resource pools.
-
-This module provides CRUD operations for Pool CRD resources, which represent
-pre-warmed sets of pods that reduce sandbox cold-start latency.
-"""
+"""CRUD for Pool CRD (pre-warmed sandbox pools) via ``K8sClient`` (rate limits + optional informer on get)."""
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -38,34 +33,17 @@ from src.services.k8s.client import K8sClient
 
 logger = logging.getLogger(__name__)
 
-# Pool CRD constants
 _GROUP = "sandbox.opensandbox.io"
 _VERSION = "v1alpha1"
 _PLURAL = "pools"
 
 
 class PoolService:
-    """
-    Service for managing Pool CRD resources in Kubernetes.
-
-    Provides CRUD operations that mirror the Pool CRD schema defined in
-    kubernetes/apis/sandbox/v1alpha1/pool_types.go.
-    """
+    """Pool CRD in-cluster; schema matches ``kubernetes/apis/sandbox/v1alpha1/pool_types.go``."""
 
     def __init__(self, k8s_client: K8sClient, namespace: str) -> None:
-        """
-        Initialize PoolService.
-
-        Args:
-            k8s_client: Kubernetes client wrapper.
-            namespace: Kubernetes namespace where pools are managed.
-        """
-        self._custom_api = k8s_client.get_custom_objects_api()
+        self._k8s = k8s_client
         self._namespace = namespace
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _build_pool_manifest(
         self,
@@ -74,7 +52,6 @@ class PoolService:
         template: Dict[str, Any],
         capacity_spec: PoolCapacitySpec,
     ) -> Dict[str, Any]:
-        """Build a Pool CRD manifest dict."""
         return {
             "apiVersion": f"{_GROUP}/{_VERSION}",
             "kind": "Pool",
@@ -94,7 +71,6 @@ class PoolService:
         }
 
     def _pool_from_raw(self, raw: Dict[str, Any]) -> PoolResponse:
-        """Convert a raw Pool CRD dict to a PoolResponse model."""
         metadata = raw.get("metadata", {})
         spec = raw.get("spec", {})
         raw_status = raw.get("status")
@@ -123,24 +99,7 @@ class PoolService:
             createdAt=metadata.get("creationTimestamp"),
         )
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def create_pool(self, request: CreatePoolRequest) -> PoolResponse:
-        """
-        Create a new Pool resource.
-
-        Args:
-            request: Pool creation request.
-
-        Returns:
-            PoolResponse representing the newly created pool.
-
-        Raises:
-            HTTPException 409: If a pool with the same name already exists.
-            HTTPException 500: On unexpected Kubernetes API errors.
-        """
         manifest = self._build_pool_manifest(
             name=request.name,
             namespace=self._namespace,
@@ -149,14 +108,14 @@ class PoolService:
         )
 
         try:
-            created = self._custom_api.create_namespaced_custom_object(
+            created = self._k8s.create_custom_object(
                 group=_GROUP,
                 version=_VERSION,
                 namespace=self._namespace,
                 plural=_PLURAL,
                 body=manifest,
             )
-            logger.info("Created pool: name=%s, namespace=%s", request.name, self._namespace)
+            logger.info(f"Created pool name={request.name} namespace={self._namespace}")
             return self._pool_from_raw(created)
 
         except ApiException as e:
@@ -168,7 +127,7 @@ class PoolService:
                         "message": f"Pool '{request.name}' already exists.",
                     },
                 ) from e
-            logger.error("Kubernetes API error creating pool %s: %s", request.name, e)
+            logger.error(f"Kubernetes API error creating pool {request.name}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
@@ -177,7 +136,7 @@ class PoolService:
                 },
             ) from e
         except Exception as e:
-            logger.error("Unexpected error creating pool %s: %s", request.name, e)
+            logger.error(f"Unexpected error creating pool {request.name}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
@@ -187,39 +146,26 @@ class PoolService:
             ) from e
 
     def get_pool(self, pool_name: str) -> PoolResponse:
-        """
-        Retrieve a Pool by name.
-
-        Args:
-            pool_name: Name of the pool to retrieve.
-
-        Returns:
-            PoolResponse for the requested pool.
-
-        Raises:
-            HTTPException 404: If the pool does not exist.
-            HTTPException 500: On unexpected Kubernetes API errors.
-        """
         try:
-            raw = self._custom_api.get_namespaced_custom_object(
+            raw = self._k8s.get_custom_object(
                 group=_GROUP,
                 version=_VERSION,
                 namespace=self._namespace,
                 plural=_PLURAL,
                 name=pool_name,
             )
-            return self._pool_from_raw(raw)
-
-        except ApiException as e:
-            if e.status == 404:
+            if raw is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail={
                         "code": SandboxErrorCodes.K8S_POOL_NOT_FOUND,
                         "message": f"Pool '{pool_name}' not found.",
                     },
-                ) from e
-            logger.error("Kubernetes API error getting pool %s: %s", pool_name, e)
+                )
+            return self._pool_from_raw(raw)
+
+        except ApiException as e:
+            logger.error(f"Kubernetes API error getting pool {pool_name}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
@@ -230,7 +176,7 @@ class PoolService:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error("Unexpected error getting pool %s: %s", pool_name, e)
+            logger.error(f"Unexpected error getting pool {pool_name}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
@@ -240,33 +186,35 @@ class PoolService:
             ) from e
 
     def list_pools(self) -> ListPoolsResponse:
-        """
-        List all Pools in the configured namespace.
-
-        Returns:
-            ListPoolsResponse containing all pools.
-
-        Raises:
-            HTTPException 500: On unexpected Kubernetes API errors.
-        """
         try:
-            result = self._custom_api.list_namespaced_custom_object(
+            raw_items = self._k8s.list_custom_objects(
                 group=_GROUP,
                 version=_VERSION,
                 namespace=self._namespace,
                 plural=_PLURAL,
+                not_found_returns_empty=False,
             )
-            items: List[PoolResponse] = [
-                self._pool_from_raw(item) for item in result.get("items", [])
-            ]
+            items: List[PoolResponse] = [self._pool_from_raw(item) for item in raw_items]
             return ListPoolsResponse(items=items)
 
         except ApiException as e:
             if e.status == 404:
-                # CRD not installed — return empty list gracefully
-                logger.warning("Pool CRD not found (404); returning empty list.")
-                return ListPoolsResponse(items=[])
-            logger.error("Kubernetes API error listing pools: %s", e)
+                logger.warning(
+                    f"Pool list API returned 404 (CRD or API unavailable): "
+                    f"group={_GROUP} version={_VERSION} plural={_PLURAL} namespace={self._namespace}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "code": SandboxErrorCodes.K8S_POOL_LIST_UNAVAILABLE,
+                        "message": (
+                            "Cannot list Pool resources: Kubernetes returned 404 for the "
+                            "Pool API path. Check that the Pool CRD is installed and the API "
+                            f"group/version ({_GROUP}/{_VERSION}) is correct."
+                        ),
+                    },
+                ) from e
+            logger.error(f"Kubernetes API error listing pools: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
@@ -275,7 +223,7 @@ class PoolService:
                 },
             ) from e
         except Exception as e:
-            logger.error("Unexpected error listing pools: %s", e)
+            logger.error(f"Unexpected error listing pools: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
@@ -285,23 +233,6 @@ class PoolService:
             ) from e
 
     def update_pool(self, pool_name: str, request: UpdatePoolRequest) -> PoolResponse:
-        """
-        Update the capacity configuration of an existing Pool.
-
-        Only ``capacitySpec`` can be updated; pod template changes require
-        recreating the pool.
-
-        Args:
-            pool_name: Name of the pool to update.
-            request: Update request containing the new capacity spec.
-
-        Returns:
-            PoolResponse reflecting the updated state.
-
-        Raises:
-            HTTPException 404: If the pool does not exist.
-            HTTPException 500: On unexpected Kubernetes API errors.
-        """
         patch_body = {
             "spec": {
                 "capacitySpec": {
@@ -314,7 +245,7 @@ class PoolService:
         }
 
         try:
-            updated = self._custom_api.patch_namespaced_custom_object(
+            updated = self._k8s.patch_custom_object(
                 group=_GROUP,
                 version=_VERSION,
                 namespace=self._namespace,
@@ -322,7 +253,7 @@ class PoolService:
                 name=pool_name,
                 body=patch_body,
             )
-            logger.info("Updated pool capacity: name=%s", pool_name)
+            logger.info(f"Updated pool capacity name={pool_name}")
             return self._pool_from_raw(updated)
 
         except ApiException as e:
@@ -334,7 +265,7 @@ class PoolService:
                         "message": f"Pool '{pool_name}' not found.",
                     },
                 ) from e
-            logger.error("Kubernetes API error updating pool %s: %s", pool_name, e)
+            logger.error(f"Kubernetes API error updating pool {pool_name}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
@@ -345,7 +276,7 @@ class PoolService:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error("Unexpected error updating pool %s: %s", pool_name, e)
+            logger.error(f"Unexpected error updating pool {pool_name}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
@@ -355,18 +286,8 @@ class PoolService:
             ) from e
 
     def delete_pool(self, pool_name: str) -> None:
-        """
-        Delete a Pool resource.
-
-        Args:
-            pool_name: Name of the pool to delete.
-
-        Raises:
-            HTTPException 404: If the pool does not exist.
-            HTTPException 500: On unexpected Kubernetes API errors.
-        """
         try:
-            self._custom_api.delete_namespaced_custom_object(
+            self._k8s.delete_custom_object(
                 group=_GROUP,
                 version=_VERSION,
                 namespace=self._namespace,
@@ -374,7 +295,7 @@ class PoolService:
                 name=pool_name,
                 grace_period_seconds=0,
             )
-            logger.info("Deleted pool: name=%s, namespace=%s", pool_name, self._namespace)
+            logger.info(f"Deleted pool name={pool_name} namespace={self._namespace}")
 
         except ApiException as e:
             if e.status == 404:
@@ -385,7 +306,7 @@ class PoolService:
                         "message": f"Pool '{pool_name}' not found.",
                     },
                 ) from e
-            logger.error("Kubernetes API error deleting pool %s: %s", pool_name, e)
+            logger.error(f"Kubernetes API error deleting pool {pool_name}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={
@@ -396,7 +317,7 @@ class PoolService:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error("Unexpected error deleting pool %s: %s", pool_name, e)
+            logger.error(f"Unexpected error deleting pool {pool_name}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail={

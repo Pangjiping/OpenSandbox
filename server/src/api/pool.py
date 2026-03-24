@@ -35,7 +35,7 @@ from src.api.schema import (
 from src.config import get_config
 from src.services.constants import SandboxErrorCodes
 
-router = APIRouter(tags=["Pools"])
+router = APIRouter(tags=["WarmPools"])
 
 _POOL_NOT_K8S_DETAIL = {
     "code": SandboxErrorCodes.K8S_POOL_NOT_SUPPORTED,
@@ -118,6 +118,10 @@ async def create_pool(
         200: {"description": "List of pools"},
         401: {"model": ErrorResponse, "description": "Authentication credentials are missing or invalid"},
         501: {"model": ErrorResponse, "description": "Pool management is not supported in this runtime"},
+        503: {
+            "model": ErrorResponse,
+            "description": "Pool list API unavailable (e.g. CRD not installed or wrong API version)",
+        },
         500: {"model": ErrorResponse, "description": "An unexpected server error occurred"},
     },
 )

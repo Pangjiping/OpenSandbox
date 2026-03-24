@@ -40,6 +40,11 @@ paths:
       summary: List WarmPools
       description: |
         Returns all WarmPool resources in the configured Kubernetes namespace.
+
+        If the cluster returns HTTP 404 for the Pool list API (CRD not installed, wrong
+        API version, or similar), the server responds with **503** and
+        `KUBERNETES::POOL_LIST_UNAVAILABLE`—this is distinct from **200** with an empty
+        `items` array when the API is healthy but no pools exist.
       responses:
         '200':
           description: List of WarmPools
@@ -54,6 +59,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '501':
           $ref: '#/components/responses/NotImplemented'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
         '500':
           $ref: '#/components/responses/InternalServerError'
     post:
@@ -265,6 +272,17 @@ components:
           $ref: '#/components/headers/XRequestId'
     NotImplemented:
       description: WarmPool management is not supported in this runtime (for example, when runtime.type is not kubernetes)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
+    ServiceUnavailable:
+      description: |
+        Pool list API returned 404 from Kubernetes (e.g. Pool CRD missing or API path wrong).
+        Error body uses code `KUBERNETES::POOL_LIST_UNAVAILABLE`.
       content:
         application/json:
           schema:
