@@ -7,8 +7,10 @@ info:
     WarmPools reduce cold-start latency by maintaining a set of ready pods; sandboxes can reference
     a pool via `extensions.poolRef` during sandbox creation.
 
-    These endpoints are only available when the server is configured with `runtime.type: kubernetes`.
-    Other runtimes return HTTP `501 Not Implemented` with a machine-readable error body.
+    These endpoints are only available when the server is configured with `runtime.type: kubernetes`
+    **and** `kubernetes.workload_provider` resolves to `batchsandbox` (WarmPool is used with
+    BatchSandbox workloads). Other runtimes or workload providers (e.g. `agent-sandbox`) return
+    HTTP `501 Not Implemented` with a machine-readable error body (`KUBERNETES::POOL_NOT_SUPPORTED`).
 
     ## Authentication
 
@@ -119,6 +121,8 @@ paths:
           $ref: '#/components/responses/NotImplemented'
         '500':
           $ref: '#/components/responses/InternalServerError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
   /warmpools/{warmPoolName}:
     parameters:
       - $ref: '#/components/parameters/WarmPoolName'
@@ -146,6 +150,8 @@ paths:
           $ref: '#/components/responses/NotImplemented'
         '500':
           $ref: '#/components/responses/InternalServerError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
     put:
       tags: [WarmPools]
       summary: Update WarmPool capacity
@@ -187,6 +193,8 @@ paths:
           $ref: '#/components/responses/NotImplemented'
         '500':
           $ref: '#/components/responses/InternalServerError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
     delete:
       tags: [WarmPools]
       summary: Delete a WarmPool
@@ -207,6 +215,8 @@ paths:
           $ref: '#/components/responses/NotImplemented'
         '500':
           $ref: '#/components/responses/InternalServerError'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
 components:
   securitySchemes:
     apiKeyAuth:
@@ -271,7 +281,9 @@ components:
         X-Request-ID:
           $ref: '#/components/headers/XRequestId'
     NotImplemented:
-      description: WarmPool management is not supported in this runtime (for example, when runtime.type is not kubernetes)
+      description: |
+        WarmPool management is not supported: e.g. `runtime.type` is not `kubernetes`, or
+        `kubernetes.workload_provider` is not `batchsandbox` (same error code in both cases).
       content:
         application/json:
           schema:
@@ -299,7 +311,35 @@ components:
       headers:
         X-Request-ID:
           $ref: '#/components/headers/XRequestId'
+    UnprocessableEntity:
+      description: |
+        Request validation failed. Typical cases: JSON body does not match the schema (POST/PUT),
+        or path parameter `warmPoolName` violates the Kubernetes resource name pattern.
+        The response follows FastAPI's default shape: JSON object with a `detail` array of
+        validation errors (each entry includes a location, message, and type).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HTTPValidationError'
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/XRequestId'
   schemas:
+    ValidationErrorItem:
+      type: object
+      description: Single validation issue (FastAPI / Pydantic).
+      additionalProperties: true
+    HTTPValidationError:
+      type: object
+      description: FastAPI default 422 response body.
+      properties:
+        detail:
+          type: array
+          description: List of validation errors.
+          items:
+            $ref: '#/components/schemas/ValidationErrorItem'
+      required: [detail]
+      additionalProperties: false
     ErrorResponse:
       type: object
       description: |

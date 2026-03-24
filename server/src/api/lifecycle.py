@@ -38,13 +38,15 @@ from src.api.schema import (
     Sandbox,
     SandboxFilter,
 )
-from src.services.factory import create_sandbox_service
+from src.services.factory import create_pool_service, create_sandbox_service
+from src.services.k8s.pool_service import PoolService
 
 # Initialize router
 router = APIRouter(tags=["Sandboxes"])
 
 # Initialize service based on configuration from config.toml (defaults to docker)
 sandbox_service = create_sandbox_service()
+warm_pool_service: Optional[PoolService] = create_pool_service()
 
 
 # ============================================================================

@@ -19,9 +19,7 @@ Pools are pre-warmed sets of sandbox pods that reduce cold-start latency.
 These endpoints are only available when the runtime is configured as 'kubernetes'.
 """
 
-from typing import Optional
-
-from fastapi import APIRouter, Header, status
+from fastapi import APIRouter, Path, status
 from fastapi.exceptions import HTTPException
 from fastapi.responses import Response
 
@@ -32,42 +30,49 @@ from src.api.schema import (
     PoolResponse,
     UpdatePoolRequest,
 )
-from src.config import get_config
 from src.services.constants import SandboxErrorCodes
 
 router = APIRouter(tags=["WarmPools"])
+
+# Align path validation with OpenAPI `WarmPoolName` / Kubernetes DNS subdomain rules.
+_POOL_NAME_PATH = Path(
+    ...,
+    pattern=r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+    max_length=253,
+    description="Pool name (Kubernetes metadata.name).",
+)
 
 _POOL_NOT_K8S_DETAIL = {
     "code": SandboxErrorCodes.K8S_POOL_NOT_SUPPORTED,
     "message": "Pool management is only available when runtime.type is 'kubernetes'.",
 }
 
+_POOL_BATCHSANDBOX_ONLY_DETAIL = {
+    "code": SandboxErrorCodes.K8S_POOL_NOT_SUPPORTED,
+    "message": (
+        "Pool management is only available when kubernetes.workload_provider is "
+        "'batchsandbox' (WarmPool is used with BatchSandbox workloads)."
+    ),
+}
+
 
 def _get_pool_service():
     """
-    Lazily create the PoolService, raising 501 if the runtime is not Kubernetes.
+    Return the process-wide ``PoolService`` (see ``lifecycle.warm_pool_service``).
 
-    This deferred approach means the pool router can be registered unconditionally
-    in main.py; non-k8s deployments simply receive a clear 501 on every call.
+    Resolved via ``lifecycle.warm_pool_service``, created by ``create_pool_service()``
+    at import (Kubernetes + ``batchsandbox`` workload provider only). Raises 501 when
+    WarmPool is not available for the current configuration.
     """
-    from src.services.k8s.client import K8sClient
-    from src.services.k8s.pool_service import PoolService
+    from src.api.lifecycle import warm_pool_service
 
-    config = get_config()
-    if config.runtime.type != "kubernetes":
+    if warm_pool_service is None:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=_POOL_NOT_K8S_DETAIL,
+            detail=_POOL_BATCHSANDBOX_ONLY_DETAIL,
         )
 
-    if not config.kubernetes:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=_POOL_NOT_K8S_DETAIL,
-        )
-
-    k8s_client = K8sClient(config.kubernetes)
-    return PoolService(k8s_client, namespace=config.kubernetes.namespace)
+    return warm_pool_service
 
 
 # ============================================================================
@@ -83,6 +88,12 @@ def _get_pool_service():
         201: {"description": "Pool created successfully"},
         400: {"model": ErrorResponse, "description": "The request was invalid or malformed"},
         401: {"model": ErrorResponse, "description": "Authentication credentials are missing or invalid"},
+        422: {
+            "description": (
+                "Request validation failed: JSON body did not match the schema "
+                "(FastAPI/Pydantic `detail` array)."
+            ),
+        },
         409: {"model": ErrorResponse, "description": "A pool with the same name already exists"},
         501: {"model": ErrorResponse, "description": "Pool management is not supported in this runtime"},
         500: {"model": ErrorResponse, "description": "An unexpected server error occurred"},
@@ -90,7 +101,6 @@ def _get_pool_service():
 )
 async def create_pool(
     request: CreatePoolRequest,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
 ) -> PoolResponse:
     """
     Create a pre-warmed resource pool.
@@ -101,7 +111,6 @@ async def create_pool(
 
     Args:
         request: Pool creation request including name, pod template, and capacity spec.
-        x_request_id: Optional request tracing identifier.
 
     Returns:
         PoolResponse: The newly created pool.
@@ -125,16 +134,11 @@ async def create_pool(
         500: {"model": ErrorResponse, "description": "An unexpected server error occurred"},
     },
 )
-async def list_pools(
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
-) -> ListPoolsResponse:
+async def list_pools() -> ListPoolsResponse:
     """
     List all pre-warmed resource pools.
 
     Returns all Pool resources in the configured namespace.
-
-    Args:
-        x_request_id: Optional request tracing identifier.
 
     Returns:
         ListPoolsResponse: Collection of all pools.
@@ -151,20 +155,23 @@ async def list_pools(
         200: {"description": "Pool retrieved successfully"},
         401: {"model": ErrorResponse, "description": "Authentication credentials are missing or invalid"},
         404: {"model": ErrorResponse, "description": "The requested pool does not exist"},
+        422: {
+            "description": (
+                "Path parameter `pool_name` failed validation (invalid Kubernetes resource name pattern)."
+            ),
+        },
         501: {"model": ErrorResponse, "description": "Pool management is not supported in this runtime"},
         500: {"model": ErrorResponse, "description": "An unexpected server error occurred"},
     },
 )
 async def get_pool(
-    pool_name: str,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    pool_name: str = _POOL_NAME_PATH,
 ) -> PoolResponse:
     """
     Retrieve a pool by name.
 
     Args:
         pool_name: Name of the pool to retrieve.
-        x_request_id: Optional request tracing identifier.
 
     Returns:
         PoolResponse: Current state of the pool including runtime status.
@@ -182,14 +189,18 @@ async def get_pool(
         400: {"model": ErrorResponse, "description": "The request was invalid or malformed"},
         401: {"model": ErrorResponse, "description": "Authentication credentials are missing or invalid"},
         404: {"model": ErrorResponse, "description": "The requested pool does not exist"},
+        422: {
+            "description": (
+                "Validation error: invalid `pool_name` path and/or request body did not match the schema."
+            ),
+        },
         501: {"model": ErrorResponse, "description": "Pool management is not supported in this runtime"},
         500: {"model": ErrorResponse, "description": "An unexpected server error occurred"},
     },
 )
 async def update_pool(
-    pool_name: str,
     request: UpdatePoolRequest,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    pool_name: str = _POOL_NAME_PATH,
 ) -> PoolResponse:
     """
     Update pool capacity configuration.
@@ -199,9 +210,8 @@ async def update_pool(
     the pool.
 
     Args:
-        pool_name: Name of the pool to update.
         request: Update request with the new capacity spec.
-        x_request_id: Optional request tracing identifier.
+        pool_name: Name of the pool to update.
 
     Returns:
         PoolResponse: Updated pool state.
@@ -217,13 +227,17 @@ async def update_pool(
         204: {"description": "Pool deleted successfully"},
         401: {"model": ErrorResponse, "description": "Authentication credentials are missing or invalid"},
         404: {"model": ErrorResponse, "description": "The requested pool does not exist"},
+        422: {
+            "description": (
+                "Path parameter `pool_name` failed validation (invalid Kubernetes resource name pattern)."
+            ),
+        },
         501: {"model": ErrorResponse, "description": "Pool management is not supported in this runtime"},
         500: {"model": ErrorResponse, "description": "An unexpected server error occurred"},
     },
 )
 async def delete_pool(
-    pool_name: str,
-    x_request_id: Optional[str] = Header(None, alias="X-Request-ID"),
+    pool_name: str = _POOL_NAME_PATH,
 ) -> Response:
     """
     Delete a pool.
@@ -233,7 +247,6 @@ async def delete_pool(
 
     Args:
         pool_name: Name of the pool to delete.
-        x_request_id: Optional request tracing identifier.
 
     Returns:
         Response: 204 No Content.

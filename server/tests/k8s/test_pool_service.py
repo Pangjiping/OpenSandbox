@@ -144,6 +144,34 @@ class TestPoolFromRaw:
         assert result.capacity_spec.buffer_max == 0
         assert result.capacity_spec.pool_max == 0
 
+    def test_pool_missing_capacity_spec_logs_and_defaults(self):
+        svc, _ = _make_pool_service()
+        raw = {
+            "metadata": {"name": "no-cap"},
+            "spec": {"template": {}},
+        }
+        result = svc._pool_from_raw(raw)
+        assert result.capacity_spec.buffer_max == 0
+        assert result.capacity_spec.pool_min == 0
+
+    def test_pool_non_object_capacity_spec_raises_500(self):
+        svc, _ = _make_pool_service()
+        raw = {
+            "metadata": {"name": "bad-cap"},
+            "spec": {"capacitySpec": "not-a-dict"},
+        }
+        with pytest.raises(HTTPException) as exc_info:
+            svc._pool_from_raw(raw)
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.K8S_POOL_API_ERROR
+
+    def test_pool_non_object_status_treated_as_unreconciled(self):
+        svc, _ = _make_pool_service()
+        raw = _make_raw_pool()
+        raw["status"] = "broken"
+        result = svc._pool_from_raw(raw)
+        assert result.status is None
+
 
 # ---------------------------------------------------------------------------
 # create_pool
@@ -221,6 +249,33 @@ class TestCreatePool:
         assert exc_info.value.status_code == 500
         assert exc_info.value.detail["code"] == SandboxErrorCodes.K8S_POOL_API_ERROR
 
+    def test_create_pool_422_preserves_status_and_json_message(self):
+        svc, mock_k8s = _make_pool_service()
+        err = ApiException(status=422)
+        err.body = '{"message": "admission webhook denied the request"}'
+        mock_k8s.create_custom_object.side_effect = err
+
+        request = CreatePoolRequest(name="p", template={}, capacitySpec=_capacity_spec())
+        with pytest.raises(HTTPException) as exc_info:
+            svc.create_pool(request)
+
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail["message"] == "admission webhook denied the request"
+
+    def test_create_pool_409_prefers_kubernetes_message(self):
+        svc, mock_k8s = _make_pool_service()
+        err = ApiException(status=409)
+        err.body = '{"message": "pool.example.io already taken"}'
+        mock_k8s.create_custom_object.side_effect = err
+
+        request = CreatePoolRequest(name="p", template={}, capacitySpec=_capacity_spec())
+        with pytest.raises(HTTPException) as exc_info:
+            svc.create_pool(request)
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.K8S_POOL_ALREADY_EXISTS
+        assert exc_info.value.detail["message"] == "pool.example.io already taken"
+
     def test_create_pool_unexpected_exception_raises_http_500(self):
         svc, mock_k8s = _make_pool_service()
         mock_k8s.create_custom_object.side_effect = RuntimeError("boom")
@@ -265,7 +320,7 @@ class TestGetPool:
         assert exc_info.value.detail["code"] == SandboxErrorCodes.K8S_POOL_NOT_FOUND
         assert "ghost-pool" in exc_info.value.detail["message"]
 
-    def test_get_pool_5xx_raises_http_500(self):
+    def test_get_pool_kubernetes_status_is_preserved(self):
         svc, mock_k8s = _make_pool_service()
         err = ApiException(status=503)
         err.reason = "Service Unavailable"
@@ -274,8 +329,9 @@ class TestGetPool:
         with pytest.raises(HTTPException) as exc_info:
             svc.get_pool("p")
 
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 503
         assert exc_info.value.detail["code"] == SandboxErrorCodes.K8S_POOL_API_ERROR
+        assert "Unavailable" in exc_info.value.detail["message"]
 
     def test_get_pool_unexpected_exception_raises_http_500(self):
         svc, mock_k8s = _make_pool_service()
@@ -334,6 +390,18 @@ class TestListPools:
 
         assert exc_info.value.status_code == 500
         assert exc_info.value.detail["code"] == SandboxErrorCodes.K8S_POOL_API_ERROR
+
+    def test_list_pools_403_passthrough(self):
+        svc, mock_k8s = _make_pool_service()
+        err = ApiException(status=403)
+        err.body = '{"message": "pods is forbidden: User cannot list resource"}'
+        mock_k8s.list_custom_objects.side_effect = err
+
+        with pytest.raises(HTTPException) as exc_info:
+            svc.list_pools()
+
+        assert exc_info.value.status_code == 403
+        assert "forbidden" in exc_info.value.detail["message"].lower()
 
     def test_list_pools_unexpected_exception_raises_http_500(self):
         svc, mock_k8s = _make_pool_service()

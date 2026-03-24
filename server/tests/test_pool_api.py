@@ -324,6 +324,12 @@ class TestListPoolsRoute:
 # ---------------------------------------------------------------------------
 
 class TestGetPoolRoute:
+    def test_get_pool_invalid_path_name_returns_422(self, client: TestClient, auth_headers: dict):
+        with patch(_POOL_SERVICE_PATCH) as mock_get:
+            mock_get.side_effect = AssertionError("pool service must not run when path validation fails")
+            response = client.get("/warmpools/Invalid_Name", headers=auth_headers)
+        assert response.status_code == 422
+
     def test_get_pool_success_returns_200(self, client: TestClient, auth_headers: dict):
         mock_svc = MagicMock()
         mock_svc.get_pool.return_value = _pool_response(name="my-pool")
