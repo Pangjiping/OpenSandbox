@@ -21,6 +21,9 @@ import (
 	"github.com/go-playground/validator/v10"
 )
 
+const CommandResumeAfterEidQuery = "after_eid"
+const SessionResumeAfterEidQuery = CommandResumeAfterEidQuery
+
 // RunCommandRequest represents a shell command execution request.
 type RunCommandRequest struct {
 	Command    string `json:"command" validate:"required"`

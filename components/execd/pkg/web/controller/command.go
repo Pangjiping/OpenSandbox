@@ -125,6 +125,21 @@ func (c *CodeInterpretingController) GetBackgroundCommandOutput() {
 	c.ctx.String(http.StatusOK, "%s", output)
 }
 
+func (c *CodeInterpretingController) ResumeCommandStream() {
+	commandID := c.ctx.Param("id")
+	if commandID == "" {
+		c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidRequest, "missing command execution id")
+		return
+	}
+	_ = c.QueryInt64(c.ctx.Query(model.CommandResumeAfterEidQuery), 0)
+
+	c.RespondError(
+		http.StatusNotImplemented,
+		model.ErrorCodeNotImplemented,
+		"command stream resume is not implemented yet",
+	)
+}
+
 func (c *CodeInterpretingController) buildExecuteCommandRequest(request model.RunCommandRequest) *runtime.ExecuteCodeRequest {
 	timeout := time.Duration(request.TimeoutMs) * time.Millisecond
 	if request.Background {

@@ -321,6 +321,25 @@ func (c *CodeInterpretingController) RunInSession() {
 	time.Sleep(flag.ApiGracefulShutdownTimeout)
 }
 
+func (c *CodeInterpretingController) ResumeSessionStream() {
+	sessionID := c.ctx.Param("sessionId")
+	if sessionID == "" {
+		c.RespondError(
+			http.StatusBadRequest,
+			model.ErrorCodeMissingQuery,
+			"missing path parameter 'sessionId'",
+		)
+		return
+	}
+	_ = c.QueryInt64(c.ctx.Query(model.SessionResumeAfterEidQuery), 0)
+
+	c.RespondError(
+		http.StatusNotImplemented,
+		model.ErrorCodeNotImplemented,
+		"session stream resume is not implemented yet",
+	)
+}
+
 // DeleteSession deletes a bash session (delete_session API).
 func (c *CodeInterpretingController) DeleteSession() {
 	sessionID := c.ctx.Param("sessionId")

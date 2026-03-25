@@ -24,8 +24,6 @@ import (
 )
 
 // ExecuteResultHook groups execution callbacks.
-// Eid is only assigned for stdout/stderr on run command (pipe tail) and run-in-session (bash stdout pipe);
-// other paths pass eid=0. Ids are allocated in runtime at pipe sync, not in HTTP/SSE writers.
 type ExecuteResultHook struct {
 	OnExecuteInit     func(context string)
 	OnExecuteResult   func(result map[string]any, count int)
@@ -48,12 +46,9 @@ type ExecuteCodeRequest struct {
 	Gid      *uint32           `json:"gid,omitempty"`
 	Hooks    ExecuteResultHook
 
-	// eventSeq assigns monotonic eids (1-based) for stdout/stderr on run command and bash session only.
 	eventSeq atomic.Uint64
 }
 
-// nextStdoutStderrEventID returns the next eid for stdout/stderr lines. Used only from run command
-// pipe tailers and bash session stdout; other callers should pass 0 into OnExecuteStdout/Stderr.
 func (req *ExecuteCodeRequest) nextStdoutStderrEventID() int64 {
 	if req == nil {
 		return 0
@@ -61,7 +56,6 @@ func (req *ExecuteCodeRequest) nextStdoutStderrEventID() int64 {
 	return int64(req.eventSeq.Add(1))
 }
 
-// wrapStdoutPipeHook wraps stdout delivery so eid is assigned when a line is flushed from the pipe tailer, not in SSE writes.
 func (req *ExecuteCodeRequest) wrapStdoutPipeHook() func(string) {
 	return func(text string) {
 		if text == "" || req.Hooks.OnExecuteStdout == nil {
@@ -72,7 +66,6 @@ func (req *ExecuteCodeRequest) wrapStdoutPipeHook() func(string) {
 	}
 }
 
-// wrapStderrPipeHook wraps stderr delivery so eid is assigned when a line is flushed from the pipe tailer, not in SSE writes.
 func (req *ExecuteCodeRequest) wrapStderrPipeHook() func(string) {
 	return func(text string) {
 		if text == "" || req.Hooks.OnExecuteStderr == nil {
