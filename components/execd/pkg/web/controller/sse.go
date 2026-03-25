@@ -123,12 +123,13 @@ func (c *CodeInterpretingController) setServerEventsHandler(ctx context.Context)
 			payload := event.ToJSON()
 			c.writeSingleEvent("OnExecuteStatus", payload, true, event.Summary())
 		},
-		OnExecuteStdout: func(text string) {
+		OnExecuteStdout: func(eid int64, text string) {
 			if text == "" {
 				return
 			}
 
 			event := model.ServerStreamEvent{
+				Eid:       eid,
 				Type:      model.StreamEventTypeStdout,
 				Text:      text,
 				Timestamp: time.Now().UnixMilli(),
@@ -136,12 +137,13 @@ func (c *CodeInterpretingController) setServerEventsHandler(ctx context.Context)
 			payload := event.ToJSON()
 			c.writeSingleEvent("OnExecuteStdout", payload, true, event.Summary())
 		},
-		OnExecuteStderr: func(text string) {
+		OnExecuteStderr: func(eid int64, text string) {
 			if text == "" {
 				return
 			}
 
 			event := model.ServerStreamEvent{
+				Eid:       eid,
 				Type:      model.StreamEventTypeStderr,
 				Text:      text,
 				Timestamp: time.Now().UnixMilli(),

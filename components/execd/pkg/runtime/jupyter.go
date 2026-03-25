@@ -103,9 +103,9 @@ func (c *Controller) runJupyterCode(ctx context.Context, kernel *jupyterKernel, 
 				for _, stream := range result.Stream {
 					switch stream.Name {
 					case execute.StreamStdout:
-						request.Hooks.OnExecuteStdout(stream.Text)
+						request.Hooks.OnExecuteStdout(0, stream.Text)
 					case execute.StreamStderr:
-						request.Hooks.OnExecuteStderr(stream.Text)
+						request.Hooks.OnExecuteStderr(0, stream.Text)
 					default:
 					}
 				}
