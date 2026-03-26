@@ -222,6 +222,42 @@ All devops commands return plain text output, making them ideal for both human r
 
 ![DevOps Summary 2](assets/cli_devops_summary_2.png)
 
+### `osb skills` — AI Coding Skills
+
+| Command     | Description                                          |
+| ----------- | ---------------------------------------------------- |
+| `install`   | Install OpenSandbox troubleshooting skill for AI tools |
+| `list`      | List supported targets and their install status      |
+| `uninstall` | Remove installed skill from AI tools                 |
+
+The troubleshooting skill enables AI coding assistants to automatically diagnose sandbox issues (OOM, crashes, image pull errors, etc.). Supported targets:
+
+| Target    | AI Tool          | Install Location |
+| --------- | ---------------- | ---------------- |
+| `claude`  | Claude Code      | `~/.claude/skills/` |
+| `cursor`  | Cursor           | `~/.cursor/rules/` |
+| `codex`   | Codex            | `~/.codex/instructions.md` |
+| `copilot` | GitHub Copilot   | `~/.github/copilot-instructions.md` |
+| `windsurf`| Windsurf         | `~/.windsurfrules` |
+| `cline`   | Cline            | `~/.clinerules` |
+
+```bash
+# Install for Claude Code (default)
+osb skills install
+
+# Install for a specific tool
+osb skills install --target cursor
+
+# Install for all supported tools
+osb skills install --target all
+
+# Check install status
+osb skills list
+
+# Uninstall
+osb skills uninstall --target claude
+```
+
 ### `osb config` — Configuration
 
 | Command | Description                                |
