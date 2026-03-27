@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2025 Alibaba Group Holding Ltd.
+# Copyright 2026 Alibaba Group Holding Ltd.
 #
 # Manual local test: POST /command (streaming output) -> disconnect -> GET /resume (catch-up + live tail),
 # repeat at least 3 disconnect/resume rounds, then read until execution_complete on the last connection.
