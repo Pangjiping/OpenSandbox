@@ -108,7 +108,7 @@ internal sealed class CommandsAdapter : IExecdCommands
                 error: new SandboxError(SandboxErrorCodes.UnexpectedResponse, "Create session returned empty session_id"));
         }
 
-        return response.SessionId;
+        return response!.SessionId;
     }
 
     public async IAsyncEnumerable<ServerStreamEvent> RunInSessionStreamAsync(
@@ -263,7 +263,8 @@ internal sealed class CommandsAdapter : IExecdCommands
 
     private static object? BuildCreateSessionBody(CreateSessionOptions? options)
     {
-        return !string.IsNullOrEmpty(options?.WorkingDirectory) ? new { cwd = options.WorkingDirectory } : null;
+        var workingDirectory = options?.WorkingDirectory;
+        return !string.IsNullOrEmpty(workingDirectory) ? new { cwd = workingDirectory } : null;
     }
 
     private static RunCommandRequest BuildRunCommandRequest(string command, RunCommandOptions? options)

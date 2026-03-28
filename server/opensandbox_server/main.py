@@ -70,6 +70,7 @@ logging.getLogger().setLevel(
     getattr(logging, app_config.server.log_level.upper(), logging.INFO)
 )
 
+from opensandbox_server.api.devops import router as devops_router  # noqa: E402
 from opensandbox_server.api.pool import router as pool_router  # noqa: E402
 from opensandbox_server.api.lifecycle import router, sandbox_service  # noqa: E402
 from opensandbox_server.api.proxy import router as proxy_router  # noqa: E402
@@ -164,11 +165,15 @@ app.add_middleware(
 # 401 from AuthMiddleware) gets X-Request-ID and logs have request_id in context.
 app.add_middleware(RequestIdMiddleware)
 
-# Include API routes at root and versioned prefix
+# Include API routes at root and versioned prefix.
+# IMPORTANT: devops_router and pool_router MUST be registered before proxy_router
+# because proxy_router contains catch-all routes that would swallow diagnostics paths.
 app.include_router(router)
+app.include_router(devops_router)
+app.include_router(pool_router)
 app.include_router(proxy_router)
 app.include_router(router, prefix="/v1")
-app.include_router(pool_router)
+app.include_router(devops_router, prefix="/v1")
 app.include_router(pool_router, prefix="/v1")
 app.include_router(proxy_router, prefix="/v1")
 
