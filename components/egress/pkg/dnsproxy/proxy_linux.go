@@ -19,12 +19,9 @@ package dnsproxy
 import (
 	"net"
 	"sync"
-	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
-
-	"github.com/alibaba/opensandbox/egress/pkg/constants"
+	"github.com/alibaba/opensandbox/egress/pkg/dialer"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 )
 
@@ -42,16 +39,5 @@ func (p *Proxy) dialerWithMark() *net.Dialer {
 		return &net.Dialer{Timeout: 5 * time.Second}
 	}
 
-	return &net.Dialer{
-		Timeout: 5 * time.Second,
-		Control: func(network, address string, c syscall.RawConn) error {
-			var opErr error
-			if err := c.Control(func(fd uintptr) {
-				opErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, constants.MarkValue)
-			}); err != nil {
-				return err
-			}
-			return opErr
-		},
-	}
+	return dialer.Marked(5 * time.Second)
 }

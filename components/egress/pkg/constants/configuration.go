@@ -30,6 +30,13 @@ const (
 
 	// EnvNameserverExempt comma-separated IPs; proxy upstream to these is not marked and is allowed in nft allow set
 	EnvNameserverExempt = "OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT"
+
+	// EnvHTTPTransparent enables cleartext HTTP transparent proxy (iptables redirect tcp/80 -> local listener).
+	EnvHTTPTransparent = "OPENSANDBOX_EGRESS_HTTP_TRANSPARENT"
+	// EnvHTTPProxyListen bind address for the HTTP transparent proxy (default 127.0.0.1:18081).
+	EnvHTTPProxyListen = "OPENSANDBOX_EGRESS_HTTP_PROXY_LISTEN"
+	// EnvHTTPHeadersFile path to a header injection file (see README); read once at startup; optional.
+	EnvHTTPHeadersFile = "OPENSANDBOX_EGRESS_HTTP_HEADERS_FILE"
 )
 
 const (
@@ -39,6 +46,7 @@ const (
 
 const (
 	DefaultEgressServerAddr = ":18080"
+	DefaultHTTPProxyListen  = "127.0.0.1:18081"
 	DefaultMaxNameservers   = 3
 	DefaultMaxEgressRules   = 4096
 )

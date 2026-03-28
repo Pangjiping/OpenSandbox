@@ -10,6 +10,7 @@ The **Egress Sidecar** is a core component of OpenSandbox that provides **FQDN-b
 - **Dynamic DNS (dns+nft mode)**: When a domain is allowed and the proxy resolves it, the resolved A/AAAA IPs are added to nftables with TTL so that default-deny + domain-allow is enforced at the network layer.
 - **Privilege Isolation**: Requires `CAP_NET_ADMIN` only for the sidecar; the application container runs unprivileged.
 - **Graceful Degradation**: If `CAP_NET_ADMIN` is missing, it warns and disables enforcement instead of crashing.
+- **Optional cleartext HTTP transparent proxy** (Linux): When enabled, `iptables` redirects outbound **TCP port 80** to a local listener that forwards HTTP to the original destination and can inject custom request headers from a small text file at startup (see [Configuration](#configuration)). Does **not** intercept HTTPS (`tcp/443`); use a separate MITM solution if TLS termination is required.
 
 ## Architecture
 
@@ -24,6 +25,9 @@ The egress control is implemented as a **Sidecar** that shares the network names
 2.  **Network Filter (Layer 2)** (when `OPENSANDBOX_EGRESS_MODE=dns+nft`):
     - Uses `nftables` to enforce IP-level allow/deny. Resolved IPs for allowed domains are added to dynamic allow sets with TTL (dynamic DNS).
     - At startup, the sidecar whitelists **127.0.0.1** (redirect target for the proxy) and **nameserver IPs** from `/etc/resolv.conf` so DNS resolution and proxy upstream work (including private DNS). Nameserver count is capped and invalid IPs are filtered; see [Configuration](#configuration).
+
+3.  **Cleartext HTTP (optional)**:
+    - When `OPENSANDBOX_EGRESS_HTTP_TRANSPARENT` is enabled, outbound **TCP/80** is redirected to `127.0.0.1` on a configurable port (default `18081`). A small proxy reads `SO_ORIGINAL_DST`, dials the real destination with `SO_MARK` (same mark as the DNS proxy) so iptables/nft bypass rules apply, and injects optional headers from the file pointed to by `OPENSANDBOX_EGRESS_HTTP_HEADERS_FILE` (read once at startup; format below).
 
 ## Requirements
 
@@ -45,6 +49,11 @@ The egress control is implemented as a **Sidecar** that shares the network names
 - Mode (`OPENSANDBOX_EGRESS_MODE`, default `dns`):
   - `dns`: DNS proxy only, no nftables (IP/CIDR rules have no effect at L2).
   - `dns+nft`: enable nftables; if nft apply fails, fallback to `dns`. IP/CIDR enforcement and DoH/DoT blocking require this mode.
+- **Cleartext HTTP transparent proxy (optional, Linux)**  
+  - `OPENSANDBOX_EGRESS_HTTP_TRANSPARENT`: set to `true`/`1`/… to redirect **outbound TCP port 80** to the local HTTP forwarder and install matching `iptables` rules.  
+  - `OPENSANDBOX_EGRESS_HTTP_PROXY_LISTEN` (default `127.0.0.1:18081`): bind address for the forwarder; must match the redirect target port.  
+  - `OPENSANDBOX_EGRESS_HTTP_HEADERS_FILE` (optional): path to a text file, read **once at process startup**. Format: line-oriented `KEY=VALUE` (one header per line). Empty lines and lines starting with `#` are ignored; the first `=` on each line separates the header name from the value (additional `=` characters belong to the value). Optional double quotes around the value are stripped. If the file is missing or has no valid `KEY=VALUE` lines, injection is skipped (and invalid lines log a warning).  
+  - **Scope:** **HTTP only** (port 80); **HTTPS is not modified.** Requires the same `CAP_NET_ADMIN` as DNS redirection. In `dns+nft` mode, upstream connections use the same packet mark as the DNS proxy so nft `meta mark` rules allow egress.
 - **Nameserver exempt**  
   Set `OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT` to a comma-separated list of **nameserver IPs** (e.g. `26.26.26.26` or `26.26.26.26,100.100.2.116`). Only single IPs are supported; CIDR entries are ignored. Traffic to these IPs on port 53 is not redirected to the proxy (iptables RETURN). In `dns+nft` mode, these IPs are also merged into the nft allow set so proxy upstream traffic to them (sent without SO_MARK) is accepted. Use when the upstream is reachable only via a specific route (e.g. tunnel) and SO_MARK would send proxy traffic elsewhere.
 - **DNS and nft mode (nameserver whitelist)**  
@@ -166,6 +175,8 @@ To test the sidecar with a sandbox application:
     - `pkg/iptables`: `iptables` rule management.
     - `pkg/nftables`: nftables static/dynamic rules and DNS-resolved IP sets.
     - `pkg/policy`: Policy parsing and definition.
+    - `pkg/httpproxy`: optional cleartext HTTP transparent proxy (header injection).
+    - `pkg/dialer`: shared `SO_MARK` dial helper for proxy upstream traffic.
 - **Main (egress)**:
     - `nameserver.go`: Builds the list of IPs to whitelist for DNS in nft mode (127.0.0.1 + validated/capped nameservers from resolv.conf).
 
@@ -173,6 +184,8 @@ To test the sidecar with a sandbox application:
 # Run tests
 go test ./...
 ```
+
+`pkg/httpproxy/server_linux_test.go` is **Linux-only** (`GOOS=linux`): it checks that injected headers reach the upstream HTTP handler (without iptables). On macOS those files are skipped; run `go test ./...` on Linux CI or in a Linux container to execute them.
 
 ### E2E benchmark: dns vs dns+nft (sync dynamic IP write)
 

@@ -25,6 +25,7 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/dnsproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/events"
+	"github.com/alibaba/opensandbox/egress/pkg/httpproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/iptables"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
@@ -84,6 +85,17 @@ func main() {
 	log.Infof("iptables redirect configured (OUTPUT 53 -> 15353) with SO_MARK bypass for proxy upstream traffic")
 
 	setupNft(ctx, nftMgr, initialRules, proxy, allowIPs)
+
+	httpTransparentCfg := httpproxy.LoadConfigFromEnv()
+	if httpTransparentCfg.Enabled {
+		go func() {
+			if err := httpproxy.Start(ctx, httpTransparentCfg); err != nil {
+				log.Fatalf("http transparent proxy: %v", err)
+			}
+		}()
+		log.Infof("cleartext HTTP transparent proxy enabled (%s, %s, optional %s)",
+			constants.EnvHTTPTransparent, constants.EnvHTTPProxyListen, constants.EnvHTTPHeadersFile)
+	}
 
 	// start policy server
 	httpAddr := envOrDefault(constants.EnvEgressHTTPAddr, constants.DefaultEgressServerAddr)
