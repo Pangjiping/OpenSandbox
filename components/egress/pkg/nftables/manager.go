@@ -83,10 +83,9 @@ func NewManagerWithOptions(opts Options) *Manager {
 // callback: without this, add-element could run while the table is being deleted/recreated
 // and fail, causing a transient deny for a client that already got an allowed DNS answer.
 //
-// normalizeIntervalSets should be true only on the first apply at process startup: it
-// removes redundant IPv4/IPv6 entries that would make nft "interval" sets fail
-// (e.g. a host inside a listed CIDR). Runtime policy updates pass false.
-func (m *Manager) ApplyStatic(ctx context.Context, p *policy.NetworkPolicy, normalizeIntervalSets bool) error {
+// On every call (startup and /policy updates), static allow/deny and DoH blocklist
+// interval sets are normalized so overlapping CIDR/host pairs do not make nft fail.
+func (m *Manager) ApplyStatic(ctx context.Context, p *policy.NetworkPolicy) error {
 	if p == nil {
 		p = policy.DefaultDenyPolicy()
 	}
@@ -95,7 +94,7 @@ func (m *Manager) ApplyStatic(ctx context.Context, p *policy.NetworkPolicy, norm
 		p.DefaultAction, len(allowV4), len(allowV6), len(denyV4), len(denyV6))
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	script, err := buildRuleset(p, m.opts, normalizeIntervalSets)
+	script, err := buildRuleset(p, m.opts)
 	if err != nil {
 		return err
 	}
@@ -134,31 +133,29 @@ func (m *Manager) AddResolvedIPs(ctx context.Context, ips []ResolvedIP) error {
 	return err
 }
 
-func buildRuleset(p *policy.NetworkPolicy, opts Options, normalizeIntervalSets bool) (string, error) {
+func buildRuleset(p *policy.NetworkPolicy, opts Options) (string, error) {
 	allowV4, allowV6, denyV4, denyV6 := p.StaticIPSets()
 	var err error
-	if normalizeIntervalSets {
-		if allowV4, err = normalizeNFTIntervalSet(allowV4); err != nil {
-			return "", err
-		}
-		if allowV6, err = normalizeNFTIntervalSet(allowV6); err != nil {
-			return "", err
-		}
-		if denyV4, err = normalizeNFTIntervalSet(denyV4); err != nil {
-			return "", err
-		}
-		if denyV6, err = normalizeNFTIntervalSet(denyV6); err != nil {
-			return "", err
-		}
+	if allowV4, err = normalizeNFTIntervalSet(allowV4); err != nil {
+		return "", err
+	}
+	if allowV6, err = normalizeNFTIntervalSet(allowV6); err != nil {
+		return "", err
+	}
+	if denyV4, err = normalizeNFTIntervalSet(denyV4); err != nil {
+		return "", err
+	}
+	if denyV6, err = normalizeNFTIntervalSet(denyV6); err != nil {
+		return "", err
 	}
 	dohBlockV4 := opts.DoHBlocklistV4
 	dohBlockV6 := opts.DoHBlocklistV6
-	if normalizeIntervalSets && len(dohBlockV4) > 0 {
+	if len(dohBlockV4) > 0 {
 		if dohBlockV4, err = normalizeNFTIntervalSet(dohBlockV4); err != nil {
 			return "", err
 		}
 	}
-	if normalizeIntervalSets && len(dohBlockV6) > 0 {
+	if len(dohBlockV6) > 0 {
 		if dohBlockV6, err = normalizeNFTIntervalSet(dohBlockV6); err != nil {
 			return "", err
 		}

@@ -22,7 +22,7 @@ import (
 // normalizeNFTIntervalSet drops entries that are redundant for nftables sets with
 // `flags interval`: a host or smaller CIDR that falls strictly inside another
 // listed CIDR would make `nft add element` fail with "conflicting intervals specified".
-// Used only when ApplyStatic is called with normalizeIntervalSets=true (startup).
+// Used on every ApplyStatic (startup and /policy updates).
 func normalizeNFTIntervalSet(elems []string) ([]string, error) {
 	if len(elems) == 0 {
 		return nil, nil
