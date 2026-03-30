@@ -183,6 +183,8 @@ type AllocStatus struct {
 	PodAllocation map[string]string
 	// pod request count
 	PodSupplement int32
+	// DirtyPods are pods that should be recycled (deleted) after release
+	DirtyPods []string
 }
 
 type SandboxSyncInfo struct {
@@ -387,6 +389,7 @@ func (allocator *defaultAllocator) deallocate(ctx context.Context, status *Alloc
 		for _, pod := range pods {
 			delete(status.PodAllocation, pod)
 			poolDeallocate = true
+			status.DirtyPods = append(status.DirtyPods, pod)
 		}
 		delete(sandboxToPods, name)
 	}
@@ -408,6 +411,7 @@ func (allocator *defaultAllocator) doDeallocate(ctx context.Context, status *All
 	for _, pod := range toRelease.Pods {
 		delete(status.PodAllocation, pod)
 		deallocate = true
+		status.DirtyPods = append(status.DirtyPods, pod)
 		log.V(1).Info("Pod released from sandbox", "pod", pod, "sandbox", name)
 	}
 	pods := make([]string, 0)

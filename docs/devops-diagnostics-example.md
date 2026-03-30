@@ -115,7 +115,7 @@ curl -X POST http://localhost:8080/v1/sandboxes \
 
 ## AI-Assisted Troubleshooting
 
-With the [troubleshooting skill](../skills/troubleshoot-sandbox/SKILL.md), AI agents (e.g. Claude Code) can automatically diagnose sandbox issues. Simply describe the problem, and the agent will run the appropriate diagnostics commands and provide a root cause analysis:
+With the [troubleshooting skill](https://github.com/alibaba/OpenSandbox/blob/main/skills/troubleshoot-sandbox/SKILL.md), AI agents (e.g. Claude Code) can automatically diagnose sandbox issues. Simply describe the problem, and the agent will run the appropriate diagnostics commands and provide a root cause analysis:
 
 ![AI Troubleshooting - Diagnostics](assets/ai-troubleshoot-1.png)
 

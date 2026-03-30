@@ -271,21 +271,20 @@ func TestAllocatorSchedule(t *testing.T) {
 				},
 			},
 			poolAlloc: &PoolAllocation{
-				PodAllocation: map[string]string{},
+				PodAllocation: map[string]string{
+					"pod1": "sbx1",
+				},
 			},
 			sandboxAlloc: &SandboxAllocation{
-				Pods: []string{
-					"pod1",
-				},
+				Pods: []string{"pod1"},
 			},
 			release: &AllocationRelease{
-				Pods: []string{
-					"pod1", "sbx1",
-				},
+				Pods: []string{"pod1"},
 			},
 			wantStatus: &AllocStatus{
 				PodAllocation: map[string]string{},
 				PodSupplement: 0,
+				DirtyPods:     []string{"pod1"},
 			},
 		},
 	}
@@ -298,6 +297,10 @@ func TestAllocatorSchedule(t *testing.T) {
 			syncer.EXPECT().GetRelease(gomock.Any(), gomock.Any()).Return(c.release, nil).Times(len(c.spec.Sandboxes))
 			status, _, _, err := allocator.Schedule(context.Background(), c.spec)
 			assert.NoError(t, err)
+			if !reflect.DeepEqual(c.wantStatus, status) {
+				t.Logf("want: %+v", c.wantStatus)
+				t.Logf("got: %+v", status)
+			}
 			assert.True(t, reflect.DeepEqual(c.wantStatus, status))
 		})
 	}

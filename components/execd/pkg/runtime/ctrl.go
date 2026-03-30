@@ -42,6 +42,7 @@ type Controller struct {
 	defaultLanguageSessions sync.Map // map[Language]string
 	commandClientMap        sync.Map // map[sessionID]*commandKernel
 	bashSessionClientMap    sync.Map // map[sessionID]*bashSession
+	ptySessionMap           sync.Map // map[sessionID]*ptySession
 	db                      *sql.DB
 	dbOnce                  sync.Once
 }

@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
@@ -118,6 +119,9 @@ var _ = Describe("Pool scale", func() {
 			Expect(k8sClient.Get(ctx, typeNamespacedName, pool)).To(Succeed())
 			pool.Spec.CapacitySpec.BufferMin = 2
 			pool.Spec.CapacitySpec.BufferMax = 2
+			pool.Spec.ScaleStrategy = &sandboxv1alpha1.ScaleStrategy{
+				MaxUnavailable: ptr.To(intstr.FromString("100%")),
+			}
 			Expect(k8sClient.Update(ctx, pool)).To(Succeed())
 			Eventually(func(g Gomega) {
 				if err := k8sClient.Get(ctx, typeNamespacedName, pool); err != nil {
@@ -134,6 +138,9 @@ var _ = Describe("Pool scale", func() {
 			pool.Spec.CapacitySpec.PoolMax = 2
 			pool.Spec.CapacitySpec.BufferMin = 3
 			pool.Spec.CapacitySpec.BufferMax = 3
+			pool.Spec.ScaleStrategy = &sandboxv1alpha1.ScaleStrategy{
+				MaxUnavailable: ptr.To(intstr.FromString("100%")),
+			}
 			Expect(k8sClient.Update(ctx, pool)).To(Succeed())
 			Eventually(func(g Gomega) {
 				if err := k8sClient.Get(ctx, typeNamespacedName, pool); err != nil {
@@ -322,6 +329,9 @@ var _ = Describe("Pool update", func() {
 			oldRevision := pool.Status.Revision
 			pool.Spec.Template.Labels = map[string]string{
 				"test.pool.update": "v1",
+			}
+			pool.Spec.ScaleStrategy = &sandboxv1alpha1.ScaleStrategy{
+				MaxUnavailable: ptr.To(intstr.FromString("100%")),
 			}
 			Expect(k8sClient.Update(ctx, pool)).To(Succeed())
 			Eventually(func(g Gomega) {
@@ -636,6 +646,162 @@ var _ = Describe("Pool deletion and recreation", func() {
 				cnt := min(pool.Spec.CapacitySpec.PoolMax, pool.Spec.CapacitySpec.BufferMin)
 				g.Expect(pool.Status.ObservedGeneration).To(Equal(pool.Generation))
 				g.Expect(pool.Status.Total).To(Equal(cnt), "new Pool should have correct total pod count")
+			}, timeout, interval).Should(Succeed())
+		})
+	})
+})
+
+var _ = Describe("Pool scaleStrategy", func() {
+	var (
+		timeout  = 10 * time.Second
+		interval = 1 * time.Second
+	)
+	Context("When reconciling a resource with scaleStrategy", func() {
+		const resourceName = "pool-scale-strategy-test"
+
+		ctx := context.Background()
+
+		typeNamespacedName := types.NamespacedName{
+			Name:      resourceName,
+			Namespace: "default",
+		}
+
+		BeforeEach(func() {
+			By("creating the custom resource for the Kind Pool")
+			typeNamespacedName.Name = resourceName + "-" + rand.String(8)
+		})
+
+		AfterEach(func() {
+			resource := &sandboxv1alpha1.Pool{}
+			err := k8sClient.Get(ctx, typeNamespacedName, resource)
+			if err != nil {
+				if !errors.IsNotFound(err) {
+					Expect(err).NotTo(HaveOccurred())
+				} else {
+					By("The specific resource instance Pool already deleted")
+					return
+				}
+			}
+			By("Cleanup the specific resource instance Pool")
+			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+		})
+
+		It("should scale with default 25% maxUnavailable when not specified", func() {
+			resource := &sandboxv1alpha1.Pool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      typeNamespacedName.Name,
+					Namespace: typeNamespacedName.Namespace,
+				},
+				Spec: sandboxv1alpha1.PoolSpec{
+					Template: &v1.PodTemplateSpec{
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name:  "main",
+									Image: "example.com",
+								},
+							},
+						},
+					},
+					CapacitySpec: sandboxv1alpha1.CapacitySpec{
+						PoolMin:   0,
+						PoolMax:   10,
+						BufferMin: 10,
+						BufferMax: 10,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			// With default 25% maxUnavailable and target 10 pods,
+			// first batch should create at most 3 pods (ceil(10 * 0.25) = 3)
+			Eventually(func(g Gomega) {
+				pool := &sandboxv1alpha1.Pool{}
+				err := k8sClient.Get(ctx, typeNamespacedName, pool)
+				g.Expect(err).NotTo(HaveOccurred())
+				// Initial creation should be limited to 3 (or less if pods become ready)
+				g.Expect(pool.Status.Total).To(BeNumerically("<=", 3))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("should scale with percentage maxUnavailable", func() {
+			maxUnavailable := intstr.FromString("20%")
+			resource := &sandboxv1alpha1.Pool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      typeNamespacedName.Name,
+					Namespace: typeNamespacedName.Namespace,
+				},
+				Spec: sandboxv1alpha1.PoolSpec{
+					Template: &v1.PodTemplateSpec{
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name:  "main",
+									Image: "example.com",
+								},
+							},
+						},
+					},
+					CapacitySpec: sandboxv1alpha1.CapacitySpec{
+						PoolMin:   0,
+						PoolMax:   10,
+						BufferMin: 10,
+						BufferMax: 10,
+					},
+					ScaleStrategy: &sandboxv1alpha1.ScaleStrategy{
+						MaxUnavailable: &maxUnavailable,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			// With 20% maxUnavailable and target 10 pods,
+			// first batch should create at most 2 pods
+			Eventually(func(g Gomega) {
+				pool := &sandboxv1alpha1.Pool{}
+				err := k8sClient.Get(ctx, typeNamespacedName, pool)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(pool.Status.Total).To(BeNumerically("<=", 2))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("should scale with integer maxUnavailable", func() {
+			maxUnavailable := intstr.FromInt(1)
+			resource := &sandboxv1alpha1.Pool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      typeNamespacedName.Name,
+					Namespace: typeNamespacedName.Namespace,
+				},
+				Spec: sandboxv1alpha1.PoolSpec{
+					Template: &v1.PodTemplateSpec{
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name:  "main",
+									Image: "example.com",
+								},
+							},
+						},
+					},
+					CapacitySpec: sandboxv1alpha1.CapacitySpec{
+						PoolMin:   0,
+						PoolMax:   5,
+						BufferMin: 5,
+						BufferMax: 5,
+					},
+					ScaleStrategy: &sandboxv1alpha1.ScaleStrategy{
+						MaxUnavailable: &maxUnavailable,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			// With maxUnavailable=1, only 1 pod should be created at a time
+			Eventually(func(g Gomega) {
+				pool := &sandboxv1alpha1.Pool{}
+				err := k8sClient.Get(ctx, typeNamespacedName, pool)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(pool.Status.Total).To(BeNumerically("<=", 1))
 			}, timeout, interval).Should(Succeed())
 		})
 	})

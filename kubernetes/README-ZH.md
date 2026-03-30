@@ -412,6 +412,14 @@ spec:
 kubectl apply -f pool-example.yaml
 ```
 
+**可选：配置扩容速率控制** - 添加 `scaleStrategy` 限制扩容节奏：
+```yaml
+  scaleStrategy:
+    maxUnavailable: "20%"  # 或绝对数量如 5
+```
+
+该配置控制扩容过程中允许不可用的 Pod 数量。例如，当 `poolMax=50` 且 `maxUnavailable=20%` 时，每次最多扩容 10 个 Pod。
+
 使用资源池创建一批沙箱：
 
 ```yaml
