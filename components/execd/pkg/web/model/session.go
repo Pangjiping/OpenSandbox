@@ -28,11 +28,11 @@ type CreateSessionResponse struct {
 	SessionID string `json:"session_id"`
 }
 
-// RunInSessionRequest is the request body for running code in an existing session.
+// RunInSessionRequest is the request body for running a command in an existing session.
 type RunInSessionRequest struct {
-	Code      string `json:"code" validate:"required"`
-	Cwd       string `json:"cwd,omitempty"`
-	TimeoutMs int64  `json:"timeout_ms,omitempty" validate:"omitempty,gte=0"`
+	Command string `json:"command" validate:"required"`
+	Cwd     string `json:"cwd,omitempty"`
+	Timeout int64  `json:"timeout,omitempty" validate:"omitempty,gte=0"`
 }
 
 // Validate validates RunInSessionRequest.

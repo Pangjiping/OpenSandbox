@@ -79,7 +79,7 @@ export interface SandboxCreateOptions {
   networkPolicy?: NetworkPolicy;
   /**
    * Optional list of volume mounts for persistent storage.
-   * Each volume specifies a backend (host path or PVC) and mount configuration.
+   * Each volume specifies a backend (host path, PVC, or OSSFS) and mount configuration.
    */
   volumes?: Volume[];
   /**
@@ -246,15 +246,15 @@ export class Sandbox {
     // Validate volumes: exactly one backend must be specified per volume
     if (opts.volumes) {
       for (const vol of opts.volumes) {
-        const backendsSpecified = [vol.host, vol.pvc].filter((b) => b !== undefined).length;
+        const backendsSpecified = [vol.host, vol.pvc, vol.ossfs].filter((b) => b != null).length;
         if (backendsSpecified === 0) {
           throw new Error(
-            `Volume '${vol.name}' must specify exactly one backend (host, pvc), but none was provided.`
+            `Volume '${vol.name}' must specify exactly one backend (host, pvc, ossfs), but none was provided.`
           );
         }
         if (backendsSpecified > 1) {
           throw new Error(
-            `Volume '${vol.name}' must specify exactly one backend (host, pvc), but multiple were provided.`
+            `Volume '${vol.name}' must specify exactly one backend (host, pvc, ossfs), but multiple were provided.`
           );
         }
       }

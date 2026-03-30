@@ -58,14 +58,22 @@ fi
 PATTERN="${COMPONENT}:v[0-9]+\.[0-9]+\.[0-9]+"
 REPLACEMENT="${COMPONENT}:${NEW_VERSION}"
 
+# Do not touch release notes: they document historical image tags and must not be
+# rewritten when bumping versions elsewhere.
 files=()
 while IFS= read -r f; do
   [ -n "$f" ] && files+=("$f")
-done < <(grep -rEl --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=.venv --exclude-dir=node_modules "$PATTERN" . 2>/dev/null || true)
+done < <(grep -rEl \
+  --exclude='*RELEASE_NOTES*' \
+  --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=.venv --exclude-dir=node_modules \
+  "$PATTERN" . 2>/dev/null || true)
 
 updated=0
 for f in "${files[@]}"; do
   [ -f "$f" ] || continue
+  case "$f" in
+    *RELEASE_NOTES*) continue ;;
+  esac
   if perl -i -pe "s/$PATTERN/$REPLACEMENT/g" "$f" 2>/dev/null; then
     echo "Updated $f"
     ((updated++)) || true

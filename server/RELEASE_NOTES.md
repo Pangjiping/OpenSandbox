@@ -1,4 +1,31 @@
-# server 0.1.8
+# server 0.1.9
+
+## What's New
+
+### ✨ Features
+- server proxy by websocket (#547)
+- **[EXPERIMENTAL]** auto-renew on sandbox proxy/ingress access for [OSEP-0009](https://github.com/alibaba/OpenSandbox/blob/main/oseps/0009-auto-renew-sandbox-on-ingress-access.md) (#535)
+- **[UNSTABLE]** add Pool CRUD API and Kubernetes CRD service (#357)
+
+### 🐛 Bug Fixes
+- **[IMPORTANT]** restore lifecycle route serialization to omit None fields in JSON responses instead of emitting explicit null (#555)
+- ensure httpx streaming responses are closed in sandbox proxy (#547)
+- print exception stack when create workload failure (#524)
+
+## 👥 Contributors
+
+Thanks to these contributors ❤️
+
+- @wangdengshan
+- @Pangjiping
+- @ninan-nn
+
+---
+- PyPI: opensandbox-server==0.1.9
+- Docker Hub: opensandbox/server:v0.1.9
+- Aliyun Registry: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/server:v0.1.9
+
+# server 0.1.8 [DEPRECATED]
 
 ## What's New
 

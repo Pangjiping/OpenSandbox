@@ -30,6 +30,21 @@ Pool 自定义资源维护一个预热的计算资源池，以实现快速沙箱
 - 基于需求的自动资源分配和释放
 - 实时状态监控，显示总数、已分配和可用资源
 
+### Pod 驱逐
+Pool 支持优雅的 Pod 驱逐，适用于节点维护或资源回收等场景：
+
+**工作原理：**
+- 用户通过给 Pod 打上 `pool.opensandbox.io/evict` 标签请求驱逐
+- 控制器会跳过已分配给 BatchSandbox 的 Pod（保护使用中的工作负载）
+- 空闲 Pod 将被删除，触发池补充容量
+- 标记驱逐的 Pod 不会被分配给新的 BatchSandbox
+
+**自定义驱逐行为：**
+您可以通过以下方式实现自定义驱逐策略：
+1. 在 Pool 上设置 `pool.opensandbox.io/eviction-handler` 标签选择您的处理器
+2. 实现 `EvictionHandler` 接口，包含 `NeedsEviction()` 和 `Evict()` 方法
+3. 在工厂函数中注册您的处理器
+
 ### 任务编排
 集成的任务管理系统，在沙箱内执行自定义工作负载：
 - **可选执行**：任务调度完全可选 - 可以在不带任务的情况下创建沙箱
@@ -396,6 +411,14 @@ spec:
 ```sh
 kubectl apply -f pool-example.yaml
 ```
+
+**可选：配置扩容速率控制** - 添加 `scaleStrategy` 限制扩容节奏：
+```yaml
+  scaleStrategy:
+    maxUnavailable: "20%"  # 或绝对数量如 5
+```
+
+该配置控制扩容过程中允许不可用的 Pod 数量。例如，当 `poolMax=50` 且 `maxUnavailable=20%` 时，每次最多扩容 10 个 Pod。
 
 使用资源池创建一批沙箱：
 

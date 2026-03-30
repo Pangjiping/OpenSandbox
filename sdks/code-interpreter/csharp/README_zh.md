@@ -244,13 +244,24 @@ await foreach (var ev in ci.Codes.RunStreamAsync(request))
 var ctx = await ci.Codes.CreateContextAsync(SupportedLanguage.Python);
 
 // 启动长时间运行的任务
+var executionId = new TaskCompletionSource<string>();
 var task = ci.Codes.RunAsync(
     "import time\nwhile True: time.sleep(1)",
-    new RunCodeOptions { Context = ctx });
+    new RunCodeOptions
+    {
+        Context = ctx,
+        Handlers = new ExecutionHandlers
+        {
+            OnInit = init =>
+            {
+                executionId.TrySetResult(init.Id);
+                return Task.CompletedTask;
+            }
+        }
+    });
 
-// 一段时间后中断
-await Task.Delay(2000);
-await ci.Codes.InterruptAsync(ctx.Id!);
+// 拿到执行 ID 后中断
+await ci.Codes.InterruptAsync(await executionId.Task);
 ```
 
 ## API 参考
@@ -281,7 +292,7 @@ await ci.Codes.InterruptAsync(ctx.Id!);
 | `DeleteContextsAsync(language)` | 删除某语言的所有上下文 |
 | `RunAsync(code, options?)` | 执行代码并返回结果 |
 | `RunStreamAsync(request)` | 执行代码并流式输出 |
-| `InterruptAsync(contextId)` | 中断正在运行的执行 |
+| `InterruptAsync(executionId)` | 按执行 ID 中断正在运行的执行 |
 
 ## 注意事项
 

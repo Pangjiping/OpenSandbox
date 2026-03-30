@@ -269,7 +269,7 @@ data: {"type":"error","error":{"ename":"CommandExecError","evalue":"","traceback
     // --- Bash session API integration tests ---
 
     [Fact]
-    public async Task CreateSessionAsync_ShouldReturnSessionId_WhenCwdProvided()
+    public async Task CreateSessionAsync_ShouldReturnSessionId_WhenWorkingDirectoryProvided()
     {
         var handler = new StubHttpMessageHandler(async (request, _) =>
         {
@@ -287,7 +287,7 @@ data: {"type":"error","error":{"ename":"CommandExecError","evalue":"","traceback
         });
         var adapter = CreateAdapter(handler);
 
-        var sessionId = await adapter.CreateSessionAsync(new CreateSessionOptions { Cwd = "/tmp" });
+        var sessionId = await adapter.CreateSessionAsync(new CreateSessionOptions { WorkingDirectory = "/tmp" });
 
         sessionId.Should().Be("sess-abc123");
         handler.RequestUris.Should().Contain(uri => uri.EndsWith("/session"));
@@ -332,7 +332,7 @@ data: {"type":"error","error":{"ename":"CommandExecError","evalue":"","traceback
     }
 
     [Fact]
-    public async Task RunInSessionAsync_ShouldSendCodeAndOptions()
+    public async Task RunInSessionAsync_ShouldSendCommandAndOptions()
     {
         var handler = new StubHttpMessageHandler(async (request, _) =>
         {
@@ -341,9 +341,9 @@ data: {"type":"error","error":{"ename":"CommandExecError","evalue":"","traceback
             request.Content.Should().NotBeNull();
             var body = await request.Content!.ReadAsStringAsync().ConfigureAwait(false);
             using var doc = JsonDocument.Parse(body);
-            doc.RootElement.GetProperty("code").GetString().Should().Be("pwd");
+            doc.RootElement.GetProperty("command").GetString().Should().Be("pwd");
             doc.RootElement.GetProperty("cwd").GetString().Should().Be("/var");
-            doc.RootElement.GetProperty("timeout_ms").GetInt64().Should().Be(5000);
+            doc.RootElement.GetProperty("timeout").GetInt64().Should().Be(5000);
 
             var sse = "data: {\"type\":\"stdout\",\"text\":\"/var\"}\ndata: {\"type\":\"execution_complete\"}\n";
             return new HttpResponseMessage(HttpStatusCode.OK)
@@ -356,11 +356,39 @@ data: {"type":"error","error":{"ename":"CommandExecError","evalue":"","traceback
         var run = await adapter.RunInSessionAsync(
             "sess-1",
             "pwd",
-            new RunInSessionOptions { Cwd = "/var", TimeoutMs = 5000 });
+            new RunInSessionOptions { WorkingDirectory = "/var", Timeout = 5000 });
 
         run.Should().NotBeNull();
         run.Logs.Stdout.Should().ContainSingle(m => m.Text == "/var");
+        run.ExitCode.Should().Be(0);
         handler.RequestUris.Should().Contain(uri => uri.Contains("/session/sess-1/run"));
+    }
+
+    [Fact]
+    public async Task RunInSessionAsync_ShouldInferNonZeroExitCodeFromFinalErrorState()
+    {
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            const string sse = """
+data: {"type":"init","text":"sess-cmd-2","timestamp":1}
+
+data: {"type":"error","error":{"ename":"CommandExecError","evalue":"7","traceback":["exit status 7"]},"timestamp":2}
+
+""";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(sse, Encoding.UTF8, "text/event-stream")
+            });
+        });
+        var adapter = CreateAdapter(handler);
+
+        var execution = await adapter.RunInSessionAsync("sess-2", "exit 7");
+
+        execution.Id.Should().Be("sess-cmd-2");
+        execution.Error.Should().NotBeNull();
+        execution.Error!.Value.Should().Be("7");
+        execution.Complete.Should().BeNull();
+        execution.ExitCode.Should().Be(7);
     }
 
     [Fact]
@@ -375,14 +403,14 @@ data: {"type":"error","error":{"ename":"CommandExecError","evalue":"","traceback
     }
 
     [Fact]
-    public async Task RunInSessionAsync_ShouldThrow_WhenCodeEmpty()
+    public async Task RunInSessionAsync_ShouldThrow_WhenCommandEmpty()
     {
         var adapter = CreateAdapter(new StubHttpMessageHandler((_, _) => throw new InvalidOperationException("Should not be called")));
 
         var act = () => adapter.RunInSessionAsync("sess-1", "  ");
 
         await act.Should().ThrowAsync<InvalidArgumentException>()
-            .WithMessage("*code*");
+            .WithMessage("*command*");
     }
 
     [Fact]

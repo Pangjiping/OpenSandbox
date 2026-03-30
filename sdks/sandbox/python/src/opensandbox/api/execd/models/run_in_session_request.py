@@ -29,54 +29,54 @@ T = TypeVar("T", bound="RunInSessionRequest")
 
 @_attrs_define
 class RunInSessionRequest:
-    """Request to run code in an existing bash session
+    """Request to run a command in an existing bash session
 
     Attributes:
-        code (str): Shell code to execute in the session Example: echo "Hello".
+        command (str): Shell command to execute in the session Example: echo "Hello".
         cwd (str | Unset): Working directory override for this run (optional) Example: /workspace.
-        timeout_ms (int | Unset): Maximum execution time in milliseconds (optional; server may not enforce if omitted)
+        timeout (int | Unset): Maximum execution time in milliseconds (optional; server may not enforce if omitted)
             Example: 30000.
     """
 
-    code: str
+    command: str
     cwd: str | Unset = UNSET
-    timeout_ms: int | Unset = UNSET
+    timeout: int | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        code = self.code
+        command = self.command
 
         cwd = self.cwd
 
-        timeout_ms = self.timeout_ms
+        timeout = self.timeout
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "code": code,
+                "command": command,
             }
         )
         if cwd is not UNSET:
             field_dict["cwd"] = cwd
-        if timeout_ms is not UNSET:
-            field_dict["timeout_ms"] = timeout_ms
+        if timeout is not UNSET:
+            field_dict["timeout"] = timeout
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        code = d.pop("code")
+        command = d.pop("command")
 
         cwd = d.pop("cwd", UNSET)
 
-        timeout_ms = d.pop("timeout_ms", UNSET)
+        timeout = d.pop("timeout", UNSET)
 
         run_in_session_request = cls(
-            code=code,
+            command=command,
             cwd=cwd,
-            timeout_ms=timeout_ms,
+            timeout=timeout,
         )
 
         run_in_session_request.additional_properties = d

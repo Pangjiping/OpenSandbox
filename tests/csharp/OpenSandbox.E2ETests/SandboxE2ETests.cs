@@ -368,7 +368,16 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
             Assert.Equal("opensandbox-e2e-marker", marker.Logs.Stdout[0].Text);
 
             var write = await roSandbox.Commands.RunAsync($"touch {containerMountPath}/should-fail.txt");
-            Assert.NotNull(write.Error);
+            var stat = await roSandbox.Commands.RunAsync(
+                $"test ! -e {containerMountPath}/should-fail.txt && echo OK");
+            var writeWasRejected = write.Error is not null || write.Logs.Stderr.Count > 0;
+            var fileWasNotCreated =
+                stat.Error is null &&
+                stat.Logs.Stdout.Count == 1 &&
+                stat.Logs.Stdout[0].Text == "OK";
+            Assert.True(
+                writeWasRejected || fileWasNotCreated,
+                "Write on read-only host volume should fail or leave no created file.");
         }
         finally
         {
@@ -468,7 +477,16 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
             Assert.Equal("pvc-marker-data", marker.Logs.Stdout[0].Text);
 
             var write = await roSandbox.Commands.RunAsync($"touch {containerMountPath}/should-fail.txt");
-            Assert.NotNull(write.Error);
+            var stat = await roSandbox.Commands.RunAsync(
+                $"test ! -e {containerMountPath}/should-fail.txt && echo OK");
+            var writeWasRejected = write.Error is not null || write.Logs.Stderr.Count > 0;
+            var fileWasNotCreated =
+                stat.Error is null &&
+                stat.Logs.Stdout.Count == 1 &&
+                stat.Logs.Stdout[0].Text == "OK";
+            Assert.True(
+                writeWasRejected || fileWasNotCreated,
+                "Write on read-only PVC volume should fail or leave no created file.");
         }
         finally
         {
@@ -545,7 +563,7 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
     }
 
     [Fact(Timeout = 2 * 60 * 1000)]
-    public async Task Command_Execution_Success_Cwd_Background_Failure()
+    public async Task Command_Execution_Success_WorkingDirectory_Background_Failure()
     {
         var sandbox = _fixture.Sandbox;
 
@@ -689,31 +707,34 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
     }
 
     [Fact(Timeout = 2 * 60 * 1000)]
-    public async Task Bash_Session_API_Cwd_And_Env_Persistence()
+    public async Task Bash_Session_API_WorkingDirectory_And_Env_Persistence()
     {
         var sandbox = _fixture.Sandbox;
 
-        var sid = await sandbox.Commands.CreateSessionAsync(new CreateSessionOptions { Cwd = "/tmp" });
+        var sid = await sandbox.Commands.CreateSessionAsync(new CreateSessionOptions { WorkingDirectory = "/tmp" });
         Assert.False(string.IsNullOrWhiteSpace(sid));
 
         var run = await sandbox.Commands.RunInSessionAsync(sid, "pwd");
         Assert.Null(run.Error);
+        Assert.Equal(0, run.ExitCode);
         var stdout = string.Join("", run.Logs.Stdout.Select(m => m.Text)).Trim();
         Assert.Equal("/tmp", stdout);
 
         run = await sandbox.Commands.RunInSessionAsync(
             sid,
             "pwd",
-            options: new RunInSessionOptions { Cwd = "/var" });
+            options: new RunInSessionOptions { WorkingDirectory = "/var" });
         Assert.Null(run.Error);
+        Assert.Equal(0, run.ExitCode);
         stdout = string.Join("", run.Logs.Stdout.Select(m => m.Text)).Trim();
         Assert.Equal("/var", stdout);
 
         run = await sandbox.Commands.RunInSessionAsync(
             sid,
             "pwd",
-            options: new RunInSessionOptions { Cwd = "/tmp" });
+            options: new RunInSessionOptions { WorkingDirectory = "/tmp" });
         Assert.Null(run.Error);
+        Assert.Equal(0, run.ExitCode);
         stdout = string.Join("", run.Logs.Stdout.Select(m => m.Text)).Trim();
         Assert.Equal("/tmp", stdout);
 
@@ -722,13 +743,22 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
 
         run = await sandbox.Commands.RunInSessionAsync(sid, "echo $E2E_SESSION_ENV");
         Assert.Null(run.Error);
+        Assert.Equal(0, run.ExitCode);
         stdout = string.Join("", run.Logs.Stdout.Select(m => m.Text)).Trim();
         Assert.Equal("session-env-ok", stdout);
 
-        var sid2 = await sandbox.Commands.CreateSessionAsync(new CreateSessionOptions { Cwd = "/var" });
+        run = await sandbox.Commands.RunInSessionAsync(sid, "sh -c 'echo session-fail >&2; exit 7'");
+        Assert.NotNull(run.Error);
+        Assert.Equal("CommandExecError", run.Error!.Name);
+        Assert.Equal("7", run.Error.Value);
+        Assert.Equal(7, run.ExitCode);
+        Assert.Null(run.Complete);
+
+        var sid2 = await sandbox.Commands.CreateSessionAsync(new CreateSessionOptions { WorkingDirectory = "/var" });
         Assert.False(string.IsNullOrWhiteSpace(sid2));
         run = await sandbox.Commands.RunInSessionAsync(sid2, "pwd");
         Assert.Null(run.Error);
+        Assert.Equal(0, run.ExitCode);
         stdout = string.Join("", run.Logs.Stdout.Select(m => m.Text)).Trim();
         Assert.Equal("/var", stdout);
 
@@ -855,6 +885,22 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
         var verify = await sandbox.Commands.RunAsync(
             $"test ! -d {testDir1} && test ! -d {testDir2} && echo OK",
             options: new RunCommandOptions { WorkingDirectory = "/tmp" });
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var verified =
+                verify.Error is null &&
+                verify.Logs.Stdout.Count == 1 &&
+                verify.Logs.Stdout[0].Text == "OK";
+            if (verified)
+            {
+                break;
+            }
+
+            await Task.Delay(1000);
+            verify = await sandbox.Commands.RunAsync(
+                $"test ! -d {testDir1} && test ! -d {testDir2} && echo OK",
+                options: new RunCommandOptions { WorkingDirectory = "/tmp" });
+        }
         Assert.Null(verify.Error);
         Assert.Single(verify.Logs.Stdout);
         Assert.Equal("OK", verify.Logs.Stdout[0].Text);

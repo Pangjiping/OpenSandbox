@@ -25,6 +25,8 @@ namespace OpenSandbox.Internal;
 /// </summary>
 internal sealed class HttpClientWrapper
 {
+    private static readonly HttpMethod PatchMethod = new("PATCH");
+
     private readonly HttpClient _httpClient;
     private readonly string _baseUrl;
     private readonly IReadOnlyDictionary<string, string> _defaultHeaders;
@@ -126,7 +128,7 @@ internal sealed class HttpClientWrapper
     {
         var url = BuildUrl(path);
         _logger.LogDebug("HTTP PATCH {Url}", url);
-        using var request = new HttpRequestMessage(HttpMethod.Patch, url);
+        using var request = new HttpRequestMessage(PatchMethod, url);
         ApplyDefaultHeaders(request);
 
         if (body != null)
@@ -146,7 +148,7 @@ internal sealed class HttpClientWrapper
     {
         var url = BuildUrl(path);
         _logger.LogDebug("HTTP PATCH {Url}", url);
-        using var request = new HttpRequestMessage(HttpMethod.Patch, url);
+        using var request = new HttpRequestMessage(PatchMethod, url);
         ApplyDefaultHeaders(request);
 
         if (body != null)

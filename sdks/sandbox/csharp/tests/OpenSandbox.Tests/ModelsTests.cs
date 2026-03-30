@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Text.Json;
 using FluentAssertions;
 using OpenSandbox.Models;
 using Xunit;
@@ -209,6 +210,43 @@ public class ModelsTests
     }
 
     [Fact]
+    public void Volume_WithOssfs_ShouldSerializeExpectedPayload()
+    {
+        var request = new CreateSandboxRequest
+        {
+            Image = new ImageSpec { Uri = "python:3.11" },
+            ResourceLimits = new Dictionary<string, string>(),
+            Entrypoint = new List<string> { "python" },
+            Volumes = new List<Volume>
+            {
+                new()
+                {
+                    Name = "oss-data",
+                    MountPath = "/mnt/oss",
+                    SubPath = "prefix",
+                    Ossfs = new OSSFS
+                    {
+                        Bucket = "bucket-a",
+                        Endpoint = "oss-cn-hangzhou.aliyuncs.com",
+                        AccessKeyId = "ak",
+                        AccessKeySecret = "sk",
+                        Options = new List<string> { "allow_other" }
+                    }
+                }
+            }
+        };
+
+        string json = JsonSerializer.Serialize(request);
+
+        json.Should().Contain("\"ossfs\":");
+        json.Should().Contain("\"bucket\":\"bucket-a\"");
+        json.Should().Contain("\"endpoint\":\"oss-cn-hangzhou.aliyuncs.com\"");
+        json.Should().Contain("\"accessKeyId\":\"ak\"");
+        json.Should().Contain("\"accessKeySecret\":\"sk\"");
+        json.Should().Contain("\"version\":\"2.0\"");
+    }
+
+    [Fact]
     public void SandboxMetrics_ShouldStoreProperties()
     {
         // Arrange & Act
@@ -324,6 +362,30 @@ public class ModelsTests
         options.Uid.Should().Be(1000);
         options.Gid.Should().Be(1000);
         options.Envs.Should().ContainKey("APP_ENV");
+    }
+
+    [Fact]
+    public void CreateSessionOptions_ShouldStoreWorkingDirectory()
+    {
+        var options = new CreateSessionOptions
+        {
+            WorkingDirectory = "/workspace"
+        };
+
+        options.WorkingDirectory.Should().Be("/workspace");
+    }
+
+    [Fact]
+    public void RunInSessionOptions_ShouldStoreProperties()
+    {
+        var options = new RunInSessionOptions
+        {
+            WorkingDirectory = "/workspace",
+            Timeout = 5000
+        };
+
+        options.WorkingDirectory.Should().Be("/workspace");
+        options.Timeout.Should().Be(5000);
     }
 
     [Fact]

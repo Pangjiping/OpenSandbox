@@ -26,11 +26,12 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/alibaba/opensandbox/execd/pkg/flag"
+	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
 	"github.com/alibaba/opensandbox/execd/pkg/runtime"
 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
 )
 
-var codeRunner *runtime.Controller
+var codeRunner codeExecutionRunner
 
 func InitCodeRunner() {
 	codeRunner = runtime.NewController(flag.JupyterServerHost, flag.JupyterServerToken)
@@ -42,6 +43,25 @@ type CodeInterpretingController struct {
 
 	// chunkWriter serializes SSE event writes to prevent interleaved output.
 	chunkWriter sync.Mutex
+}
+
+type codeExecutionRunner interface {
+	CreateContext(req *runtime.CreateContextRequest) (string, error)
+	Execute(request *runtime.ExecuteCodeRequest) error
+	GetContext(session string) (runtime.CodeContext, error)
+	GetCommandStatus(session string) (*runtime.CommandStatus, error)
+	ListContext(language string) ([]runtime.CodeContext, error)
+	DeleteLanguageContext(language runtime.Language) error
+	DeleteContext(session string) error
+	CreateBashSession(req *runtime.CreateContextRequest) (string, error)
+	RunInBashSession(ctx context.Context, req *runtime.ExecuteCodeRequest) error
+	SeekBackgroundCommandOutput(session string, cursor int64) ([]byte, int64, error)
+	DeleteBashSession(sessionID string) error
+	Interrupt(sessionID string) error
+	CreatePTYSession(id, cwd string) runtime.PTYSession
+	GetPTYSession(id string) runtime.PTYSession
+	DeletePTYSession(id string) error
+	GetPTYSessionStatus(id string) (bool, int64, error)
 }
 
 func NewCodeInterpretingController(ctx *gin.Context) *CodeInterpretingController {
@@ -113,6 +133,27 @@ func (c *CodeInterpretingController) RunCode() {
 	defer cancel()
 	runCodeRequest := c.buildExecuteCodeRequest(request)
 	eventsHandler := c.setServerEventsHandler(ctx)
+
+	// completeCh is closed when OnExecuteComplete fires, meaning the final SSE
+	// event has been written and flushed. We only wait for this callback as a
+	// safety check and then return immediately to avoid fixed tail latency.
+	completeCh := make(chan struct{})
+	var completeOnce sync.Once
+	signalComplete := func() {
+		completeOnce.Do(func() {
+			close(completeCh)
+		})
+	}
+	origComplete := eventsHandler.OnExecuteComplete
+	eventsHandler.OnExecuteComplete = func(executionTime time.Duration) {
+		origComplete(executionTime)
+		signalComplete()
+	}
+	origError := eventsHandler.OnExecuteError
+	eventsHandler.OnExecuteError = func(err *execute.ErrorOutput) {
+		origError(err)
+		signalComplete()
+	}
 	runCodeRequest.Hooks = eventsHandler
 
 	c.setupSSEResponse()
@@ -126,7 +167,7 @@ func (c *CodeInterpretingController) RunCode() {
 		return
 	}
 
-	time.Sleep(flag.ApiGracefulShutdownTimeout)
+	waitForExecutionComplete(ctx, completeCh)
 }
 
 // GetContext returns a specific code context by id.
@@ -265,7 +306,7 @@ func (c *CodeInterpretingController) CreateSession() {
 	c.RespondSuccess(model.CreateSessionResponse{SessionID: sessionID})
 }
 
-// RunInSession runs code in an existing bash session and streams output via SSE (run_in_session API).
+// RunInSession runs a command in an existing bash session and streams output via SSE (run_in_session API).
 func (c *CodeInterpretingController) RunInSession() {
 	sessionID := c.ctx.Param("sessionId")
 	if sessionID == "" {
@@ -295,17 +336,39 @@ func (c *CodeInterpretingController) RunInSession() {
 		return
 	}
 
-	timeout := time.Duration(request.TimeoutMs) * time.Millisecond
+	timeout := time.Duration(request.Timeout) * time.Millisecond
 	runReq := &runtime.ExecuteCodeRequest{
 		Language: runtime.Bash,
 		Context:  sessionID,
-		Code:     request.Code,
+		Code:     request.Command,
 		Cwd:      request.Cwd,
 		Timeout:  timeout,
 	}
 	ctx, cancel := context.WithCancel(c.ctx.Request.Context())
 	defer cancel()
-	runReq.Hooks = c.setServerEventsHandler(ctx)
+
+	// completeCh is closed when OnExecuteComplete fires, meaning the final SSE
+	// event has been written and flushed. We only wait for this callback as a
+	// safety check and then return immediately to avoid fixed tail latency.
+	completeCh := make(chan struct{})
+	var completeOnce sync.Once
+	signalComplete := func() {
+		completeOnce.Do(func() {
+			close(completeCh)
+		})
+	}
+	hooks := c.setServerEventsHandler(ctx)
+	origComplete := hooks.OnExecuteComplete
+	hooks.OnExecuteComplete = func(executionTime time.Duration) {
+		origComplete(executionTime)
+		signalComplete()
+	}
+	origError := hooks.OnExecuteError
+	hooks.OnExecuteError = func(err *execute.ErrorOutput) {
+		origError(err)
+		signalComplete()
+	}
+	runReq.Hooks = hooks
 
 	c.setupSSEResponse()
 	err := codeRunner.RunInBashSession(ctx, runReq)
@@ -318,7 +381,7 @@ func (c *CodeInterpretingController) RunInSession() {
 		return
 	}
 
-	time.Sleep(flag.ApiGracefulShutdownTimeout)
+	waitForExecutionComplete(ctx, completeCh)
 }
 
 // DeleteSession deletes a bash session (delete_session API).
@@ -367,6 +430,24 @@ func (c *CodeInterpretingController) buildExecuteCodeRequest(request model.RunCo
 	}
 
 	return req
+}
+
+func waitForExecutionComplete(ctx context.Context, completeCh <-chan struct{}) {
+	timer := time.NewTimer(flag.ApiGracefulShutdownTimeout)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+
+	select {
+	case <-completeCh:
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 func (c *CodeInterpretingController) interrupt() {

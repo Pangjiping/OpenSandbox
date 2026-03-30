@@ -182,8 +182,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Run code in bash session (run_in_session)
-         * @description Executes code in an existing bash session and streams the output in real-time via SSE
+         * Run command in bash session (run_in_session)
+         * @description Executes a shell command in an existing bash session and streams the output in real-time via SSE
          *     (Server-Sent Events). The session must have been created by create_session. Supports
          *     optional working directory override and timeout (milliseconds).
          */
@@ -560,13 +560,13 @@ export interface components {
              */
             session_id: string;
         };
-        /** @description Request to run code in an existing bash session */
+        /** @description Request to run a command in an existing bash session */
         RunInSessionRequest: {
             /**
-             * @description Shell code to execute in the session
+             * @description Shell command to execute in the session
              * @example echo "Hello"
              */
-            code: string;
+            command: string;
             /**
              * @description Working directory override for this run (optional)
              * @example /workspace
@@ -577,7 +577,7 @@ export interface components {
              * @description Maximum execution time in milliseconds (optional; server may not enforce if omitted)
              * @example 30000
              */
-            timeout_ms?: number;
+            timeout?: number;
         };
         /** @description Request to create a code execution context */
         CodeContextRequest: {
