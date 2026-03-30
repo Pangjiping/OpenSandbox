@@ -12,6 +12,7 @@
 - [架构设计](#架构设计)
 - [快速开始](#快速开始)
 - [配置说明](#配置说明)
+  - [沙箱内的 Linux clone3 兼容](#沙箱内的-linux-clone3-兼容)
 - [API 参考](#api-参考)
 - [支持的语言](#支持的语言)
 - [开发指南](#开发指南)
@@ -80,6 +81,7 @@
 | `pkg/jupyter/execute/` | 执行结果类型与流解析器                                |
 | `pkg/jupyter/session/` | 会话管理与生命周期                                  |
 | `pkg/util/`            | 通用工具（安全 goroutine、glob 辅助）                 |
+| `pkg/clone3compat/`    | Linux 下可选 seccomp，使 `clone3` 返回 `ENOSYS`      |
 | `tests/`               | 测试脚本和工具                                    |
 
 ## 快速开始
@@ -166,6 +168,45 @@ export JUPYTER_TOKEN=your-token
 ```
 
 环境变量优先于默认值，但会被显式的 CLI 标志覆盖。
+
+| 变量 | 说明 |
+|------|------|
+| `EXECD_CLONE3_COMPAT` | 仅 Linux。详见 [下文](#沙箱内的-linux-clone3-兼容)。 |
+
+### 沙箱内的 Linux clone3 兼容
+
+部分沙箱镜像使用 **glibc ≥ 2.34**，会优先使用 **`clone3(2)`** 系统调用。在**较旧的容器引擎**上（例如 Docker **低于 20.10.10** 及对应 containerd CRI 版本），或运行时对 `clone3` 支持不完整时，**创建子进程可能失败**。
+
+受影响场景包括：execd 内部的 **Go `os/exec`**、shell 命令、`apt`/`dnf` 等包管理器，以及会拉子进程的语言运行时。
+
+常见报错里会出现 **`clone3`**、**`Function not implemented`** 或 **`Operation not permitted`**，且多发生在**沙箱内**执行命令或代码时，而不一定是宿主机上启动 OpenSandbox 服务时。
+
+#### 启用内置规避
+
+execd 可通过 **seccomp** 让 `clone3` 返回 **`ENOSYS`**，迫使 libc 与 Go 运行时回退到 **`clone(2)`**，思路与 [AkihiroSuda/clone3-workaround](https://github.com/AkihiroSuda/clone3-workaround) 一致。实现见 [`pkg/clone3compat/`](pkg/clone3compat/)。
+
+在**沙箱容器环境变量**中设置（execd 作为容器入口或主进程时）：
+
+| 取值 | 行为 |
+|------|------|
+| `1`、`true`、`yes`、`on` | 在 `main` 开头加载过滤器（Go `init` 之后）。 |
+| `reexec` | 加载过滤器后对同二进制再 `exec` 一次，使后续 `init` 已在 seccomp 下运行（最接近外挂 workaround 二进制的方式）。 |
+
+未设置、为空，或为 `0` / `false` / `off` / `no` 时关闭。
+
+#### SDK
+
+在 `Sandbox.create` 的 `env` 中设置 `EXECD_CLONE3_COMPAT`，使 execd 在沙箱启动时即可读到：
+
+```python
+sandbox = await Sandbox.create(
+    "opensandbox/code-interpreter:v1.0.2",
+    entrypoint=["/opt/opensandbox/code-interpreter.sh"],
+    env={"EXECD_CLONE3_COMPAT": "1"},
+)
+```
+
+沙箱需允许加载 seccomp 过滤器（**seccomp**、**`PR_SET_NO_NEW_PRIVS`**）。长期仍建议在宿主机上升级容器引擎/内核，使 `clone3` 全链路可用。
 
 ## API 参考
 

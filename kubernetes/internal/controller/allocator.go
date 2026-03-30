@@ -173,9 +173,8 @@ func (syncer *annoAllocationSyncer) GetRelease(ctx context.Context, sandbox *san
 type AllocSpec struct {
 	// sandboxes need to allocate
 	Sandboxes []*sandboxv1alpha1.BatchSandbox
-	// pool
-	Pool *sandboxv1alpha1.Pool
-	// all pods of pool
+	Pool      *sandboxv1alpha1.Pool
+	// all candidate pods
 	Pods []*corev1.Pod
 }
 
@@ -184,6 +183,8 @@ type AllocStatus struct {
 	PodAllocation map[string]string
 	// pod request count
 	PodSupplement int32
+	// DirtyPods are pods that should be recycled (deleted) after release
+	DirtyPods []string
 }
 
 type SandboxSyncInfo struct {
@@ -194,6 +195,7 @@ type SandboxSyncInfo struct {
 
 type Allocator interface {
 	Schedule(ctx context.Context, spec *AllocSpec) (*AllocStatus, []SandboxSyncInfo, bool, error)
+	GetPoolAllocation(ctx context.Context, pool *sandboxv1alpha1.Pool) (map[string]string, error)
 	PersistPoolAllocation(ctx context.Context, pool *sandboxv1alpha1.Pool, status *AllocStatus) error
 	SyncSandboxAllocation(ctx context.Context, sandbox *sandboxv1alpha1.BatchSandbox, pods []string) error
 }
@@ -269,7 +271,7 @@ func (allocator *defaultAllocator) initAllocation(ctx context.Context, spec *All
 	status := &AllocStatus{
 		PodAllocation: make(map[string]string),
 	}
-	status.PodAllocation, err = allocator.getPodAllocation(ctx, spec.Pool)
+	status.PodAllocation, err = allocator.GetPoolAllocation(ctx, spec.Pool)
 	if err != nil {
 		return nil, err
 	}
@@ -387,6 +389,7 @@ func (allocator *defaultAllocator) deallocate(ctx context.Context, status *Alloc
 		for _, pod := range pods {
 			delete(status.PodAllocation, pod)
 			poolDeallocate = true
+			status.DirtyPods = append(status.DirtyPods, pod)
 		}
 		delete(sandboxToPods, name)
 	}
@@ -408,6 +411,7 @@ func (allocator *defaultAllocator) doDeallocate(ctx context.Context, status *All
 	for _, pod := range toRelease.Pods {
 		delete(status.PodAllocation, pod)
 		deallocate = true
+		status.DirtyPods = append(status.DirtyPods, pod)
 		log.V(1).Info("Pod released from sandbox", "pod", pod, "sandbox", name)
 	}
 	pods := make([]string, 0)
@@ -421,7 +425,7 @@ func (allocator *defaultAllocator) doDeallocate(ctx context.Context, status *All
 	return deallocate, nil
 }
 
-func (allocator *defaultAllocator) getPodAllocation(ctx context.Context, pool *sandboxv1alpha1.Pool) (map[string]string, error) {
+func (allocator *defaultAllocator) GetPoolAllocation(ctx context.Context, pool *sandboxv1alpha1.Pool) (map[string]string, error) {
 	alloc, err := allocator.store.GetAllocation(ctx, pool)
 	if err != nil {
 		return nil, err

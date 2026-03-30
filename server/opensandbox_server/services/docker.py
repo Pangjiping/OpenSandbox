@@ -62,6 +62,7 @@ from opensandbox_server.api.schema import (
     SandboxStatus,
 )
 from opensandbox_server.config import AppConfig, get_config
+from opensandbox_server.services.docker_diagnostics import DockerDiagnosticsMixin
 from opensandbox_server.services.extension_service import ExtensionService
 from opensandbox_server.services.constants import (
     EGRESS_MODE_ENV,
@@ -128,7 +129,7 @@ class PendingSandbox:
     status: SandboxStatus
 
 
-class DockerSandboxService(OSSFSMixin, SandboxService, ExtensionService):
+class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, ExtensionService):
     """
     Docker-based implementation of SandboxService.
 

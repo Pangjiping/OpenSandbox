@@ -172,6 +172,21 @@ func (mr *MockAllocatorMockRecorder) Schedule(ctx, spec interface{}) *gomock.Cal
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Schedule", reflect.TypeOf((*MockAllocator)(nil).Schedule), ctx, spec)
 }
 
+// GetPoolAllocation mocks base method.
+func (m *MockAllocator) GetPoolAllocation(ctx context.Context, pool *v1alpha1.Pool) (map[string]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetPoolAllocation", ctx, pool)
+	ret0, _ := ret[0].(map[string]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetPoolAllocation indicates an expected call of GetPoolAllocation.
+func (mr *MockAllocatorMockRecorder) GetPoolAllocation(ctx, pool interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPoolAllocation", reflect.TypeOf((*MockAllocator)(nil).GetPoolAllocation), ctx, pool)
+}
+
 func (m *MockAllocator) PersistPoolAllocation(ctx context.Context, pool *v1alpha1.Pool, status *AllocStatus) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "PersistPoolAllocation", ctx, pool, status)

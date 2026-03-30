@@ -30,6 +30,21 @@ The Pool custom resource maintains a pool of pre-warmed compute resources to ena
 - Automatic resource allocation and deallocation based on demand
 - Real-time status monitoring showing total, allocated, and available resources
 
+### Pod Eviction
+Pool supports graceful pod eviction for scenarios like node maintenance or resource reclamation:
+
+**How it works:**
+- Users label a pod with `pool.opensandbox.io/evict` to request eviction
+- The controller skips pods already allocated to BatchSandbox (protecting in-use workloads)
+- Idle pods are deleted, triggering the pool to replenish capacity
+- Pods marked for eviction are excluded from new allocations
+
+**Custom eviction behavior:**
+You can implement custom eviction strategies by:
+1. Setting `pool.opensandbox.io/eviction-handler` label on the Pool to select your handler
+2. Implementing the `EvictionHandler` interface with `NeedsEviction()` and `Evict()` methods
+3. Registering your handler in the factory function
+
 ### Task Orchestration
 Integrated task management system that executes custom workloads within sandboxes:
 - **Optional Execution**: Task scheduling is completely optional - sandboxes can be created without tasks

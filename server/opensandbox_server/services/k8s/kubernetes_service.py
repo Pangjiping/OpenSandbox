@@ -53,6 +53,7 @@ from opensandbox_server.services.endpoint_auth import generate_egress_token
 from opensandbox_server.services.endpoint_auth import build_egress_auth_headers, merge_endpoint_headers
 from opensandbox_server.services.helpers import matches_filter
 from opensandbox_server.services.extension_service import ExtensionService
+from opensandbox_server.services.k8s.k8s_diagnostics import K8sDiagnosticsMixin
 from opensandbox_server.services.sandbox_service import SandboxService
 from opensandbox_server.services.validators import (
     calculate_expiration_or_raise,
@@ -69,7 +70,7 @@ from opensandbox_server.services.k8s.provider_factory import create_workload_pro
 logger = logging.getLogger(__name__)
 
 
-class KubernetesSandboxService(SandboxService, ExtensionService):
+class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionService):
     """
     Kubernetes-based implementation of SandboxService.
     
@@ -409,7 +410,7 @@ class KubernetesSandboxService(SandboxService, ExtensionService):
                     "message": f"Failed to create sandbox: {str(e)}",
                 },
             ) from e
-    
+
     def get_sandbox(self, sandbox_id: str) -> Sandbox:
         """
         Get sandbox by ID.
