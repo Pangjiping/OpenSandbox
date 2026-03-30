@@ -83,6 +83,14 @@ func NewRouter(accessToken string) *gin.Engine {
 		metric.GET("/watch", withMetric(func(c *controller.MetricController) { c.WatchMetrics() }))
 	}
 
+	pty := r.Group("/pty")
+	{
+		pty.POST("", withPTY(func(c *controller.PTYController) { c.CreatePTYSession() }))
+		pty.GET("/:sessionId", withPTY(func(c *controller.PTYController) { c.GetPTYSessionStatus() }))
+		pty.DELETE("/:sessionId", withPTY(func(c *controller.PTYController) { c.DeletePTYSession() }))
+		pty.GET("/:sessionId/ws", controller.PTYSessionWebSocket)
+	}
+
 	return r
 }
 
@@ -101,6 +109,12 @@ func withCode(fn func(*controller.CodeInterpretingController)) gin.HandlerFunc {
 func withMetric(fn func(*controller.MetricController)) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		fn(controller.NewMetricController(ctx))
+	}
+}
+
+func withPTY(fn func(*controller.PTYController)) gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		fn(controller.NewPTYController(ctx))
 	}
 }
 

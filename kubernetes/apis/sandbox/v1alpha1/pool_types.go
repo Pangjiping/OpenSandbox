@@ -17,6 +17,7 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -32,6 +33,9 @@ type PoolSpec struct {
 	// CapacitySpec controls the size of the resource pool.
 	// +kubebuilder:validation:Required
 	CapacitySpec CapacitySpec `json:"capacitySpec"`
+	// ScaleStrategy controls the scaling behavior.
+	// +optional
+	ScaleStrategy *ScaleStrategy `json:"scaleStrategy,omitempty"`
 }
 
 type CapacitySpec struct {
@@ -51,6 +55,15 @@ type CapacitySpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Required
 	PoolMin int32 `json:"poolMin"`
+}
+
+// ScaleStrategy controls the pace of scaling operations.
+type ScaleStrategy struct {
+	// MaxUnavailable is the maximum number of pods that can be unavailable during scaling.
+	// Can be an absolute number (ex: 5) or a percentage of desired pods (ex: "20%").
+	// Defaults to 25%.
+	// +optional
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 }
 
 // PoolStatus defines the observed state of Pool.

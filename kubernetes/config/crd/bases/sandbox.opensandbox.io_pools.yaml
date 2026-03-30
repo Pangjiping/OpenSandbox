@@ -84,6 +84,19 @@ spec:
                 - poolMax
                 - poolMin
                 type: object
+              scaleStrategy:
+                description: ScaleStrategy controls the scaling behavior.
+                properties:
+                  maxUnavailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      MaxUnavailable is the maximum number of pods that can be unavailable during scaling.
+                      Can be an absolute number (ex: 5) or a percentage of desired pods (ex: "20%").
+                      Defaults to 25%.
+                    x-kubernetes-int-or-string: true
+                type: object
               template:
                 description: Pod Template used to create pre-warmed nodes in the pool.
                 x-kubernetes-preserve-unknown-fields: true

@@ -411,6 +411,14 @@ Apply the pool configuration:
 kubectl apply -f pool-example.yaml
 ```
 
+**Optional: Configure scale rate control** - Add `scaleStrategy` to limit the pace of scaling:
+```yaml
+  scaleStrategy:
+    maxUnavailable: "20%"  # or absolute number like 5
+```
+
+This controls how many pods can be unavailable during scaling. For example, with `poolMax=50` and `maxUnavailable=20%`, at most 10 pods will be scaled at once.
+
 Create a batch of sandboxes using the pool:
 
 ```yaml
@@ -426,6 +434,53 @@ spec:
 Apply the batch sandbox configuration:
 ```sh
 kubectl apply -f pooled-batch-sandbox.yaml
+```
+
+##### Pooled Sandbox with Scale Rate Control
+
+The Pool supports configurable scale rate control through `scaleStrategy`, which limits the pace of scaling operations to prevent resource contention:
+
+```yaml
+apiVersion: sandbox.opensandbox.io/v1alpha1
+kind: Pool
+metadata:
+  name: scale-controlled-pool
+spec:
+  template:
+    spec:
+      containers:
+      - name: sandbox-container
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+  capacitySpec:
+    bufferMax: 20
+    bufferMin: 5
+    poolMax: 50
+    poolMin: 10
+  scaleStrategy:
+    # MaxUnavailable controls the maximum number of pods that can be unavailable during scaling.
+    # Can be an absolute number (ex: 5) or a percentage of desired pods (ex: "10%").
+    # Defaults to 25% if not specified.
+    maxUnavailable: "20%"
+```
+
+**ScaleStrategy parameters:**
+
+- **maxUnavailable**: Specifies the maximum number of pods that can be unavailable during scaling operations. This can be:
+  - An absolute number (e.g., `5` means at most 5 pods can be unavailable at once)
+  - A percentage string (e.g., `"10%"` means at most 10% of desired pods can be unavailable)
+  - Defaults to `25%` if not specified
+
+**Use cases:**
+
+- **Prevent resource contention**: Limit scaling pace to avoid overwhelming the cluster with simultaneous pod creation/deletion
+- **Gradual scaling**: Ensure smooth scaling transitions by capping the rate of change
+- **Production stability**: Protect production workloads from aggressive scaling that might impact service quality
+
+Apply the pool configuration:
+```sh
+kubectl apply -f pool-with-scale-strategy.yaml
 ```
 
 ##### Pooled Sandbox With Heterogeneous Tasks

@@ -45,7 +45,7 @@ execd_image = "opensandbox/execd:v1.0.9"
 [egress]
 # Egress configuration
 # -----------------------------------------------------------------
-image = "opensandbox/egress:v1.0.3"
+image = "opensandbox/egress:v1.0.4"
 # Enforcement: "dns" (DNS proxy only) or "dns+nft" (nftables + DNS).
 mode = "dns"
 # Default is true (recommended for dual-stack CNI). Set false only if you need IPv6 in the netns.

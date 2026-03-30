@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/alibaba/opensandbox/internal v0.0.0
 	github.com/bmatcuk/doublestar/v4 v4.9.1
+	github.com/creack/pty v1.1.24
 	github.com/elastic/go-seccomp-bpf v1.6.0
 	github.com/gin-gonic/gin v1.10.0
 	github.com/go-playground/validator/v10 v10.28.0

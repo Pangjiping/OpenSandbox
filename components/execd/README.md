@@ -31,6 +31,7 @@ English | [中文](README_zh.md)
 - **Command execution**: Synchronous and background shell commands
 - **File operations**: Full filesystem CRUD with chunked upload/download
 - **Monitoring**: Real-time host metrics (CPU, memory, uptime)
+- **Interactive PTY**: Long-lived Bash over WebSocket (TTY or pipe mode, replay on reconnect) — see [PTY.md](./PTY.md)
 
 ## Core Features
 

@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	gerrors "errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
@@ -447,11 +449,19 @@ func (r *PoolReconciler) scalePool(ctx context.Context, args *scaleArgs) error {
 		if createCnt > maxNewPods {
 			createCnt = maxNewPods
 		}
-		log.Info("Scaling up pool", "pool", pool.Name, "createCnt", createCnt)
-		for range createCnt {
-			if err := r.createPoolPod(ctx, pool, args.latestRevision); err != nil {
-				log.Error(err, "Failed to create pool pod")
-				errs = append(errs, err)
+		maxUnavailable := r.getMaxUnavailable(pool, desiredSchedulableCnt)
+		notReadyCnt := r.countNotReadyPods(pods)
+		limitedCreatCnt := maxUnavailable - notReadyCnt
+		createCnt = int32(math.Max(0, math.Min(float64(createCnt), float64(limitedCreatCnt))))
+		if createCnt > 0 {
+			log.Info("Scaling up pool with constraint", "pool", pool.Name,
+				"createCnt", createCnt, "maxUnavailable", maxUnavailable,
+				"notReadyCnt", notReadyCnt, "desiredSchedulableCnt", desiredSchedulableCnt, "limitedCreatCnt", limitedCreatCnt)
+			for range createCnt {
+				if err := r.createPoolPod(ctx, pool, args.latestRevision); err != nil {
+					log.Error(err, "Failed to create pool pod")
+					errs = append(errs, err)
+				}
 			}
 		}
 	}
@@ -482,7 +492,7 @@ func (r *PoolReconciler) updatePoolStatus(ctx context.Context, latestRevision st
 		if _, ok := podAllocation[pod.Name]; ok {
 			continue
 		}
-		if pod.Status.Phase != corev1.PodRunning {
+		if !isPodReady(pod) {
 			continue
 		}
 		availableCnt++
@@ -539,6 +549,37 @@ func (r *PoolReconciler) pickPodsToDelete(pods []*corev1.Pod, idlePodNames []str
 		scaleIn -= 1
 	}
 	return podsToDelete
+}
+
+// getMaxUnavailable returns the resolved maxUnavailable value.
+// If not specified, defaults to 25% of desiredTotal.
+// Minimum return value is 1 to ensure scaling progress.
+func (r *PoolReconciler) getMaxUnavailable(pool *sandboxv1alpha1.Pool, desiredTotal int32) int32 {
+	defaultPercentage := intstr.FromString("25%")
+
+	maxUnavailable := &defaultPercentage
+	if pool.Spec.ScaleStrategy != nil && pool.Spec.ScaleStrategy.MaxUnavailable != nil {
+		maxUnavailable = pool.Spec.ScaleStrategy.MaxUnavailable
+	}
+
+	result, err := intstr.GetScaledValueFromIntOrPercent(maxUnavailable, int(desiredTotal), true)
+	if err != nil || result < 1 {
+		result = 1
+	}
+	return int32(result)
+}
+
+// countNotReadyPods returns the count of pods that are not ready.
+// A pod is considered not ready if it doesn't have a Ready condition
+// with status True.
+func (r *PoolReconciler) countNotReadyPods(pods []*corev1.Pod) int32 {
+	var count int32
+	for _, pod := range pods {
+		if !isPodReady(pod) {
+			count++
+		}
+	}
+	return count
 }
 
 func (r *PoolReconciler) createPoolPod(ctx context.Context, pool *sandboxv1alpha1.Pool, latestRevision string) error {
@@ -607,4 +648,16 @@ func (r *PoolReconciler) filterEvictingPods(ctx context.Context, pool *sandboxv1
 		filtered = append(filtered, pod)
 	}
 	return filtered
+}
+
+func isPodReady(pod *corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
