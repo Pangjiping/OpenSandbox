@@ -92,6 +92,10 @@ func main() {
 	}
 	log.Infof("policy server listening on %s (POST /policy)", httpAddr)
 
+	if err := startMitmproxyTransparentIfEnabled(ctx); err != nil {
+		log.Fatalf("mitmproxy transparent: %v", err)
+	}
+
 	<-ctx.Done()
 	log.Infof("received shutdown signal; exiting")
 	_ = os.Stderr.Sync()
@@ -110,15 +114,6 @@ func envOrDefault(key, defaultVal string) string {
 	return defaultVal
 }
 
-func isTruthy(v string) bool {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "yes", "y", "on":
-		return true
-	default:
-		return false
-	}
-}
-
 func containsAddr(addrs []netip.Addr, a netip.Addr) bool {
 	for _, x := range addrs {
 		if x == a {
@@ -129,14 +124,11 @@ func containsAddr(addrs []netip.Addr, a netip.Addr) bool {
 }
 
 func parseMode() string {
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv(constants.EnvEgressMode)))
-	switch mode {
-	case "", constants.PolicyDnsOnly:
-		return constants.PolicyDnsOnly
-	case constants.PolicyDnsNft:
-		return constants.PolicyDnsNft
-	default:
-		log.Warnf("invalid %s=%s, falling back to dns", constants.EnvEgressMode, mode)
+	raw := os.Getenv(constants.EnvEgressMode)
+	normalized, err := constants.ParseEgressMode(raw)
+	if err != nil {
+		log.Warnf("invalid %s=%q: %v; falling back to %s", constants.EnvEgressMode, raw, err, constants.PolicyDnsOnly)
 		return constants.PolicyDnsOnly
 	}
+	return normalized
 }

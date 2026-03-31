@@ -14,10 +14,16 @@
 
 package constants
 
+import (
+	"os"
+	"strconv"
+	"strings"
+)
+
 const (
 	EnvBlockDoH443      = "OPENSANDBOX_EGRESS_BLOCK_DOH_443"
 	EnvDoHBlocklist     = "OPENSANDBOX_EGRESS_DOH_BLOCKLIST" // comma-separated IP/CIDR
-	EnvEgressMode       = "OPENSANDBOX_EGRESS_MODE"          // dns | dns+nft
+	EnvEgressMode       = "OPENSANDBOX_EGRESS_MODE"          // + -separated tokens: dns (required), nft — see ParseEgressMode
 	EnvEgressHTTPAddr   = "OPENSANDBOX_EGRESS_HTTP_ADDR"
 	EnvEgressToken      = "OPENSANDBOX_EGRESS_TOKEN"
 	EnvEgressRules      = "OPENSANDBOX_EGRESS_RULES"
@@ -30,6 +36,14 @@ const (
 
 	// EnvNameserverExempt comma-separated IPs; proxy upstream to these is not marked and is allowed in nft allow set
 	EnvNameserverExempt = "OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT"
+
+	// Python mitmproxy (mitmdump) transparent mode — Linux + CAP_NET_ADMIN only.
+	EnvMitmproxyTransparent = "OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT"
+	EnvMitmproxyPort        = "OPENSANDBOX_EGRESS_MITMPROXY_PORT"
+	EnvMitmproxyUser        = "OPENSANDBOX_EGRESS_MITMPROXY_USER"
+	EnvMitmproxyConfDir     = "OPENSANDBOX_EGRESS_MITMPROXY_CONFDIR"
+	EnvMitmproxyScript      = "OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT"
+	EnvMitmproxyExtraArgs   = "OPENSANDBOX_EGRESS_MITMPROXY_ARGS"
 )
 
 const (
@@ -39,6 +53,28 @@ const (
 
 const (
 	DefaultEgressServerAddr = ":18080"
+	DefaultMitmproxyPort    = 8080
 	DefaultMaxNameservers   = 3
 	DefaultMaxEgressRules   = 4096
 )
+
+func EnvIntOrDefault(key string, defaultVal int) int {
+	s := strings.TrimSpace(os.Getenv(key))
+	if s == "" {
+		return defaultVal
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return defaultVal
+	}
+	return v
+}
+
+func IsTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
