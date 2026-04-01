@@ -131,15 +131,13 @@ All metrics are created via the OpenTelemetry Meter; units and attributes follow
 | Category | Metric name (suggested) | Type | Description |
 |----------|-------------------------|------|-------------|
 | **DNS** | `egress.dns.query.duration` | Histogram | Per-query latency |
-| | `egress.dns.cache.hits_total` | Counter | Cache hits |
-| | `egress.dns.cache.misses_total` | Counter | Cache misses (hit rate = hits / (hits + misses)) |
 | **Policy** | `egress.policy.denied_total` | Counter | Denials; block rate derivable with evaluations |
 | **nftables** | `egress.nftables.rules.count` | Gauge | Current rule count |
 | | `egress.nftables.updates.count` | Counter | Rule update count (update frequency observable) |
 | **System** | `egress.system.cpu.usage` | Gauge | CPU usage |
 | | `egress.system.memory.usage_bytes` | Gauge | Memory usage |
 
-**Per–sandbox outbound hostname / IP (monitoring vs logs):** Operators often want a record of **which hostnames or IPs** a sandbox attempted to reach. **Do not** encode raw hostname or per-IP destination as **metric labels** or default metric dimensions: that creates extreme cardinality in Prometheus-style backends and conflicts with the cardinality controls elsewhere in this OSEP. Instead, treat **each DNS egress attempt** (and its outcome) as a **structured log event** (see [§2.1](#21-egress-sandbox-outbound-access-log-hostname--ip)). Aggregated **metrics** above remain suitable for rates, latency, allow/deny counts, and cache behavior without naming every destination.
+**Per–sandbox outbound hostname / IP (monitoring vs logs):** Operators often want a record of **which hostnames or IPs** a sandbox attempted to reach. **Do not** encode raw hostname or per-IP destination as **metric labels** or default metric dimensions: that creates extreme cardinality in Prometheus-style backends and conflicts with the cardinality controls elsewhere in this OSEP. Instead, treat **each DNS egress attempt** (and its outcome) as a **structured log event** (see [§2.1](#21-egress-sandbox-outbound-access-log-hostname--ip)). Aggregated **metrics** above remain suitable for rates, latency, and allow/deny counts without naming every destination.
 
 **Egress `osbx.id` on metrics (and Resource):** For **egress** OpenTelemetry **metrics**, include an **`osbx.id`** **dimension** on exported series, and the same value on the **Resource** when appropriate, using the value from **`OPENSANDBOX_EGRESS_SANDBOX_ID`** when that env var is set. The sidecar is typically **one process per sandbox**; this is the **only** supported mechanism in this OSEP for per-sandbox **metric** aggregation labels—**do not** use a separate `OPENSANDBOX_OTEL_METRICS_EXTRA_ATTRIBUTES`-style hook. When **`OPENSANDBOX_EGRESS_SANDBOX_ID`** is unset, document whether the dimension is omitted or empty.
 

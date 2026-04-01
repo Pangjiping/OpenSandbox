@@ -164,6 +164,7 @@ func (s *policyServer) handlePost(w http.ResponseWriter, r *http.Request) {
 
 	raw, err := readPolicyRequestBody(r)
 	if err != nil {
+		logEgressUpdateFailedWarn(fmt.Sprintf("failed to read body: %v", err))
 		http.Error(w, fmt.Sprintf("failed to read body: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -174,6 +175,7 @@ func (s *policyServer) handlePost(w http.ResponseWriter, r *http.Request) {
 		if !s.commitPolicy(r.Context(), w, def, "reset") {
 			return
 		}
+		logEgressUpdated(s.proxy.CurrentPolicy())
 		log.Infof("policy API: proxy and nftables updated to deny_all")
 		writeJSON(w, http.StatusOK, policyStatusResponse{
 			Status: "ok",
@@ -185,6 +187,7 @@ func (s *policyServer) handlePost(w http.ResponseWriter, r *http.Request) {
 
 	pol, err := policy.ParsePolicy(raw)
 	if err != nil {
+		logEgressUpdateFailedWarn(fmt.Sprintf("invalid policy: %v", err))
 		http.Error(w, fmt.Sprintf("invalid policy: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -197,6 +200,7 @@ func (s *policyServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	if !s.commitPolicy(r.Context(), w, pol, "post") {
 		return
 	}
+	logEgressUpdated(s.proxy.CurrentPolicy())
 	log.Infof("policy API: proxy and nftables updated successfully")
 	writeJSON(w, http.StatusOK, policyStatusResponse{
 		Status:          "ok",
@@ -205,7 +209,6 @@ func (s *policyServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handlePatch merges JSON egress rules into the current policy (PATCH body = array of rules).
 func (s *policyServer) handlePatch(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	s.mu.Lock()
@@ -213,18 +216,30 @@ func (s *policyServer) handlePatch(w http.ResponseWriter, r *http.Request) {
 
 	raw, err := readPolicyRequestBody(r)
 	if err != nil || raw == "" {
+		if err != nil {
+			logEgressUpdateFailedWarn(fmt.Sprintf("failed to read body: %v", err))
+		} else {
+			logEgressUpdateFailedWarn("empty patch body")
+		}
 		http.Error(w, fmt.Sprintf("failed to read body: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	var patchRules []policy.EgressRule
-	if err := json.Unmarshal([]byte(raw), &patchRules); err != nil || len(patchRules) == 0 {
+	if err := json.Unmarshal([]byte(raw), &patchRules); err != nil {
+		logEgressUpdateFailedWarn(fmt.Sprintf("invalid patch rules: %v", err))
 		http.Error(w, fmt.Sprintf("invalid patch rules: %v", err), http.StatusBadRequest)
+		return
+	}
+	if len(patchRules) == 0 {
+		logEgressUpdateFailedWarn("empty patch rules array")
+		http.Error(w, "invalid patch rules: empty array", http.StatusBadRequest)
 		return
 	}
 
 	newPolicy, err := patchMergedPolicy(s.proxy.CurrentPolicy(), patchRules)
 	if err != nil {
+		logEgressUpdateFailedWarn(fmt.Sprintf("invalid merged policy: %v", err))
 		http.Error(w, fmt.Sprintf("invalid merged policy: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -237,6 +252,7 @@ func (s *policyServer) handlePatch(w http.ResponseWriter, r *http.Request) {
 	if !s.commitPolicy(r.Context(), w, newPolicy, "patch") {
 		return
 	}
+	logEgressUpdated(s.proxy.CurrentPolicy())
 	log.Infof("policy API: patch applied successfully")
 	writeJSON(w, http.StatusOK, policyStatusResponse{
 		Status:          "ok",
@@ -248,12 +264,14 @@ func (s *policyServer) handlePatch(w http.ResponseWriter, r *http.Request) {
 // commitPolicy applies one logical update: persist (if configured) → nft → in-memory policy.
 func (s *policyServer) commitPolicy(ctx context.Context, w http.ResponseWriter, pol *policy.NetworkPolicy, op string) bool {
 	if err := s.persistPolicy(pol); err != nil {
+		logEgressUpdateFailedError(fmt.Sprintf("persist policy: %v", err))
 		log.Errorf("policy API: persist policy failed: %v", err)
 		http.Error(w, fmt.Sprintf("failed to persist policy: %v", err), http.StatusInternalServerError)
 		return false
 	}
 	if s.nft != nil {
 		if err := s.nft.ApplyStatic(ctx, pol.WithExtraAllowIPs(s.nameserverIPs)); err != nil {
+			logEgressUpdateFailedError(fmt.Sprintf("nftables apply (%s): %v", op, err))
 			log.Errorf("policy API: nftables apply failed (%s): %v", op, err)
 			http.Error(w, fmt.Sprintf("failed to apply nftables policy: %v", err), http.StatusInternalServerError)
 			return false
@@ -282,6 +300,7 @@ func (s *policyServer) enforceEgressRuleLimit(w http.ResponseWriter, egressCount
 		return true
 	}
 	if egressCount > s.maxEgressRules {
+		logEgressUpdateFailedWarn(fmt.Sprintf("egress rule total count %d exceeds limit %d", egressCount, s.maxEgressRules))
 		http.Error(w, fmt.Sprintf("egress rule total count %d exceeds limit %d", egressCount, s.maxEgressRules), http.StatusRequestEntityTooLarge)
 		return false
 	}

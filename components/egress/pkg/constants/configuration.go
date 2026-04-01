@@ -27,6 +27,8 @@ const (
 	EnvMaxNameservers   = "OPENSANDBOX_EGRESS_MAX_NS"
 	EnvBlockedWebhook   = "OPENSANDBOX_EGRESS_DENY_WEBHOOK"
 	ENVSandboxID        = "OPENSANDBOX_EGRESS_SANDBOX_ID"
+	// EnvEgressMetricsExtraAttrs optional comma-separated key=value pairs appended to every egress OTLP metric datapoint (first '=' splits key/value per segment).
+	EnvEgressMetricsExtraAttrs = "OPENSANDBOX_EGRESS_METRICS_EXTRA_ATTRS"
 
 	// EnvNameserverExempt comma-separated IPs; proxy upstream to these is not marked and is allowed in nft allow set
 	EnvNameserverExempt = "OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT"

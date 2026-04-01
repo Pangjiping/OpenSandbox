@@ -19,16 +19,20 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/miekg/dns"
 
+	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/events"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
+	"github.com/alibaba/opensandbox/egress/pkg/telemetry"
+	slogger "github.com/alibaba/opensandbox/internal/logger"
 )
 
 const defaultListenAddr = "127.0.0.1:15353"
@@ -108,11 +112,13 @@ func (p *Proxy) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	q := r.Question[0]
 	domain := q.Name
+	host := normalizeDNSHost(domain)
 
 	p.policyMu.RLock()
 	currentPolicy := p.policy
 	p.policyMu.RUnlock()
 	if currentPolicy != nil && currentPolicy.Evaluate(domain) == policy.ActionDeny {
+		telemetry.RecordDNSDenied()
 		p.publishBlocked(domain)
 		resp := new(dns.Msg)
 		resp.SetRcode(r, dns.RcodeNameError)
@@ -120,14 +126,20 @@ func (p *Proxy) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	start := time.Now()
 	resp, err := p.forward(r)
+	elapsed := time.Since(start).Seconds()
 	if err != nil {
+		telemetry.RecordDNSForward(elapsed)
+		logOutboundDNS("error", host, nil, "", err.Error())
 		log.Warnf("[dns] forward error for %s: %v", domain, err)
 		fail := new(dns.Msg)
 		fail.SetRcode(r, dns.RcodeServerFailure)
 		_ = w.WriteMsg(fail)
 		return
 	}
+	telemetry.RecordDNSForward(elapsed)
+	logOutboundDNS("allow", host, resolvedIPStrings(resp), "", "")
 	p.maybeNotifyResolved(domain, resp)
 	_ = w.WriteMsg(resp)
 }
@@ -285,6 +297,45 @@ func ResolvNameserverIPs(resolvPath string) ([]netip.Addr, error) {
 		out = append(out, ip)
 	}
 	return out, nil
+}
+
+func normalizeDNSHost(domain string) string {
+	return strings.ToLower(strings.TrimSuffix(domain, "."))
+}
+
+func resolvedIPStrings(resp *dns.Msg) []string {
+	ri := extractResolvedIPs(resp)
+	if len(ri) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ri))
+	for _, x := range ri {
+		out = append(out, x.Addr.String())
+	}
+	return out
+}
+
+func logOutboundDNS(result, host string, ips []string, peer string, errStr string) {
+	fields := []slogger.Field{
+		{Key: "osbx.event", Value: "egress.outbound"},
+		{Key: "osbx.result", Value: result},
+	}
+	if id := strings.TrimSpace(os.Getenv(constants.ENVSandboxID)); id != "" {
+		fields = append(fields, slogger.Field{Key: "osbx.id", Value: id})
+	}
+	if host != "" {
+		fields = append(fields, slogger.Field{Key: "osbx.host", Value: host})
+	}
+	if peer != "" {
+		fields = append(fields, slogger.Field{Key: "osbx.peer", Value: peer})
+	}
+	if len(ips) > 0 {
+		fields = append(fields, slogger.Field{Key: "osbx.ips", Value: ips})
+	}
+	if errStr != "" {
+		fields = append(fields, slogger.Field{Key: "osbx.err", Value: errStr})
+	}
+	log.Logger.With(fields...).Infof("egress outbound")
 }
 
 func ensurePolicyDefaults(p *policy.NetworkPolicy) *policy.NetworkPolicy {

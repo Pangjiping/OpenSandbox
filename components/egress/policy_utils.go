@@ -23,7 +23,9 @@ import (
 	"strings"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
+	"github.com/alibaba/opensandbox/egress/pkg/log"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
+	slogger "github.com/alibaba/opensandbox/internal/logger"
 )
 
 const maxPolicyBodyBytes = 1 << 20
@@ -123,4 +125,70 @@ func modeFromPolicy(p *policy.NetworkPolicy) string {
 	}
 
 	return "enforcing"
+}
+
+func osbxBaseFields() []slogger.Field {
+	id := strings.TrimSpace(os.Getenv(constants.ENVSandboxID))
+	if id == "" {
+		return nil
+	}
+	return []slogger.Field{{Key: "osbx.id", Value: id}}
+}
+
+func policyRuleSummary(p *policy.NetworkPolicy) []map[string]string {
+	if p == nil {
+		return nil
+	}
+	out := make([]map[string]string, 0, len(p.Egress))
+	for _, r := range p.Egress {
+		out = append(out, map[string]string{
+			"action": r.Action,
+			"target": r.Target,
+		})
+	}
+	return out
+}
+
+func logEgressLoaded(src policy.PolicyInitialSource, pol *policy.NetworkPolicy) {
+	if pol == nil {
+		pol = policy.DefaultDenyPolicy()
+	}
+	fields := append(osbxBaseFields(),
+		slogger.Field{Key: "osbx.event", Value: "egress.loaded"},
+		slogger.Field{Key: "osbx.src", Value: string(src)},
+		slogger.Field{Key: "osbx.default", Value: pol.DefaultAction},
+		slogger.Field{Key: "osbx.rule_count", Value: len(pol.Egress)},
+		slogger.Field{Key: "osbx.rules", Value: policyRuleSummary(pol)},
+	)
+	log.Logger.With(fields...).Infof("egress policy loaded")
+}
+
+func logEgressUpdated(pol *policy.NetworkPolicy) {
+	if pol == nil {
+		pol = policy.DefaultDenyPolicy()
+	}
+	fields := append(osbxBaseFields(),
+		slogger.Field{Key: "osbx.event", Value: "egress.updated"},
+		slogger.Field{Key: "osbx.src", Value: "http"},
+		slogger.Field{Key: "osbx.default", Value: pol.DefaultAction},
+		slogger.Field{Key: "osbx.rule_count", Value: len(pol.Egress)},
+		slogger.Field{Key: "osbx.rules", Value: policyRuleSummary(pol)},
+	)
+	log.Logger.With(fields...).Infof("egress policy updated")
+}
+
+func logEgressUpdateFailedWarn(msg string) {
+	fields := append(osbxBaseFields(),
+		slogger.Field{Key: "osbx.event", Value: "egress.update_failed"},
+		slogger.Field{Key: "osbx.err", Value: msg},
+	)
+	log.Logger.With(fields...).Warnf("egress policy update failed")
+}
+
+func logEgressUpdateFailedError(msg string) {
+	fields := append(osbxBaseFields(),
+		slogger.Field{Key: "osbx.event", Value: "egress.update_failed"},
+		slogger.Field{Key: "osbx.err", Value: msg},
+	)
+	log.Logger.With(fields...).Errorf("egress policy update failed")
 }

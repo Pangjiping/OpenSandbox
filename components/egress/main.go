@@ -16,11 +16,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/dnsproxy"
@@ -28,8 +30,10 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/iptables"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
+	"github.com/alibaba/opensandbox/egress/pkg/telemetry"
 	slogger "github.com/alibaba/opensandbox/internal/logger"
 	"github.com/alibaba/opensandbox/internal/version"
+	"go.uber.org/zap/zapcore"
 )
 
 func main() {
@@ -38,13 +42,27 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	ctx = withLogger(ctx)
+	otelShutdown, otelZapCore, err := telemetry.Init(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "telemetry init failed: %v\n", err)
+		os.Exit(1)
+	}
+	if otelShutdown != nil {
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			_ = otelShutdown(shutdownCtx)
+		}()
+	}
+
+	ctx = withLogger(ctx, otelZapCore)
 	defer log.Logger.Sync()
 
-	initialRules, err := policy.LoadInitialPolicy(os.Getenv(constants.EnvEgressPolicyFile), constants.EnvEgressRules)
+	initialRules, policySrc, err := policy.LoadInitialPolicyDetailed(os.Getenv(constants.EnvEgressPolicyFile), constants.EnvEgressRules)
 	if err != nil {
 		log.Fatalf("failed to load initial egress policy: %v", err)
 	}
+	logEgressLoaded(policySrc, initialRules)
 
 	allowIPs := AllowIPsForNft("/etc/resolv.conf")
 	// Merge nameserver exempt IPs into nft allow set so proxy traffic to them (no SO_MARK) is allowed in dns+nft mode.
@@ -97,9 +115,20 @@ func main() {
 	_ = os.Stderr.Sync()
 }
 
-func withLogger(ctx context.Context) context.Context {
+func withLogger(ctx context.Context, otelCore zapcore.Core) context.Context {
 	level := envOrDefault(constants.EnvEgressLogLevel, "info")
-	logger := slogger.MustNew(slogger.Config{Level: level}).Named("opensandbox.egress")
+	cfg := slogger.Config{Level: level}
+	var base slogger.Logger
+	if otelCore != nil {
+		l, err := slogger.NewWithExtraCores(cfg, otelCore)
+		if err != nil {
+			panic(err)
+		}
+		base = l
+	} else {
+		base = slogger.MustNew(cfg)
+	}
+	logger := base.Named("opensandbox.egress")
 	return log.WithLogger(ctx, logger)
 }
 
