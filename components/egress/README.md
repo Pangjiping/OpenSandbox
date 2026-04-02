@@ -103,6 +103,12 @@ Examples:
     -d '[{"action":"allow","target":"www.cloudflare.com"}]'
   ```
 
+### Observability (OpenTelemetry)
+
+Egress can export **OTLP metrics**; application logs use the **native zap** logger (JSON to stdout by default, configurable via `OPENSANDBOX_LOG_OUTPUT` / `OPENSANDBOX_EGRESS_LOG_LEVEL`). **OTLP log export is not used.**
+
+See **[Egress OpenTelemetry reference](docs/opentelemetry.md)** for metrics, structured log fields, and how to enable OTLP metrics (`OTEL_EXPORTER_OTLP_*`, `OPENSANDBOX_EGRESS_SANDBOX_ID`, etc.).
+
 ## Build & Run
 
 ### 1. Build Docker Image

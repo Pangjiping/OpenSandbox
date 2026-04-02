@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/dnsproxy"
@@ -28,6 +29,7 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/iptables"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
+	"github.com/alibaba/opensandbox/egress/pkg/telemetry"
 	slogger "github.com/alibaba/opensandbox/internal/logger"
 	"github.com/alibaba/opensandbox/internal/version"
 )
@@ -41,9 +43,28 @@ func main() {
 	ctx = withLogger(ctx)
 	defer log.Logger.Sync()
 
-	initialRules, err := policy.LoadInitialPolicy(os.Getenv(constants.EnvEgressPolicyFile), constants.EnvEgressRules)
+	otelShutdown, err := telemetry.Init(ctx)
+	if err != nil {
+		log.Warnf("OpenTelemetry metrics disabled (continuing without OTLP): %v", err)
+		otelShutdown = nil
+	}
+	if otelShutdown != nil {
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			_ = otelShutdown(shutdownCtx)
+		}()
+	}
+
+	initialRules, _, err := policy.LoadInitialPolicyDetailed(os.Getenv(constants.EnvEgressPolicyFile), constants.EnvEgressRules)
 	if err != nil {
 		log.Fatalf("failed to load initial egress policy: %v", err)
+	}
+	logEgressLoaded(initialRules)
+
+	alwaysDeny, alwaysAllow, err := policy.LoadAlwaysRuleFiles()
+	if err != nil {
+		log.Fatalf("failed to load always allow/deny rule files: %v", err)
 	}
 
 	allowIPs := AllowIPsForNft("/etc/resolv.conf")
@@ -57,7 +78,7 @@ func main() {
 	mode := parseMode()
 	log.Infof("enforcement mode: %s", mode)
 	nftMgr := createNftManager(mode)
-	proxy, err := dnsproxy.New(initialRules, "")
+	proxy, err := dnsproxy.New(initialRules, "", alwaysDeny, alwaysAllow)
 	if err != nil {
 		log.Fatalf("failed to init dns proxy: %v", err)
 	}
@@ -83,11 +104,11 @@ func main() {
 	}
 	log.Infof("iptables redirect configured (OUTPUT 53 -> 15353) with SO_MARK bypass for proxy upstream traffic")
 
-	setupNft(ctx, nftMgr, initialRules, proxy, allowIPs)
+	setupNft(ctx, nftMgr, initialRules, proxy, allowIPs, alwaysDeny, alwaysAllow)
 
 	// start policy server
 	httpAddr := envOrDefault(constants.EnvEgressHTTPAddr, constants.DefaultEgressServerAddr)
-	if err = startPolicyServer(ctx, proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs, os.Getenv(constants.EnvEgressPolicyFile)); err != nil {
+	if err = startPolicyServer(ctx, proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs, os.Getenv(constants.EnvEgressPolicyFile), alwaysDeny, alwaysAllow); err != nil {
 		log.Fatalf("failed to start policy server: %v", err)
 	}
 	log.Infof("policy server listening on %s (POST /policy)", httpAddr)
@@ -103,7 +124,13 @@ func main() {
 
 func withLogger(ctx context.Context) context.Context {
 	level := envOrDefault(constants.EnvEgressLogLevel, "info")
-	logger := slogger.MustNew(slogger.Config{Level: level}).Named("opensandbox.egress")
+	cfg := slogger.Config{Level: level}
+	base := slogger.MustNew(cfg)
+	// Fixed dimensions for every log line (sandbox_id, optional OPENSANDBOX_EGRESS_METRICS_EXTRA_ATTRS).
+	if extra := telemetry.EgressLogFields(); len(extra) > 0 {
+		base = base.With(extra...)
+	}
+	logger := base.Named("opensandbox.egress")
 	return log.WithLogger(ctx, logger)
 }
 

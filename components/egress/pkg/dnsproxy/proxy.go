@@ -29,16 +29,21 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
+	"github.com/alibaba/opensandbox/egress/pkg/telemetry"
+	slogger "github.com/alibaba/opensandbox/internal/logger"
 )
 
 const defaultListenAddr = "127.0.0.1:15353"
 
 type Proxy struct {
-	policyMu   sync.RWMutex
-	policy     *policy.NetworkPolicy
-	listenAddr string
-	upstream   string // single upstream for MVP
-	servers    []*dns.Server
+	policyMu        sync.RWMutex
+	userPolicy      *policy.NetworkPolicy
+	effectivePolicy *policy.NetworkPolicy
+	alwaysDeny      []policy.EgressRule
+	alwaysAllow     []policy.EgressRule
+	listenAddr      string
+	upstream        string // single upstream for MVP
+	servers         []*dns.Server
 
 	// optional; called in goroutine when A/AAAA are present
 	onResolved func(domain string, ips []nftables.ResolvedIP)
@@ -48,7 +53,9 @@ type Proxy struct {
 }
 
 // New builds a proxy with resolved upstream; listenAddr can be empty for default.
-func New(p *policy.NetworkPolicy, listenAddr string) (*Proxy, error) {
+// alwaysDeny and alwaysAllow are optional operator rules merged ahead of user egress
+// (see policy.MergeAlwaysOverlay); they are not persisted via the policy API.
+func New(p *policy.NetworkPolicy, listenAddr string, alwaysDeny, alwaysAllow []policy.EgressRule) (*Proxy, error) {
 	if listenAddr == "" {
 		listenAddr = defaultListenAddr
 	}
@@ -60,11 +67,18 @@ func New(p *policy.NetworkPolicy, listenAddr string) (*Proxy, error) {
 		return nil, err
 	}
 	proxy := &Proxy{
-		listenAddr: listenAddr,
-		upstream:   upstream,
-		policy:     ensurePolicyDefaults(p),
+		listenAddr:  listenAddr,
+		upstream:    upstream,
+		userPolicy:  ensurePolicyDefaults(p),
+		alwaysDeny:  append([]policy.EgressRule(nil), alwaysDeny...),
+		alwaysAllow: append([]policy.EgressRule(nil), alwaysAllow...),
 	}
+	proxy.refreshEffectivePolicy()
 	return proxy, nil
+}
+
+func (p *Proxy) refreshEffectivePolicy() {
+	p.effectivePolicy = policy.MergeAlwaysOverlay(p.userPolicy, p.alwaysDeny, p.alwaysAllow)
 }
 
 func (p *Proxy) Start(ctx context.Context) error {
@@ -108,11 +122,13 @@ func (p *Proxy) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	q := r.Question[0]
 	domain := q.Name
+	host := normalizeDNSHost(domain)
 
 	p.policyMu.RLock()
-	currentPolicy := p.policy
+	currentPolicy := p.effectivePolicy
 	p.policyMu.RUnlock()
 	if currentPolicy != nil && currentPolicy.Evaluate(domain) == policy.ActionDeny {
+		telemetry.RecordDNSDenied()
 		p.publishBlocked(domain)
 		resp := new(dns.Msg)
 		resp.SetRcode(r, dns.RcodeNameError)
@@ -120,14 +136,20 @@ func (p *Proxy) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	start := time.Now()
 	resp, err := p.forward(r)
+	elapsed := time.Since(start).Seconds()
 	if err != nil {
+		telemetry.RecordDNSForward(elapsed)
+		logOutboundDNS(host, nil, "", err.Error())
 		log.Warnf("[dns] forward error for %s: %v", domain, err)
 		fail := new(dns.Msg)
 		fail.SetRcode(r, dns.RcodeServerFailure)
 		_ = w.WriteMsg(fail)
 		return
 	}
+	telemetry.RecordDNSForward(elapsed)
+	logOutboundDNS(host, resolvedIPStrings(resp), "", "")
 	p.maybeNotifyResolved(domain, resp)
 	_ = w.WriteMsg(resp)
 }
@@ -163,19 +185,20 @@ func (p *Proxy) UpstreamHost() string {
 	return host
 }
 
-// UpdatePolicy swaps the in-memory policy used by the proxy.
+// UpdatePolicy swaps the user-facing policy (without always-deny/allow file overlay).
 // Passing nil reverts to the default deny-all policy.
 func (p *Proxy) UpdatePolicy(newPolicy *policy.NetworkPolicy) {
 	p.policyMu.Lock()
-	p.policy = ensurePolicyDefaults(newPolicy)
+	p.userPolicy = ensurePolicyDefaults(newPolicy)
+	p.refreshEffectivePolicy()
 	p.policyMu.Unlock()
 }
 
-// CurrentPolicy returns the policy currently enforced by the proxy.
+// CurrentPolicy returns the user policy (POST/PATCH/GET), not the always-deny/allow overlay.
 func (p *Proxy) CurrentPolicy() *policy.NetworkPolicy {
 	p.policyMu.RLock()
 	defer p.policyMu.RUnlock()
-	return p.policy
+	return p.userPolicy
 }
 
 // SetOnResolved sets the callback invoked when an allowed domain resolves to A/AAAA.
@@ -285,6 +308,41 @@ func ResolvNameserverIPs(resolvPath string) ([]netip.Addr, error) {
 		out = append(out, ip)
 	}
 	return out, nil
+}
+
+func normalizeDNSHost(domain string) string {
+	return strings.ToLower(strings.TrimSuffix(domain, "."))
+}
+
+func resolvedIPStrings(resp *dns.Msg) []string {
+	ri := extractResolvedIPs(resp)
+	if len(ri) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ri))
+	for _, x := range ri {
+		out = append(out, x.Addr.String())
+	}
+	return out
+}
+
+func logOutboundDNS(host string, ips []string, peer string, errStr string) {
+	fields := []slogger.Field{
+		{Key: "opensandbox.event", Value: "egress.outbound"},
+	}
+	if host != "" {
+		fields = append(fields, slogger.Field{Key: "target.host", Value: host})
+	}
+	if peer != "" {
+		fields = append(fields, slogger.Field{Key: "peer", Value: peer})
+	}
+	if len(ips) > 0 {
+		fields = append(fields, slogger.Field{Key: "target.ips", Value: ips})
+	}
+	if errStr != "" {
+		fields = append(fields, slogger.Field{Key: "error", Value: errStr})
+	}
+	log.Logger.With(fields...).Infof("egress outbound")
 }
 
 func ensurePolicyDefaults(p *policy.NetworkPolicy) *policy.NetworkPolicy {
