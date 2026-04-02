@@ -34,7 +34,7 @@ func startMitmproxyTransparentIfEnabled(ctx context.Context) error {
 	}
 
 	mpPort := constants.EnvIntOrDefault(constants.EnvMitmproxyPort, constants.DefaultMitmproxyPort)
-	mpUID, _, _, err := mitmproxy.LookupUser(mitmproxy.RunAsUser)
+	mpUID, _, mpHome, err := mitmproxy.LookupUser(mitmproxy.RunAsUser)
 	if err != nil {
 		return fmt.Errorf("lookup user %q: %w (ensure this user exists in the image)", mitmproxy.RunAsUser, err)
 	}
@@ -57,5 +57,10 @@ func startMitmproxyTransparentIfEnabled(ctx context.Context) error {
 		return fmt.Errorf("iptables transparent: %w", err)
 	}
 	log.Infof("mitmproxy: transparent intercept active (OUTPUT tcp 80,443 -> %d; trust mitm CA in clients)", mpPort)
+
+	confDir := strings.TrimSpace(os.Getenv(constants.EnvMitmproxyConfDir))
+	if err := mitmproxy.SyncRootCA(confDir, mpHome); err != nil {
+		return fmt.Errorf("mitm CA export: %w", err)
+	}
 	return nil
 }
