@@ -24,12 +24,14 @@ import (
 )
 
 // SetupTransparentHTTP redirects locally originated TCP 80/443 to localPort for processes
-// whose UID is not mitmUID (so mitmdump's upstream connections are not redirected).
-// Requires CAP_NET_ADMIN. IPv4 only in this MVP.
+// whose UID is not mitmUID.
+//
+// IPv4 only.
 func SetupTransparentHTTP(localPort, mitmUID int) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("iptables transparent: only supported on linux")
 	}
+
 	if localPort <= 0 || mitmUID < 0 {
 		return fmt.Errorf("iptables transparent: invalid port or uid")
 	}

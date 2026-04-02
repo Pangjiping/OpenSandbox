@@ -27,26 +27,23 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
 )
 
-// startMitmproxyTransparentIfEnabled launches Python mitmdump in transparent mode and installs
-// iptables when OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT is truthy. No-op when disabled.
+// startMitmproxyTransparentIfEnabled launches Python mitmdump in transparent mode and installs iptables
 func startMitmproxyTransparentIfEnabled(ctx context.Context) error {
 	if !constants.IsTruthy(os.Getenv(constants.EnvMitmproxyTransparent)) {
 		return nil
 	}
 
 	mpPort := constants.EnvIntOrDefault(constants.EnvMitmproxyPort, constants.DefaultMitmproxyPort)
-	mpUser := envOrDefault(constants.EnvMitmproxyUser, "mitmproxy")
-	mpUID, _, _, err := mitmproxy.LookupUser(mpUser)
+	mpUID, _, _, err := mitmproxy.LookupUser(mitmproxy.RunAsUser)
 	if err != nil {
-		return fmt.Errorf("lookup user %q: %w (ensure this user exists in the image)", mpUser, err)
+		return fmt.Errorf("lookup user %q: %w (ensure this user exists in the image)", mitmproxy.RunAsUser, err)
 	}
 
 	_, err = mitmproxy.Launch(ctx, mitmproxy.Config{
 		ListenPort: mpPort,
-		UserName:   mpUser,
+		UserName:   mitmproxy.RunAsUser,
 		ConfDir:    strings.TrimSpace(os.Getenv(constants.EnvMitmproxyConfDir)),
 		ScriptPath: strings.TrimSpace(os.Getenv(constants.EnvMitmproxyScript)),
-		ExtraArgs:  strings.TrimSpace(os.Getenv(constants.EnvMitmproxyExtraArgs)),
 	})
 	if err != nil {
 		return fmt.Errorf("start mitmdump: %w", err)

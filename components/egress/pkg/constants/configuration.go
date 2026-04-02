@@ -42,10 +42,8 @@ const (
 	// Python mitmproxy (mitmdump) transparent mode — Linux + CAP_NET_ADMIN only.
 	EnvMitmproxyTransparent = "OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT"
 	EnvMitmproxyPort        = "OPENSANDBOX_EGRESS_MITMPROXY_PORT"
-	EnvMitmproxyUser        = "OPENSANDBOX_EGRESS_MITMPROXY_USER"
 	EnvMitmproxyConfDir     = "OPENSANDBOX_EGRESS_MITMPROXY_CONFDIR"
 	EnvMitmproxyScript      = "OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT"
-	EnvMitmproxyExtraArgs   = "OPENSANDBOX_EGRESS_MITMPROXY_ARGS"
 )
 
 const (
@@ -55,7 +53,7 @@ const (
 
 const (
 	DefaultEgressServerAddr = ":18080"
-	DefaultMitmproxyPort    = 8080
+	DefaultMitmproxyPort    = 18081
 	DefaultMaxNameservers   = 3
 	DefaultMaxEgressRules   = 4096
 )

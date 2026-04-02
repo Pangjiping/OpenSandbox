@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package mitmproxy launches the Python mitmdump in transparent mode.
 package mitmproxy
 
 import (
@@ -29,6 +28,8 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 )
 
+const RunAsUser = "mitmproxy"
+
 // Config controls mitmdump --mode transparent.
 type Config struct {
 	ListenPort int
@@ -38,14 +39,12 @@ type Config struct {
 	ConfDir string
 	// ScriptPath optional mitmproxy script (-s) for addons (e.g. inject headers).
 	ScriptPath string
-	// ExtraArgs space-separated extra mitmdump arguments.
-	ExtraArgs string
 }
 
 // LookupUser resolves uid/gid and home directory for UserName (default mitmproxy).
 func LookupUser(userName string) (uid, gid int, home string, err error) {
 	if strings.TrimSpace(userName) == "" {
-		userName = "mitmproxy"
+		userName = RunAsUser
 	}
 	u, err := user.Lookup(userName)
 	if err != nil {
@@ -67,12 +66,13 @@ func Launch(ctx context.Context, cfg Config) (*exec.Cmd, error) {
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("mitmproxy: transparent mitmdump is only supported on linux")
 	}
+
 	if cfg.ListenPort <= 0 {
 		return nil, fmt.Errorf("mitmproxy: invalid listen port")
 	}
 	uname := cfg.UserName
 	if strings.TrimSpace(uname) == "" {
-		uname = "mitmproxy"
+		uname = RunAsUser
 	}
 	uid, gid, home, err := LookupUser(uname)
 	if err != nil {
@@ -84,7 +84,6 @@ func Launch(ctx context.Context, cfg Config) (*exec.Cmd, error) {
 		"--listen-host", "0.0.0.0",
 		"--listen-port", strconv.Itoa(cfg.ListenPort),
 		"--set", "block_global=false",
-		"-v",
 	}
 	homeEnv := home
 	if strings.TrimSpace(cfg.ConfDir) != "" {
@@ -94,11 +93,6 @@ func Launch(ctx context.Context, cfg Config) (*exec.Cmd, error) {
 	}
 	if strings.TrimSpace(cfg.ScriptPath) != "" {
 		args = append(args, "-s", strings.TrimSpace(cfg.ScriptPath))
-	}
-	for _, tok := range strings.Fields(cfg.ExtraArgs) {
-		if tok != "" {
-			args = append(args, tok)
-		}
 	}
 
 	cmd := exec.CommandContext(ctx, "mitmdump", args...)
