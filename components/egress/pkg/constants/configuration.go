@@ -33,10 +33,10 @@ const (
 	EnvNameserverExempt = "OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT"
 
 	// EnvDNSUpstream comma-separated upstream resolvers; each address must be a literal IPv4/IPv6 (optional :port). Hostnames are rejected (DNS recursion via REDIRECT).
-	EnvDNSUpstream = "OPENSANDBOX_EGRESS_DNS_UPSTREAM"
-
-	// EnvDNSUpstreamTimeout is the per-upstream DNS forward timeout in whole seconds (default 5). Invalid/empty uses default.
-	EnvDNSUpstreamTimeout = "OPENSANDBOX_EGRESS_DNS_UPSTREAM_TIMEOUT"
+	EnvDNSUpstream                 = "OPENSANDBOX_EGRESS_DNS_UPSTREAM"
+	EnvDNSUpstreamTimeout          = "OPENSANDBOX_EGRESS_DNS_UPSTREAM_TIMEOUT"
+	EnvDNSUpstreamProbe            = "OPENSANDBOX_EGRESS_DNS_UPSTREAM_PROBE"
+	EnvDNSUpstreamProbeIntervalSec = "OPENSANDBOX_EGRESS_DNS_UPSTREAM_PROBE_INTERVAL_SEC"
 )
 
 const (
@@ -45,8 +45,7 @@ const (
 )
 
 const (
-	DefaultEgressServerAddr = ":18080"
-	// ResolvNameserverCap is the max number of nameserver lines read from /etc/resolv.conf for nft allow-list merge and auto upstream chain (not configurable).
+	DefaultEgressServerAddr      = ":18080"
 	ResolvNameserverCap          = 10
 	DefaultMaxEgressRules        = 4096
 	DefaultDNSUpstreamTimeoutSec = 5

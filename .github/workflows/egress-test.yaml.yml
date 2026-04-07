@@ -61,6 +61,12 @@ jobs:
           chmod +x tests/smoke-dynamic-ip.sh
           ./tests/smoke-dynamic-ip.sh
 
+      - name: Run dns upstream probe test
+        working-directory: components/egress
+        run: |
+          chmod +x tests/smoke-dns-upstream-probe.sh
+          ./tests/smoke-dns-upstream-probe.sh
+
   bench:
     runs-on: ubuntu-latest
     steps:
