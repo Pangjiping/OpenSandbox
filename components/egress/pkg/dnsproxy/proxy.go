@@ -15,7 +15,6 @@
 package dnsproxy
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"net/netip"
@@ -48,6 +47,7 @@ type Proxy struct {
 	upstreams               []string // ordered resolver chain; try next on forward failure
 	upstreamExchangeTimeout time.Duration
 	servers                 []*dns.Server
+	shutdownOnce            sync.Once
 
 	// optional; called in goroutine when A/AAAA are present
 	onResolved func(domain string, ips []nftables.ResolvedIP)
@@ -101,7 +101,7 @@ func upstreamExchangeTimeoutFromEnv() time.Duration {
 	return time.Duration(n) * time.Second
 }
 
-func (p *Proxy) Start(ctx context.Context) error {
+func (p *Proxy) Start() error {
 	handler := dns.HandlerFunc(p.serveDNS)
 
 	udpServer := &dns.Server{Addr: p.listenAddr, Net: "udp", Handler: handler}
@@ -118,14 +118,6 @@ func (p *Proxy) Start(ctx context.Context) error {
 		}()
 	}
 
-	// Shutdown on context done
-	go func() {
-		<-ctx.Done()
-		for _, srv := range p.servers {
-			_ = srv.Shutdown()
-		}
-	}()
-
 	select {
 	case err := <-errCh:
 		return fmt.Errorf("dns proxy failed: %w", err)
@@ -133,6 +125,19 @@ func (p *Proxy) Start(ctx context.Context) error {
 		// small grace window; running fine
 		return nil
 	}
+}
+
+// Shutdown stops UDP/TCP DNS listeners. Safe to call more than once.
+func (p *Proxy) Shutdown() error {
+	var outErr error
+	p.shutdownOnce.Do(func() {
+		for _, srv := range p.servers {
+			if e := srv.Shutdown(); e != nil && outErr == nil {
+				outErr = e
+			}
+		}
+	})
+	return outErr
 }
 
 func (p *Proxy) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
