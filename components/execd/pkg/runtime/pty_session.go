@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/alibaba/opensandbox/internal/safego"
 	"github.com/creack/pty"
 
 	"github.com/alibaba/opensandbox/execd/pkg/log"
@@ -183,8 +184,8 @@ func (s *ptySession) StartPTY() error {
 	s.doneCh = make(chan struct{})
 	s.stdin = ptmx // write to the PTY master to feed stdin
 
-	go s.broadcastPTY()
-	go s.waitAndExit(cmd, ptmx)
+	safego.Go(func() { s.broadcastPTY() })
+	safego.Go(func() { s.waitAndExit(cmd, ptmx) })
 
 	return nil
 }
@@ -251,9 +252,9 @@ func (s *ptySession) StartPipe() error {
 	s.doneCh = make(chan struct{})
 	s.stdin = stdinW
 
-	go s.broadcastPipe(stdoutR, true)
-	go s.broadcastPipe(stderrR, false)
-	go s.waitAndExitPipe(cmd, stdinW, stdoutR, stderrR)
+	safego.Go(func() { s.broadcastPipe(stdoutR, true) })
+	safego.Go(func() { s.broadcastPipe(stderrR, false) })
+	safego.Go(func() { s.waitAndExitPipe(cmd, stdinW, stdoutR, stderrR) })
 
 	return nil
 }

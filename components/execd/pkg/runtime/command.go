@@ -158,7 +158,7 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 	c.storeCommandKernel(session, kernel)
 	request.Hooks.OnExecuteInit(session)
 
-	go func() {
+	safego.Go(func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -173,7 +173,7 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 				}
 			}
 		}
-	}()
+	})
 
 	err = cmd.Wait()
 	close(done)
