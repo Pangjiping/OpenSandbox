@@ -18,13 +18,16 @@ import (
 	"context"
 	"sync"
 	"testing"
+
+	"github.com/alibaba/opensandbox/internal/logger"
 )
 
 func Test_Go(t *testing.T) {
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	defer cancelFunc()
 
-	InitPanicLogger(ctx)
+	logg, _ := logger.New(logger.Config{})
+	InitPanicLogger(ctx, logg)
 
 	var wg sync.WaitGroup
 	wg.Add(1)

@@ -30,9 +30,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alibaba/opensandbox/internal/safego"
+
 	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
 	"github.com/alibaba/opensandbox/execd/pkg/log"
-	"github.com/alibaba/opensandbox/execd/pkg/util/safego"
 )
 
 // getShell returns the preferred shell, falling back to sh if bash is not available.
