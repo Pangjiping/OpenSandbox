@@ -54,7 +54,6 @@ type Proxy struct {
 	upstreamExchangeTimeout time.Duration
 	servers                 []*dns.Server
 	shutdownOnce            sync.Once
-	probeCancel             context.CancelFunc // stops runUpstreamProbes; set when Start succeeds
 
 	// optional; called in goroutine when A/AAAA are present
 	onResolved func(domain string, ips []nftables.ResolvedIP)
@@ -113,7 +112,7 @@ func upstreamExchangeTimeoutFromEnv() time.Duration {
 	return time.Duration(n) * time.Second
 }
 
-func (p *Proxy) Start() error {
+func (p *Proxy) Start(ctx context.Context) error {
 	handler := dns.HandlerFunc(p.serveDNS)
 
 	udpServer := &dns.Server{Addr: p.listenAddr, Net: "udp", Handler: handler}
@@ -139,9 +138,7 @@ func (p *Proxy) Start() error {
 		// listeners bound; start upstream probes only after DNS servers are up
 	}
 
-	probeCtx, cancel := context.WithCancel(context.Background())
-	p.probeCancel = cancel
-	go p.runUpstreamProbes(probeCtx)
+	go p.runUpstreamProbes(ctx)
 
 	return nil
 }
@@ -150,10 +147,6 @@ func (p *Proxy) Start() error {
 func (p *Proxy) Shutdown() error {
 	var outErr error
 	p.shutdownOnce.Do(func() {
-		if p.probeCancel != nil {
-			p.probeCancel()
-			p.probeCancel = nil
-		}
 		for _, srv := range p.servers {
 			if e := srv.Shutdown(); e != nil && outErr == nil {
 				outErr = e

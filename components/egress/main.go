@@ -75,7 +75,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to init dns proxy: %v", err)
 	}
-	if err := proxy.Start(); err != nil {
+	if err := proxy.Start(ctx); err != nil {
 		log.Fatalf("failed to start dns proxy: %v", err)
 	}
 	log.Infof("dns proxy started on 127.0.0.1:15353")
