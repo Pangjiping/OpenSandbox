@@ -15,7 +15,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -27,40 +26,46 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
 )
 
-// startMitmproxyTransparentIfEnabled launches Python mitmdump in transparent mode and installs iptables
-func startMitmproxyTransparentIfEnabled(ctx context.Context) error {
+type mitmTransparent struct {
+	running *mitmproxy.Running
+	port    int
+	uid     int
+}
+
+// startMitmproxyTransparentIfEnabled launches Python mitmdump in transparent mode and installs iptables.
+func startMitmproxyTransparentIfEnabled() (*mitmTransparent, error) {
 	if !constants.IsTruthy(os.Getenv(constants.EnvMitmproxyTransparent)) {
-		return nil
+		return nil, nil
 	}
 
 	mpPort := constants.EnvIntOrDefault(constants.EnvMitmproxyPort, constants.DefaultMitmproxyPort)
 	mpUID, _, mpHome, err := mitmproxy.LookupUser(mitmproxy.RunAsUser)
 	if err != nil {
-		return fmt.Errorf("lookup user %q: %w (ensure this user exists in the image)", mitmproxy.RunAsUser, err)
+		return nil, fmt.Errorf("lookup user %q: %w (ensure this user exists in the image)", mitmproxy.RunAsUser, err)
 	}
 
-	_, err = mitmproxy.Launch(ctx, mitmproxy.Config{
+	running, err := mitmproxy.Launch(mitmproxy.Config{
 		ListenPort: mpPort,
 		UserName:   mitmproxy.RunAsUser,
 		ConfDir:    strings.TrimSpace(os.Getenv(constants.EnvMitmproxyConfDir)),
 		ScriptPath: strings.TrimSpace(os.Getenv(constants.EnvMitmproxyScript)),
 	})
 	if err != nil {
-		return fmt.Errorf("start mitmdump: %w", err)
+		return nil, fmt.Errorf("start mitmdump: %w", err)
 	}
 
 	waitAddr := fmt.Sprintf("127.0.0.1:%d", mpPort)
 	if err := mitmproxy.WaitListenPort(waitAddr, 15*time.Second); err != nil {
-		return fmt.Errorf("wait listen %s: %w", waitAddr, err)
+		return nil, fmt.Errorf("wait listen %s: %w", waitAddr, err)
 	}
 	if err := iptables.SetupTransparentHTTP(mpPort, mpUID); err != nil {
-		return fmt.Errorf("iptables transparent: %w", err)
+		return nil, fmt.Errorf("iptables transparent: %w", err)
 	}
 	log.Infof("mitmproxy: transparent intercept active (OUTPUT tcp 80,443 -> %d; trust mitm CA in clients)", mpPort)
 
 	confDir := strings.TrimSpace(os.Getenv(constants.EnvMitmproxyConfDir))
 	if err := mitmproxy.SyncRootCA(confDir, mpHome); err != nil {
-		return fmt.Errorf("mitm CA export: %w", err)
+		return nil, fmt.Errorf("mitm CA export: %w", err)
 	}
-	return nil
+	return &mitmTransparent{running: running, port: mpPort, uid: mpUID}, nil
 }

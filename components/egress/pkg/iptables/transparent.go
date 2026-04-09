@@ -19,9 +19,29 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 )
+
+// transparentHTTPRules returns argv lines for transparent OUTPUT redirect (append or delete via op).
+// op must be "-A" or "-D".
+func transparentHTTPRules(localPort, mitmUID int, op string) [][]string {
+	target := strconv.Itoa(localPort)
+	uid := strconv.Itoa(mitmUID)
+	loopRules := [][]string{
+		{"iptables", "-t", "nat", op, "OUTPUT", "-p", "tcp", "-d", "127.0.0.0/8", "-j", "RETURN"},
+	}
+	redir := [][]string{
+		{
+			"iptables", "-t", "nat", op, "OUTPUT", "-p", "tcp",
+			"-m", "owner", "!", "--uid-owner", uid,
+			"-m", "multiport", "--dports", "80,443",
+			"-j", "REDIRECT", "--to-ports", target,
+		},
+	}
+	return append(loopRules, redir...)
+}
 
 // SetupTransparentHTTP redirects locally originated TCP 80/443 to localPort for processes
 // whose UID is not mitmUID.
@@ -39,20 +59,7 @@ func SetupTransparentHTTP(localPort, mitmUID int) error {
 	uid := strconv.Itoa(mitmUID)
 	log.Infof("installing iptables transparent: OUTPUT tcp dport 80,443 -> 127.0.0.1:%s (skip uid %s)", target, uid)
 
-	// Do not redirect loopback destinations (local services).
-	loopRules := [][]string{
-		{"iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp", "-d", "127.0.0.0/8", "-j", "RETURN"},
-	}
-	redir := [][]string{
-		{
-			"iptables", "-t", "nat", "-A", "OUTPUT", "-p", "tcp",
-			"-m", "owner", "!", "--uid-owner", uid,
-			"-m", "multiport", "--dports", "80,443",
-			"-j", "REDIRECT", "--to-ports", target,
-		},
-	}
-	rules := append(loopRules, redir...)
-
+	rules := transparentHTTPRules(localPort, mitmUID, "-A")
 	for _, args := range rules {
 		if output, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
 			return fmt.Errorf("iptables transparent: %v (output: %s)", err, output)
@@ -60,4 +67,23 @@ func SetupTransparentHTTP(localPort, mitmUID int) error {
 	}
 	log.Infof("iptables transparent rules installed successfully")
 	return nil
+}
+
+// RemoveTransparentHTTP deletes rules installed by SetupTransparentHTTP with the same port and mitmUID.
+// Deletion order is reverse of insertion. Missing rules are ignored so teardown is best-effort.
+func RemoveTransparentHTTP(localPort, mitmUID int) {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	if localPort <= 0 || mitmUID < 0 {
+		return
+	}
+	rules := transparentHTTPRules(localPort, mitmUID, "-D")
+	for i := len(rules) - 1; i >= 0; i-- {
+		args := rules[i]
+		if output, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			log.Warnf("iptables transparent remove rule (ignored): %v (output: %s)", err, strings.TrimSpace(string(output)))
+		}
+	}
+	log.Infof("iptables transparent rules removed")
 }

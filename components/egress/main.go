@@ -113,11 +113,12 @@ func main() {
 	}
 	log.Infof("policy server listening on %s (POST /policy)", httpAddr)
 
-	if err := startMitmproxyTransparentIfEnabled(ctx); err != nil {
+	mitm, err := startMitmproxyTransparentIfEnabled()
+	if err != nil {
 		log.Fatalf("mitmproxy transparent: %v", err)
 	}
 
-	waitForShutdown(ctx, proxy, policySrv, exemptDst, nftMgr)
+	waitForShutdown(ctx, proxy, policySrv, exemptDst, nftMgr, mitm)
 }
 
 func withLogger(ctx context.Context) context.Context {

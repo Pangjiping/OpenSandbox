@@ -15,7 +15,6 @@
 package mitmproxy
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -41,7 +40,12 @@ type Config struct {
 	ScriptPath string
 }
 
-// LookupUser resolves uid/gid and home directory for UserName (default mitmproxy).
+// Running is a started mitmdump. Call GracefulShutdown before process exit to send SIGTERM and reap it.
+type Running struct {
+	Cmd  *exec.Cmd
+	done chan error
+}
+
 func LookupUser(userName string) (uid, gid int, home string, err error) {
 	if strings.TrimSpace(userName) == "" {
 		userName = RunAsUser
@@ -61,8 +65,8 @@ func LookupUser(userName string) (uid, gid int, home string, err error) {
 	return int(uid64), int(gid64), u.HomeDir, nil
 }
 
-// Launch starts mitmdump and returns immediately after the process is running (Start, not Wait).
-func Launch(ctx context.Context, cfg Config) (*exec.Cmd, error) {
+// Launch starts mitmdump and returns immediately after the process is running.
+func Launch(cfg Config) (*Running, error) {
 	if runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("mitmproxy: transparent mitmdump is only supported on linux")
 	}
@@ -95,7 +99,7 @@ func Launch(ctx context.Context, cfg Config) (*exec.Cmd, error) {
 		args = append(args, "-s", strings.TrimSpace(cfg.ScriptPath))
 	}
 
-	cmd := exec.CommandContext(ctx, "mitmdump", args...)
+	cmd := exec.Command("mitmdump", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -106,12 +110,11 @@ func Launch(ctx context.Context, cfg Config) (*exec.Cmd, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("mitmproxy: start mitmdump: %w", err)
 	}
+	done := make(chan error, 1)
 	go func() {
-		err := cmd.Wait()
-		if err != nil && ctx.Err() == nil {
-			log.Errorf("[mitmproxy] mitmdump exited: %v", err)
-		}
+		done <- cmd.Wait()
 	}()
+
 	log.Infof("[mitmproxy] mitmdump started (pid %d, transparent on :%d)", cmd.Process.Pid, cfg.ListenPort)
-	return cmd, nil
+	return &Running{Cmd: cmd, done: done}, nil
 }
