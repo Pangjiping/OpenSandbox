@@ -303,7 +303,7 @@ func TestPTYSession_ControllerCRUD(t *testing.T) {
 	c := NewController("", "")
 	id := uuidString()
 
-	sess := c.CreatePTYSession(id, "")
+	sess, _ := c.CreatePTYSession(id, "")
 	require.NotNil(t, sess)
 
 	got := c.GetPTYSession(id)

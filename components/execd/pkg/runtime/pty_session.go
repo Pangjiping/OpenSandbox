@@ -542,11 +542,17 @@ func (s *ptySession) close() {
 }
 
 // CreatePTYSession creates a new PTY session and stores it in the map.
-func (c *Controller) CreatePTYSession(id, cwd string) PTYSession {
+func (c *Controller) CreatePTYSession(id, cwd string) (PTYSession, error) {
+	if cwd != "" {
+		err := os.MkdirAll(cwd, os.ModePerm)
+		if err != nil {
+			return nil, fmt.Errorf("error creating PTY session work directory: %w", err)
+		}
+	}
 	s := newPTYSession(id, cwd)
 	c.ptySessionMap.Store(id, s)
 	log.Info("created pty session %s", id)
-	return s
+	return s, nil
 }
 
 // getPTYSession looks up a PTY session by ID. Returns nil if not found.
