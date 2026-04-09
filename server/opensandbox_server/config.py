@@ -240,6 +240,14 @@ class ServerConfig(BaseModel):
         le=65535,
         description="Port exposed by the lifecycle API server.",
     )
+    timeout_keep_alive: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "Idle keep-alive timeout in seconds passed to uvicorn. "
+            "Connections idle longer than this may be closed by the server."
+        ),
+    )
     log_level: str = Field(
         default="INFO",
         description="Python logging level for the server process.",

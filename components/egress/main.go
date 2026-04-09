@@ -73,14 +73,7 @@ func main() {
 		log.Fatalf("failed to load always allow/deny rule files: %v", err)
 	}
 
-	allowIPs := AllowIPsForNft("/etc/resolv.conf")
-	// Merge nameserver exempt IPs into nft allow set so proxy traffic to them (no SO_MARK) is allowed in dns+nft mode.
-	for _, addr := range dnsproxy.ParseNameserverExemptList() {
-		if !containsAddr(allowIPs, addr) {
-			allowIPs = append(allowIPs, addr)
-		}
-	}
-
+	allowIPs := allowIps()
 	mode := parseMode()
 	log.Infof("enforcement mode: %s", mode)
 	nftMgr := createNftManager(mode)
@@ -114,7 +107,8 @@ func main() {
 
 	// start policy server
 	httpAddr := envOrDefault(constants.EnvEgressHTTPAddr, constants.DefaultEgressServerAddr)
-	if err = startPolicyServer(ctx, proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs, os.Getenv(constants.EnvEgressPolicyFile), alwaysDeny, alwaysAllow); err != nil {
+	policySrv, err := startPolicyServer(proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs, os.Getenv(constants.EnvEgressPolicyFile), alwaysDeny, alwaysAllow)
+	if err != nil {
 		log.Fatalf("failed to start policy server: %v", err)
 	}
 	log.Infof("policy server listening on %s (POST /policy)", httpAddr)
@@ -123,9 +117,7 @@ func main() {
 		log.Fatalf("mitmproxy transparent: %v", err)
 	}
 
-	<-ctx.Done()
-	log.Infof("received shutdown signal; exiting")
-	_ = os.Stderr.Sync()
+	waitForShutdown(ctx, proxy, policySrv, exemptDst, nftMgr)
 }
 
 func withLogger(ctx context.Context) context.Context {

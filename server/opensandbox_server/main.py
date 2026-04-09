@@ -227,4 +227,5 @@ if __name__ == "__main__":
         port=app_config.server.port,
         reload=True,
         log_config=_log_config,
+        timeout_keep_alive=app_config.server.timeout_keep_alive,
     )

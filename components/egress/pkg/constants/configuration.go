@@ -30,7 +30,6 @@ const (
 	EnvEgressPolicyFile = "OPENSANDBOX_EGRESS_POLICY_FILE" // optional JSON snapshot; if present and valid, overrides EnvEgressRules at startup
 	EnvEgressLogLevel   = "OPENSANDBOX_EGRESS_LOG_LEVEL"
 	EnvMaxEgressRules   = "OPENSANDBOX_EGRESS_MAX_RULES" // max egress rules for POST/PATCH; 0 = unlimited; empty = default
-	EnvMaxNameservers   = "OPENSANDBOX_EGRESS_MAX_NS"
 	EnvBlockedWebhook   = "OPENSANDBOX_EGRESS_DENY_WEBHOOK"
 	EnvSandboxID        = "OPENSANDBOX_EGRESS_SANDBOX_ID"
 	// EnvEgressMetricsExtraAttrs optional comma-separated key=value pairs appended to every egress OTLP metric datapoint (first '=' splits key/value per segment).
@@ -44,6 +43,12 @@ const (
 	EnvMitmproxyPort        = "OPENSANDBOX_EGRESS_MITMPROXY_PORT"
 	EnvMitmproxyConfDir     = "OPENSANDBOX_EGRESS_MITMPROXY_CONFDIR"
 	EnvMitmproxyScript      = "OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT"
+
+	// EnvDNSUpstream comma-separated upstream resolvers; each address must be a literal IPv4/IPv6 (optional :port). Hostnames are rejected (DNS recursion via REDIRECT).
+	EnvDNSUpstream                 = "OPENSANDBOX_EGRESS_DNS_UPSTREAM"
+	EnvDNSUpstreamTimeout          = "OPENSANDBOX_EGRESS_DNS_UPSTREAM_TIMEOUT"
+	EnvDNSUpstreamProbe            = "OPENSANDBOX_EGRESS_DNS_UPSTREAM_PROBE"
+	EnvDNSUpstreamProbeIntervalSec = "OPENSANDBOX_EGRESS_DNS_UPSTREAM_PROBE_INTERVAL_SEC"
 )
 
 const (
@@ -52,10 +57,11 @@ const (
 )
 
 const (
-	DefaultEgressServerAddr = ":18080"
-	DefaultMitmproxyPort    = 18081
-	DefaultMaxNameservers   = 3
-	DefaultMaxEgressRules   = 4096
+	DefaultEgressServerAddr      = ":18080"
+	DefaultMitmproxyPort         = 18081
+	ResolvNameserverCap          = 10
+	DefaultMaxEgressRules        = 4096
+	DefaultDNSUpstreamTimeoutSec = 5
 )
 
 func EnvIntOrDefault(key string, defaultVal int) int {
