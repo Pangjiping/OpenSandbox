@@ -29,7 +29,7 @@ from kubernetes.client import (
     V1VolumeMount,
 )
 
-from opensandbox_server.config import AppConfig, EGRESS_MODE_DNS
+from opensandbox_server.config import AppConfig, DEFAULT_EGRESS_DISABLE_IPV6, EGRESS_MODE_DNS
 from opensandbox_server.services.helpers import format_ingress_endpoint
 from opensandbox_server.api.schema import Endpoint, ImageSpec, NetworkPolicy, PlatformSpec, Volume
 from opensandbox_server.services.k8s.agent_sandbox_template import AgentSandboxTemplateManager
@@ -111,7 +111,7 @@ class AgentSandboxProvider(WorkloadProvider):
         self.egress_disable_ipv6 = (
             bool(app_config.egress.disable_ipv6)
             if app_config and app_config.egress is not None
-            else False
+            else DEFAULT_EGRESS_DISABLE_IPV6
         )
 
     def _resource_name(self, sandbox_id: str) -> str:
