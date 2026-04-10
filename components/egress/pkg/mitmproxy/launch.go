@@ -90,16 +90,12 @@ func Launch(cfg Config) (*Running, error) {
 		"--listen-port", strconv.Itoa(cfg.ListenPort),
 		"--set", "block_global=false",
 	}
-	if constants.IsTruthy(os.Getenv(constants.EnvMitmproxySslInsecureUpstream)) {
-		args = append(args, "--ssl-insecure")
-		log.Warnf("[mitmproxy] upstream TLS verification disabled (%s=true)", constants.EnvMitmproxySslInsecureUpstream)
-	} else {
-		trustDir := strings.TrimSpace(os.Getenv(constants.EnvMitmproxyUpstreamTrustDir))
-		if trustDir == "" {
-			trustDir = "/etc/ssl/certs"
-		}
-		args = append(args, "--set", "ssl_verify_upstream_trusted_confdir="+trustDir)
+
+	trustDir := strings.TrimSpace(os.Getenv(constants.EnvMitmproxyUpstreamTrustDir))
+	if trustDir == "" {
+		trustDir = "/etc/ssl/certs"
 	}
+	args = append(args, "--set", "ssl_verify_upstream_trusted_confdir="+trustDir)
 	homeEnv := home
 	if strings.TrimSpace(cfg.ConfDir) != "" {
 		cd := strings.TrimSpace(cfg.ConfDir)

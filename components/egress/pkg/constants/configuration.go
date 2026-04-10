@@ -36,12 +36,11 @@ const (
 	EnvNameserverExempt        = "OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT"
 
 	// Python mitmproxy (mitmdump) transparent mode — Linux + CAP_NET_ADMIN only.
-	EnvMitmproxyTransparent         = "OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT"
-	EnvMitmproxyPort                = "OPENSANDBOX_EGRESS_MITMPROXY_PORT"
-	EnvMitmproxyConfDir             = "OPENSANDBOX_EGRESS_MITMPROXY_CONFDIR"
-	EnvMitmproxyScript              = "OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT"
-	EnvMitmproxyUpstreamTrustDir    = "OPENSANDBOX_EGRESS_MITMPROXY_UPSTREAM_TRUST_DIR"
-	EnvMitmproxySslInsecureUpstream = "OPENSANDBOX_EGRESS_MITMPROXY_SSL_INSECURE_UPSTREAM"
+	EnvMitmproxyTransparent      = "OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT"
+	EnvMitmproxyPort             = "OPENSANDBOX_EGRESS_MITMPROXY_PORT"
+	EnvMitmproxyConfDir          = "OPENSANDBOX_EGRESS_MITMPROXY_CONFDIR"
+	EnvMitmproxyScript           = "OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT"
+	EnvMitmproxyUpstreamTrustDir = "OPENSANDBOX_EGRESS_MITMPROXY_UPSTREAM_TRUST_DIR"
 
 	// EnvDNSUpstream comma-separated upstream resolvers; each address must be a literal IPv4/IPv6 (optional :port). Hostnames are rejected (DNS recursion via REDIRECT).
 	EnvDNSUpstream                 = "OPENSANDBOX_EGRESS_DNS_UPSTREAM"
@@ -61,6 +60,8 @@ const (
 	ResolvNameserverCap          = 10
 	DefaultMaxEgressRules        = 4096
 	DefaultDNSUpstreamTimeoutSec = 5
+
+	OpenSandboxRootDir = "/opt/opensandbox"
 )
 
 func EnvIntOrDefault(key string, defaultVal int) int {

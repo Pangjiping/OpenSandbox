@@ -23,14 +23,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 )
 
 const (
-	OpenSandboxRootDir = "/opt/opensandbox"
-	mitmCACertName     = "mitmproxy-ca-cert.pem"
-	pollInterval       = 200 * time.Millisecond
-	waitCACert         = 20 * time.Second
+	mitmCACertName = "mitmproxy-ca-cert.pem"
+	pollInterval   = 200 * time.Millisecond
+	waitCACert     = 20 * time.Second
 )
 
 // candidateCACertPaths lists possible locations for mitmproxy-ca-cert.pem depending on
@@ -68,10 +68,10 @@ func SyncRootCA(confDirEnv, home string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(OpenSandboxRootDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", OpenSandboxRootDir, err)
+	if err := os.MkdirAll(constants.OpenSandboxRootDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", constants.OpenSandboxRootDir, err)
 	}
-	dst := filepath.Join(OpenSandboxRootDir, mitmCACertName)
+	dst := filepath.Join(constants.OpenSandboxRootDir, mitmCACertName)
 	if err := copyFile(src, dst, 0o644); err != nil {
 		return fmt.Errorf("copy mitm CA to %s: %w", dst, err)
 	}
@@ -83,7 +83,6 @@ func SyncRootCA(confDirEnv, home string) error {
 	return nil
 }
 
-// installMitmCAInSystemTrust registers the mitm PEM in the OS trust store
 func installMitmCAInSystemTrust(pemPath string) error {
 	if _, err := exec.LookPath("update-ca-certificates"); err != nil {
 		return fmt.Errorf("update-ca-certificates not found (install ca-certificates in the egress image): %w", err)
