@@ -41,6 +41,7 @@ const (
 	EnvMitmproxyConfDir          = "OPENSANDBOX_EGRESS_MITMPROXY_CONFDIR"
 	EnvMitmproxyScript           = "OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT"
 	EnvMitmproxyUpstreamTrustDir = "OPENSANDBOX_EGRESS_MITMPROXY_UPSTREAM_TRUST_DIR"
+	EnvMitmproxyIgnoreHosts      = "OPENSANDBOX_EGRESS_MITMPROXY_IGNORE_HOSTS"
 
 	// EnvDNSUpstream comma-separated upstream resolvers; each address must be a literal IPv4/IPv6 (optional :port). Hostnames are rejected (DNS recursion via REDIRECT).
 	EnvDNSUpstream                 = "OPENSANDBOX_EGRESS_DNS_UPSTREAM"

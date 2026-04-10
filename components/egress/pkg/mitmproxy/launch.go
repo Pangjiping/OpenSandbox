@@ -106,6 +106,16 @@ func Launch(cfg Config) (*Running, error) {
 		args = append(args, "-s", strings.TrimSpace(cfg.ScriptPath))
 	}
 
+	// Passthrough: no TLS interception for matching host/IP (regex). Each pattern -> --set ignore_hosts=...
+	// https://docs.mitmproxy.org/stable/concepts/options/ — transparent mode often works better with IP ranges.
+	for _, p := range strings.Split(os.Getenv(constants.EnvMitmproxyIgnoreHosts), ";") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		args = append(args, "--set", "ignore_hosts="+p)
+	}
+
 	cmd := exec.Command("mitmdump", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
