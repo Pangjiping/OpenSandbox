@@ -287,6 +287,16 @@ func (p *Proxy) UpdatePolicy(newPolicy *policy.NetworkPolicy) {
 	p.refreshEffectivePolicy()
 }
 
+// UpdateAlwaysRules swaps always-deny/always-allow overlays used by DNS evaluation.
+func (p *Proxy) UpdateAlwaysRules(alwaysDeny, alwaysAllow []policy.EgressRule) {
+	p.policyMu.Lock()
+	defer p.policyMu.Unlock()
+
+	p.alwaysDeny = append([]policy.EgressRule(nil), alwaysDeny...)
+	p.alwaysAllow = append([]policy.EgressRule(nil), alwaysAllow...)
+	p.refreshEffectivePolicy()
+}
+
 // CurrentPolicy returns the user policy (POST/PATCH/GET), not the always-deny/allow overlay.
 func (p *Proxy) CurrentPolicy() *policy.NetworkPolicy {
 	p.policyMu.RLock()
