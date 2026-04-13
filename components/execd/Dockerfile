@@ -44,5 +44,6 @@ FROM alpine:latest
 
 COPY --from=builder /build/execd .
 COPY components/execd/bootstrap.sh ./bootstrap.sh
+COPY components/execd/install.bat ./install.bat
 
 ENTRYPOINT ["./execd"]

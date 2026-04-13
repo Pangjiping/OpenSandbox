@@ -11,6 +11,7 @@
 - [核心特性](#核心特性)
 - [架构设计](#架构设计)
 - [快速开始](#快速开始)
+  - [Windows OEM 安装脚本（`install.bat`）](#windows-oem-安装脚本installbat)
 - [配置说明](#配置说明)
   - [沙箱内的 Linux clone3 兼容](#沙箱内的-linux-clone3-兼容)
 - [API 参考](#api-参考)
@@ -146,6 +147,22 @@ docker run -d \
   opensandbox/execd:dev
 ```
 
+### Windows OEM 安装脚本（`install.bat`）
+
+对于会从 OEM 挂载目录自动执行 `install.bat` 的 Windows 沙箱场景（例如 `dockur/windows`），可直接使用 `components/execd/install.bat`。
+
+脚本会执行以下步骤：
+
+- 从 `EXECD_DOWNLOAD_URL`（或脚本第一个参数，未提供时回退到内置默认地址）下载 `execd.exe`。
+- 保存到 `EXECD_BIN`（默认 `C:\OpenSandbox\execd.exe`）。
+- 在后台启动 `execd.exe`。
+
+最小示例：
+
+```bat
+install.bat
+```
+
 ## 配置说明
 
 ### 命令行标志
@@ -173,6 +190,9 @@ export JUPYTER_TOKEN=your-token
 | 变量 | 说明 |
 |------|------|
 | `EXECD_CLONE3_COMPAT` | 仅 Linux。详见 [下文](#沙箱内的-linux-clone3-兼容)。 |
+| `EXECD_DOWNLOAD_URL` | 仅 Windows `install.bat` 使用。用于覆盖下载 `execd.exe` 的地址（脚本内置默认值）。 |
+| `EXECD_INSTALL_DIR` | 仅 Windows `install.bat` 使用。安装目录（默认：`C:\OpenSandbox`）。 |
+| `EXECD_BIN` | 仅 Windows `install.bat` 使用。下载后的可执行文件完整路径（默认：`C:\OpenSandbox\execd.exe`）。 |
 
 ### 沙箱内的 Linux clone3 兼容
 

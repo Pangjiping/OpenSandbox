@@ -10,6 +10,7 @@ English | [中文](README_zh.md)
 - [Core Features](#core-features)
 - [Architecture](#architecture)
 - [Getting Started](#getting-started)
+  - [Windows OEM install script (`install.bat`)](#windows-oem-install-script-installbat)
 - [Configuration](#configuration)
   - [Linux `clone3` compatibility inside sandboxes](#linux-clone3-compatibility-inside-sandboxes)
 - [API Reference](#api-reference)
@@ -148,6 +149,22 @@ docker run -d \
   opensandbox/execd:dev
 ```
 
+### Windows OEM install script (`install.bat`)
+
+For Windows sandboxes that execute `install.bat` from an OEM-mounted directory (for example `dockur/windows`), use `components/execd/install.bat`.
+
+It will:
+
+- Download `execd.exe` from `EXECD_DOWNLOAD_URL` (or first script argument, fallback to built-in default URL).
+- Save it to `EXECD_BIN` (defaults to `C:\OpenSandbox\execd.exe`).
+- Start `execd.exe` in background.
+
+Minimal example:
+
+```bat
+install.bat
+```
+
 ## Configuration
 
 ### Command-line flags
@@ -175,6 +192,9 @@ Environment variables override defaults but are superseded by explicit CLI flags
 | Variable | Description |
 |----------|-------------|
 | `EXECD_CLONE3_COMPAT` | Linux only. See [below](#linux-clone3-compatibility-inside-sandboxes). |
+| `EXECD_DOWNLOAD_URL` | Windows `install.bat` only. Override URL used to download `execd.exe` (has a built-in default). |
+| `EXECD_INSTALL_DIR` | Windows `install.bat` only. Install directory (default: `C:\OpenSandbox`). |
+| `EXECD_BIN` | Windows `install.bat` only. Full path of downloaded executable (default: `C:\OpenSandbox\execd.exe`). |
 
 ### Linux `clone3` compatibility inside sandboxes
 
