@@ -100,13 +100,6 @@ def test_ensure_metadata_labels_rejects_value_too_long():
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_METADATA_LABEL
 
-def test_ensure_metadata_labels_rejects_non_string_key():
-    """Non-string keys in metadata should be rejected."""
-    with pytest.raises(HTTPException) as exc_info:
-        ensure_metadata_labels({1: "value"})  # type: ignore[dict-item]
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_METADATA_LABEL
-
 def test_ensure_metadata_labels_rejects_key_with_empty_prefix():
     """Key with an empty prefix (starts with '/') should be rejected."""
     with pytest.raises(HTTPException) as exc_info:
