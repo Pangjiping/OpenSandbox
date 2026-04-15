@@ -38,14 +38,18 @@ const (
 
 // DefaultDenyPolicy returns a new policy that denies all traffic.
 func DefaultDenyPolicy() *NetworkPolicy {
-	return &NetworkPolicy{DefaultAction: ActionDeny}
+	return &NetworkPolicy{
+		DefaultAction: ActionDeny,
+		domainIndex:   compileDomainIndex(nil),
+	}
 }
 
 // NetworkPolicy is the minimal MVP shape for egress control.
-// Only domain/wildcard targets are honored in this MVP.
 type NetworkPolicy struct {
 	Egress        []EgressRule `json:"egress"`
 	DefaultAction string       `json:"defaultAction"`
+
+	domainIndex *compiledDomainIndex
 }
 
 type EgressRule struct {
@@ -81,21 +85,39 @@ func (p *NetworkPolicy) Evaluate(domain string) string {
 		return ActionDeny
 	}
 	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
-	for _, r := range p.Egress {
-		if r.targetKind != targetDomain {
-			continue
-		}
-		if r.matchesDomain(domain) {
-			if r.Action == "" {
+
+	if p.domainIndex != nil {
+		if action, ok := p.domainIndex.match(domain); ok {
+			if action == "" {
 				return ActionDeny
 			}
-			return r.Action
+			return action
+		}
+	} else {
+		// Keep compatibility for policies built manually without ParsePolicy/ensureDefaults.
+		if action, ok := p.evaluateLinear(domain); ok {
+			return action
 		}
 	}
 	if p.DefaultAction == "" {
 		return ActionDeny
 	}
 	return p.DefaultAction
+}
+
+func (p *NetworkPolicy) evaluateLinear(domain string) (string, bool) {
+	for _, r := range p.Egress {
+		if r.targetKind != targetDomain {
+			continue
+		}
+		if r.matchesDomain(domain) {
+			if r.Action == "" {
+				return ActionDeny, true
+			}
+			return r.Action, true
+		}
+	}
+	return "", false
 }
 
 // ensureDefaults guarantees a policy always has a default action.
@@ -106,6 +128,7 @@ func ensureDefaults(p *NetworkPolicy) *NetworkPolicy {
 	if p.DefaultAction == "" {
 		p.DefaultAction = ActionDeny
 	}
+	p.domainIndex = compileDomainIndex(p.Egress)
 	return p
 }
 
