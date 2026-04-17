@@ -32,6 +32,7 @@ from opensandbox_server.services.k8s.security_context import (
     build_security_context_from_dict,
     serialize_security_context_to_dict,
 )
+from opensandbox_server.services.constants import OPENSANDBOX_EXECD_TOKEN
 
 
 def _build_execd_init_container(
@@ -82,9 +83,14 @@ def _build_main_container(
     *,
     include_execd_volume: bool,
     has_network_policy: bool = False,
+    execd_auth_token: Optional[str] = None,
 ) -> V1Container:
     env_vars = [V1EnvVar(name=k, value=v) for k, v in env.items()]
-    env_vars.append(V1EnvVar(name="EXECD", value="/opt/opensandbox/bin/execd"))
+    execd_command = "/opt/opensandbox/bin/execd"
+    if execd_auth_token:
+        execd_command = f"{execd_command} --access-token {execd_auth_token}"
+        env_vars.append(V1EnvVar(name=OPENSANDBOX_EXECD_TOKEN, value=execd_auth_token))
+    env_vars.append(V1EnvVar(name="EXECD", value=execd_command))
 
     resources = None
     if resource_limits:

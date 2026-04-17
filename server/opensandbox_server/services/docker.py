@@ -82,8 +82,10 @@ from opensandbox_server.services.constants import (
     EGRESS_MODE_ENV,
     EGRESS_RULES_ENV,
     OPENSANDBOX_EGRESS_TOKEN,
+    OPENSANDBOX_EXECD_TOKEN,
     SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY,
     SANDBOX_EMBEDDING_PROXY_PORT_LABEL,
+    SANDBOX_EXECD_AUTH_TOKEN_METADATA_KEY,
     SANDBOX_EXPIRES_AT_LABEL,
     SANDBOX_HTTP_PORT_LABEL,
     SANDBOX_ID_LABEL,
@@ -96,7 +98,9 @@ from opensandbox_server.services.constants import (
 )
 from opensandbox_server.services.endpoint_auth import (
     build_egress_auth_headers,
+    build_execd_auth_headers,
     generate_egress_token,
+    generate_execd_token,
     merge_endpoint_headers,
 )
 from opensandbox_server.services.helpers import (
@@ -844,7 +848,11 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             [
                 "#!/bin/sh",
                 "set -e",
-                f"{execd_binary} >/tmp/execd.log 2>&1 &",
+                f'if [ -n "${{{OPENSANDBOX_EXECD_TOKEN}:-}}" ]; then',
+                f'  {execd_binary} --access-token "${OPENSANDBOX_EXECD_TOKEN}" >/tmp/execd.log 2>&1 &',
+                "else",
+                f"  {execd_binary} >/tmp/execd.log 2>&1 &",
+                "fi",
                 'exec "$@"',
                 "",
             ]
@@ -1167,6 +1175,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
         image_uri, auth_config = self._resolve_image_auth(request, sandbox_id)
         mem_limit, nano_cpus = self._resolve_resource_limits(request)
         egress_token: Optional[str] = None
+        execd_token: Optional[str] = None
         requested_windows_profile = is_windows_platform(request.platform)
 
         if requested_windows_profile:
@@ -1183,6 +1192,11 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
 
         sidecar_container = None
         try:
+            if request.secure_access:
+                execd_token = generate_execd_token()
+                labels[SANDBOX_EXECD_AUTH_TOKEN_METADATA_KEY] = execd_token
+                environment.append(f"{OPENSANDBOX_EXECD_TOKEN}={execd_token}")
+
             # For dockur/windows profile, resourceLimits are translated to
             # guest envs (RAM_SIZE/CPU_CORES/DISK_SIZE). Avoid applying
             # container cgroup memory/cpu limits to the outer Linux container,
@@ -2059,17 +2073,18 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                     labels,
                     port,
                 )
-            return self._resolve_internal_endpoint(container, port)
+            endpoint = self._resolve_internal_endpoint(container, port)
+            self._attach_execd_auth_headers(endpoint, labels)
+            return endpoint
 
         public_host = self._resolve_public_host()
 
         if self.network_mode == HOST_NETWORK_MODE:
             endpoint = Endpoint(endpoint=f"{public_host}:{port}")
             container = self._get_container_by_sandbox_id(sandbox_id)
-            self._attach_egress_auth_headers(
-                endpoint,
-                (container.attrs.get("Config", {}).get("Labels") or {}),
-            )
+            labels = container.attrs.get("Config", {}).get("Labels") or {}
+            self._attach_execd_auth_headers(endpoint, labels)
+            self._attach_egress_auth_headers(endpoint, labels)
             return endpoint
 
         # non-host mode (bridge / user-defined network)
@@ -2101,7 +2116,10 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
                         "message": "Missing host port mapping for container port 8080.",
                     },
                 )
-            return Endpoint(endpoint=f"{public_host}:{http_host_port}")
+            endpoint = Endpoint(endpoint=f"{public_host}:{http_host_port}")
+            self._attach_execd_auth_headers(endpoint, labels)
+            self._attach_egress_auth_headers(endpoint, labels)
+            return endpoint
 
         if execd_host_port is None:
             raise HTTPException(
@@ -2113,8 +2131,22 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             )
 
         endpoint = Endpoint(endpoint=f"{public_host}:{execd_host_port}/proxy/{port}")
+        self._attach_execd_auth_headers(endpoint, labels)
         self._attach_egress_auth_headers(endpoint, labels)
         return endpoint
+
+    def _attach_execd_auth_headers(
+        self,
+        endpoint: Endpoint,
+        labels: dict[str, str],
+    ) -> None:
+        token = labels.get(SANDBOX_EXECD_AUTH_TOKEN_METADATA_KEY)
+        if not token:
+            return
+        endpoint.headers = merge_endpoint_headers(
+            endpoint.headers,
+            build_execd_auth_headers(token),
+        )
 
     def _attach_egress_auth_headers(
         self,

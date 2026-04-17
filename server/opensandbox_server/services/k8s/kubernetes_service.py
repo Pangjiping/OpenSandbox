@@ -45,12 +45,12 @@ from opensandbox_server.services.constants import (
     SANDBOX_ID_LABEL,
     SandboxErrorCodes,
 )
-from opensandbox_server.services.endpoint_auth import generate_egress_token
+from opensandbox_server.services.endpoint_auth import generate_egress_token, generate_execd_token
 from opensandbox_server.services.extension_service import ExtensionService
 from opensandbox_server.services.k8s.create_helpers import _build_create_workload_context
 from opensandbox_server.services.k8s.error_helpers import _build_k8s_api_error
 from opensandbox_server.services.k8s.k8s_diagnostics import K8sDiagnosticsMixin
-from opensandbox_server.services.k8s.endpoint_resolver import _attach_egress_auth_headers
+from opensandbox_server.services.k8s.endpoint_resolver import _attach_egress_auth_headers, _attach_execd_auth_headers
 from opensandbox_server.services.k8s.list_helpers import _build_list_sandboxes_response
 from opensandbox_server.services.k8s.status_helpers import (
     _is_unschedulable_status,
@@ -397,6 +397,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
             sandbox_id=sandbox_id,
             created_at=created_at,
             egress_token_factory=generate_egress_token,
+            execd_token_factory=generate_execd_token,
         )
         
         try:
@@ -429,6 +430,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                 egress_image=context.egress_image,
                 egress_auth_token=context.egress_auth_token,
                 egress_mode=context.egress_mode,
+                execd_auth_token=context.execd_auth_token,
                 volumes=request.volumes,
                 platform=request.platform,
             )
@@ -733,6 +735,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                         "message": "Pod IP is not yet available. The Pod may still be starting.",
                     },
                 )
+            _attach_execd_auth_headers(endpoint, workload)
             _attach_egress_auth_headers(endpoint, workload)
             return endpoint
             
@@ -741,4 +744,3 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
         except Exception as e:
             logger.error(f"Error getting endpoint for {sandbox_id}:{port}: {e}")
             raise _build_k8s_api_error("get endpoint", e) from e
-

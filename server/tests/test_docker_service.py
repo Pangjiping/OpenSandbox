@@ -32,9 +32,15 @@ from opensandbox_server.config import (
     IngressConfig,
 )
 from opensandbox_server.extensions import ACCESS_RENEW_EXTEND_SECONDS_METADATA_KEY
-from opensandbox_server.services.constants import EGRESS_MODE_ENV, OPENSANDBOX_EGRESS_TOKEN
+from opensandbox_server.services.constants import (
+    EGRESS_MODE_ENV,
+    OPEN_SANDBOX_EXECD_AUTH_HEADER,
+    OPENSANDBOX_EGRESS_TOKEN,
+    OPENSANDBOX_EXECD_TOKEN,
+)
 from opensandbox_server.services.constants import (
     SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY,
+    SANDBOX_EXECD_AUTH_TOKEN_METADATA_KEY,
     SANDBOX_EXPIRES_AT_LABEL,
     SANDBOX_ID_LABEL,
     SANDBOX_MANUAL_CLEANUP_LABEL,
@@ -48,6 +54,7 @@ from opensandbox_server.services.helpers import parse_memory_limit, parse_nano_c
 from opensandbox_server.api.schema import (
     CreateSandboxRequest,
     CreateSandboxResponse,
+    Endpoint,
     Host,
     ImageSpec,
     NetworkPolicy,
@@ -625,6 +632,69 @@ async def test_egress_sidecar_injection_and_capabilities(mock_docker):
     sidecar_env = sidecar_kwargs["environment"]
     assert f"{OPENSANDBOX_EGRESS_TOKEN}=egress-token" in sidecar_env
     assert f"{EGRESS_MODE_ENV}={EGRESS_MODE_DNS}" in sidecar_env
+
+
+@pytest.mark.asyncio
+@patch("opensandbox_server.services.docker.docker")
+async def test_secure_access_generates_execd_token_in_labels_and_env(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+
+    def host_cfg_side_effect(**kwargs):
+        return kwargs
+
+    mock_client.api.create_host_config.side_effect = host_cfg_side_effect
+    mock_client.api.create_container.return_value = {"Id": "main-id"}
+    mock_client.containers.get.return_value = MagicMock(id="main-id")
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "bridge"
+    service = DockerSandboxService(config=cfg)
+
+    req = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        metadata={},
+        entrypoint=["python"],
+        secureAccess=True,
+    )
+
+    with (
+        patch("opensandbox_server.services.docker.generate_execd_token", return_value="execd-token"),
+        patch(
+            "opensandbox_server.services.docker.allocate_port_bindings",
+            return_value={
+                "44772": ("0.0.0.0", 44772),
+                "8080": ("0.0.0.0", 8080),
+            },
+        ),
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_prepare_sandbox_runtime"),
+    ):
+        await service.create_sandbox(req)
+
+    main_kwargs = mock_client.api.create_container.call_args.kwargs
+    assert main_kwargs["labels"][SANDBOX_EXECD_AUTH_TOKEN_METADATA_KEY] == "execd-token"
+    assert f"{OPENSANDBOX_EXECD_TOKEN}=execd-token" in main_kwargs["environment"]
+
+
+def test_attach_execd_auth_headers_merges_token_from_labels():
+    endpoint = Endpoint(endpoint="127.0.0.1:44772", headers={"OpenSandbox-Ingress-To": "sbx-44772"})
+    service = DockerSandboxService.__new__(DockerSandboxService)
+
+    service._attach_execd_auth_headers(
+        endpoint,
+        {SANDBOX_EXECD_AUTH_TOKEN_METADATA_KEY: "execd-token"},
+    )
+
+    assert endpoint.headers == {
+        "OpenSandbox-Ingress-To": "sbx-44772",
+        OPEN_SANDBOX_EXECD_AUTH_HEADER: "execd-token",
+    }
+
 
 @pytest.mark.asyncio
 @patch("opensandbox_server.services.docker.docker")

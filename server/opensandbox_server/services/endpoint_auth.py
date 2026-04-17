@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import secrets
 
-from opensandbox_server.services.constants import OPEN_SANDBOX_EGRESS_AUTH_HEADER
+from opensandbox_server.services.constants import OPEN_SANDBOX_EGRESS_AUTH_HEADER, OPEN_SANDBOX_EXECD_AUTH_HEADER
 
 EGRESS_AUTH_TOKEN_BYTES = 24
+EXECD_AUTH_TOKEN_BYTES = 24
 
 
 def generate_egress_token() -> str:
@@ -28,9 +29,19 @@ def generate_egress_token() -> str:
     return secrets.token_urlsafe(EGRESS_AUTH_TOKEN_BYTES)
 
 
+def generate_execd_token() -> str:
+    """Return a random URL-safe token for execd endpoint auth."""
+    return secrets.token_urlsafe(EXECD_AUTH_TOKEN_BYTES)
+
+
 def build_egress_auth_headers(token: str) -> dict[str, str]:
     """Build endpoint headers for egress auth."""
     return {OPEN_SANDBOX_EGRESS_AUTH_HEADER: token}
+
+
+def build_execd_auth_headers(token: str) -> dict[str, str]:
+    """Build endpoint headers for execd auth."""
+    return {OPEN_SANDBOX_EXECD_AUTH_HEADER: token}
 
 
 def merge_endpoint_headers(
@@ -45,7 +56,10 @@ def merge_endpoint_headers(
 
 __all__ = [
     "EGRESS_AUTH_TOKEN_BYTES",
+    "EXECD_AUTH_TOKEN_BYTES",
     "build_egress_auth_headers",
+    "build_execd_auth_headers",
     "generate_egress_token",
+    "generate_execd_token",
     "merge_endpoint_headers",
 ]

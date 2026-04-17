@@ -28,6 +28,7 @@ from opensandbox_server.config import (
     EGRESS_MODE_DNS,
     INGRESS_MODE_GATEWAY,
 )
+from opensandbox_server.services.constants import OPENSANDBOX_EXECD_TOKEN
 from opensandbox_server.services.helpers import format_ingress_endpoint
 from opensandbox_server.api.schema import Endpoint, ImageSpec, NetworkPolicy, PlatformSpec, Volume
 from opensandbox_server.services.k8s.image_pull_secret_helper import (
@@ -110,6 +111,7 @@ class BatchSandboxProvider(WorkloadProvider):
         annotations: Optional[Dict[str, str]] = None,
         egress_auth_token: Optional[str] = None,
         egress_mode: str = EGRESS_MODE_DNS,
+        execd_auth_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a BatchSandbox in template mode or pool mode."""
         extensions = extensions or {}
@@ -140,6 +142,7 @@ class BatchSandboxProvider(WorkloadProvider):
                 expires_at=expires_at,
                 entrypoint=entrypoint,
                 env=env,
+                execd_auth_token=execd_auth_token,
                 annotations=annotations,
             )
         
@@ -163,6 +166,7 @@ class BatchSandboxProvider(WorkloadProvider):
             resource_limits=resource_limits,
             include_execd_volume=True,
             has_network_policy=network_policy is not None,
+            execd_auth_token=execd_auth_token,
         )
         
         containers = [_container_to_dict(main_container)]
@@ -295,13 +299,14 @@ class BatchSandboxProvider(WorkloadProvider):
         expires_at: Optional[datetime],
         entrypoint: List[str],
         env: Dict[str, str],
+        execd_auth_token: Optional[str] = None,
         annotations: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Create a BatchSandbox by referencing an existing pool."""
         spec: Dict[str, Any] = {
             "replicas": 1,
             "poolRef": pool_ref,
-            "taskTemplate": self._build_task_template(entrypoint, env),
+            "taskTemplate": self._build_task_template(entrypoint, env, execd_auth_token),
         }
         if expires_at is not None:
             spec["expireTime"] = expires_at.isoformat()
@@ -402,6 +407,7 @@ class BatchSandboxProvider(WorkloadProvider):
         self,
         entrypoint: List[str],
         env: Dict[str, str],
+        execd_auth_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build pool taskTemplate with shell-escaped bootstrap command."""
         escaped_entrypoint = ' '.join(shlex.quote(arg) for arg in entrypoint)
@@ -410,6 +416,14 @@ class BatchSandboxProvider(WorkloadProvider):
         wrapped_command = ["/bin/sh", "-c", user_process_cmd]
         
         env_list = [{"name": k, "value": v} for k, v in env.items()] if env else []
+        if execd_auth_token:
+            env_list.append(
+                {
+                    "name": "EXECD",
+                    "value": f"/opt/opensandbox/bin/execd --access-token {execd_auth_token}",
+                }
+            )
+            env_list.append({"name": OPENSANDBOX_EXECD_TOKEN, "value": execd_auth_token})
         
         return {
             "spec": {
