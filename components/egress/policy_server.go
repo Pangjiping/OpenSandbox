@@ -28,6 +28,7 @@ import (
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
+	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/alibaba/opensandbox/internal/safego"
@@ -53,7 +54,7 @@ type nftApplier interface {
 // startPolicyServer launches a lightweight HTTP API for updating the egress policy at runtime.
 //
 // nameserverIPs are merged into every applied policy so system DNS stays allowed (e.g. private DNS).
-func startPolicyServer(proxy policyUpdater, nft nftApplier, enforcementMode string, addr string, token string, nameserverIPs []netip.Addr, policyFile string, alwaysDeny, alwaysAllow []policy.EgressRule) (*http.Server, error) {
+func startPolicyServer(proxy policyUpdater, nft nftApplier, enforcementMode string, addr string, token string, nameserverIPs []netip.Addr, policyFile string, alwaysDeny, alwaysAllow []policy.EgressRule, mitmGate *mitmproxy.HealthGate) (*http.Server, error) {
 	maxEgressRules := maxEgressRulesFromEnv()
 	if maxEgressRules > 0 {
 		log.Infof("policy API: max egress rules per policy (POST/PATCH) = %d (set %s=0 to disable)", maxEgressRules, constants.EnvMaxEgressRules)
@@ -74,6 +75,11 @@ func startPolicyServer(proxy policyUpdater, nft nftApplier, enforcementMode stri
 
 	mux.HandleFunc("/policy", handler.handlePolicy)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if mitmGate != nil && mitmGate.MitmPending() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("mitmproxy not ready\n"))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})

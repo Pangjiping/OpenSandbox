@@ -55,13 +55,13 @@ func (f funcHook) Name() string { return f.name }
 
 func (f funcHook) Run(ctx context.Context) error { return f.fn(ctx) }
 
-func RunPhasePrePolicy(ctx context.Context) error {
+func RunPost(ctx context.Context) error {
 	mu.Lock()
 	list := append([]Hook(nil), hooks...)
 	mu.Unlock()
 	for _, h := range list {
 		if err := h.Run(ctx); err != nil {
-			return fmt.Errorf("startup hook %q (PhasePrePolicy): %w", h.Name(), err)
+			return fmt.Errorf("startup hook %q (post): %w", h.Name(), err)
 		}
 	}
 	return nil

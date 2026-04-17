@@ -30,13 +30,13 @@ type namedHook struct {
 func (n namedHook) Name() string                  { return n.name }
 func (n namedHook) Run(ctx context.Context) error { return n.run(ctx) }
 
-func TestRunPhasePrePolicy_empty(t *testing.T) {
+func TestRunPost_empty(t *testing.T) {
 	resetHooksForTest()
 	t.Cleanup(resetHooksForTest)
-	require.NoError(t, RunPhasePrePolicy(context.Background()))
+	require.NoError(t, RunPost(context.Background()))
 }
 
-func TestRunPhasePrePolicy_orderAndError(t *testing.T) {
+func TestRunPost_orderAndError(t *testing.T) {
 	resetHooksForTest()
 	t.Cleanup(resetHooksForTest)
 
@@ -65,7 +65,7 @@ func TestRunPhasePrePolicy_orderAndError(t *testing.T) {
 		},
 	})
 
-	err := RunPhasePrePolicy(context.Background())
+	err := RunPost(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "b")
 	require.Contains(t, err.Error(), "boom")

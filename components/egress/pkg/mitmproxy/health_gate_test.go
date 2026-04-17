@@ -12,14 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package hooks is a blank-import anchor for egress startup extensions.
-//
-// Add Go files that call startup.Register or startup.RegisterFunc from init().
-// Hooks run in RunPost — after transparent mitmdump setup returns (see main).
-//
-//	func init() {
-//		startup.RegisterFunc("example", func(ctx context.Context) error { return nil })
-//	}
-//
-// main imports this package so those init functions run before main().
-package hooks
+package mitmproxy
+
+import (
+	"testing"
+
+	"github.com/alibaba/opensandbox/egress/pkg/constants"
+	"github.com/stretchr/testify/require"
+)
+
+func TestHealthGate(t *testing.T) {
+	t.Run("transparent", func(t *testing.T) {
+		t.Setenv(constants.EnvMitmproxyTransparent, "1")
+		on := NewHealthGate()
+		require.True(t, on.MitmPending())
+		on.MarkStackReady()
+		require.False(t, on.MitmPending())
+	})
+	t.Run("not transparent", func(t *testing.T) {
+		t.Setenv(constants.EnvMitmproxyTransparent, "")
+		off := NewHealthGate()
+		require.False(t, off.MitmPending())
+	})
+}

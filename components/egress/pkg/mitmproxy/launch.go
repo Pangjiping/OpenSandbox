@@ -30,6 +30,10 @@ import (
 
 const RunAsUser = "mitmproxy"
 
+// listenHostLoopback binds mitmdump to loopback only. Transparent mode receives traffic via iptables REDIRECT
+// to this port; listening on 0.0.0.0 would expose an open proxy to any interface in the netns.
+const listenHostLoopback = "127.0.0.1"
+
 // Config controls mitmdump --mode transparent.
 type Config struct {
 	ListenPort int
@@ -86,9 +90,8 @@ func Launch(cfg Config) (*Running, error) {
 
 	args := []string{
 		"--mode", "transparent",
-		"--listen-host", "0.0.0.0",
+		"--listen-host", listenHostLoopback,
 		"--listen-port", strconv.Itoa(cfg.ListenPort),
-		"--set", "block_global=false",
 	}
 
 	trustDir := strings.TrimSpace(os.Getenv(constants.EnvMitmproxyUpstreamTrustDir))
@@ -132,6 +135,6 @@ func Launch(cfg Config) (*Running, error) {
 		done <- cmd.Wait()
 	}()
 
-	log.Infof("[mitmproxy] mitmdump started (pid %d, transparent on :%d)", cmd.Process.Pid, cfg.ListenPort)
+	log.Infof("[mitmproxy] mitmdump started (pid %d, transparent on %s:%d)", cmd.Process.Pid, listenHostLoopback, cfg.ListenPort)
 	return &Running{Cmd: cmd, done: done}, nil
 }

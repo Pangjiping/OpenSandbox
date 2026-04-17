@@ -32,6 +32,7 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/events"
 	"github.com/alibaba/opensandbox/egress/pkg/iptables"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
+	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/alibaba/opensandbox/egress/pkg/startup"
 	"github.com/alibaba/opensandbox/egress/pkg/telemetry"
@@ -60,10 +61,6 @@ func main() {
 			defer shutdownCancel()
 			_ = otelShutdown(shutdownCtx)
 		}()
-	}
-
-	if err = startup.RunPhasePrePolicy(ctx); err != nil {
-		log.Fatalf("startup hooks: %v", err)
 	}
 
 	initialRules, _, err := policy.LoadInitialPolicyDetailed(os.Getenv(constants.EnvEgressPolicyFile), constants.EnvEgressRules)
@@ -111,7 +108,8 @@ func main() {
 
 	// start policy server
 	httpAddr := envOrDefault(constants.EnvEgressHTTPAddr, constants.DefaultEgressServerAddr)
-	policySrv, err := startPolicyServer(proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs, os.Getenv(constants.EnvEgressPolicyFile), alwaysDeny, alwaysAllow)
+	mitmGate := mitmproxy.NewHealthGate()
+	policySrv, err := startPolicyServer(proxy, nftMgr, mode, httpAddr, os.Getenv(constants.EnvEgressToken), allowIPs, os.Getenv(constants.EnvEgressPolicyFile), alwaysDeny, alwaysAllow, mitmGate)
 	if err != nil {
 		log.Fatalf("failed to start policy server: %v", err)
 	}
@@ -120,6 +118,11 @@ func main() {
 	mitm, err := startMitmproxyTransparentIfEnabled()
 	if err != nil {
 		log.Fatalf("mitmproxy transparent: %v", err)
+	}
+	mitmGate.MarkStackReady()
+
+	if err := startup.RunPost(ctx); err != nil {
+		log.Errorf("startup hooks (post) error: %v", err)
 	}
 
 	waitForShutdown(ctx, proxy, policySrv, exemptDst, nftMgr, mitm)
