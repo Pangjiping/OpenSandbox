@@ -2703,7 +2703,11 @@ class TestDockerVolumeValidation:
         mock_client.containers.list.return_value = []
         mock_docker.from_env.return_value = mock_client
 
-        service = DockerSandboxService(config=_app_config())
+        cfg = _app_config()
+        cfg.storage = StorageConfig(
+            allowed_host_paths=["/nonexistent/path/that/does/not/exist"]
+        )
+        service = DockerSandboxService(config=cfg)
 
         request = CreateSandboxRequest(
             image=ImageSpec(uri="python:3.11"),
@@ -2802,11 +2806,12 @@ class TestDockerVolumeValidation:
         mock_client.containers.get.return_value = MagicMock()
         mock_docker.from_env.return_value = mock_client
 
-        service = DockerSandboxService(config=_app_config())
-
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _app_config()
+            cfg.storage = StorageConfig(allowed_host_paths=[tmpdir])
+            service = DockerSandboxService(config=cfg)
             request = CreateSandboxRequest(
                 image=ImageSpec(uri="python:3.11"),
                 timeout=120,
@@ -2847,11 +2852,12 @@ class TestDockerVolumeValidation:
         mock_client.containers.get.return_value = MagicMock()
         mock_docker.from_env.return_value = mock_client
 
-        service = DockerSandboxService(config=_app_config())
-
         import tempfile
 
         with tempfile.NamedTemporaryFile(suffix=".iso") as iso_file:
+            cfg = _app_config()
+            cfg.storage = StorageConfig(allowed_host_paths=[iso_file.name])
+            service = DockerSandboxService(config=cfg)
             request = CreateSandboxRequest(
                 image=ImageSpec(uri="python:3.11"),
                 timeout=120,
@@ -2890,11 +2896,12 @@ class TestDockerVolumeValidation:
         mock_client.containers.get.return_value = MagicMock()
         mock_docker.from_env.return_value = mock_client
 
-        service = DockerSandboxService(config=_app_config())
-
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _app_config()
+            cfg.storage = StorageConfig(allowed_host_paths=[tmpdir])
+            service = DockerSandboxService(config=cfg)
             # Create the subPath directory
             sub_dir = os.path.join(tmpdir, "task-001")
             os.makedirs(sub_dir)
@@ -2938,11 +2945,12 @@ class TestDockerVolumeValidation:
         mock_client.containers.get.return_value = MagicMock()
         mock_docker.from_env.return_value = mock_client
 
-        service = DockerSandboxService(config=_app_config())
-
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _app_config()
+            cfg.storage = StorageConfig(allowed_host_paths=[tmpdir])
+            service = DockerSandboxService(config=cfg)
             sub = "auto-created-sub"
             request = CreateSandboxRequest(
                 image=ImageSpec(uri="python:3.11"),
@@ -2984,8 +2992,8 @@ class TestDockerVolumeValidation:
             assert os.path.isdir(resolved)
 
     @pytest.mark.asyncio
-    async def test_empty_allowlist_permits_any_host_path(self, mock_docker):
-        """Empty allowed_host_paths (default) should permit any valid host path."""
+    async def test_empty_allowlist_rejects_host_path(self, mock_docker):
+        """Empty allowed_host_paths (default) should reject host bind mounts."""
         mock_client = MagicMock()
         mock_client.containers.list.return_value = []
         mock_client.api.create_host_config.return_value = {}
@@ -3022,9 +3030,10 @@ class TestDockerVolumeValidation:
                 patch.object(service, "_ensure_image_available"),
                 patch.object(service, "_prepare_sandbox_runtime"),
             ):
-                response = await service.create_sandbox(request)
-
-            assert response.status.state == "Running"
+                with pytest.raises(HTTPException) as exc_info:
+                    await service.create_sandbox(request)
+            assert exc_info.value.status_code == 400
+            assert exc_info.value.detail["code"] == SandboxErrorCodes.HOST_PATH_NOT_ALLOWED
 
     @pytest.mark.asyncio
     async def test_no_volumes_omits_binds_from_host_config(self, mock_docker):

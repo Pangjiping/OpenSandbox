@@ -404,7 +404,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
 
             ensure_volumes_valid(
                 request.volumes,
-                self.app_config.storage.allowed_host_paths or None,
+                self.app_config.storage.allowed_host_paths,
             )
             
 

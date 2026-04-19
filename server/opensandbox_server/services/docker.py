@@ -1396,7 +1396,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             return {}, []
 
         # Shared validation: names, mount paths, sub paths, backend count, host path allowlist
-        allowed_prefixes = self.app_config.storage.allowed_host_paths or None
+        allowed_prefixes = self.app_config.storage.allowed_host_paths
         ensure_volumes_valid(request.volumes, allowed_host_prefixes=allowed_prefixes)
 
         pvc_inspect_cache: dict[str, dict] = {}
