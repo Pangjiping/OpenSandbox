@@ -20,6 +20,7 @@ and configuration for the sandbox lifecycle management service.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -54,6 +55,12 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        api_key_confirm(configured_api_key=app_config.server.api_key)
+    except Exception as exc:
+        logger.error("API key startup confirmation failed: %s", exc)
+        os._exit(1)
+
     app.state.http_client = httpx.AsyncClient(timeout=180.0)
 
     # Validate secure runtime configuration at startup
@@ -187,12 +194,6 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-
-    try:
-        api_key_confirm(configured_api_key=app_config.server.api_key)
-    except RuntimeError as exc:
-        logger.error("%s", exc)
-        raise SystemExit(1) from exc
 
     # Run the application
     uvicorn.run(
