@@ -35,5 +35,8 @@ func InitFlags() {
 	flag.IntVar(&RenewIntentQueueMaxLen, "renew-intent-queue-max-len", 0, "Max renew-intent queue length (0 = no cap)")
 	flag.IntVar(&RenewIntentMinIntervalSec, "renew-intent-min-interval", 60, "Min seconds between publishing intents for the same sandbox (client-side throttle)")
 
+	flag.BoolVar(&SecureAccessEnabled, "secure-access-enabled", false, "Enable OSEP-0011 secure route verification (requires --secure-access-keys)")
+	flag.StringVar(&SecureAccessKeys, "secure-access-keys", "", "OSEP-0011 verification keys: k1=base64,k2=base64 (2-char key_id each)")
+
 	flag.Parse()
 }
