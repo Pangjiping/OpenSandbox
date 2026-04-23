@@ -34,7 +34,7 @@ import (
 type mockProvider struct {
 	endpoints   map[string]string // sandboxName -> IP
 	notReady    map[string]bool   // sandboxName -> notReady flag
-	accessToken map[string]string // sandboxName -> opensandbox.io/access-token value (non-empty => verification required)
+	accessToken map[string]string // sandboxName -> opensandbox.io/secure-access-token value (non-empty => verification required)
 }
 
 func (m *mockProvider) sandboxExists(sandboxId string) bool {

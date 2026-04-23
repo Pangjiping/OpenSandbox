@@ -5,7 +5,7 @@ type EndpointInfo struct {
 	// Endpoint is the resolved upstream endpoint (IP/FQDN) for this sandbox.
 	Endpoint string
 
-	// SecureAccessToken is the trimmed annotation opensandbox.io/access-token value.
+	// SecureAccessToken is the trimmed annotation opensandbox.io/secure-access-token value.
 	// Empty means secure access is not required.
 	SecureAccessToken string
 }

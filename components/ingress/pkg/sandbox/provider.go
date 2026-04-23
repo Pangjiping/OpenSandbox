@@ -28,7 +28,7 @@ const (
 	sandboxNameIndex string = "sandbox-name"
 
 	// AnnotationAccessToken marks a sandbox that requires signed ingress routes when non-empty.
-	AnnotationAccessToken = "opensandbox.io/access-token"
+	AnnotationAccessToken = "opensandbox.io/secure-access-token"
 )
 
 func (tpy ProviderType) String() string { return string(tpy) }
