@@ -26,6 +26,7 @@ import (
 type parsedRoute struct {
 	sandboxID       string
 	port            int
+	expiresB36      string
 	signature       string
 	requestURI      string
 	uriParsedAsOSEP bool
@@ -38,9 +39,15 @@ func parseHostRoute(s string) (parsedRoute, error) {
 	}
 	label := domain[0]
 
-	sandboxID, port, routeSig, tripleErr := signature.ParseRouteToken(label)
-	if tripleErr == nil {
-		return parsedRoute{sandboxID: sandboxID, port: port, signature: routeSig, requestURI: ""}, nil
+	sandboxID, port, expires, routeSig, parseErr := signature.ParseRouteToken(label)
+	if parseErr == nil {
+		return parsedRoute{
+			sandboxID:  sandboxID,
+			port:       port,
+			expiresB36: expires,
+			signature:  routeSig,
+			requestURI: "",
+		}, nil
 	}
 
 	ingressAndPort := strings.Split(label, "-")
@@ -52,7 +59,7 @@ func parseHostRoute(s string) (parsedRoute, error) {
 	if err != nil {
 		return parsedRoute{}, fmt.Errorf("invalid port format: %w", err)
 	}
-	return parsedRoute{sandboxID: ingress, port: port, signature: "", requestURI: ""}, nil
+	return parsedRoute{sandboxID: ingress, port: port, expiresB36: "", signature: "", requestURI: ""}, nil
 }
 
 func parseURIRoute(path string) (parsedRoute, error) {
@@ -61,21 +68,26 @@ func parseURIRoute(path string) (parsedRoute, error) {
 	}
 
 	trimmed := strings.TrimPrefix(path, "/")
-	parts4 := strings.SplitN(trimmed, "/", 4)
-	if len(parts4) >= 3 && parts4[0] != "" {
-		port, perr := signature.ParsePortSegment(parts4[1])
-		if perr == nil && signature.ValidateSignatureFormat(parts4[2]) == nil {
-			requestURI := "/"
-			if len(parts4) == 4 && parts4[3] != "" {
-				requestURI = "/" + parts4[3]
+	parts := strings.SplitN(trimmed, "/", 5)
+	if len(parts) >= 4 && parts[0] != "" {
+		port, perr := signature.ParsePortSegment(parts[1])
+		if perr == nil {
+			if _, eerr := signature.ParseExpiresB36(parts[2]); eerr == nil {
+				if signature.ValidateSignatureFormat(parts[3]) == nil {
+					requestURI := "/"
+					if len(parts) == 5 && parts[4] != "" {
+						requestURI = "/" + parts[4]
+					}
+					return parsedRoute{
+						sandboxID:       parts[0],
+						port:            port,
+						expiresB36:      parts[2],
+						signature:       parts[3],
+						requestURI:      requestURI,
+						uriParsedAsOSEP: true,
+					}, nil
+				}
 			}
-			return parsedRoute{
-				sandboxID:       parts4[0],
-				port:            port,
-				signature:       parts4[2],
-				requestURI:      requestURI,
-				uriParsedAsOSEP: true,
-			}, nil
 		}
 	}
 	return parseURILegacy(path)
@@ -104,6 +116,7 @@ func parseURILegacy(path string) (parsedRoute, error) {
 	return parsedRoute{
 		sandboxID:       sandboxID,
 		port:            port,
+		expiresB36:      "",
 		signature:       "",
 		requestURI:      requestURI,
 		uriParsedAsOSEP: false,

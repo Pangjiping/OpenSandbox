@@ -67,14 +67,17 @@ func (p *Proxy) getSandboxHostDefinition(r *http.Request) (*sandboxHost, int, er
 		}
 	}
 
+	present, accessTok := signature.SecureAccessHeaderInfo(r)
 	if err := signature.CheckIngressSecureAccess(signature.IngressAccessInput{
-		Secure:               need,
-		ExpectedAccessToken:  endpoint.SecureAccessToken,
-		RequestedAccessToken: signature.SecureAccessHeaderFromRequest(r),
-		Signature:            pr.signature,
-		SandboxID:            pr.sandboxID,
-		Port:                 pr.port,
-		Verifier:             p.secure,
+		Secure:                    need,
+		ExpectedAccessToken:       endpoint.SecureAccessToken,
+		SecureAccessHeaderPresent: present,
+		RequestedAccessToken:      accessTok,
+		ExpiresB36:                pr.expiresB36,
+		Signature:                 pr.signature,
+		SandboxID:                 pr.sandboxID,
+		Port:                      pr.port,
+		Verifier:                  p.secure,
 	}); err != nil {
 		return nil, ingressRouteErrHTTPStatus(err), err
 	}

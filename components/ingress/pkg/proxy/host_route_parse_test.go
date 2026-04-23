@@ -35,12 +35,13 @@ func TestParseURIRoute_LegacyLeadingZeroPortRejected(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestParseURIRoute_OSEPThreeSegmentsWithSig(t *testing.T) {
-	sig := "01234567ab"
-	pr, err := parseURIRoute("/sb/9090/" + sig + "/extra/path")
+func TestParseURIRoute_OSEPFourSegmentsWithSig(t *testing.T) {
+	exp, sig := "1a2b3c", "01234567a"
+	pr, err := parseURIRoute("/sb/9090/" + exp + "/" + sig + "/extra/path")
 	assert.NoError(t, err)
 	assert.Equal(t, "sb", pr.sandboxID)
 	assert.Equal(t, 9090, pr.port)
+	assert.Equal(t, exp, pr.expiresB36)
 	assert.Equal(t, sig, pr.signature)
 	assert.Equal(t, "/extra/path", pr.requestURI)
 	assert.True(t, pr.uriParsedAsOSEP)

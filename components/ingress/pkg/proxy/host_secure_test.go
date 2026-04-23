@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/alibaba/opensandbox/ingress/pkg/sandbox"
 	"github.com/alibaba/opensandbox/ingress/pkg/signature"
@@ -42,14 +44,15 @@ func TestGetSandboxHostDefinition_HeaderSecureSig(t *testing.T) {
 	secret := []byte("ingress-test-secret")
 	sb := "gamma"
 	port := 7777
-	sig := signature.ExpectedHex8(signature.Inner(secret, signature.CanonicalBytes(sb, port))) + "k1"
+	e := strconv.FormatUint(uint64(time.Now().Add(1*time.Hour).Unix()), 36)
+	sig := signature.ExpectedHex8(signature.Inner(secret, signature.CanonicalBytes(sb, port, e))) + "k"
 
 	p := &Proxy{
 		mode:            ModeHeader,
 		sandboxProvider: routeTestProvider{},
-		secure:          &signature.Verifier{Keys: map[string][]byte{"k1": secret}},
+		secure:          &signature.Verifier{Keys: map[string][]byte{"k": secret}},
 	}
-	label := fmt.Sprintf("%s-%d-%s", sb, port, sig)
+	label := fmt.Sprintf("%s-%d-%s-%s", sb, port, e, sig)
 	r := httptest.NewRequest(http.MethodGet, "http://example/", nil)
 	r.Host = label + ".gw.example.com"
 	host, code, err := p.getSandboxHostDefinition(r)
@@ -62,8 +65,10 @@ func TestGetSandboxHostDefinition_HeaderSecureSig(t *testing.T) {
 func TestGetSandboxHostDefinition_HeaderSecureHeaderBypassSignedShape(t *testing.T) {
 	sb := "gamma"
 	port := 7777
-	sig := "aabbccdd12"
-	label := fmt.Sprintf("%s-%d-%s", sb, port, sig)
+	// 9 characters: 8-hex + 1 key id (header bypasses HMAC, but must parse as OSEP-0011)
+	sig := "aabbccdd" + "1"
+	e := "0"
+	label := fmt.Sprintf("%s-%d-%s-%s", sb, port, e, sig)
 
 	p := &Proxy{mode: ModeHeader, sandboxProvider: routeTestProvider{}}
 	r := httptest.NewRequest(http.MethodGet, "http://example/", nil)
@@ -92,14 +97,15 @@ func TestGetSandboxHostDefinition_URISecureSig(t *testing.T) {
 	secret := []byte("uri-mode-secret")
 	sb := "d-e"
 	port := 3000
-	sig := signature.ExpectedHex8(signature.Inner(secret, signature.CanonicalBytes(sb, port))) + "ab"
+	e := strconv.FormatUint(uint64(time.Now().Add(1*time.Hour).Unix()), 36)
+	sig := signature.ExpectedHex8(signature.Inner(secret, signature.CanonicalBytes(sb, port, e))) + "a"
 
 	p := &Proxy{
 		mode:            ModeURI,
 		sandboxProvider: routeTestProvider{},
-		secure:          &signature.Verifier{Keys: map[string][]byte{"ab": secret}},
+		secure:          &signature.Verifier{Keys: map[string][]byte{"a": secret}},
 	}
-	path := "/" + sb + fmt.Sprintf("/%d/", port) + sig + "/api/x"
+	path := fmt.Sprintf("/%s/%d/%s/%s/api/x", sb, port, e, sig)
 	r := httptest.NewRequest(http.MethodGet, "http://ingress.local"+path, nil)
 	host, code, err := p.getSandboxHostDefinition(r)
 	assert.NoError(t, err)
@@ -112,10 +118,11 @@ func TestGetSandboxHostDefinition_URISecureSig(t *testing.T) {
 func TestGetSandboxHostDefinition_URISecureHeaderBypass(t *testing.T) {
 	sb := "d-e"
 	port := 3000
-	sig := "cafef00dab"
+	e := "0"
+	sig := "cafebabe" + "0"
 
 	p := &Proxy{mode: ModeURI, sandboxProvider: routeTestProvider{}}
-	path := "/" + sb + fmt.Sprintf("/%d/", port) + sig + "/api/x"
+	path := fmt.Sprintf("/%s/%d/%s/%s/api/x", sb, port, e, sig)
 	r := httptest.NewRequest(http.MethodGet, "http://ingress.local"+path, nil)
 	r.Header.Set(signature.OpenSandboxSecureAccessCanonical, "annot-secret")
 	host, code, err := p.getSandboxHostDefinition(r)

@@ -15,12 +15,15 @@
 package signature
 
 import (
+	"crypto/subtle"
 	"errors"
 	"net/http"
 	"strings"
 )
 
 const (
+	// OpenSandboxSecureAccessHeader is the OSEP-0011 header field name; use
+	// OpenSandboxSecureAccessCanonical when looking up the HTTP header map.
 	OpenSandboxSecureAccessHeader = "OpenSandbox-Secure-Access"
 )
 
@@ -32,49 +35,67 @@ var (
 	ErrVerifierNotConfigured = errors.New("signature: ingress verifier not configured")
 )
 
-func SecureAccessHeaderFromRequest(r *http.Request) string {
+// SecureAccessHeaderInfo reports field presence: present iff the header field
+// is sent (values may be empty) and the trimmed first value for comparison.
+func SecureAccessHeaderInfo(r *http.Request) (present bool, value string) {
 	if r == nil {
-		return ""
+		return false, ""
 	}
-	return strings.TrimSpace(r.Header.Get(OpenSandboxSecureAccessCanonical))
+	vs := r.Header.Values(OpenSandboxSecureAccessCanonical)
+	if len(vs) == 0 {
+		return false, ""
+	}
+	return true, strings.TrimSpace(vs[0])
 }
 
-func secureAccessHeaderMatches(headerValue, requireToken string) bool {
-	if requireToken == "" || headerValue == "" {
+// SecureAccessHeaderFromRequest returns the trimmed first field value, or "" if absent.
+func SecureAccessHeaderFromRequest(r *http.Request) string {
+	_, v := SecureAccessHeaderInfo(r)
+	return v
+}
+
+func secureAccessTokenEqualConstantTime(a, b string) bool {
+	if len(a) != len(b) {
 		return false
 	}
-
-	return headerValue == requireToken
+	if len(a) == 0 {
+		return true
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 type IngressAccessInput struct {
-	Secure               bool
-	ExpectedAccessToken  string
-	RequestedAccessToken string
-	Signature            string
-	SandboxID            string
-	Port                 int
-	Verifier             *Verifier
+	Secure                    bool
+	ExpectedAccessToken       string
+	SecureAccessHeaderPresent bool
+	RequestedAccessToken      string
+	ExpiresB36                string
+	Signature                 string
+	SandboxID                 string
+	Port                      int
+	Verifier                  *Verifier
 }
 
+// CheckIngressSecureAccess applies OSEP-0011: if OpenSandbox-Secure-Access is
+// present, compare to annotation token (constant-time) and 401 on mismatch
+// (no route-signature fallback). If absent, verify route signature+expiry.
 func CheckIngressSecureAccess(in IngressAccessInput) error {
 	if !in.Secure {
 		return nil
 	}
 
 	at := strings.TrimSpace(in.ExpectedAccessToken)
-	hv := strings.TrimSpace(in.RequestedAccessToken)
-	if hv != "" {
-		if secureAccessHeaderMatches(hv, at) {
+	if in.SecureAccessHeaderPresent {
+		if secureAccessTokenEqualConstantTime(in.RequestedAccessToken, at) {
 			return nil
 		}
 		return ErrSecureHeaderMismatch
 	}
-	if in.Signature != "" {
+	if in.Signature != "" && strings.TrimSpace(in.ExpiresB36) != "" {
 		if in.Verifier == nil || !in.Verifier.Enabled() {
 			return ErrVerifierNotConfigured
 		}
-		return in.Verifier.VerifySignature(in.Signature, in.SandboxID, in.Port)
+		return in.Verifier.VerifySignature(in.Signature, in.SandboxID, in.Port, in.ExpiresB36)
 	}
 	return ErrSignatureRequired
 }
@@ -84,6 +105,9 @@ func HTTPStatusForIngressErr(err error) int {
 		return 0
 	}
 	if errors.Is(err, ErrUnauthorized) {
+		return http.StatusUnauthorized
+	}
+	if errors.Is(err, ErrAccessExpired) {
 		return http.StatusUnauthorized
 	}
 	if errors.Is(err, ErrSecureHeaderMismatch) {
