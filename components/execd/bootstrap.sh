@@ -153,9 +153,8 @@ if [ -z "$SHELL_BIN" ]; then
 	fi
 fi
 
-set -x
 if [ "$CMD" != "" ]; then
-	exec "$SHELL_BIN" -c "$CMD"
+	exec "$SHELL_BIN" -c "exec $CMD"
 fi
 
 if [ $# -eq 0 ]; then
