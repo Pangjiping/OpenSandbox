@@ -79,10 +79,7 @@ func main() {
 	}
 
 	var secure *signature.Verifier
-	if flag.SecureAccessEnabled {
-		if strings.TrimSpace(flag.SecureAccessKeys) == "" {
-			log.Panicf("secure-access-enabled requires non-empty secure-access-keys")
-		}
+	if keyStr := strings.TrimSpace(flag.SecureAccessKeys); keyStr != "" {
 		keys, err := signature.ParseKeys(flag.SecureAccessKeys)
 		if err != nil {
 			log.Panicf("parse secure-access-keys: %v", err)
