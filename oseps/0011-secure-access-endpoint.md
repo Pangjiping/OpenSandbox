@@ -3,8 +3,8 @@ title: Secure Access on GetEndpoint and Signed Endpoint
 authors:
   - "@Pangjiping"
 creation-date: 2026-04-19
-last-updated: 2026-04-21
-status: implementing
+last-updated: 2026-04-25
+status: implemented
 ---
 
 # OSEP-0011: Secure Access on GetEndpoint and Signed Endpoint
