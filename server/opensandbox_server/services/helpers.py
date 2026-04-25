@@ -189,9 +189,14 @@ def format_ingress_endpoint(
     ingress_config: Optional[IngressConfig],
     sandbox_id: str,
     port: int,
+    expires_b36: Optional[str] = None,
+    signature: Optional[str] = None,
 ) -> Optional[Endpoint]:
     """
     Build an ingress-based endpoint string for a sandbox.
+
+    When *expires_b36* and *signature* are provided, the endpoint embeds a
+    signed route token (OSEP-0011). Otherwise a plain ingress endpoint is returned.
 
     Returns None when ingress is not in gateway mode.
     """
@@ -203,16 +208,24 @@ def format_ingress_endpoint(
 
     address = gateway_cfg.address
     route_mode = gateway_cfg.route.mode
+    is_signed = expires_b36 is not None and signature is not None
 
     if route_mode == GATEWAY_ROUTE_MODE_WILDCARD:
         base = address[2:] if address.startswith("*.") else address
+        if is_signed:
+            return Endpoint(endpoint=f"{sandbox_id}-{port}-{expires_b36}-{signature}.{base}")
         return Endpoint(endpoint=f"{sandbox_id}-{port}.{base}")
 
     if route_mode == GATEWAY_ROUTE_MODE_URI:
+        if is_signed:
+            return Endpoint(endpoint=f"{address}/{sandbox_id}/{port}/{expires_b36}/{signature}")
         return Endpoint(endpoint=f"{address}/{sandbox_id}/{port}")
 
     if route_mode == GATEWAY_ROUTE_MODE_HEADER:
-        header_value = f"{sandbox_id}-{port}"
+        if is_signed:
+            header_value = f"{sandbox_id}-{port}-{expires_b36}-{signature}"
+        else:
+            header_value = f"{sandbox_id}-{port}"
         return Endpoint(
             endpoint=address,
             headers={OPEN_SANDBOX_INGRESS_HEADER: header_value},

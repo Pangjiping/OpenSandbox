@@ -3318,3 +3318,18 @@ class TestDockerVolumeValidation:
 
         host_config_call = mock_client.api.create_host_config.call_args
         assert "binds" not in host_config_call.kwargs
+
+
+def test_docker_get_endpoint_rejects_expires():
+    from unittest.mock import patch
+
+    with patch("opensandbox_server.services.docker.docker"):
+        cfg = _app_config()
+        cfg.docker.network_mode = "bridge"
+        service = DockerSandboxService(config=cfg)
+
+        with pytest.raises(HTTPException) as exc:
+            service.get_endpoint("sbx-001", 8080, expires=1000)
+
+        assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert "not supported" in exc.value.detail["message"].lower()

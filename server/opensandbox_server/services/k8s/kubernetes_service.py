@@ -40,13 +40,14 @@ from opensandbox_server.api.schema import (
     Sandbox,
     SandboxStatus,
 )
-from opensandbox_server.config import AppConfig, INGRESS_MODE_GATEWAY, get_config
+from opensandbox_server.config import AppConfig, INGRESS_MODE_GATEWAY, SecureAccessConfig, get_config
 from opensandbox_server.services.constants import (
     SANDBOX_ID_LABEL,
     SandboxErrorCodes,
 )
 from opensandbox_server.services.endpoint_auth import generate_egress_token, generate_secure_access_token
 from opensandbox_server.services.extension_service import ExtensionService
+from opensandbox_server.services.helpers import format_ingress_endpoint
 from opensandbox_server.services.k8s.create_helpers import _build_create_workload_context
 from opensandbox_server.services.k8s.error_helpers import _build_k8s_api_error
 from opensandbox_server.services.k8s.k8s_diagnostics import K8sDiagnosticsMixin
@@ -59,6 +60,12 @@ from opensandbox_server.services.k8s.status_helpers import (
 from opensandbox_server.services.k8s.workload_mapper import (
     _build_sandbox_from_workload,
     _extract_platform_from_workload,
+)
+from opensandbox_server.services.signing import (
+    build_canonical_bytes,
+    build_signed_route_token,
+    compute_signature,
+    encode_expires_b36,
 )
 from opensandbox_server.services.k8s.workload_access import (
     _delete_workload_or_404,
@@ -717,31 +724,57 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
         sandbox_id: str,
         port: int,
         resolve_internal: bool = False,
+        expires: Optional[int] = None,
     ) -> Endpoint:
         """
         Get sandbox access endpoint.
-        
+
         Args:
             sandbox_id: Unique sandbox identifier
             port: Port number
             resolve_internal: Ignored for Kubernetes (always returns Pod IP)
-            
+            expires: Unix epoch seconds for a signed route token.
+                Requires ingress gateway mode with secure_access keys configured.
+
         Returns:
-            Endpoint: Endpoint information
-            
+            Endpoint: Endpoint information (with optional route_token when signed)
+
         Raises:
-            HTTPException: If endpoint not available
+            HTTPException: If endpoint not available or signed routes unsupported
         """
         self.validate_port(port)
-        
+
+        if expires is not None:
+            if expires < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.INVALID_PARAMETER,
+                        "message": "expires must be a non-negative Unix timestamp (uint64).",
+                    },
+                )
+            now = int(time.time())
+            if expires <= now:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": SandboxErrorCodes.INVALID_PARAMETER,
+                        "message": f"expires ({expires}) must be greater than current time ({now}).",
+                    },
+                )
+
         try:
             workload = _get_workload_or_404(
                 self.workload_provider,
                 self.namespace,
                 sandbox_id,
             )
-            
-            endpoint = self.workload_provider.get_endpoint_info(workload, port, sandbox_id)
+
+            if expires is not None:
+                endpoint = self._build_signed_endpoint(sandbox_id, port, expires)
+            else:
+                endpoint = self.workload_provider.get_endpoint_info(workload, port, sandbox_id)
+
             if not endpoint:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -753,9 +786,65 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
             _attach_secure_access_headers(endpoint, workload)
             _attach_egress_auth_headers(endpoint, workload)
             return endpoint
-            
+
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Error getting endpoint for {sandbox_id}:{port}: {e}")
             raise _build_k8s_api_error("get endpoint", e) from e
+
+    def _build_signed_endpoint(self, sandbox_id: str, port: int, expires: int) -> Endpoint:
+        """Build a signed ingress endpoint with route token per OSEP-0011."""
+        secure_cfg = self._get_secure_access_config()
+
+        expires_b36 = encode_expires_b36(expires)
+        secret = secure_cfg.get_active_secret_bytes()
+        active_key = secure_cfg.active_key
+        canonical = build_canonical_bytes(sandbox_id, port, expires_b36)
+        signature = compute_signature(secret, active_key, canonical)
+        route_token = build_signed_route_token(sandbox_id, port, expires_b36, signature)
+
+        endpoint = format_ingress_endpoint(
+            self.ingress_config, sandbox_id, port,
+            expires_b36=expires_b36, signature=signature,
+        )
+        if endpoint is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.INVALID_PARAMETER,
+                    "message": (
+                        "Signed routes are only available when ingress is in gateway mode. "
+                        "Configure ingress gateway or omit the expires parameter."
+                    ),
+                },
+            )
+        endpoint.route_token = route_token
+        return endpoint
+
+    def _get_secure_access_config(self) -> SecureAccessConfig:
+        """Return the secure_access config or raise 400 if not configured."""
+        if not self.ingress_config or self.ingress_config.mode != INGRESS_MODE_GATEWAY:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.INVALID_PARAMETER,
+                    "message": (
+                        "Signed routes require ingress.mode = 'gateway'. "
+                        "Configure ingress gateway or omit the expires parameter."
+                    ),
+                },
+            )
+        secure = self.ingress_config.secure_access
+        if secure is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.INVALID_PARAMETER,
+                    "message": (
+                        "Signed routes require ingress.secure_access to be configured "
+                        "with signing keys. Configure secure_access or omit the expires parameter."
+                    ),
+                },
+            )
+        return secure
