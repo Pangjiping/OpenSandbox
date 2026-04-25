@@ -118,6 +118,7 @@ Created with `NewLifecycleClient(baseURL, apiKey string, opts ...Option)`.
 | `ResumeSandbox(ctx, id)` | Resume a paused sandbox |
 | `RenewExpiration(ctx, id, expiresAt)` | Extend sandbox expiration time |
 | `GetEndpoint(ctx, sandboxID, port, useServerProxy)` | Get public endpoint for a sandbox port |
+| `GetSignedEndpoint(ctx, sandboxID, port, expires)` | Get signed endpoint URL with OSEP-0011 route token |
 
 ### ExecdClient
 
