@@ -15,6 +15,7 @@
 package logger
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -106,6 +107,16 @@ func NewWithExtraCores(cfg Config, extra ...zapcore.Core) (Logger, error) {
 func newWithRotate(cfg Config, extra ...zapcore.Core) (Logger, error) {
 	cfg.Rotate.applyDefaults()
 
+	// Fail fast on bad paths/permissions, matching the original zap.Config.Build
+	// behaviour that opens sinks at init time.
+	for _, paths := range [][]string{cfg.OutputPaths, cfg.ErrorOutputPaths} {
+		for _, path := range paths {
+			if err := validateOutputPath(path); err != nil {
+				return nil, fmt.Errorf("invalid output path %q: %w", path, err)
+			}
+		}
+	}
+
 	encoderCfg := zap.NewProductionEncoderConfig()
 	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
 	encoderCfg.CallerKey = ""
@@ -128,6 +139,19 @@ func newWithRotate(cfg Config, extra ...zapcore.Core) (Logger, error) {
 		return zapcore.NewSamplerWithOptions(c, time.Second, 100, 100)
 	}))
 	return &zapLogger{base: base, sugar: base.Sugar()}, nil
+}
+
+// validateOutputPath fails fast on bad paths/permissions by trying to open the
+// sink. stdout/stderr are always valid.
+func validateOutputPath(path string) error {
+	if path == "stdout" || path == "stderr" {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 // rotateWriter returns a WriteSyncer for the given path using lumberjack
