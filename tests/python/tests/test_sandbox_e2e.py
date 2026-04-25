@@ -292,7 +292,8 @@ class TestSandboxE2E:
 
             # Use the signed endpoint to make an actual request to execd /ping
             # through the ingress gateway, verifying the route token is accepted.
-            ping_url = signed_ep.endpoint.rstrip("/") + "/ping"
+            # The endpoint returned by the API has no scheme — prepend protocol.
+            ping_url = f"{TEST_PROTOCOL}://{signed_ep.endpoint.rstrip('/')}/ping"
             ping_headers = {**signed_ep.headers} if signed_ep.headers else {}
             logger.info(f"Signed /ping via gateway: {ping_url}")
             async with httpx.AsyncClient() as client:
