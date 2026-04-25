@@ -1094,7 +1094,8 @@ class TestSignedEndpoint:
         parts = endpoint.endpoint.split(".")[0].rsplit("-", 3)
         assert len(parts) == 4  # sandbox_id-port-b36-signature
 
-    def test_signed_endpoint_attaches_secure_access_header(self, k8s_service):
+    def test_signed_endpoint_omits_secure_access_header(self, k8s_service):
+        """Signed endpoint must NOT include the static SecureAccessToken header."""
         self._setup_gateway_with_secure_access(k8s_service)
         k8s_service.workload_provider.get_workload.return_value = {
             "metadata": {
@@ -1105,6 +1106,27 @@ class TestSignedEndpoint:
         }
 
         endpoint = k8s_service.get_endpoint("sbx-001", 8080, expires=2000000000)
+
+        if endpoint.headers:
+            assert OPEN_SANDBOX_SECURE_ACCESS_HEADER not in endpoint.headers, (
+                "Signed endpoint should not carry the static SecureAccessToken header"
+            )
+
+    def test_unsigned_endpoint_attaches_secure_access_header(self, k8s_service):
+        """Unsigned endpoint must include the static SecureAccessToken header."""
+        self._setup_gateway_with_secure_access(k8s_service)
+        k8s_service.workload_provider.get_workload.return_value = {
+            "metadata": {
+                "annotations": {
+                    SANDBOX_SECURE_ACCESS_TOKEN_METADATA_KEY: "static-token",
+                }
+            },
+        }
+        k8s_service.workload_provider.get_endpoint_info.return_value = Endpoint(
+            endpoint="sbx-001-8080.sandbox.example.com",
+        )
+
+        endpoint = k8s_service.get_endpoint("sbx-001", 8080)
 
         assert endpoint.headers is not None
         assert endpoint.headers[OPEN_SANDBOX_SECURE_ACCESS_HEADER] == "static-token"

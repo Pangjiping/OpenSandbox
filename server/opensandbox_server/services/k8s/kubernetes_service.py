@@ -782,7 +782,8 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                         "message": "Pod IP is not yet available. The Pod may still be starting.",
                     },
                 )
-            _attach_secure_access_headers(endpoint, workload)
+            if expires is None:
+                _attach_secure_access_headers(endpoint, workload)
             _attach_egress_auth_headers(endpoint, workload)
             return endpoint
 
