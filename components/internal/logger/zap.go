@@ -17,12 +17,47 @@ package logger
 import (
 	"os"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 const envLogOutput = "OPENSANDBOX_LOG_OUTPUT"
+
+const (
+	// DefaultRotateMaxSize is the default max size in megabytes before rotation.
+	DefaultRotateMaxSize = 100
+	// DefaultRotateMaxAge is the default max days to retain old log files.
+	DefaultRotateMaxAge = 30
+	// DefaultRotateMaxBackups is the default max old files to retain.
+	DefaultRotateMaxBackups = 10
+)
+
+// RotateConfig controls log file rotation for file-based output paths.
+type RotateConfig struct {
+	// MaxSize is the maximum size in megabytes before rotation (default 100).
+	MaxSize int
+	// MaxAge is the maximum number of days to retain old log files (default 30).
+	MaxAge int
+	// MaxBackups is the maximum number of old log files to retain (default 10).
+	MaxBackups int
+	// Compress determines whether rotated files are gzip-compressed (default true).
+	Compress bool
+}
+
+func (r *RotateConfig) applyDefaults() {
+	if r.MaxSize <= 0 {
+		r.MaxSize = DefaultRotateMaxSize
+	}
+	if r.MaxAge <= 0 {
+		r.MaxAge = DefaultRotateMaxAge
+	}
+	if r.MaxBackups <= 0 {
+		r.MaxBackups = DefaultRotateMaxBackups
+	}
+}
 
 // Config is the minimal configuration to align execd/ingress defaults.
 // - JSON encoding, ISO8601 time
@@ -30,31 +65,20 @@ const envLogOutput = "OPENSANDBOX_LOG_OUTPUT"
 // - Stdout as default output
 // - Level defaults to info
 type Config struct {
-	Level            string   // debug|info|warn|error|fatal (default: info)
-	OutputPaths      []string // default: stdout
-	ErrorOutputPaths []string // default: OutputPaths
+	Level            string        // debug|info|warn|error|fatal (default: info)
+	OutputPaths      []string      // default: stdout
+	ErrorOutputPaths []string      // default: OutputPaths
+	Rotate           *RotateConfig // nil means no rotation on file outputs
 }
 
 // New creates a zap-backed Logger with the provided config.
+// Log file rotation is enabled by default for file-based output paths.
 func New(cfg Config) (Logger, error) {
 	cfg = applyEnvOutputs(cfg)
-
-	zapCfg := zap.NewProductionConfig()
-	zapCfg.Level = zap.NewAtomicLevelAt(parseLevel(cfg.Level))
-	zapCfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	zapCfg.EncoderConfig.CallerKey = ""
-	zapCfg.DisableCaller = true
-	zapCfg.DisableStacktrace = true
-	zapCfg.EncoderConfig.StacktraceKey = ""
-
-	zapCfg.OutputPaths = cfg.OutputPaths
-	zapCfg.ErrorOutputPaths = cfg.ErrorOutputPaths
-
-	base, err := zapCfg.Build()
-	if err != nil {
-		return nil, err
+	if cfg.Rotate == nil {
+		cfg.Rotate = &RotateConfig{}
 	}
-	return &zapLogger{base: base, sugar: base.Sugar()}, nil
+	return newWithRotate(cfg)
 }
 
 // MustNew is a convenience helper that panics on error.
@@ -72,28 +96,72 @@ func NewWithExtraCores(cfg Config, extra ...zapcore.Core) (Logger, error) {
 		return New(cfg)
 	}
 	cfg = applyEnvOutputs(cfg)
-
-	zapCfg := zap.NewProductionConfig()
-	zapCfg.Level = zap.NewAtomicLevelAt(parseLevel(cfg.Level))
-	zapCfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	zapCfg.EncoderConfig.CallerKey = ""
-	zapCfg.DisableCaller = true
-	zapCfg.DisableStacktrace = true
-	zapCfg.EncoderConfig.StacktraceKey = ""
-
-	zapCfg.OutputPaths = cfg.OutputPaths
-	zapCfg.ErrorOutputPaths = cfg.ErrorOutputPaths
-
-	base, err := zapCfg.Build(zap.WrapCore(func(c zapcore.Core) zapcore.Core {
-		cores := make([]zapcore.Core, 0, len(extra)+1)
-		cores = append(cores, c)
-		cores = append(cores, extra...)
-		return zapcore.NewTee(cores...)
-	}))
-	if err != nil {
-		return nil, err
+	if cfg.Rotate == nil {
+		cfg.Rotate = &RotateConfig{}
 	}
+	return newWithRotate(cfg, extra...)
+}
+
+// newWithRotate builds a Logger with lumberjack-backed file writers.
+func newWithRotate(cfg Config, extra ...zapcore.Core) (Logger, error) {
+	cfg.Rotate.applyDefaults()
+
+	encoderCfg := zap.NewProductionEncoderConfig()
+	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+	encoderCfg.CallerKey = ""
+	encoderCfg.StacktraceKey = ""
+	encoder := zapcore.NewJSONEncoder(encoderCfg)
+
+	atom := zap.NewAtomicLevelAt(parseLevel(cfg.Level))
+
+	var cores []zapcore.Core
+	for _, path := range cfg.OutputPaths {
+		cores = append(cores, zapcore.NewCore(encoder, rotateWriter(path, cfg.Rotate), atom))
+	}
+
+	core := teeCores(cores)
+	if len(extra) > 0 {
+		core = zapcore.NewTee(append([]zapcore.Core{core}, extra...)...)
+	}
+
+	base := zap.New(core, zap.WrapCore(func(c zapcore.Core) zapcore.Core {
+		return zapcore.NewSamplerWithOptions(c, time.Second, 100, 100)
+	}))
 	return &zapLogger{base: base, sugar: base.Sugar()}, nil
+}
+
+// rotateWriter returns a WriteSyncer for the given path using lumberjack
+// for file paths, os.Stdout/os.Stderr for console paths.
+func rotateWriter(path string, rc *RotateConfig) zapcore.WriteSyncer {
+	switch path {
+	case "stdout":
+		return zapcore.AddSync(os.Stdout)
+	case "stderr":
+		return zapcore.AddSync(os.Stderr)
+	default:
+		return zapcore.AddSync(&lumberjack.Logger{
+			Filename:   path,
+			MaxSize:    rc.MaxSize,
+			MaxAge:     rc.MaxAge,
+			MaxBackups: rc.MaxBackups,
+			Compress:   rc.Compress,
+		})
+	}
+}
+
+func teeCores(cores []zapcore.Core) zapcore.Core {
+	switch len(cores) {
+	case 0:
+		return zapcore.NewCore(
+			zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+			zapcore.AddSync(os.Stdout),
+			zap.NewAtomicLevelAt(zapcore.InfoLevel),
+		)
+	case 1:
+		return cores[0]
+	default:
+		return zapcore.NewTee(cores...)
+	}
 }
 
 // AsZapSugared returns the underlying zap SugaredLogger when available.
