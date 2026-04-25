@@ -200,7 +200,7 @@ export class SandboxesAdapter implements Sandboxes {
     expires: number
   ): Promise<Endpoint> {
     const { data, error, response } = await this.client.GET("/sandboxes/{sandboxId}/endpoints/{port}", {
-      params: { path: { sandboxId, port }, query: { expires } },
+      params: { path: { sandboxId, port }, query: { expires: expires.toString() } },
     });
     throwOnOpenApiFetchError({ error, response }, "Get signed endpoint failed");
     const ok = data as ApiEndpointOk | undefined;
