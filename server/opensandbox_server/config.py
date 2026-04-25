@@ -262,7 +262,7 @@ class SecureAccessConfig(BaseModel):
         if self.active_key not in seen:
             raise ValueError(
                 f"active_key {self.active_key!r} not found in secure_access.keys; "
-                f"available keys: {sorted(key_ids)}"
+                f"available keys: {sorted(seen)}"
             )
         return self
 
