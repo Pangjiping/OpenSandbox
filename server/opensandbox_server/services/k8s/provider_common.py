@@ -78,7 +78,6 @@ def _build_main_container(
     env: Dict[str, str],
     resource_limits: Dict[str, str],
     *,
-    include_execd_volume: bool,
     has_network_policy: bool = False,
 ) -> V1Container:
     env_vars = [V1EnvVar(name=k, value=v) for k, v in env.items()]
@@ -91,14 +90,12 @@ def _build_main_container(
             requests=resource_limits,
         )
 
-    volume_mounts = None
-    if include_execd_volume:
-        volume_mounts = [
-            V1VolumeMount(
-                name="opensandbox-bin",
-                mount_path="/opt/opensandbox/bin",
-            )
-        ]
+    volume_mounts = [
+        V1VolumeMount(
+            name="opensandbox-bin",
+            mount_path="/opt/opensandbox/bin",
+        )
+    ]
 
     security_context = None
     if has_network_policy:

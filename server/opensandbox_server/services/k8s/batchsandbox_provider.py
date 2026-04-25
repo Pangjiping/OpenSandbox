@@ -46,6 +46,12 @@ from opensandbox_server.services.k8s.provider_common import (
     _extract_platform_unschedulable_message_from_pod,
     _workload_platform_constraint_scope,
 )
+from opensandbox_server.services.k8s.windows_profile import (
+    apply_windows_profile_arch_selector,
+    apply_windows_profile_overrides,
+    is_windows_profile,
+    validate_windows_profile_resource_limits,
+)
 from opensandbox_server.services.k8s.volume_helper import apply_volumes_to_pod_spec
 from opensandbox_server.services.k8s.workload_provider import WorkloadProvider
 from opensandbox_server.services.runtime_resolver import SecureRuntimeResolver
@@ -67,7 +73,7 @@ class BatchSandboxProvider(WorkloadProvider):
         k8s_config = app_config.kubernetes if app_config else None
         template_file_path = k8s_config.batchsandbox_template_file if k8s_config else None
         if template_file_path:
-            logger.info("Using BatchSandbox template file: %s", template_file_path)
+            logger.info(f"Using BatchSandbox template file: {template_file_path}")
         self.execd_init_resources = k8s_config.execd_init_resources if k8s_config else None
 
         self.resolver = SecureRuntimeResolver(app_config) if app_config else None
@@ -113,13 +119,10 @@ class BatchSandboxProvider(WorkloadProvider):
     ) -> Dict[str, Any]:
         """Create a BatchSandbox in template mode or pool mode."""
         extensions = extensions or {}
+        windows_profile = is_windows_profile(platform)
 
         if self.runtime_class:
-            logger.info(
-                "Using Kubernetes RuntimeClass '%s' for sandbox %s",
-                self.runtime_class,
-                sandbox_id,
-            )
+            logger.info(f"Using Kubernetes RuntimeClass '{self.runtime_class}' for sandbox {sandbox_id}")
 
         if extensions.get("poolRef"):
             if platform is not None:
@@ -145,6 +148,9 @@ class BatchSandboxProvider(WorkloadProvider):
         
         extra_volumes, extra_mounts = self._extract_template_pod_extras()
 
+        if windows_profile:
+            validate_windows_profile_resource_limits(resource_limits)
+
         disable_ipv6_for_egress = (
             network_policy is not None
             and egress_image is not None
@@ -161,13 +167,11 @@ class BatchSandboxProvider(WorkloadProvider):
             entrypoint=entrypoint,
             env=env,
             resource_limits=resource_limits,
-            include_execd_volume=True,
             has_network_policy=network_policy is not None,
         )
         
         containers = [_container_to_dict(main_container)]
-        
-        pod_spec: Dict[str, Any] = {
+        pod_spec = {
             "initContainers": [_container_to_dict(init_container)],
             "containers": containers,
             "volumes": [
@@ -177,8 +181,29 @@ class BatchSandboxProvider(WorkloadProvider):
                 }
             ],
         }
-        self._apply_platform_node_selector(pod_spec, platform)
+        if windows_profile:
+            apply_windows_profile_overrides(
+                pod_spec=pod_spec,
+                entrypoint=entrypoint,
+                env=env,
+                resource_limits=resource_limits,
+                disable_ipv6_for_egress=disable_ipv6_for_egress,
+            )
+            template = self.template_manager.get_base_template()
+            template_spec = (
+                template.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+            )
+            apply_windows_profile_arch_selector(
+                pod_spec=pod_spec,
+                template_spec=template_spec if isinstance(template_spec, dict) else {},
+                platform=platform,
+            )
+        else:
+            self._apply_platform_node_selector(pod_spec, platform)
 
+        containers = pod_spec.get("containers", [])
         if self.runtime_class:
             pod_spec["runtimeClassName"] = self.runtime_class
 
@@ -222,7 +247,7 @@ class BatchSandboxProvider(WorkloadProvider):
         else:
             batchsandbox["spec"]["expireTime"] = expires_at.isoformat()
         self._merge_pod_spec_extras(batchsandbox, extra_volumes, extra_mounts)
-        if platform is not None:
+        if platform is not None and not windows_profile:
             merged_pod_spec = batchsandbox.get("spec", {}).get("template", {}).get("spec", {})
             WorkloadProvider.ensure_platform_compatible_with_affinity(merged_pod_spec, platform)
         
@@ -245,9 +270,9 @@ class BatchSandboxProvider(WorkloadProvider):
             )
             try:
                 self.k8s_client.create_secret(namespace=namespace, body=secret)
-                logger.info("Created imagePullSecret for sandbox %s", sandbox_id)
+                logger.info(f"Created imagePullSecret for sandbox {sandbox_id}")
             except Exception:
-                logger.warning("Failed to create imagePullSecret for sandbox %s, rolling back BatchSandbox", sandbox_id)
+                logger.warning(f"Failed to create imagePullSecret for sandbox {sandbox_id}, rolling back BatchSandbox")
                 try:
                     self.k8s_client.delete_custom_object(
                         group=self.group,
@@ -258,7 +283,7 @@ class BatchSandboxProvider(WorkloadProvider):
                         grace_period_seconds=0,
                     )
                 except Exception as del_exc:
-                    logger.warning("Failed to rollback BatchSandbox %s: %s", sandbox_id, del_exc)
+                    logger.warning(f"Failed to rollback BatchSandbox {sandbox_id}: {del_exc}")
                 raise
 
         return {
@@ -502,7 +527,7 @@ class BatchSandboxProvider(WorkloadProvider):
         try:
             return datetime.fromisoformat(expire_time_str.replace('Z', '+00:00'))
         except (ValueError, TypeError) as e:
-            logger.warning("Invalid expireTime format: %s, error: %s", expire_time_str, e)
+            logger.warning(f"Invalid expireTime format: {expire_time_str}, error: {e}")
             return None
 
     def _parse_pod_ip(self, workload: Dict[str, Any]) -> Optional[str]:

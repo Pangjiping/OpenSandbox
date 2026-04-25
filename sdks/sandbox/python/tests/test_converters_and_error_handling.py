@@ -267,7 +267,7 @@ def test_platform_spec_rejects_windows_before_request_conversion() -> None:
         PlatformSpec(os="windows", arch="amd64")
 
 
-def test_sandbox_model_converter_omits_timeout_for_manual_cleanup() -> None:
+def test_sandbox_model_converter_preserves_null_timeout_for_manual_cleanup() -> None:
     req = SandboxModelConverter.to_api_create_sandbox_request(
         spec=SandboxImageSpec("python:3.11"),
         entrypoint=["/bin/sh"],
@@ -282,7 +282,7 @@ def test_sandbox_model_converter_omits_timeout_for_manual_cleanup() -> None:
     )
 
     dumped = req.to_dict()
-    assert "timeout" not in dumped
+    assert dumped["timeout"] is None
 
 
 def test_sandbox_model_converter_maps_platform_from_create_response() -> None:

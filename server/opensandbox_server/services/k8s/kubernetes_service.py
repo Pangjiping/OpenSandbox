@@ -316,14 +316,13 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
             except ApiException as e:
                 if e.status == 403:
                     logger.warning(
-                        "No RBAC permission to read PVC '%s', skipping auto-create. "
-                        "Grant 'get' and 'create' on 'persistentvolumeclaims' to enable.",
-                        claim_name,
+                        f"No RBAC permission to read PVC '{claim_name}', skipping auto-create. "
+                        "Grant 'get' and 'create' on 'persistentvolumeclaims' to enable."
                     )
                     return  # Skip all remaining PVCs — same SA, same permissions
                 raise
             if existing is not None:
-                logger.debug("PVC '%s' already exists in namespace '%s'", claim_name, self.namespace)
+                logger.debug(f"PVC '{claim_name}' already exists in namespace '{self.namespace}'")
                 continue
 
             storage = vol.pvc.storage or default_size
@@ -346,18 +345,17 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
             try:
                 self.k8s_client.create_pvc(self.namespace, pvc_body)
                 logger.info(
-                    "Auto-created PVC '%s' (size=%s, class=%s) in namespace '%s'",
-                    claim_name, storage, storage_class or "<default>", self.namespace,
+                    f"Auto-created PVC '{claim_name}' (size={storage}, class={storage_class or '<default>'}) "
+                    f"in namespace '{self.namespace}'"
                 )
             except ApiException as e:
                 if e.status == 409:
                     # Race condition: another request created it between our check and create
-                    logger.info("PVC '%s' was created concurrently, proceeding", claim_name)
+                    logger.info(f"PVC '{claim_name}' was created concurrently, proceeding")
                 elif e.status == 403:
                     logger.warning(
-                        "No RBAC permission to create PVC '%s', skipping. "
-                        "The PVC must be pre-created or RBAC must be updated.",
-                        claim_name,
+                        f"No RBAC permission to create PVC '{claim_name}', skipping. "
+                        "The PVC must be pre-created or RBAC must be updated."
                     )
                 elif e.status in (400, 422):
                     # Invalid PVC spec from user-provided hints
@@ -371,7 +369,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                         },
                     ) from e
                 else:
-                    logger.error("Failed to create PVC '%s': %s", claim_name, e)
+                    logger.error(f"Failed to create PVC '{claim_name}': {e}")
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                         detail={
@@ -423,7 +421,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
 
             ensure_volumes_valid(
                 request.volumes,
-                self.app_config.storage.allowed_host_paths or None,
+                self.app_config.storage.allowed_host_paths,
             )
             
 

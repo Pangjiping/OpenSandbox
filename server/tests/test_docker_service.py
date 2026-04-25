@@ -47,7 +47,12 @@ from opensandbox_server.services.constants import (
     SandboxErrorCodes,
 )
 from opensandbox_server.services.docker import DockerSandboxService, PendingSandbox
-from opensandbox_server.services.helpers import parse_memory_limit, parse_nano_cpus, parse_timestamp
+from opensandbox_server.services.helpers import (
+    parse_gpu_request,
+    parse_memory_limit,
+    parse_nano_cpus,
+    parse_timestamp,
+)
 from opensandbox_server.api.schema import (
     CreateSandboxRequest,
     CreateSandboxResponse,
@@ -82,6 +87,17 @@ def test_parse_nano_cpus():
     assert parse_nano_cpus("500m") == 500_000_000
     assert parse_nano_cpus("2") == 2_000_000_000
     assert parse_nano_cpus("bad") is None
+
+def test_parse_gpu_request():
+    assert parse_gpu_request("1") == 1
+    assert parse_gpu_request("4") == 4
+    assert parse_gpu_request("all") == -1
+    assert parse_gpu_request("ALL") == -1
+    assert parse_gpu_request(None) is None
+    assert parse_gpu_request("") is None
+    assert parse_gpu_request("0") is None
+    assert parse_gpu_request("-1") is None
+    assert parse_gpu_request("bad") is None
 
 def test_parse_timestamp_defaults_on_invalid():
     ts = parse_timestamp("0001-01-01T00:00:00Z")
@@ -155,6 +171,82 @@ async def test_create_sandbox_applies_security_defaults(mock_docker):
     assert "no-new-privileges:true" in host_config.get("security_opt", [])
     assert host_config.get("cap_drop") == service.app_config.docker.drop_capabilities
     assert host_config.get("pids_limit") == service.app_config.docker.pids_limit
+
+@pytest.mark.asyncio
+@patch("opensandbox_server.services.docker.docker")
+async def test_create_sandbox_passes_gpu_device_requests(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_client.api.create_container.return_value = {"Id": "cid"}
+    mock_client.containers.get.return_value = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={"gpu": "2"}),
+        env={},
+        metadata={},
+        entrypoint=["python"],
+    )
+
+    with (
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_prepare_sandbox_runtime"),
+        patch(
+            "opensandbox_server.services.docker.allocate_port_bindings",
+            return_value={
+                "44772": ("0.0.0.0", 40001),
+                "8080": ("0.0.0.0", 40002),
+            },
+        ),
+    ):
+        await service.create_sandbox(request)
+
+    create_host_config_kwargs = mock_client.api.create_host_config.call_args.kwargs
+    device_requests = create_host_config_kwargs.get("device_requests")
+    assert device_requests is not None
+    assert len(device_requests) == 1
+    # DeviceRequest is a dict subclass keyed with the Docker Engine's
+    # capitalized field names.
+    assert device_requests[0]["Count"] == 2
+    assert device_requests[0]["Capabilities"] == [["gpu"]]
+
+@pytest.mark.asyncio
+@patch("opensandbox_server.services.docker.docker")
+async def test_create_sandbox_without_gpu_omits_device_requests(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_client.api.create_container.return_value = {"Id": "cid"}
+    mock_client.containers.get.return_value = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        timeout=120,
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        metadata={},
+        entrypoint=["python"],
+    )
+
+    with (
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_prepare_sandbox_runtime"),
+        patch(
+            "opensandbox_server.services.docker.allocate_port_bindings",
+            return_value={
+                "44772": ("0.0.0.0", 40001),
+                "8080": ("0.0.0.0", 40002),
+            },
+        ),
+    ):
+        await service.create_sandbox(request)
+
+    create_host_config_kwargs = mock_client.api.create_host_config.call_args.kwargs
+    assert "device_requests" not in create_host_config_kwargs
 
 @pytest.mark.parametrize(
     "runtime_exc, expected_status, expect_wrapped_error",
@@ -962,6 +1054,54 @@ def test_egress_sidecar_host_config_sysctls_only_when_egress_disable_ipv6(mock_d
     hc2 = mock_client.api.create_host_config.call_args.kwargs
     assert hc2["sysctls"]["net.ipv6.conf.all.disable_ipv6"] == 1
 
+
+@patch("opensandbox_server.services.docker.docker")
+def test_egress_sidecar_normalizes_windows_port_bindings(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+
+    def host_cfg_side_effect(**kwargs):
+        return kwargs
+
+    sidecar_container = MagicMock()
+    mock_client.api.create_host_config.side_effect = host_cfg_side_effect
+    mock_client.api.create_container.return_value = {"Id": "sidecar-id"}
+    mock_client.containers.get.return_value = sidecar_container
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.docker.network_mode = "bridge"
+    cfg.egress = EgressConfig(image="egress:latest", disable_ipv6=False)
+    service = DockerSandboxService(config=cfg)
+
+    with (
+        patch.object(service, "_ensure_image_available"),
+        patch.object(service, "_docker_operation") as mock_op,
+    ):
+        mock_op.return_value.__enter__.return_value = None
+        mock_op.return_value.__exit__.return_value = None
+        service._start_egress_sidecar(
+            "sandbox-id",
+            NetworkPolicy(defaultAction="deny", egress=[]),
+            egress_token="egress-token",
+            host_execd_port=44772,
+            host_http_port=8080,
+            extra_port_bindings={
+                "3389/tcp": ("0.0.0.0", 53389),
+                "3389/udp": ("0.0.0.0", 53390),
+                "8006/tcp": ("0.0.0.0", 58006),
+            },
+        )
+
+    hc_kwargs = mock_client.api.create_host_config.call_args.kwargs
+    assert "3389" in hc_kwargs["port_bindings"]
+    assert "3389/udp" in hc_kwargs["port_bindings"]
+    assert "8006" in hc_kwargs["port_bindings"]
+    sidecar_kwargs = mock_client.api.create_container.call_args.kwargs
+    assert "3389" in sidecar_kwargs["ports"]
+    assert "3389/udp" in sidecar_kwargs["ports"]
+    assert "8006" in sidecar_kwargs["ports"]
+
 def test_expire_cleans_sidecar():
     service = DockerSandboxService(config=_app_config())
     mock_container = MagicMock()
@@ -1327,9 +1467,9 @@ async def test_create_sandbox_windows_profile_injects_runtime_defaults(mock_dock
     port_bindings = host_config_kwargs["port_bindings"]
     assert "44772" in port_bindings
     assert "8080" in port_bindings
-    assert "3389/tcp" in port_bindings
+    assert "3389" in port_bindings
     assert "3389/udp" in port_bindings
-    assert "8006/tcp" in port_bindings
+    assert "8006" in port_bindings
 
 
 @pytest.mark.asyncio
@@ -1495,6 +1635,86 @@ async def test_create_sandbox_windows_profile_accepts_dockur_demo_like_request(m
     assert response.platform is not None
     assert response.platform.os == "windows"
     assert response.platform.arch == "amd64"
+
+
+@pytest.mark.asyncio
+@patch("opensandbox_server.services.docker.docker")
+async def test_create_sandbox_windows_profile_with_network_policy_maps_windows_ports(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_docker.from_env.return_value = mock_client
+
+    cfg = _app_config()
+    cfg.runtime.execd_image = "ghcr.io/opensandbox/execd:v1.0.11"
+    cfg.docker.network_mode = "bridge"
+    cfg.egress = EgressConfig(image="opensandbox/egress:latest")
+    service = DockerSandboxService(config=cfg)
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="dockurr/windows:latest"),
+        resourceLimits=ResourceLimits(
+            root={
+                "cpu": "4",
+                "memory": "8G",
+                "disk": "64G",
+            }
+        ),
+        env={"VERSION": "11"},
+        entrypoint=["cmd", "/c", "echo ready"],
+        platform=PlatformSpec(os="windows", arch="amd64"),
+        networkPolicy=NetworkPolicy(default_action="deny", egress=[]),
+    )
+    created_container = MagicMock()
+    created_container.image.attrs = {"Os": "windows", "Architecture": "amd64"}
+    sidecar = MagicMock()
+    sidecar.id = "sidecar-123"
+
+    with (
+        patch(
+            "opensandbox_server.services.docker.validate_windows_runtime_prerequisites",
+            return_value=None,
+        ),
+        patch("opensandbox_server.services.docker.generate_egress_token", return_value="egress-token"),
+        patch(
+            "opensandbox_server.services.docker.allocate_port_bindings",
+            return_value={
+                "44772": ("0.0.0.0", 51664),
+                "8080": ("0.0.0.0", 48891),
+                "3389/tcp": ("0.0.0.0", 53389),
+                "3389/udp": ("0.0.0.0", 53390),
+                "8006/tcp": ("0.0.0.0", 58006),
+            },
+        ),
+        patch.object(service, "_start_egress_sidecar", return_value=sidecar) as mock_start_sidecar,
+        patch.object(
+            service,
+            "_create_and_start_container",
+            return_value=created_container,
+        ) as mock_create,
+    ):
+        await service.create_sandbox(request)
+
+    _, start_kwargs = mock_start_sidecar.call_args
+    assert start_kwargs["host_execd_port"] == 51664
+    assert start_kwargs["host_http_port"] == 48891
+    assert start_kwargs["extra_port_bindings"] == {
+        "3389/tcp": ("0.0.0.0", 53389),
+        "3389/udp": ("0.0.0.0", 53390),
+        "8006/tcp": ("0.0.0.0", 58006),
+    }
+
+    forwarded_env = mock_create.call_args.args[4]
+    host_config_kwargs = mock_create.call_args.args[5]
+    forwarded_ports = mock_create.call_args.args[6]
+    labels = mock_create.call_args.args[3]
+
+    assert "USER_PORTS=44772,8080,3389,8006" in forwarded_env
+    assert host_config_kwargs["network_mode"] == "container:sidecar-123"
+    assert "NET_ADMIN" in set(host_config_kwargs.get("cap_add") or [])
+    assert "NET_ADMIN" not in set(host_config_kwargs.get("cap_drop") or [])
+    assert forwarded_ports is None
+    assert labels["opensandbox.io/embedding-proxy-port"] == "51664"
+    assert labels["opensandbox.io/http-port"] == "48891"
+
 
 def test_restore_existing_sandboxes_ignores_manual_cleanup_without_warning():
     service = DockerSandboxService(config=_app_config())
@@ -2737,7 +2957,11 @@ class TestDockerVolumeValidation:
         mock_client.containers.list.return_value = []
         mock_docker.from_env.return_value = mock_client
 
-        service = DockerSandboxService(config=_app_config())
+        cfg = _app_config()
+        cfg.storage = StorageConfig(
+            allowed_host_paths=["/nonexistent/path/that/does/not/exist"]
+        )
+        service = DockerSandboxService(config=cfg)
 
         request = CreateSandboxRequest(
             image=ImageSpec(uri="python:3.11"),
@@ -2836,11 +3060,12 @@ class TestDockerVolumeValidation:
         mock_client.containers.get.return_value = MagicMock()
         mock_docker.from_env.return_value = mock_client
 
-        service = DockerSandboxService(config=_app_config())
-
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _app_config()
+            cfg.storage = StorageConfig(allowed_host_paths=[tmpdir])
+            service = DockerSandboxService(config=cfg)
             request = CreateSandboxRequest(
                 image=ImageSpec(uri="python:3.11"),
                 timeout=120,
@@ -2881,11 +3106,12 @@ class TestDockerVolumeValidation:
         mock_client.containers.get.return_value = MagicMock()
         mock_docker.from_env.return_value = mock_client
 
-        service = DockerSandboxService(config=_app_config())
-
         import tempfile
 
         with tempfile.NamedTemporaryFile(suffix=".iso") as iso_file:
+            cfg = _app_config()
+            cfg.storage = StorageConfig(allowed_host_paths=[iso_file.name])
+            service = DockerSandboxService(config=cfg)
             request = CreateSandboxRequest(
                 image=ImageSpec(uri="python:3.11"),
                 timeout=120,
@@ -2924,11 +3150,12 @@ class TestDockerVolumeValidation:
         mock_client.containers.get.return_value = MagicMock()
         mock_docker.from_env.return_value = mock_client
 
-        service = DockerSandboxService(config=_app_config())
-
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _app_config()
+            cfg.storage = StorageConfig(allowed_host_paths=[tmpdir])
+            service = DockerSandboxService(config=cfg)
             # Create the subPath directory
             sub_dir = os.path.join(tmpdir, "task-001")
             os.makedirs(sub_dir)
@@ -2972,11 +3199,12 @@ class TestDockerVolumeValidation:
         mock_client.containers.get.return_value = MagicMock()
         mock_docker.from_env.return_value = mock_client
 
-        service = DockerSandboxService(config=_app_config())
-
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _app_config()
+            cfg.storage = StorageConfig(allowed_host_paths=[tmpdir])
+            service = DockerSandboxService(config=cfg)
             sub = "auto-created-sub"
             request = CreateSandboxRequest(
                 image=ImageSpec(uri="python:3.11"),
@@ -3018,8 +3246,8 @@ class TestDockerVolumeValidation:
             assert os.path.isdir(resolved)
 
     @pytest.mark.asyncio
-    async def test_empty_allowlist_permits_any_host_path(self, mock_docker):
-        """Empty allowed_host_paths (default) should permit any valid host path."""
+    async def test_empty_allowlist_rejects_host_path(self, mock_docker):
+        """Empty allowed_host_paths (default) should reject host bind mounts."""
         mock_client = MagicMock()
         mock_client.containers.list.return_value = []
         mock_client.api.create_host_config.return_value = {}
@@ -3056,9 +3284,10 @@ class TestDockerVolumeValidation:
                 patch.object(service, "_ensure_image_available"),
                 patch.object(service, "_prepare_sandbox_runtime"),
             ):
-                response = await service.create_sandbox(request)
-
-            assert response.status.state == "Running"
+                with pytest.raises(HTTPException) as exc_info:
+                    await service.create_sandbox(request)
+            assert exc_info.value.status_code == 400
+            assert exc_info.value.detail["code"] == SandboxErrorCodes.HOST_PATH_NOT_ALLOWED
 
     @pytest.mark.asyncio
     async def test_no_volumes_omits_binds_from_host_config(self, mock_docker):

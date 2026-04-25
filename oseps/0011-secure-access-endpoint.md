@@ -18,8 +18,8 @@ Optional `secure_access` on sandbox create. There are **two** complementary mech
    Ingress evaluates this header **before** route-signature verification, with **fail-fast** semantics when the header field is **present** but wrong (see § *Ingress verification*).
 
 2. **Route `signature` (short route token)** — a **9-character** value embedded in host / header / path: **`hex8`** (8 lowercase hex) + **`signed_key_id`** (**exactly 1** char **`[0-9a-z]`**).  
-   **Every signed route also carries an `expires` value:** Unix epoch seconds as **`uint64`**, encoded for routing and signing as **`expires_b36`**: **base-36** using **lowercase** digits **`0-9`** and letters **`a-z`**, **no leading zeros** (except **`expires_sec == 0`** is **`0`**). Equivalently (Go): **`strconv.FormatUint(expires_sec, 36)`** / **`strconv.ParseUint(s, 36, 64)`**. It appears in **`canonical_bytes`** and as its **own** `-`-delimited segment: **`{sandbox_id}-{port}-{expires_b36}-{signature}`**.  
-   **Minting** always requires an **`expires`** input (see API). Ingress enforces **`now ≤ expires_seconds`** after decoding.
+   **Every signed route also carries an `expires` value:** **Linux / Unix epoch seconds** (POSIX: whole seconds since `1970-01-01 00:00:00` UTC, same as `time(2)`; **not** milliseconds) as **`uint64`**, encoded for routing and signing as **`expires_b36`**: **base-36** using **lowercase** digits **`0-9`** and letters **`a-z`**, **no leading zeros** (except **`expires_sec == 0`** is **`0`**). Equivalently (Go): **`strconv.FormatUint(expires_sec, 36)`** / **`strconv.ParseUint(s, 36, 64)`**. It appears in **`canonical_bytes`** and as its **own** `-`-delimited segment: **`{sandbox_id}-{port}-{expires_b36}-{signature}`**.  
+   **Minting** uses the same **`GetEndpoint`** path with an **`expires`** query (see API) — the value is **Linux / Unix epoch seconds**. Ingress enforces **`now ≤ expires_seconds`** after decoding.
 
 There is **no** signing of app path or query, and **no** DNS parent domain in the signed material. The wildcard parent domain is **routing-only**.
 
@@ -41,7 +41,7 @@ OpenSandbox-Secure-Access: <token>
 
 ## `expires_b36` encoding
 
-Let **`expires_sec`** be **`uint64`** Unix epoch seconds (UTC).
+Let **`expires_sec`** be **`uint64`** **Linux / Unix epoch seconds** (UTC): whole seconds since the Unix epoch, not milliseconds.
 
 **`expires_b36`** is the **base-36** encoding of **`expires_sec`** using **lowercase** alphabet **`0-9a-z`**, with **no leading zeros**, except **`expires_sec == 0`** is encoded as **`0`**. Normative reference (Go): **`strconv.FormatUint(expires_sec, 36)`** for minting and **`strconv.ParseUint(segment, 36, 64)`** for ingress.
 
@@ -99,13 +99,14 @@ signature = hex8 + signed_key_id       // 9 chars total
 ## API
 
 - **CreateSandbox:** `secure_access.enabled` (default `false`).
-- **`GetEndpoint(sandboxId)`:** when secure access is on, includes **`SecureAccessToken`** for **`OpenSandbox-Secure-Access`**.
-- **Mint signed URL / host token (all require expiry input):**
-  - **`GET /sandboxes/{sandboxId}/endpoints/secure/{port}?expires=<unix_seconds>`** (and/or **`GetSignedEndpoint`** with the same query).  
-  - **`expires`** query is a **decimal `uint64`** Unix second (human-friendly). The server **normalizes** to **`expires_b36`** (rules above) for both **`canonical_bytes`** and the returned routing token.  
-  - Missing **`expires`** on mint → **`400`**.
+- **`GetEndpoint` — `GET /sandboxes/{sandboxId}/endpoints/{port}`**
+  - **Without** query **`expires`:** returns the public URL; when secure access is on, the response also carries **`SecureAccessToken`** (and clients use **`OPENSANDBOX-SECURE-ACCESS`**) as in § *Static access token*.
+  - **With** query **`expires=<unix_seconds>`:** **mints** a signed route.
+    - **`expires`** is a **decimal `uint64`** **Linux / Unix epoch second** (whole seconds since `1970-01-01 00:00:00` UTC; **not** milliseconds). The server **normalizes** to **`expires_b36`** (rules above) for both **`canonical_bytes`** and the returned routing token in the JSON.
+    - **Omitting** **`expires`** does **not** invoke minting (unsigned / legacy response); it is **not** a **`400`** by itself.  
+    - If **`expires`** is **present** but **empty, malformed, or out of range** → **`400`**.
 
-Returned signed routing material always uses **`{sandbox_id}-{port}-{expires_b36}-{signature}`**.
+Returned **signed** routing material always uses **`{sandbox_id}-{port}-{expires_b36}-{signature}`** (then wrapped into host / path / header as usual).
 
 ## Gateway routing
 
@@ -174,10 +175,10 @@ opensandbox-ingress --secure-access-enabled \
 
 ## Errors
 
-- **`400`:** missing **`expires`** on mint, malformed token, invalid **`expires_b36`** (empty / bad charset / length **> 13** / parse overflow), bad **`port`** / **`signature`**.
+- **`400`:** **`expires`** query **present but invalid** (empty, bad decimal, etc.), malformed token, invalid **`expires_b36`** after normalization (empty / bad charset / length **> 13** / parse overflow), bad **`port`** / **`signature`**. **Not** “**`expires`** omitted” on a normal `GetEndpoint` (that case returns the unsigned response).
 - **`401`:** header mismatch, **`now > expires_sec`**, bad **`hex8`**, unknown key, missing credential when required.
 
 ## Tests
 
 - Unit: `inner` / `hex8`, four-part right split with `-` in **`sandbox_id`**, **`expires_b36`** canonicalization (no leading zeros, **`0`** case, round-trip **`ParseUint(..., 36, 64)`**).
-- Integration: three modes; invalid **`expires_b36`** → **`400`**; past expiry → **`401`**; mint without **`expires`** → **`400`**.
+- Integration: three modes; invalid **`expires_b36`** / bad **`expires`** query → **`400`**; past expiry → **`401`**; **`expires`** **omitted** (unsigned path) does **not** require **`400`**; **`expires` present and invalid** → **`400`**.
