@@ -119,8 +119,8 @@ type policyServer struct {
 	token           string
 	enforcementMode string
 	nameserverIPs   []netip.Addr
-	policyFile      string  // if set, successful /policy changes persist (truncate+write+fsync)
-	maxEgressRules  int     // 0 = unlimited; cap len(Egress) for POST/PATCH
+	policyFile      string     // if set, successful /policy changes persist (truncate+write+fsync)
+	maxEgressRules  int        // 0 = unlimited; cap len(Egress) for POST/PATCH
 	mu              sync.Mutex // serializes /policy handlers (no lost update across POST vs PATCH)
 
 	alwaysLoader     *policy.AlwaysRuleLoader

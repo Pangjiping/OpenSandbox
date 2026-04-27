@@ -3,8 +3,8 @@ title: Secure Access on GetEndpoint and Signed Endpoint
 authors:
   - "@Pangjiping"
 creation-date: 2026-04-19
-last-updated: 2026-04-21
-status: implementing
+last-updated: 2026-04-25
+status: implemented
 ---
 
 # OSEP-0011: Secure Access on GetEndpoint and Signed Endpoint
@@ -14,7 +14,7 @@ status: implementing
 Optional `secure_access` on sandbox create. There are **two** complementary mechanisms:
 
 1. **Static header authorization (from `GetEndpoint`)** — when `secure_access` is enabled, **`GetEndpoint`** returns a stable opaque **`SecureAccessToken`**. Clients attach it to **all subsequent requests** as  
-   **`OPENSANDBOX-SECURE-ACCESS: <token>`**  
+   **`OpenSandbox-Secure-Access: <token>`**  
    Ingress evaluates this header **before** route-signature verification, with **fail-fast** semantics when the header field is **present** but wrong (see § *Ingress verification*).
 
 2. **Route `signature` (short route token)** — a **9-character** value embedded in host / header / path: **`hex8`** (8 lowercase hex) + **`signed_key_id`** (**exactly 1** char **`[0-9a-z]`**).  
@@ -30,10 +30,10 @@ When the sandbox has **`secure_access` enabled**, **`GetEndpoint(sandboxId)`** (
 **Client rule:** for **every** follow-up request through the gateway:
 
 ```http
-OPENSANDBOX-SECURE-ACCESS: <token>
+OpenSandbox-Secure-Access: <token>
 ```
 
-**Ingress rule (secure sandbox):** define **header present** as: the **`OPENSANDBOX-SECURE-ACCESS`** field appears on the HTTP request (any value, including empty). Then:
+**Ingress rule (secure sandbox):** define **header present** as: the **`OpenSandbox-Secure-Access`** field appears on the HTTP request (any value, including empty). Then:
 
 - If **present** and the value **matches** **`SecureAccessToken`** (constant-time compare) → **allow**; route-signature verification is **not** required.  
 - If **present** and the value **does not match** → **`401` immediately**; ingress **must not** fall through to route-signature verification (prevents “bad/stale header + valid signed URL” from being accepted).  
@@ -144,7 +144,7 @@ Strip the signed prefix **only** on the secure path; forward path + query unchan
 2. **`GetEndpoint(sandbox_id)`** once: secure-access flag, **`SecureAccessToken`**, and backend endpoint.
 3. **URI mode + secure access not required:** **re-parse the full path using legacy URI rules** for **`sandbox_id`**, **`port`**, and upstream **`requestURI`** (§ *URI parsing* / unsecured safeguard). **Do not** strip **`expires_b36`** / **`signature`**-shaped segments from the forwarded path.
 4. **Secure access required** (final signed interpretation for URI / host / header):
-   - **Header branch:** if **`OPENSANDBOX-SECURE-ACCESS`** is **present** (see § *Static access token*): **match** → **allow**; **mismatch** → **`401`** (no route-signature fallback).
+   - **Header branch:** if **`OpenSandbox-Secure-Access`** is **present** (see § *Static access token*): **match** → **allow**; **mismatch** → **`401`** (no route-signature fallback).
    - **Signature branch:** if the header is **absent** and a signed route token is present: decode **`expires_sec`** from **`expires_b36`**, require **`now ≤ expires_sec`**, rebuild **`canonical_bytes`** with the **same** **`expires_b36`**, verify **`signature`** → **`401`** on failure; if no signed credential → **`401`**.
 5. **Secure access not required** (URI after step 3 legacy re-parse, or unsigned host/header shapes): **allow** without route-signature verification.
 

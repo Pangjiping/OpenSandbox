@@ -24,9 +24,9 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 )
 
-func transparentHTTPRules(localPort, mitmUID int, op string) [][]string {
+func transparentHTTPRules(localPort int, mitmUID uint32, op string) [][]string {
 	target := strconv.Itoa(localPort)
-	uid := strconv.Itoa(mitmUID)
+	uid := strconv.FormatUint(uint64(mitmUID), 10)
 	loopRules := [][]string{
 		{"iptables", "-t", "nat", op, "OUTPUT", "-p", "tcp", "-d", "127.0.0.0/8", "-j", "RETURN"},
 	}
@@ -42,16 +42,16 @@ func transparentHTTPRules(localPort, mitmUID int, op string) [][]string {
 }
 
 // SetupTransparentHTTP: non-mitm UIDs get OUTPUT tcp:80,443 → localPort; loopback and mitm’s traffic excluded.
-func SetupTransparentHTTP(localPort, mitmUID int) error {
+func SetupTransparentHTTP(localPort int, mitmUID uint32) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("iptables transparent: only supported on linux")
 	}
 
-	if localPort <= 0 || mitmUID < 0 {
+	if localPort <= 0 {
 		return fmt.Errorf("iptables transparent: invalid port or uid")
 	}
 	target := strconv.Itoa(localPort)
-	uid := strconv.Itoa(mitmUID)
+	uid := strconv.FormatUint(uint64(mitmUID), 10)
 	log.Infof("installing iptables transparent: OUTPUT tcp dport 80,443 -> 127.0.0.1:%s (skip uid %s)", target, uid)
 
 	rules := transparentHTTPRules(localPort, mitmUID, "-A")
@@ -64,11 +64,11 @@ func SetupTransparentHTTP(localPort, mitmUID int) error {
 	return nil
 }
 
-func RemoveTransparentHTTP(localPort, mitmUID int) {
+func RemoveTransparentHTTP(localPort int, mitmUID uint32) {
 	if runtime.GOOS != "linux" {
 		return
 	}
-	if localPort <= 0 || mitmUID < 0 {
+	if localPort <= 0 {
 		return
 	}
 	rules := transparentHTTPRules(localPort, mitmUID, "-D")

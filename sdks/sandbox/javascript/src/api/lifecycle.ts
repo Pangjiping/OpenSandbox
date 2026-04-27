@@ -397,6 +397,8 @@ export interface paths {
                 query?: {
                     /** @description Whether to return a server-proxied URL */
                     use_server_proxy?: boolean;
+                    /** @description Unix epoch seconds for a signed route token (OSEP-0011) */
+                    expires?: number;
                 };
                 header?: never;
                 path: {

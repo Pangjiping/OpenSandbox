@@ -39,7 +39,7 @@ import org.junit.jupiter.api.Timeout;
 @Tag("e2e")
 @DisplayName("Sandbox secured access E2E Tests (Java SDK)")
 public class SandboxSecureAccessE2ETest extends BaseE2ETest {
-    private static final String SECURE_ACCESS_HEADER = "OPENSANDBOX-SECURE-ACCESS";
+    private static final String SECURE_ACCESS_HEADER = "OpenSandbox-Secure-Access";
     private static final String SECURE_ACCESS_VERIFIABLE_ENV =
             "OPENSANDBOX_TEST_SECURE_ACCESS_VERIFIABLE";
 

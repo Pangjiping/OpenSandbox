@@ -29,7 +29,7 @@ import (
 type mitmTransparent struct {
 	running *mitmproxy.Running
 	port    int
-	uid     int
+	uid     uint32
 }
 
 // startMitmproxyTransparentIfEnabled starts mitmdump in transparent mode, waits for the listener, and installs OUTPUT REDIRECT, then syncs the CA.

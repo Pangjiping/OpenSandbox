@@ -225,6 +225,10 @@ class BatchSandboxProvider(WorkloadProvider):
         spec: Dict[str, Any] = {
             "replicas": 1,
             "template": {
+                "metadata": {
+                    "labels": labels,
+                    "annotations": annotations or {},
+                },
                 "spec": pod_spec,
             },
         }

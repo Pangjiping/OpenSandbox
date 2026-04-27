@@ -2060,7 +2060,8 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
 
         return RenewSandboxExpirationResponse(expires_at=new_expiration)
 
-    def get_endpoint(self, sandbox_id: str, port: int, resolve_internal: bool = False) -> Endpoint:
+    def get_endpoint(self, sandbox_id: str, port: int, resolve_internal: bool = False,
+                     expires: Optional[int] = None) -> Endpoint:
         """
         Get sandbox access endpoint.
 
@@ -2068,13 +2069,27 @@ class DockerSandboxService(DockerDiagnosticsMixin, OSSFSMixin, SandboxService, E
             sandbox_id: Unique sandbox identifier
             port: Port number where the service is listening inside the sandbox
             resolve_internal: If True, return the internal container IP (for proxy), ignoring router config.
+            expires: Not supported by Docker runtime.
 
         Returns:
             Endpoint: Public endpoint URL
 
         Raises:
-            HTTPException: If sandbox not found or endpoint not available
+            HTTPException: If sandbox not found, endpoint not available,
+                or expires is provided (Docker does not support signed routes).
         """
+        if expires is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": SandboxErrorCodes.API_NOT_SUPPORTED,
+                    "message": (
+                        "Signed routes (expires parameter) are not supported when "
+                        "runtime.type='docker'. Use the Kubernetes runtime for signed routes."
+                    ),
+                },
+            )
+
         try:
             self.validate_port(port)
         except ValueError as exc:

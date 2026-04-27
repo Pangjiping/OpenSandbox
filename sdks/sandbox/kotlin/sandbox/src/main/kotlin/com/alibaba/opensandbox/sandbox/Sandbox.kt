@@ -420,6 +420,20 @@ class Sandbox internal constructor(
     }
 
     /**
+     * Gets a signed endpoint for a service port with an OSEP-0011 route token.
+     *
+     * @param port The port number to get the endpoint for
+     * @param expires Unix epoch seconds for the signed route token expiry
+     * @return Signed endpoint information
+     */
+    fun getSignedEndpoint(
+        port: Int,
+        expires: Long,
+    ): SandboxEndpoint {
+        return sandboxService.getSignedSandboxEndpoint(id, port, expires, httpClientProvider.config.useServerProxy)
+    }
+
+    /**
      * Gets the current status of this sandbox.
      *
      * @return Current sandbox status including state and metadata
