@@ -21,6 +21,7 @@ For detailed development setup, architecture deep-dive, coding standards, testin
 - `test/e2e_task/`: task-executor e2e tests
 - `test/e2e_runtime/`: runtime-class e2e tests (gVisor)
 - `docs/`: design documents and troubleshooting guides
+- `docs/proposals/`: design proposals for new features and significant changes (see [template](./docs/proposals/YYYYMMDD-template.md))
 
 If the task changes CRD schemas in `apis/`, also run `make manifests` and `make generate` to keep CRD YAML and DeepCopy methods in sync.
 
