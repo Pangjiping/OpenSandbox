@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -52,7 +53,7 @@ public class SnapshotE2ETest extends BaseE2ETest {
     @DisplayName("snapshot create, poll, list, restore, and delete")
     @Timeout(value = 10, unit = TimeUnit.MINUTES)
     void testSnapshotLifecycleEndToEnd() throws InterruptedException {
-        return; // skip snapshot e2e test
+        Assumptions.assumeTrue(false, "skip snapshot e2e test");
 
         SandboxManager manager =
                 SandboxManager.builder().connectionConfig(sharedConnectionConfig).build();

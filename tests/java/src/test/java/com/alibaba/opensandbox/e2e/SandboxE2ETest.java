@@ -1477,7 +1477,7 @@ public class SandboxE2ETest extends BaseE2ETest {
     @DisplayName("Sandbox Pause Operation")
     @Timeout(value = 5, unit = TimeUnit.MINUTES)
     void testSandboxPause() throws InterruptedException {
-        return; // skip pause/resume e2e test
+        Assumptions.assumeTrue(false, "skip pause/resume e2e test");
 
         assertNotNull(sandbox);
 
@@ -1518,7 +1518,7 @@ public class SandboxE2ETest extends BaseE2ETest {
     @DisplayName("Sandbox Resume Operation")
     @Timeout(value = 3, unit = TimeUnit.MINUTES)
     void testSandboxResume() throws InterruptedException {
-        return; // skip pause/resume e2e test
+        Assumptions.assumeTrue(false, "skip pause/resume e2e test");
 
         assertNotNull(sandbox);
 
