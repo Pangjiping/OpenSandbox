@@ -66,7 +66,7 @@ public class SandboxE2ETest extends BaseE2ETest {
                         .metadata(metadataMap)
                         .env("E2E_TEST", "true")
                         .env("EXECD_API_GRACE_SHUTDOWN", "3s")
-                        .env("EXECD_JUPYTER_IDLE_POLL_INTERVAL", "1s")
+                        .env("EXECD_JUPYTER_IDLE_POLL_INTERVAL", "200ms")
                         .healthCheckPollingInterval(Duration.ofMillis(500))
                         .build();
     }
