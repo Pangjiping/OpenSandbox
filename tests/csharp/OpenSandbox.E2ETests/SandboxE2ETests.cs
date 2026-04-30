@@ -1096,6 +1096,20 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
             await Task.Delay(1000);
         }
     }
+
+    private static async Task<Execution> RunWithRetryAsync(Sandbox sandbox, string command, int maxAttempts = 5, int delayMs = 500)
+    {
+        Execution? result = null;
+        for (int attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            result = await sandbox.Commands.RunAsync(command);
+            if (result.Error == null && result.Logs.Stdout.Count > 0)
+                return result;
+            if (attempt < maxAttempts - 1)
+                await Task.Delay(delayMs);
+        }
+        return result!;
+    }
 }
 
 public sealed class SandboxE2ETestFixture : IAsyncLifetime
@@ -1140,19 +1154,5 @@ public sealed class SandboxE2ETestFixture : IAsyncLifetime
         }
 
         await _sandbox.DisposeAsync();
-    }
-
-    private static async Task<Execution> RunWithRetryAsync(Sandbox sandbox, string command, int maxAttempts = 5, int delayMs = 500)
-    {
-        Execution? result = null;
-        for (int attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            result = await sandbox.Commands.RunAsync(command);
-            if (result.Error == null && result.Logs.Stdout.Count > 0)
-                return result;
-            if (attempt < maxAttempts - 1)
-                await Task.Delay(delayMs);
-        }
-        return result!;
     }
 }
