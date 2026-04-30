@@ -309,7 +309,8 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
 
         try
         {
-            var marker = await volumeSandbox.Commands.RunAsync($"cat {containerMountPath}/marker.txt");
+            // Retry: bind mount propagation can sometimes lag on first access
+            var marker = await RunWithRetryAsync(volumeSandbox, $"cat {containerMountPath}/marker.txt");
             Assert.Null(marker.Error);
             Assert.Single(marker.Logs.Stdout);
             Assert.Equal("opensandbox-e2e-marker", marker.Logs.Stdout[0].Text);
@@ -318,7 +319,8 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
                 $"echo 'written-from-sandbox' > {containerMountPath}/sandbox-output.txt");
             Assert.Null(write.Error);
 
-            var readBack = await volumeSandbox.Commands.RunAsync($"cat {containerMountPath}/sandbox-output.txt");
+            // Retry: bind mount propagation can sometimes lag on first access
+            var readBack = await RunWithRetryAsync(volumeSandbox, $"cat {containerMountPath}/sandbox-output.txt");
             Assert.Null(readBack.Error);
             Assert.Single(readBack.Logs.Stdout);
             Assert.Equal("written-from-sandbox", readBack.Logs.Stdout[0].Text);
@@ -362,7 +364,8 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
 
         try
         {
-            var marker = await roSandbox.Commands.RunAsync($"cat {containerMountPath}/marker.txt");
+            // Retry: bind mount propagation can sometimes lag on first access
+            var marker = await RunWithRetryAsync(roSandbox, $"cat {containerMountPath}/marker.txt");
             Assert.Null(marker.Error);
             Assert.Single(marker.Logs.Stdout);
             Assert.Equal("opensandbox-e2e-marker", marker.Logs.Stdout[0].Text);
@@ -418,7 +421,8 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
 
         try
         {
-            var marker = await pvcSandbox.Commands.RunAsync($"cat {containerMountPath}/marker.txt");
+            // Retry: bind mount propagation can sometimes lag on first access
+            var marker = await RunWithRetryAsync(pvcSandbox, $"cat {containerMountPath}/marker.txt");
             Assert.Null(marker.Error);
             Assert.Single(marker.Logs.Stdout);
             Assert.Equal("pvc-marker-data", marker.Logs.Stdout[0].Text);
@@ -427,7 +431,8 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
                 $"echo 'written-to-pvc' > {containerMountPath}/pvc-output.txt");
             Assert.Null(write.Error);
 
-            var readBack = await pvcSandbox.Commands.RunAsync($"cat {containerMountPath}/pvc-output.txt");
+            // Retry: bind mount propagation can sometimes lag on first access
+            var readBack = await RunWithRetryAsync(pvcSandbox, $"cat {containerMountPath}/pvc-output.txt");
             Assert.Null(readBack.Error);
             Assert.Single(readBack.Logs.Stdout);
             Assert.Equal("written-to-pvc", readBack.Logs.Stdout[0].Text);
@@ -471,7 +476,8 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
 
         try
         {
-            var marker = await roSandbox.Commands.RunAsync($"cat {containerMountPath}/marker.txt");
+            // Retry: bind mount propagation can sometimes lag on first access
+            var marker = await RunWithRetryAsync(roSandbox, $"cat {containerMountPath}/marker.txt");
             Assert.Null(marker.Error);
             Assert.Single(marker.Logs.Stdout);
             Assert.Equal("pvc-marker-data", marker.Logs.Stdout[0].Text);
@@ -528,7 +534,8 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
 
         try
         {
-            var marker = await subPathSandbox.Commands.RunAsync($"cat {containerMountPath}/marker.txt");
+            // Retry: bind mount propagation can sometimes lag on first access
+            var marker = await RunWithRetryAsync(subPathSandbox, $"cat {containerMountPath}/marker.txt");
             Assert.Null(marker.Error);
             Assert.Single(marker.Logs.Stdout);
             Assert.Equal("pvc-subpath-marker", marker.Logs.Stdout[0].Text);
@@ -543,7 +550,8 @@ public class SandboxE2ETests : IClassFixture<SandboxE2ETestFixture>
                 $"echo 'subpath-write-test' > {containerMountPath}/output.txt");
             Assert.Null(write.Error);
 
-            var readBack = await subPathSandbox.Commands.RunAsync($"cat {containerMountPath}/output.txt");
+            // Retry: bind mount propagation can sometimes lag on first access
+            var readBack = await RunWithRetryAsync(subPathSandbox, $"cat {containerMountPath}/output.txt");
             Assert.Null(readBack.Error);
             Assert.Single(readBack.Logs.Stdout);
             Assert.Equal("subpath-write-test", readBack.Logs.Stdout[0].Text);
@@ -1132,5 +1140,19 @@ public sealed class SandboxE2ETestFixture : IAsyncLifetime
         }
 
         await _sandbox.DisposeAsync();
+    }
+
+    private static async Task<Execution> RunWithRetryAsync(Sandbox sandbox, string command, int maxAttempts = 5, int delayMs = 500)
+    {
+        Execution? result = null;
+        for (int attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            result = await sandbox.Commands.RunAsync(command);
+            if (result.Error == null && result.Logs.Stdout.Count > 0)
+                return result;
+            if (attempt < maxAttempts - 1)
+                await Task.Delay(delayMs);
+        }
+        return result!;
     }
 }

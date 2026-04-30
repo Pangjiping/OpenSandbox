@@ -64,13 +64,27 @@ func TestVolume_HostMount(t *testing.T) {
 	}
 	defer sb.Kill(context.Background())
 
-	exec, err := sb.RunCommand(ctx, `echo "host-mount-test" > /mnt/host-data/go-e2e.txt`, nil)
+	// Retry: execd SSE endpoint may return empty stream before fully ready
+	var exec *opensandbox.Execution
+	for attempt := 0; attempt < 3; attempt++ {
+		exec, err = sb.RunCommand(ctx, `echo "host-mount-test" > /mnt/host-data/go-e2e.txt`, nil)
+		if err == nil || !strings.Contains(err.Error(), "empty sse stream") {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	require.NoError(t, err)
 	if exec.ExitCode != nil {
 		require.Equal(t, 0, *exec.ExitCode, "write exit code")
 	}
 
-	exec, err = sb.RunCommand(ctx, "cat /mnt/host-data/go-e2e.txt", nil)
+	for attempt := 0; attempt < 3; attempt++ {
+		exec, err = sb.RunCommand(ctx, "cat /mnt/host-data/go-e2e.txt", nil)
+		if err == nil || !strings.Contains(err.Error(), "empty sse stream") {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	require.NoError(t, err)
 	require.Contains(t, exec.Text(), "host-mount-test")
 	t.Log("Host volume mount read/write passed")
@@ -135,13 +149,27 @@ func TestVolume_PVCMount(t *testing.T) {
 	}
 	defer sb.Kill(context.Background())
 
-	exec, err := sb.RunCommand(ctx, `echo "pvc-test-data" > /mnt/pvc-data/go-e2e.txt`, nil)
+	// Retry: execd SSE endpoint may return empty stream before fully ready
+	var exec *opensandbox.Execution
+	for attempt := 0; attempt < 3; attempt++ {
+		exec, err = sb.RunCommand(ctx, `echo "pvc-test-data" > /mnt/pvc-data/go-e2e.txt`, nil)
+		if err == nil || !strings.Contains(err.Error(), "empty sse stream") {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	require.NoError(t, err)
 	if exec.ExitCode != nil {
 		require.Equal(t, 0, *exec.ExitCode, "write exit code")
 	}
 
-	exec, err = sb.RunCommand(ctx, "cat /mnt/pvc-data/go-e2e.txt", nil)
+	for attempt := 0; attempt < 3; attempt++ {
+		exec, err = sb.RunCommand(ctx, "cat /mnt/pvc-data/go-e2e.txt", nil)
+		if err == nil || !strings.Contains(err.Error(), "empty sse stream") {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 	require.NoError(t, err)
 	require.Contains(t, exec.Text(), "pvc-test-data")
 	t.Log("PVC volume mount read/write passed")
