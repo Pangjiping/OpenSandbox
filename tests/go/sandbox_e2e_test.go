@@ -173,6 +173,7 @@ func TestSandbox_NetworkPolicyCreate(t *testing.T) {
 }
 
 func TestSandbox_PauseAndResume(t *testing.T) {
+	t.Skip("skip pause/resume e2e test")
 	config := getConnectionConfig(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

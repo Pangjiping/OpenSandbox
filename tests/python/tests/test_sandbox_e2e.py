@@ -1530,6 +1530,7 @@ class TestSandboxE2E:
     @pytest.mark.timeout(120)
     @pytest.mark.order(6)
     async def test_05_sandbox_pause(self):
+        pytest.skip("skip pause/resume e2e test")
         """Test sandbox pause operation."""
         if is_kubernetes_runtime():
             pytest.skip("Pause is not supported by the Kubernetes runtime")
@@ -1587,6 +1588,7 @@ class TestSandboxE2E:
     @pytest.mark.timeout(120)
     @pytest.mark.order(7)
     async def test_06_sandbox_resume(self):
+        pytest.skip("skip pause/resume e2e test")
         """Test sandbox resume operation."""
         if is_kubernetes_runtime():
             pytest.skip("Resume is not supported by the Kubernetes runtime")

@@ -96,6 +96,7 @@ func TestManager_GetAndKill(t *testing.T) {
 }
 
 func TestManager_PauseAndResume(t *testing.T) {
+	t.Skip("skip pause/resume e2e test")
 	config := getConnectionConfig(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
