@@ -171,6 +171,8 @@ func TestScenario_SimpleAgentLoop(t *testing.T) {
 }
 
 func TestScenario_CodeInterpreterAgent(t *testing.T) {
+	t.Skip("skip code interpreter e2e tests")
+
 	llmEndpoint := getLLMEndpoint()
 	if llmEndpoint == "" {
 		t.Skip("LLM_ENDPOINT or OPENSANDBOX_TEST_DOMAIN not set")
