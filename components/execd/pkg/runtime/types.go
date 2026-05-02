@@ -49,7 +49,7 @@ type ExecuteCodeRequest struct {
 	eventSeq atomic.Uint64
 }
 
-func (req *ExecuteCodeRequest) nextStdoutStderrEventID() int64 {
+func (req *ExecuteCodeRequest) NextEventID() int64 {
 	if req == nil {
 		return 0
 	}
@@ -61,7 +61,7 @@ func (req *ExecuteCodeRequest) wrapStdoutPipeHook() func(string) {
 		if text == "" || req.Hooks.OnExecuteStdout == nil {
 			return
 		}
-		eid := req.nextStdoutStderrEventID()
+		eid := req.NextEventID()
 		req.Hooks.OnExecuteStdout(eid, text)
 	}
 }
@@ -71,7 +71,7 @@ func (req *ExecuteCodeRequest) wrapStderrPipeHook() func(string) {
 		if text == "" || req.Hooks.OnExecuteStderr == nil {
 			return
 		}
-		eid := req.nextStdoutStderrEventID()
+		eid := req.NextEventID()
 		req.Hooks.OnExecuteStderr(eid, text)
 	}
 }

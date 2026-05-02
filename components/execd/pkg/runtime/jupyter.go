@@ -123,12 +123,12 @@ func dispatchExecutionResultHooks(request *ExecuteCodeRequest, result *execute.E
 		switch stream.Name {
 		case execute.StreamStdout:
 			if stream.Text != "" && request.Hooks.OnExecuteStdout != nil {
-				eid := request.nextStdoutStderrEventID()
+				eid := request.NextEventID()
 				request.Hooks.OnExecuteStdout(eid, stream.Text)
 			}
 		case execute.StreamStderr:
 			if stream.Text != "" && request.Hooks.OnExecuteStderr != nil {
-				eid := request.nextStdoutStderrEventID()
+				eid := request.NextEventID()
 				request.Hooks.OnExecuteStderr(eid, stream.Text)
 			}
 		default:

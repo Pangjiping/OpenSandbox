@@ -26,7 +26,6 @@ const (
 	ErrorCodeFileNotFound        ErrorCode = "FILE_NOT_FOUND"
 	ErrorCodeUnknown             ErrorCode = "UNKNOWN"
 	ErrorCodeContextNotFound     ErrorCode = "CONTEXT_NOT_FOUND"
-	ErrorCodeNotImplemented      ErrorCode = "NOT_IMPLEMENTED"
 	ErrorCodeNotSupported        ErrorCode = "NOT_SUPPORTED"
 )
 

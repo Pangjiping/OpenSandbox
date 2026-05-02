@@ -55,10 +55,10 @@ func (c *CodeInterpretingController) RunCommand() {
 
 	ctx, cancel := context.WithCancel(c.ctx.Request.Context())
 	defer cancel()
-	c.resumeEnabled = true
+	c.resumeEnabled.Store(true)
 	defer func() {
 		deferResumeCleanup(c)
-		c.resumeEnabled = false
+		c.resumeEnabled.Store(false)
 	}()
 	execStart := time.Now()
 	var recordOnce sync.Once
@@ -74,7 +74,7 @@ func (c *CodeInterpretingController) RunCommand() {
 	}
 
 	runCodeRequest := c.buildExecuteCommandRequest(request)
-	eventsHandler := c.setServerEventsHandler(ctx)
+	eventsHandler := c.setServerEventsHandler(ctx, runCodeRequest)
 	origComplete := eventsHandler.OnExecuteComplete
 	eventsHandler.OnExecuteComplete = func(executionTime time.Duration) {
 		origComplete(executionTime)

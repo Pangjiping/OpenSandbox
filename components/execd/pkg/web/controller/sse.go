@@ -46,10 +46,10 @@ func (c *basicController) setupSSEResponse() {
 }
 
 // setServerEventsHandler adapts runtime callbacks to SSE events.
-func (c *CodeInterpretingController) setServerEventsHandler(ctx context.Context) runtime.ExecuteResultHook {
+func (c *CodeInterpretingController) setServerEventsHandler(ctx context.Context, req *runtime.ExecuteCodeRequest) runtime.ExecuteResultHook {
 	return runtime.ExecuteResultHook{
 		OnExecuteInit: func(session string) {
-			if c.resumeEnabled {
+			if c.resumeEnabled.Load() {
 				c.resumeStreamMu.Lock()
 				c.resumeStreamID = session
 				c.resumeStreamMu.Unlock()
@@ -100,26 +100,30 @@ func (c *CodeInterpretingController) setServerEventsHandler(ctx context.Context)
 			}
 		},
 		OnExecuteComplete: func(executionTime time.Duration) {
+			eid := req.NextEventID()
 			event := model.ServerStreamEvent{
+				Eid:           eid,
 				Type:          model.StreamEventTypeComplete,
 				ExecutionTime: executionTime.Milliseconds(),
 				Timestamp:     time.Now().UnixMilli(),
 			}
 			payload := event.ToJSON()
-			c.writeSingleEvent("OnExecuteComplete", payload, true, event.Summary(), 0)
+			c.writeSingleEvent("OnExecuteComplete", payload, true, event.Summary(), eid)
 		},
 		OnExecuteError: func(err *execute.ErrorOutput) {
 			if err == nil {
 				return
 			}
 
+			eid := req.NextEventID()
 			event := model.ServerStreamEvent{
+				Eid:       eid,
 				Type:      model.StreamEventTypeError,
 				Error:     err,
 				Timestamp: time.Now().UnixMilli(),
 			}
 			payload := event.ToJSON()
-			c.writeSingleEvent("OnExecuteError", payload, true, event.Summary(), 0)
+			c.writeSingleEvent("OnExecuteError", payload, true, event.Summary(), eid)
 		},
 		OnExecuteStatus: func(status string) {
 			event := model.ServerStreamEvent{
@@ -169,7 +173,7 @@ func (c *CodeInterpretingController) writeSingleEvent(handler string, data []byt
 	}
 
 	var streamID string
-	if c.resumeEnabled {
+	if c.resumeEnabled.Load() {
 		c.resumeStreamMu.Lock()
 		streamID = c.resumeStreamID
 		c.resumeStreamMu.Unlock()
