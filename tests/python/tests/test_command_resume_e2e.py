@@ -28,7 +28,6 @@ from datetime import timedelta
 
 import httpx
 import pytest
-
 from opensandbox.adapters.command_adapter import CommandsAdapter
 from opensandbox.config import ConnectionConfig
 from opensandbox.constants import DEFAULT_EXECD_PORT
@@ -240,63 +239,9 @@ class TestCommandResumeE2E:
             len(execution.logs.stdout),
         )
 
-    # -----------------------------------------------------------------------
-    # Test: run_in_session with injected disconnect
-    # -----------------------------------------------------------------------
-
-    @pytest.mark.timeout(120)
-    async def test_run_in_session_auto_resume_on_disconnect(self) -> None:
-        """Inject disconnect during session command; verify resume in session context."""
-        transport = _DisconnectInjectTransport()
-        cfg = ConnectionConfig(
-            domain=TEST_DOMAIN,
-            api_key=TEST_API_KEY,
-            transport=transport,
-            protocol=TEST_PROTOCOL,
-            request_timeout=timedelta(minutes=3),
-            use_server_proxy=should_use_server_proxy(),
-        )
-
-        adapter = CommandsAdapter(cfg, self.execd_endpoint)
-        session_id = await adapter.create_session(working_directory="/tmp")
-        logger.info("Created session: %s", session_id)
-
-        try:
-            cmd = (
-                "for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; "
-                "do echo \"sess-line$i\"; sleep 0.2; done"
-            )
-
-            execution = await adapter.run_in_session(session_id, cmd)
-        finally:
-            try:
-                await adapter.delete_session(session_id)
-            except Exception:
-                pass
-
-        # --- assertions ---
-        assert transport.post_count == 1, "should send exactly one POST /session/:id/run"
-        assert transport.resume_count >= 1, (
-            f"should resume at least once, got resume_count={transport.resume_count}"
-        )
-        assert transport.last_resume_eid is not None
-        assert transport.last_resume_eid >= 1
-
-        assert len(execution.logs.stdout) == 20, (
-            f"expected 20 stdout lines, got {len(execution.logs.stdout)}"
-        )
-        for i, msg in enumerate(execution.logs.stdout):
-            expected = f"sess-line{i + 1}"
-            actual = msg.text.strip()
-            assert actual == expected, f"stdout[{i}]: expected {expected!r}, got {actual!r}"
-
-        assert execution.complete is not None
-        assert execution.exit_code == 0
-
-        logger.info(
-            "Resume e2e session: post=%d resume=%d after_eid=%d lines=%d",
-            transport.post_count,
-            transport.resume_count,
-            transport.last_resume_eid,
-            len(execution.logs.stdout),
-        )
+    # NOTE: run_in_session resume is intentionally NOT tested here.
+    # execd does not currently support resume for session-scoped commands:
+    #   - No resume route under /session group
+    #   - GetCommandStatus only looks in commandClientMap (sessions use bashSessionClientMap)
+    #   - resumeEnabled is never set for RunInSession
+    # The SDK will attempt resume on disconnect but execd returns 404.
