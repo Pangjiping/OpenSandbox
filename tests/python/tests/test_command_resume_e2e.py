@@ -56,26 +56,30 @@ logger = logging.getLogger(__name__)
 class _DisconnectInjectStream(httpx.AsyncByteStream):
     """Wraps real byte stream; raises ReadError after N chunks yielded."""
 
-    def __init__(self, real_stream: httpx.AsyncByteStream, disconnect_after_chunks: int = 4) -> None:
+    def __init__(self, real_stream, disconnect_after_chunks: int = 4) -> None:
         self._real = real_stream
         self._disconnect_after = disconnect_after_chunks
         self._chunk_count = 0
+        self._real_iter = None
 
-    def __aiter__(self) -> httpx.AsyncByteStream:
+    def __aiter__(self):
+        self._real_iter = self._real.__aiter__()
         return self
 
     async def __anext__(self) -> bytes:
         if self._chunk_count >= self._disconnect_after:
             raise httpx.ReadError("simulated disconnect for e2e test")
         try:
-            chunk = await self._real.__anext__()
+            chunk = await self._real_iter.__anext__()
         except StopAsyncIteration:
             raise
         self._chunk_count += 1
         return chunk
 
     async def aclose(self) -> None:
-        if hasattr(self._real, "aclose"):
+        if self._real_iter is not None and hasattr(self._real_iter, "aclose"):
+            await self._real_iter.aclose()
+        elif hasattr(self._real, "aclose"):
             await self._real.aclose()
 
 
