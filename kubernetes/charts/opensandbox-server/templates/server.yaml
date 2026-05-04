@@ -21,6 +21,9 @@ metadata:
     {{- include "opensandbox-server.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
     resources: ["pods", "pods/status", "events", "services", "configmaps"]
     verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
   - apiGroups: [""]
@@ -28,7 +31,7 @@ rules:
     verbs: ["create", "delete", "get"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
-    verbs: ["create", "get"]
+    verbs: ["create", "get", "delete"]
   - apiGroups: ["node.k8s.io"]
     resources: ["runtimeclasses"]
     verbs: ["get", "list"]
