@@ -57,6 +57,11 @@ class TenantLoader:
         with self._lock:
             return len({e.name for e in self._entries.values()})
 
+    @property
+    def namespaces(self) -> set[str]:
+        with self._lock:
+            return {e.namespace for e in self._entries.values()}
+
     def _reload(self) -> None:
         data = tomllib.loads(self._path.read_text())
         new_entries: dict[str, TenantEntry] = {}

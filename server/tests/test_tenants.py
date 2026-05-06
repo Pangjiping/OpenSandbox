@@ -43,6 +43,35 @@ def test_tenant_entry_constructs():
     assert e.api_keys == ["k1", "k2"]
 
 
+@pytest.mark.parametrize("name", [
+    "a",
+    "team-a",
+    "tenant_alpha",
+    "Team.Name",
+    "team-1.prod_us",
+    "a" * 63,
+])
+def test_tenant_entry_accepts_valid_k8s_label_names(name):
+    e = TenantEntry(name=name, namespace="ns", api_keys=["k"])
+    assert e.name == name
+
+
+@pytest.mark.parametrize("name,match", [
+    ("-bad", "not a valid Kubernetes label value"),
+    ("_bad", "not a valid Kubernetes label value"),
+    (".bad", "not a valid Kubernetes label value"),
+    ("bad-", "not a valid Kubernetes label value"),
+    ("bad_", "not a valid Kubernetes label value"),
+    ("bad.", "not a valid Kubernetes label value"),
+    ("bad name", "not a valid Kubernetes label value"),
+    ("bad@name", "not a valid Kubernetes label value"),
+    ("a" * 64, "must be ≤ 63"),
+])
+def test_tenant_entry_rejects_invalid_k8s_label_names(name, match):
+    with pytest.raises(ValidationError, match=match):
+        TenantEntry(name=name, namespace="ns", api_keys=["k"])
+
+
 # ---------------------------------------------------------------------------
 # TenantsConfig
 # ---------------------------------------------------------------------------
@@ -350,3 +379,44 @@ def test_loader_stop_stops_watcher():
         loader = TenantLoader(p)
         loader.stop()
         assert loader._stop_event.is_set()
+
+
+def test_loader_namespaces_returns_unique_set():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        p = _write_tenants_toml(Path(tmpdir), TWO_TENANTS)
+        loader = TenantLoader(p)
+        try:
+            assert loader.namespaces == {"ns-alpha", "ns-beta"}
+        finally:
+            loader.stop()
+
+
+def test_loader_namespaces_deduplicates_same_namespace():
+    toml = """\
+[[tenants]]
+name = "a"
+namespace = "shared-ns"
+api_keys = ["ka1"]
+
+[[tenants]]
+name = "b"
+namespace = "shared-ns"
+api_keys = ["kb1"]
+"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        p = _write_tenants_toml(Path(tmpdir), toml)
+        loader = TenantLoader(p)
+        try:
+            assert loader.namespaces == {"shared-ns"}
+        finally:
+            loader.stop()
+
+
+def test_loader_namespaces_returns_empty_when_no_tenants():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        p = _write_tenants_toml(Path(tmpdir), "")
+        loader = TenantLoader(p)
+        try:
+            assert loader.namespaces == set()
+        finally:
+            loader.stop()

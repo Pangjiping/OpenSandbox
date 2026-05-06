@@ -16,7 +16,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
+
+from opensandbox_server.services.validators import LABEL_VALUE_RE
 
 
 class TenantEntry(BaseModel):
@@ -25,6 +27,23 @@ class TenantEntry(BaseModel):
     name: str
     namespace: str
     api_keys: list[str]
+
+    @field_validator("name")
+    @classmethod
+    def _must_be_valid_k8s_label_value(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Tenant name must not be empty.")
+        if len(v) > 63:
+            raise ValueError(
+                f"Tenant name '{v}' is {len(v)} chars; must be ≤ 63 "
+                f"(Kubernetes label value limit)."
+            )
+        if not LABEL_VALUE_RE.match(v):
+            raise ValueError(
+                f"Tenant name '{v}' is not a valid Kubernetes label value. "
+                f"Must match [{LABEL_VALUE_RE.pattern}]."
+            )
+        return v
 
 
 class TenantsConfig(BaseModel):

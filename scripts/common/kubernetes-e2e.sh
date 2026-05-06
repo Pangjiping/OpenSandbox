@@ -192,7 +192,7 @@ configToml: |
   image = "${EGRESS_IMG}"
 
   [kubernetes]
-  namespace = "${E2E_NAMESPACE}"
+  namespace = "not-used"
   workload_provider = "batchsandbox"
   sandbox_create_timeout_seconds = 180
   sandbox_create_poll_interval_seconds = 1.0

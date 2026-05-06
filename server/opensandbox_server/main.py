@@ -63,6 +63,18 @@ if _tenants_path.exists():
     _tenant_loader = TenantLoader(_tenants_path)
     logger.info(f"Multi-tenant mode enabled — {_tenant_loader.tenant_count} tenant(s) loaded.")
 
+    _k8s_ns = (app_config.kubernetes.namespace
+               if app_config.runtime.type == "kubernetes" and app_config.kubernetes
+               else None)
+    if _k8s_ns:
+        _overlap = {ns for ns in _tenant_loader.namespaces if ns == _k8s_ns}
+        if _overlap:
+            raise SystemExit(
+                f"Tenant namespace(s) {_overlap} conflict with the default "
+                f"kubernetes.namespace '{_k8s_ns}'. Each tenant must use a "
+                f"namespace distinct from the server's own namespace."
+            )
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     try:
