@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from opensandbox_server.services.docker_snapshot_runtime import DockerSnapshotRuntime
-from opensandbox_server.services.snapshot_runtime import NoopSnapshotRuntime
+from opensandbox_server.services.k8s.snapshot_runtime import KubernetesSnapshotRuntime
 from opensandbox_server.services.snapshot_runtime_factory import create_snapshot_runtime
 
 
@@ -32,12 +32,16 @@ def test_create_snapshot_runtime_selects_docker_runtime() -> None:
     assert isinstance(runtime, DockerSnapshotRuntime)
 
 
-def test_create_snapshot_runtime_selects_noop_for_kubernetes() -> None:
-    config = SimpleNamespace(runtime=SimpleNamespace(type="kubernetes"))
+def test_create_snapshot_runtime_selects_kubernetes_runtime() -> None:
+    config = SimpleNamespace(
+        runtime=SimpleNamespace(type="kubernetes"),
+        kubernetes=SimpleNamespace(namespace="default"),
+    )
+    k8s_client = object()
 
-    runtime = create_snapshot_runtime(config)
+    runtime = create_snapshot_runtime(config, k8s_client=k8s_client)
 
-    assert isinstance(runtime, NoopSnapshotRuntime)
+    assert isinstance(runtime, KubernetesSnapshotRuntime)
 
 
 def test_create_snapshot_runtime_requires_docker_client_for_docker() -> None:

@@ -21,13 +21,14 @@ from __future__ import annotations
 from typing import Optional
 
 from opensandbox_server.config import AppConfig, get_config
-from opensandbox_server.services.snapshot_runtime import NoopSnapshotRuntime, SnapshotRuntime
+from opensandbox_server.services.snapshot_runtime import SnapshotRuntime
 
 
 def create_snapshot_runtime(
     config: Optional[AppConfig] = None,
     *,
     docker_client=None,
+    k8s_client=None,
 ) -> SnapshotRuntime:
     active_config = config or get_config()
     runtime_type = active_config.runtime.type.lower()
@@ -40,9 +41,17 @@ def create_snapshot_runtime(
         return DockerSnapshotRuntime(docker_client)
 
     if runtime_type == "kubernetes":
-        # TODO: Implement a Kubernetes snapshot runtime once the backing
-        # artifact model and restore flow are defined.
-        return NoopSnapshotRuntime()
+        from opensandbox_server.services.k8s.client import K8sClient
+        from opensandbox_server.services.k8s.snapshot_runtime import KubernetesSnapshotRuntime
+
+        kubernetes_config = getattr(active_config, "kubernetes", None)
+        if k8s_client is None:
+            if kubernetes_config is None:
+                raise ValueError("kubernetes config is required when runtime.type = 'kubernetes'.")
+            k8s_client = K8sClient(kubernetes_config)
+
+        namespace = getattr(kubernetes_config, "namespace", None) or "default"
+        return KubernetesSnapshotRuntime(k8s_client, namespace=namespace)
 
     raise ValueError(f"Unsupported snapshot runtime type: {runtime_type}")
 
