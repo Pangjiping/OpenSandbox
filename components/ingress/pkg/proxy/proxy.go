@@ -48,7 +48,7 @@ func NewProxy(_ context.Context, sandboxProvider sandbox.Provider, mode Mode, re
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rcv := recover(); rcv != nil {
-			panicErr := "unknown panic"
+			panicErr := fmt.Sprintf("%v", rcv)
 			if err, ok := rcv.(error); ok {
 				panicErr = err.Error()
 			}
