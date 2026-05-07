@@ -215,7 +215,6 @@ return 1
 
     def snapshot_counters(self, pool_name: str) -> StoreCounters:
         def op() -> StoreCounters:
-            self.reap_expired_idle(pool_name, datetime.now(timezone.utc))
             idle_count = cast(int, self._redis.hlen(self._idle_expires_key(pool_name)))
             return StoreCounters(idle_count=idle_count)
 
@@ -223,7 +222,6 @@ return 1
 
     def snapshot_idle_entries(self, pool_name: str) -> list[IdleEntry]:
         def op() -> list[IdleEntry]:
-            self.reap_expired_idle(pool_name, datetime.now(timezone.utc))
             raw_ids = cast(
                 list[Any],
                 self._redis.lrange(self._idle_list_key(pool_name), 0, -1),

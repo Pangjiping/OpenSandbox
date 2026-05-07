@@ -59,6 +59,8 @@ async def test_async_redis_store_reap_expired_idle(
     await store.set_idle_entry_ttl("pool", timedelta(milliseconds=50))
     await store.put_idle("pool", "id-1")
     await asyncio.sleep(0.1)
+    assert (await store.snapshot_counters("pool")).idle_count == 1
+
     await store.reap_expired_idle("pool", datetime.now(timezone.utc))
 
     assert (await store.snapshot_counters("pool")).idle_count == 0

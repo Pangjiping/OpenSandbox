@@ -96,6 +96,8 @@ class RedisPoolStateStoreTest {
         stateStore.setIdleEntryTtl(poolName, Duration.ofMillis(50))
         stateStore.putIdle(poolName, "id-1")
         Thread.sleep(100)
+        assertEquals(1, stateStore.snapshotCounters(poolName).idleCount)
+
         stateStore.reapExpiredIdle(poolName, Instant.now())
 
         assertEquals(0, stateStore.snapshotCounters(poolName).idleCount)

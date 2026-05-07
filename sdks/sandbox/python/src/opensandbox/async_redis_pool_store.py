@@ -26,9 +26,9 @@ from typing import Any, TypeVar, cast
 from opensandbox.exceptions import PoolStateStoreUnavailableException
 from opensandbox.pool_types import IdleEntry, StoreCounters
 from opensandbox.redis_pool_store import (
-    RedisPoolStateStore,
-    Redis,
     _REQUIRED_REDIS_METHODS,
+    Redis,
+    RedisPoolStateStore,
     _decode,
     _millis,
     _validate_owner_and_ttl,
@@ -177,7 +177,6 @@ class AsyncRedisPoolStateStore:
 
     async def snapshot_counters(self, pool_name: str) -> StoreCounters:
         async def op() -> StoreCounters:
-            await self.reap_expired_idle(pool_name, datetime.now(timezone.utc))
             idle_count = cast(
                 int,
                 await cast(
@@ -193,7 +192,6 @@ class AsyncRedisPoolStateStore:
 
     async def snapshot_idle_entries(self, pool_name: str) -> list[IdleEntry]:
         async def op() -> list[IdleEntry]:
-            await self.reap_expired_idle(pool_name, datetime.now(timezone.utc))
             raw_ids = cast(
                 list[Any],
                 await cast(

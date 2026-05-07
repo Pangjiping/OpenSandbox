@@ -143,13 +143,11 @@ class RedisPoolStateStore(
 
     override fun snapshotCounters(poolName: String): StoreCounters =
         execute("snapshotCounters", poolName) {
-            reapExpiredIdle(poolName, Instant.now())
             StoreCounters(redis.hlen(idleExpiresKey(poolName)).toInt())
         }
 
     override fun snapshotIdleEntries(poolName: String): List<IdleEntry> =
         execute("snapshotIdleEntries", poolName) {
-            reapExpiredIdle(poolName, Instant.now())
             val ids = redis.lrange(idleListKey(poolName), 0, -1)
             val expiresById = redis.hgetAll(idleExpiresKey(poolName))
             ids.mapNotNull { sandboxId ->

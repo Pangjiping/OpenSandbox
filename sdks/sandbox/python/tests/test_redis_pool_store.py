@@ -55,6 +55,8 @@ def test_redis_store_reap_expired_idle(
     store.set_idle_entry_ttl("pool", timedelta(milliseconds=50))
     store.put_idle("pool", "id-1")
     time.sleep(0.1)
+    assert store.snapshot_counters("pool").idle_count == 1
+
     store.reap_expired_idle("pool", datetime.now(timezone.utc))
 
     assert store.snapshot_counters("pool").idle_count == 0
