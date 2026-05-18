@@ -68,7 +68,7 @@ The bundled system addon at `/var/egress/mitmscripts/system.py` is shipped in th
 
 - Forces streaming (`flow.response.stream = True`) for SSE (`text/event-stream`) and chunked responses, so each chunk is forwarded immediately instead of being buffered up to the `stream_large_bodies=1m` threshold (critical for LLM streaming UX).
 
-To disable the system addon, set `OPENSANDBOX_EGRESS_MITMPROXY_SYSTEM_SCRIPT=` (empty). To swap in a customized variant, point it at another path.
+The system addon is always loaded and cannot be disabled via configuration. To override its behavior, supply a user addon via `OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT`; user addons are loaded after the system addon and may observe or override its hooks.
 
 ### 3) Add a User Addon Alongside the System Addon
 

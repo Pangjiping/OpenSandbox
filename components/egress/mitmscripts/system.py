@@ -30,7 +30,7 @@ from mitmproxy import http
 def responseheaders(flow: http.HTTPFlow) -> None:
     if flow.response is None:
         return
-    content_type = flow.response.headers.get("content-type", "")
-    transfer_encoding = flow.response.headers.get("transfer-encoding", "")
+    content_type = flow.response.headers.get("content-type", "").lower()
+    transfer_encoding = flow.response.headers.get("transfer-encoding", "").lower()
     if "text/event-stream" in content_type or "chunked" in transfer_encoding:
         flow.response.stream = True
