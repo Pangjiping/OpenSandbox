@@ -138,6 +138,49 @@ func TestCreateSandbox_ImageAuth(t *testing.T) {
 	require.NoErrorf(t, err, "CreateSandbox with ImageAuth")
 }
 
+func TestPatchSandboxMetadata(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	value := "platform"
+
+	_, client := newLifecycleServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			assert.Fail(t, fmt.Sprintf("expected PATCH, got %s", r.Method))
+		}
+		if r.URL.Path != "/sandboxes/sbx-123/metadata" {
+			assert.Fail(t, fmt.Sprintf("expected /sandboxes/sbx-123/metadata, got %s", r.URL.Path))
+		}
+
+		var body map[string]*string
+		require.NoErrorf(t, json.NewDecoder(r.Body).Decode(&body), "decode metadata patch")
+		require.NotNil(t, body["team"])
+		if *body["team"] != "platform" {
+			assert.Fail(t, fmt.Sprintf("team = %q, want platform", *body["team"]))
+		}
+		_, hasOld := body["old"]
+		require.True(t, hasOld, "old metadata key should be present")
+		if body["old"] != nil {
+			assert.Fail(t, "old metadata key should be null")
+		}
+
+		jsonResponse(w, http.StatusOK, SandboxInfo{
+			ID:         "sbx-123",
+			Status:     SandboxStatus{State: StateRunning},
+			Metadata:   map[string]string{"team": "platform"},
+			Entrypoint: []string{"/bin/sh"},
+			CreatedAt:  now,
+		})
+	})
+
+	got, err := client.PatchSandboxMetadata(context.Background(), "sbx-123", MetadataPatch{
+		"team": &value,
+		"old":  nil,
+	})
+	require.NoErrorf(t, err, "PatchSandboxMetadata")
+	if got.Metadata["team"] != "platform" {
+		assert.Fail(t, fmt.Sprintf("team = %q, want platform", got.Metadata["team"]))
+	}
+}
+
 func TestCreateSandbox_SecureAccess(t *testing.T) {
 	_, client := newLifecycleServer(t, func(w http.ResponseWriter, r *http.Request) {
 		var req CreateSandboxRequest
@@ -977,6 +1020,92 @@ func TestExecdAuthHeader(t *testing.T) {
 	client := NewExecdClient(srv.URL, "my-execd-token")
 	err := client.Ping(context.Background())
 	require.NoErrorf(t, err, "Ping")
+}
+
+// TestResolveExecdForwardsAllEndpointHeaders verifies that every header
+// returned by GetEndpoint (auth tokens, routing hints, sticky-session keys,
+// etc.) is forwarded as-is on subsequent execd requests, mirroring the
+// Python SDK behavior.
+func TestResolveExecdForwardsAllEndpointHeaders(t *testing.T) {
+	endpointHeaders := map[string]string{
+		"X-EXECD-ACCESS-TOKEN": "execd-tok",
+		"X-Route-Hint":         "vip-pool",
+		"X-Sticky-Session":     "sess-abc",
+	}
+
+	execdSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, want := range endpointHeaders {
+			if got := r.Header.Get(k); got != want {
+				assert.Fail(t, fmt.Sprintf("header %s = %q, want %q", k, got, want))
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer execdSrv.Close()
+
+	lifecycleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/endpoints/") {
+			jsonResponse(w, http.StatusOK, Endpoint{
+				Endpoint: execdSrv.URL,
+				Headers:  endpointHeaders,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer lifecycleSrv.Close()
+
+	config := ConnectionConfig{Domain: lifecycleSrv.URL}
+	sb := &Sandbox{
+		id:        "sbx-headers",
+		config:    &config,
+		lifecycle: config.lifecycleClient(),
+	}
+
+	require.NoErrorf(t, sb.resolveExecd(context.Background()), "resolveExecd")
+	require.NoErrorf(t, sb.execd.Ping(context.Background()), "Ping")
+}
+
+// TestResolveEgressForwardsAllEndpointHeaders verifies the same forwarding
+// behavior for the egress sidecar client.
+func TestResolveEgressForwardsAllEndpointHeaders(t *testing.T) {
+	endpointHeaders := map[string]string{
+		"OPENSANDBOX-EGRESS-AUTH": "egress-tok",
+		"X-Route-Hint":            "egress-vip",
+	}
+
+	egressSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, want := range endpointHeaders {
+			if got := r.Header.Get(k); got != want {
+				assert.Fail(t, fmt.Sprintf("header %s = %q, want %q", k, got, want))
+			}
+		}
+		jsonResponse(w, http.StatusOK, PolicyStatusResponse{Status: "ok"})
+	}))
+	defer egressSrv.Close()
+
+	lifecycleSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/endpoints/") {
+			jsonResponse(w, http.StatusOK, Endpoint{
+				Endpoint: egressSrv.URL,
+				Headers:  endpointHeaders,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer lifecycleSrv.Close()
+
+	config := ConnectionConfig{Domain: lifecycleSrv.URL}
+	sb := &Sandbox{
+		id:        "sbx-egress-headers",
+		config:    &config,
+		lifecycle: config.lifecycleClient(),
+	}
+
+	require.NoErrorf(t, sb.resolveEgress(context.Background()), "resolveEgress")
+	_, err := sb.egress.GetPolicy(context.Background())
+	require.NoErrorf(t, err, "GetPolicy")
 }
 
 func TestSandboxManager_ListFilter(t *testing.T) {

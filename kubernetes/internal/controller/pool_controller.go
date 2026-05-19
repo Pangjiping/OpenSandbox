@@ -674,8 +674,14 @@ func (r *PoolReconciler) scalePool(ctx context.Context, pool *sandboxv1alpha1.Po
 	errs := make([]error, 0)
 	pods := args.pods
 	if satisfied, unsatisfiedDuration, dirtyPods := PoolScaleExpectations.SatisfiedExpectations(controllerutils.GetControllerKey(pool)); !satisfied {
-		log.Info("Pool scale is not ready, requeue", "unsatisfiedDuration", unsatisfiedDuration, "dirtyPods", dirtyPods)
-		return fmt.Errorf("pool scale is not ready, %v", pool.Name)
+		if unsatisfiedDuration >= expectations.ExpectationTimeout {
+			log.Info("Pool scale expectations timed out, clearing stale expectations",
+				"unsatisfiedDuration", unsatisfiedDuration, "dirtyPods", dirtyPods)
+			PoolScaleExpectations.DeleteExpectations(controllerutils.GetControllerKey(pool))
+		} else {
+			log.Info("Pool scale is not ready, requeue", "unsatisfiedDuration", unsatisfiedDuration, "dirtyPods", dirtyPods)
+			return fmt.Errorf("pool scale is not ready, %v", pool.Name)
+		}
 	}
 	schedulableCnt := int32(len(args.pods))
 	totalPodCnt := args.totalPodCnt

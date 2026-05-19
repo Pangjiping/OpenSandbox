@@ -34,11 +34,16 @@ const RunAsUser = "mitmproxy"
 // Loopback: transparent mode receives via REDIRECT; do not listen on 0.0.0.0 in the netns.
 const listenHostLoopback = "127.0.0.1"
 
+// systemScriptPath: bundled system addon shipped via the egress Dockerfile
+// (COPY components/egress/mitmscripts /var/egress/mitmscripts). Always loaded.
+const systemScriptPath = "/var/egress/mitmscripts/system.py"
+
 // Config: mitmdump --mode transparent; UserName must match iptables ! --uid-owner, ConfDir is mitm state/CA.
 type Config struct {
 	ListenPort int
 	UserName   string
 	ConfDir    string
+	// ScriptPath is an optional user-supplied addon, loaded after the system addon.
 	ScriptPath string
 	// OnExit is called (if non-nil) when mitmdump exits. Called from a background goroutine.
 	OnExit func(error)
@@ -102,14 +107,28 @@ func Launch(cfg Config) (*Running, error) {
 	// Stream large bodies instead of buffering them in memory (OOM prevention).
 	args = append(args, "--set", "stream_large_bodies=1m")
 
+	// Lazy connection strategy: defer upstream connection until the request is fully received,
+	// which avoids unnecessary connections for blocked/filtered requests.
+	args = append(args, "--set", "connection_strategy=lazy")
+
+	// Transparent mode redirects TCP to IP addresses. Clients connecting to IPs
+	// do not send SNI, so upstream TLS cert hostname verification fails with
+	// "IP address mismatch". Set OPENSANDBOX_EGRESS_MITMPROXY_SSL_INSECURE=true
+	// to skip upstream verification when clients connect by IP.
+	if constants.IsTruthy(os.Getenv(constants.EnvMitmproxySslInsecure)) {
+		args = append(args, "--set", "ssl_insecure=true")
+	}
+
 	homeEnv := home
 	if strings.TrimSpace(cfg.ConfDir) != "" {
 		cd := strings.TrimSpace(cfg.ConfDir)
 		args = append(args, "--set", "confdir="+cd)
 		homeEnv = cd
 	}
-	if strings.TrimSpace(cfg.ScriptPath) != "" {
-		args = append(args, "-s", strings.TrimSpace(cfg.ScriptPath))
+	// Load the system addon first so user addons can observe / override its hooks.
+	args = append(args, "-s", systemScriptPath)
+	if user := strings.TrimSpace(cfg.ScriptPath); user != "" {
+		args = append(args, "-s", user)
 	}
 
 	// Upstream passthrough: each pattern becomes --set ignore_hosts= (regex; IP ranges are practical in transparent mode).

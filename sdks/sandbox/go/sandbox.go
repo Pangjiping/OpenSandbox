@@ -227,9 +227,10 @@ func (s *Sandbox) Kill(ctx context.Context) error {
 }
 
 // Close releases local HTTP resources. Does NOT terminate the sandbox.
-func (s *Sandbox) Close() {
+func (s *Sandbox) Close() error {
 	// No-op for now — Go's http.Client doesn't need explicit close.
 	// Placeholder for future transport pooling.
+	return nil
 }
 
 // Pause pauses the sandbox while preserving its state.
@@ -240,6 +241,12 @@ func (s *Sandbox) Pause(ctx context.Context) error {
 // GetInfo returns the sandbox's current info (status, metadata, image, etc.).
 func (s *Sandbox) GetInfo(ctx context.Context) (*SandboxInfo, error) {
 	return s.lifecycle.GetSandbox(ctx, s.id)
+}
+
+// PatchMetadata patches this sandbox's metadata. Non-nil values add or replace
+// keys. Nil values delete keys.
+func (s *Sandbox) PatchMetadata(ctx context.Context, patch MetadataPatch) (*SandboxInfo, error) {
+	return s.lifecycle.PatchSandboxMetadata(ctx, s.id, patch)
 }
 
 // IsHealthy checks whether the sandbox's execd service is responsive.
@@ -404,23 +411,19 @@ func (s *Sandbox) resolveExecd(ctx context.Context) error {
 		execdURL = s.config.GetProtocol() + "://" + execdURL
 	}
 
-	token := ""
-	var extraHeaders map[string]string
-	if endpoint.Headers != nil {
-		token = endpoint.Headers["X-EXECD-ACCESS-TOKEN"]
-		// Preserve all endpoint headers (e.g. routing headers) except the auth token
-		extraHeaders = make(map[string]string, len(endpoint.Headers))
-		for k, v := range endpoint.Headers {
-			if k != "X-EXECD-ACCESS-TOKEN" {
-				extraHeaders[k] = v
+	headers := make(map[string]string, len(endpoint.Headers)+1)
+	for k, v := range endpoint.Headers {
+		headers[k] = v
+	}
+	if s.config.UseServerProxy {
+		if _, ok := headers[execdAuthHeader]; !ok {
+			if apiKey := s.config.GetAPIKey(); apiKey != "" {
+				headers[execdAuthHeader] = apiKey
 			}
 		}
 	}
-	if s.config.UseServerProxy && token == "" {
-		token = s.config.GetAPIKey()
-	}
 
-	s.execd = s.config.execdClient(execdURL, token, extraHeaders)
+	s.execd = s.config.execdClient(execdURL, headers)
 	return nil
 }
 
@@ -444,18 +447,18 @@ func (s *Sandbox) resolveEgress(ctx context.Context) error {
 		egressURL = s.config.GetProtocol() + "://" + egressURL
 	}
 
-	token := ""
-	var extraHeaders map[string]string
-	if endpoint.Headers != nil {
-		token = endpoint.Headers["OPENSANDBOX-EGRESS-AUTH"]
-		extraHeaders = make(map[string]string, len(endpoint.Headers))
-		for k, v := range endpoint.Headers {
-			if k != "OPENSANDBOX-EGRESS-AUTH" {
-				extraHeaders[k] = v
+	headers := make(map[string]string, len(endpoint.Headers)+1)
+	for k, v := range endpoint.Headers {
+		headers[k] = v
+	}
+	if s.config.UseServerProxy {
+		if _, ok := headers[egressAuthHeader]; !ok {
+			if apiKey := s.config.GetAPIKey(); apiKey != "" {
+				headers[egressAuthHeader] = apiKey
 			}
 		}
 	}
 
-	s.egress = s.config.egressClient(egressURL, token, extraHeaders)
+	s.egress = s.config.egressClient(egressURL, headers)
 	return nil
 }

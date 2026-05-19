@@ -202,6 +202,24 @@ class WorkloadProvider(ABC):
         """
         raise NotImplementedError("Resume is not supported by this provider")
 
+    def patch_labels(
+        self, name: str, namespace: str, labels: Dict[str, Optional[str]]
+    ) -> Dict[str, Any]:
+        """Patch workload metadata.labels via JSON merge patch.
+
+        A None value for a label key deletes that label per RFC 7396.
+        Returns the API server response (the patched workload).
+        """
+        body = {"metadata": {"labels": labels}}
+        return self.k8s_client.patch_custom_object(
+            group=self.group,
+            version=self.version,
+            namespace=namespace,
+            plural=self.plural,
+            name=name,
+            body=body,
+        )
+
     def supports_image_auth(self) -> bool:
         """
         Whether this provider supports per-request image pull authentication.
