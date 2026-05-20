@@ -113,6 +113,52 @@ func TestRunCommand_CancelKillsChildren(t *testing.T) {
 	t.Fatalf("child pid %d still alive 2s after cancel — process leak", childPid)
 }
 
+// TestInterrupt_AfterFinished_ReturnsError verifies that an Interrupt
+// arriving after the command has completed does not signal a recycled PID.
+// Without this guard, group-wide kill would amplify the stale-PID hazard
+// to every process in an unrelated process group.
+func TestInterrupt_AfterFinished_ReturnsError(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not found in PATH")
+	}
+
+	c := NewController("", "")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var session string
+	completeCh := make(chan struct{}, 1)
+	req := &ExecuteCodeRequest{
+		Code:    `echo done`,
+		Cwd:     t.TempDir(),
+		Timeout: 5 * time.Second,
+		Hooks: ExecuteResultHook{
+			OnExecuteInit:     func(s string) { session = s },
+			OnExecuteStdout:   func(_ string) {},
+			OnExecuteStderr:   func(_ string) {},
+			OnExecuteError:    func(_ *execute.ErrorOutput) {},
+			OnExecuteComplete: func(_ time.Duration) { completeCh <- struct{}{} },
+		},
+	}
+	require.NoError(t, c.runCommand(ctx, req))
+
+	select {
+	case <-completeCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("command did not complete in time")
+	}
+	require.NotEmpty(t, session)
+
+	err := c.Interrupt(session)
+	require.Error(t, err, "Interrupt on finished session must error")
+	require.Contains(t, err.Error(), "not running")
+
+	snap := c.commandSnapshot(session)
+	require.NotNil(t, snap)
+	require.False(t, snap.running, "running flag should be cleared")
+	require.Equal(t, 0, snap.pid, "pid should be cleared to avoid stale-PID kill")
+}
+
 // TestKillPid_TerminatesEntireProcessGroup verifies that killPid signals
 // the whole process group, not just the leader. Regression test for
 // https://github.com/alibaba/OpenSandbox/issues/922.

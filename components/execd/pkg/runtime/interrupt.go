@@ -34,8 +34,16 @@ func (c *Controller) Interrupt(sessionID string) error {
 		log.Warning("Interrupting Jupyter kernel %s", kernel.kernelID)
 		return kernel.client.InterruptKernel(kernel.kernelID)
 	case c.getCommandKernel(sessionID) != nil:
-		kernel := c.getCommandKernel(sessionID)
-		return c.killPid(kernel.pid)
+		// Snapshot under c.mu so running/pid are observed consistently with
+		// markCommandFinished. killPid signals the entire process group, so
+		// guarding against a stale PID is critical: a late Interrupt on a
+		// finished session must not blast SIGTERM/SIGKILL at an unrelated
+		// process group that has reused the PID.
+		snapshot := c.commandSnapshot(sessionID)
+		if snapshot == nil || !snapshot.running || snapshot.pid <= 0 {
+			return fmt.Errorf("command session %s is not running", sessionID)
+		}
+		return c.killPid(snapshot.pid)
 	case c.getBashSession(sessionID) != nil:
 		return c.closeBashSession(sessionID)
 	default:
