@@ -159,6 +159,37 @@ func TestInterrupt_AfterFinished_ReturnsError(t *testing.T) {
 	require.Equal(t, 0, snap.pid, "pid should be cleared to avoid stale-PID kill")
 }
 
+// TestKillPid_ZombieLeaderDoesNotFail verifies that killPid does not
+// return an error when a group leader becomes a zombie before its parent
+// has reaped it. kill(-pid, 0) keeps reporting the group as observable
+// while the zombie lingers, but SIGKILL has already been delivered and
+// the kernel will tear the group down once Wait() runs. Treating that
+// state as a failure caused Interrupt to surface a 500 even though the
+// kill succeeded.
+func TestKillPid_ZombieLeaderDoesNotFail(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not found in PATH")
+	}
+
+	cmd := exec.Command("bash", "-c", `sleep 30 & wait`)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, cmd.Start())
+	// Deliberately omit a reaper goroutine so the leader stays as a
+	// zombie after kill — that is the condition we want to exercise.
+	t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_, _ = cmd.Process.Wait()
+	})
+
+	// Give bash a moment to spawn the sleep child so the group has more
+	// than just the leader.
+	time.Sleep(100 * time.Millisecond)
+
+	c := &Controller{}
+	require.NoError(t, c.killPid(cmd.Process.Pid),
+		"slow post-SIGKILL teardown must not be reported as a hard failure")
+}
+
 // TestKillPid_TerminatesEntireProcessGroup verifies that killPid signals
 // the whole process group, not just the leader. Regression test for
 // https://github.com/alibaba/OpenSandbox/issues/922.
