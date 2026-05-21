@@ -116,14 +116,14 @@ interface Commands {
         workingDirectory: String? = null,
         timeout: Duration? = null,
     ): Execution {
-        return runInSession(
-            sessionId,
+        val builder =
             RunInSessionRequest.builder()
                 .command(command)
                 .workingDirectory(workingDirectory)
-                .timeout(timeout)
-                .build(),
-        )
+        if (timeout != null) {
+            builder.timeout(timeout)
+        }
+        return runInSession(sessionId, builder.build())
     }
 
     @Deprecated(

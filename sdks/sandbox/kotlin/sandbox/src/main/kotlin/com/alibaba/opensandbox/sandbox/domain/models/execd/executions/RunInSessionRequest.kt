@@ -55,17 +55,17 @@ class RunInSessionRequest private constructor(
             return this
         }
 
-        fun timeout(timeout: Duration?): Builder {
+        fun timeout(timeout: Duration): Builder {
             this.timeout = timeout
             return this
         }
 
         @Deprecated(
             message = "Use java.time.Duration instead.",
-            replaceWith = ReplaceWith("timeout(timeout?.toJavaDuration())", "kotlin.time.toJavaDuration"),
+            replaceWith = ReplaceWith("timeout(timeout.toJavaDuration())", "kotlin.time.toJavaDuration"),
         )
-        fun timeout(timeout: kotlin.time.Duration?): Builder {
-            return timeout(timeout?.toJavaDuration())
+        fun timeout(timeout: kotlin.time.Duration): Builder {
+            return timeout(timeout.toJavaDuration())
         }
 
         fun handlers(handlers: ExecutionHandlers?): Builder {
