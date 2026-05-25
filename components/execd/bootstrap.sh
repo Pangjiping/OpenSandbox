@@ -129,7 +129,7 @@ trust_mitm_ca_nss() {
 MITM_CA="/opt/opensandbox/mitmproxy-ca-cert.pem"
 if is_truthy "${OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT:-}"; then
 	i=0
-	while [ "$i" -lt 30 ]; do
+	while [ "$i" -lt 300 ]; do
 		if [ -f "$MITM_CA" ] && [ -s "$MITM_CA" ]; then
 			break
 		fi
@@ -137,9 +137,12 @@ if is_truthy "${OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT:-}"; then
 		i=$((i + 1))
 	done
 	if [ ! -f "$MITM_CA" ] || [ ! -s "$MITM_CA" ]; then
-		echo "warning: timed out after 30s waiting for $MITM_CA (egress mitm CA export); continuing without system CA trust" >&2
-	elif ! trust_mitm_ca "$MITM_CA"; then
-		echo "warning: failed to install mitm CA into system trust store; TLS interception may not work for system libraries" >&2
+		echo "warning: timed out after 300s waiting for $MITM_CA (egress mitm CA export); continuing without system CA trust" >&2
+	else
+		echo "mitm CA ready at $MITM_CA after ${i}s"
+		if ! trust_mitm_ca "$MITM_CA"; then
+			echo "warning: failed to install mitm CA into system trust store; TLS interception may not work for system libraries" >&2
+		fi
 	fi
 
 	if [ -f "$MITM_CA" ] && [ -s "$MITM_CA" ]; then
