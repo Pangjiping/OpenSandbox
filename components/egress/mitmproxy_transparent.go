@@ -48,6 +48,7 @@ type mitmTransparent struct {
 	cfg        mitmproxy.Config // OnExit must NOT be set here; built per-Launch
 	nextGen    uint64           // atomic; monotonic gen counter handed to each Launch
 	restartCh  chan exitEvent
+	shutdownCh chan struct{} // closed by watchMitmproxy on ctx cancel; lets OnExit unblock during shutdown
 }
 
 func (m *mitmTransparent) getRunning() *mitmproxy.Running {
@@ -71,11 +72,20 @@ func (m *mitmTransparent) getCurrentGen() uint64 {
 
 // launchTagged starts mitmdump with an OnExit closure that publishes the death
 // of this specific process (identified by gen) into restartCh.
-func launchTagged(cfg mitmproxy.Config, restartCh chan<- exitEvent, gen uint64) (*mitmproxy.Running, error) {
+//
+// The send is blocking with shutdownCh as the only escape: dropping an exit
+// event while the watcher is still running can leave egress in a silent dead
+// state (the watcher would never see the death and never trigger a restart).
+// Stale events from killed half-launched attempts are still cheap to discard
+// downstream via the gen check in watchMitmproxy; we just must not lose them
+// in transit. Shutdown is the only legitimate reason to give up on a send,
+// and we log a warning when that happens so the drop is observable.
+func launchTagged(cfg mitmproxy.Config, restartCh chan<- exitEvent, shutdownCh <-chan struct{}, gen uint64) (*mitmproxy.Running, error) {
 	cfg.OnExit = func(err error) {
 		select {
 		case restartCh <- exitEvent{gen: gen, err: err}:
-		default:
+		case <-shutdownCh:
+			log.Warnf("[mitmproxy] dropping exit event during shutdown (gen=%d): %v", gen, err)
 		}
 	}
 	return mitmproxy.Launch(cfg)
@@ -99,17 +109,15 @@ func startMitmproxyTransparentIfEnabled() (*mitmTransparent, error) {
 		ConfDir:    strings.TrimSpace(os.Getenv(constants.EnvMitmproxyConfDir)),
 		ScriptPath: strings.TrimSpace(os.Getenv(constants.EnvMitmproxyScript)),
 	}
-	// Buffered enough to absorb stale exit events from a retry storm without
-	// dropping the death event of the currently-live mitmdump. With buffer 1,
-	// a single half-launched attempt's OnExit can occupy the slot, causing the
-	// fresh process's real death event to be dropped via the default branch in
-	// launchTagged -- watcher would then read the stale event, ignore it on
-	// gen mismatch, and block forever (the same silent-dead-state this watchdog
-	// is meant to prevent). Stale events are still cheap to discard via the
-	// gen check; we just need room to store them.
+	// Buffer absorbs OnExit events from a retry storm so OnExit goroutines
+	// don't all park waiting for the watcher to drain. Correctness does not
+	// depend on the size: launchTagged uses a blocking send with shutdownCh
+	// as the only escape, so events cannot be silently dropped while the
+	// watcher is alive.
 	restartCh := make(chan exitEvent, 64)
+	shutdownCh := make(chan struct{})
 	const initialGen uint64 = 1
-	running, err := launchTagged(cfg, restartCh, initialGen)
+	running, err := launchTagged(cfg, restartCh, shutdownCh, initialGen)
 	if err != nil {
 		return nil, fmt.Errorf("start mitmdump: %w", err)
 	}
@@ -135,12 +143,20 @@ func startMitmproxyTransparentIfEnabled() (*mitmTransparent, error) {
 		cfg:        cfg,
 		nextGen:    initialGen,
 		restartCh:  restartCh,
+		shutdownCh: shutdownCh,
 	}, nil
 }
 
 // watchMitmproxy monitors mitmdump for unexpected exits, logs the error, and restarts it.
 // Must be called after startMitmproxyTransparentIfEnabled.
 func (m *mitmTransparent) watchMitmproxy(ctx context.Context, gate *mitmproxy.HealthGate) {
+	// Closing shutdownCh on ctx cancel unblocks any OnExit closures that are
+	// parked on the (now-unread) restartCh send so they don't leak past
+	// shutdown.
+	safego.Go(func() {
+		<-ctx.Done()
+		close(m.shutdownCh)
+	})
 	safego.Go(func() {
 		for {
 			select {
@@ -194,7 +210,7 @@ func (m *mitmTransparent) restartWithBackoff(ctx context.Context, gate *mitmprox
 		}
 
 		gen := atomic.AddUint64(&m.nextGen, 1)
-		newRunning, launchErr := launchTagged(m.cfg, m.restartCh, gen)
+		newRunning, launchErr := launchTagged(m.cfg, m.restartCh, m.shutdownCh, gen)
 		if launchErr == nil {
 			if waitErr := mitmproxy.WaitListenPort(waitAddr, 15*time.Second); waitErr == nil {
 				m.setRunning(newRunning, gen)
