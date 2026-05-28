@@ -23,6 +23,7 @@ status: provisional
   - [Architecture Overview](#architecture-overview)
   - [Request Flow](#request-flow)
   - [API Schema](#api-schema)
+  - [Binding Templates](#binding-templates)
   - [Credential Sources](#credential-sources)
   - [Credential Injection](#credential-injection)
   - [Response Redaction and Echo Handling](#response-redaction-and-echo-handling)
@@ -61,7 +62,7 @@ to:
 ### Goals
 
 1. **Brokered credentials**: Let sandboxed workloads use credentials without receiving plaintext secret values through OpenSandbox-managed environment variables, files, lifecycle API responses, diagnostics, or logs.
-2. **Declarative binding**: Add a sandbox creation-time credential binding model that describes source, scope, and injection behavior.
+2. **Declarative binding**: Add a sandbox creation-time credential binding model that describes source, scope, and injection behavior, with operator-approved templates for common patterns.
 3. **Policy-aware runtime injection**: Inject credentials only when sandbox identity, destination FQDN, HTTP method, and path all match the binding.
 4. **Egress alignment**: Integrate with `networkPolicy.egress` so credential scope and network reachability are consistent.
 5. **Runtime agnostic**: Support both Docker and Kubernetes through the existing egress sidecar pattern that shares the sandbox network namespace.
@@ -94,7 +95,8 @@ to:
 | R9 | Credential Proxy is default-deny for missing, invalid, or non-matching bindings | Must Have |
 | R10 | The runtime uses egress transparent mitmproxy as the Credential Proxy implementation | Must Have |
 | R11 | Credential-enabled egress startup fails closed when transparent redirect, mitm readiness, CA bootstrap, or egress API auth cannot be configured | Must Have |
-| R12 | Future secret managers can be added through a provider interface | Should Have |
+| R12 | Users can reference built-in or operator-configured binding templates instead of repeating full scope and injection rules | Should Have |
+| R13 | Future secret managers can be added through a provider interface | Should Have |
 
 ## Proposal
 
@@ -178,6 +180,7 @@ At a high level:
 - **Credential Vault**: OpenSandbox control-plane capability for declaring, validating, and managing credential bindings on sandboxes.
 - **Credential Proxy**: Credential-aware runtime behavior in the egress sidecar's transparent mitmproxy path. It evaluates outbound HTTP/HTTPS requests and injects credentials when policy matches.
 - **Credential Binding**: A per-sandbox declaration that connects a credential source to an allowed destination and injection rule.
+- **Credential Binding Template**: A built-in or operator-configured template that expands user parameters and a credential source into a full credential binding.
 - **Credential Source**: A trusted source of credential material, such as Kubernetes Secret or server-local configuration.
 - **Credential Injection**: The act of adding credential material to an outbound request, for example as an `Authorization` header.
 
@@ -248,17 +251,35 @@ components:
 
     CredentialBinding:
       type: object
-      required: [name, sourceRef, scope, injection]
+      required: [name]
       properties:
         name:
           type: string
           description: Sandbox-local credential binding name.
+        templateRef:
+          $ref: '#/components/schemas/CredentialBindingTemplateRef'
+        credential:
+          $ref: '#/components/schemas/CredentialSourceRef'
         sourceRef:
           $ref: '#/components/schemas/CredentialSourceRef'
         scope:
           $ref: '#/components/schemas/CredentialScope'
         injection:
           $ref: '#/components/schemas/CredentialInjection'
+      additionalProperties: false
+
+    CredentialBindingTemplateRef:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          description: Built-in or operator-configured template name.
+        params:
+          type: object
+          additionalProperties:
+            type: string
+          description: Non-sensitive template parameters. Sensitive values must use credential, not params.
       additionalProperties: false
 
     CredentialSourceRef:
@@ -330,7 +351,17 @@ components:
       additionalProperties: false
 ```
 
-Example request:
+Validation rules:
+
+- A `CredentialBinding` must use exactly one of these forms:
+  - **Inline full binding**: `sourceRef`, `scope`, and `injection`.
+  - **Template binding**: `templateRef` and `credential`.
+- `templateRef.params` is for non-sensitive values only and may be logged in validation errors.
+- `credential` has the same schema as `sourceRef` and is treated as sensitive according to its source type.
+- Sandbox creators cannot define arbitrary templates in `CreateSandboxRequest`; they can only reference built-in or operator-configured templates.
+- The server expands templates before egress validation, ambiguity checks, and runtime bootstrap.
+
+Example full binding request:
 
 ```json
 {
@@ -368,6 +399,117 @@ Example request:
   }
 }
 ```
+
+Example template binding request:
+
+```json
+{
+  "image": "python:3.12",
+  "networkPolicy": {
+    "defaultAction": "deny",
+    "egress": [
+      { "action": "allow", "target": "code.alibaba-inc.com" }
+    ]
+  },
+  "credentialVault": {
+    "mode": "transparentProxy",
+    "bindings": [
+      {
+        "name": "code-alibaba-git",
+        "templateRef": {
+          "name": "git-https-basic",
+          "params": {
+            "target": "code.alibaba-inc.com",
+            "repoPath": "/foo/bar.git"
+          }
+        },
+        "credential": {
+          "type": "inlineEphemeral",
+          "value": "domain-account:private-token"
+        }
+      }
+    ]
+  }
+}
+```
+
+The template expands this into an internal binding equivalent to:
+
+```json
+{
+  "scope": {
+    "schemes": ["https"],
+    "ports": [443],
+    "targets": ["code.alibaba-inc.com"],
+    "methods": ["GET", "POST"],
+    "paths": ["/foo/bar.git", "/foo/bar.git/*"]
+  },
+  "injection": {
+    "type": "header",
+    "name": "Authorization",
+    "value": "Basic {{ credential | base64 }}"
+  }
+}
+```
+
+The sandbox workload can then use the normal unauthenticated repository URL:
+
+```bash
+git clone https://code.alibaba-inc.com/foo/bar.git
+```
+
+### Binding Templates
+
+Binding templates reduce repeated boilerplate for common credential injection patterns. They are resolved by OpenSandbox server before sandbox creation reaches runtime providers.
+
+Template sources:
+
+1. **Built-in templates**
+   - Shipped with OpenSandbox.
+   - Cover common protocols such as `git-https-basic`, `generic-bearer`, and `generic-basic`.
+2. **Operator-configured templates**
+   - Defined in server configuration under `[credential_vault]`.
+   - Intended for enterprise-specific targets and path constraints.
+   - Override or conflict with built-in names only if the operator uses an explicit namespace such as `operator/alibaba-code-git`.
+
+Example server configuration:
+
+```toml
+[credential_vault]
+enabled = true
+
+[[credential_vault.binding_templates]]
+name = "operator/alibaba-code-git"
+type = "git_https_basic"
+target = "code.alibaba-inc.com"
+allowed_repo_path_prefixes = ["/foo/", "/bar/"]
+```
+
+Example use:
+
+```json
+{
+  "name": "code-alibaba-git",
+  "templateRef": {
+    "name": "operator/alibaba-code-git",
+    "params": {
+      "repoPath": "/foo/bar.git"
+    }
+  },
+  "credential": {
+    "type": "inlineEphemeral",
+    "value": "domain-account:private-token"
+  }
+}
+```
+
+Template safety rules:
+
+- Templates must be built-in or configured by an operator; sandbox creators cannot submit arbitrary template definitions.
+- Template params must be schema-validated by the selected template.
+- Sensitive values must not be passed through `templateRef.params`; use `credential` so redaction and write-only handling apply.
+- Expanded bindings must still pass HTTPS/port defaults, egress policy validation, source authorization, and ambiguity checks.
+- Templates should keep targets and paths as narrow as possible. Operator-configured templates may fix `target` and allow only path parameters, which is safer for enterprise deployments.
 
 ### Credential Sources
 
@@ -535,6 +677,8 @@ All diagnostics APIs that surface runtime logs must preserve redaction behavior.
 - Add config model for `[credential_vault]`.
 - Add source provider interface.
 - Validate `CreateSandboxRequest.credentialVault`.
+- Load built-in and operator-configured binding templates.
+- Expand template bindings into full bindings before egress validation and runtime bootstrap.
 - Require and validate `networkPolicy.egress` for credential-enabled sandboxes.
 - Persist credential binding metadata without plaintext credential values.
 - Resolve or prepare sandbox-scoped credential material during sandbox creation.
@@ -570,14 +714,19 @@ All diagnostics APIs that surface runtime logs must preserve redaction behavior.
 #### SDKs and CLI
 
 - Add typed request models for credential bindings.
+- Add typed request models for template references and credential values.
 - Add examples for common providers such as GitHub and model APIs.
+- Add examples for `git-https-basic` and enterprise operator-configured Git templates.
 - CLI may include validation helpers, but it should not print credential values.
 
 ## Test Plan
 
 ### Unit Tests
 
-- Schema validation accepts valid bindings and rejects missing `name`, `sourceRef`, `scope`, or `injection`.
+- Schema validation accepts valid full bindings and rejects full bindings missing `name`, `sourceRef`, `scope`, or `injection`.
+- Schema validation accepts valid template bindings and rejects bindings that mix full-binding fields with template fields.
+- Template params are validated by template type, and sensitive values in params are rejected.
+- Template expansion produces the expected scope and injection policy for `git-https-basic`.
 - Scheme, port, FQDN, wildcard, method, and path matching work as expected.
 - Injection defaults to HTTPS/443 only and rejects HTTP injection unless explicitly configured and permitted.
 - Multiple matching bindings fail closed.
@@ -587,6 +736,7 @@ All diagnostics APIs that surface runtime logs must preserve redaction behavior.
 - `inlineEphemeral.value` is accepted only as write-only create input and never appears in serialized sandbox metadata or API responses.
 - Egress validation requires `networkPolicy.egress` and catches binding targets not allowed by policy.
 - Kubernetes Secret source providers reject namespace/name references that are outside configured allowlists or requester authorization.
+- Operator-configured templates reject repo paths outside allowed prefixes.
 
 ### Integration Tests
 
@@ -605,6 +755,7 @@ All diagnostics APIs that surface runtime logs must preserve redaction behavior.
 ### E2E Tests
 
 - Create a sandbox with `networkPolicy.defaultAction=deny`, allow `api.github.com`, bind a read-only GitHub credential, and verify a normal `https://api.github.com/...` call succeeds through Credential Proxy.
+- Create a sandbox with a `git-https-basic` template, run `git clone https://code.alibaba-inc.com/foo/bar.git`, and verify the injected Basic auth succeeds without credentials in the URL.
 - Verify direct access to a non-allowed domain fails under egress policy.
 - Verify logs and diagnostic APIs never contain the credential string.
 - Verify a mock upstream that echoes request headers does not expose known credential values in supported response headers or text bodies.
@@ -642,6 +793,10 @@ SDK mediation can be safer and more structured, but it requires language-specifi
 
 Explicit proxy and local gateway modes avoid transparent network interception, but they require application configuration and do not match the current OpenSandbox egress direction. The existing egress transparent mitmproxy path already provides the correct runtime interception point for Credential Proxy.
 
+### User-defined Templates in CreateSandboxRequest
+
+Allowing sandbox creators to define arbitrary templates inline would reduce server configuration work, but templates decide target hosts, path scope, headers, schemes, ports, and credential rendering. Those are security policy surfaces. This proposal only allows built-in and operator-configured templates; sandbox creators may pass validated non-sensitive params and a credential source.
+
 ## Infrastructure Needed
 
 - No new Credential Proxy component image for the MVP; Credential Proxy is implemented in the existing egress image through transparent mitmproxy and a first-party credential addon.
@@ -650,6 +805,7 @@ Explicit proxy and local gateway modes avoid transparent network interception, b
 - Kubernetes permission to create/delete sandbox-scoped runtime Secrets when `inlineEphemeral` is enabled for Kubernetes runtime.
 - CI tests for Docker and Kubernetes runtime paths.
 - Documentation and examples for common credential binding patterns.
+- Documentation for built-in binding templates and operator-configured templates.
 - Sandbox image or runtime support for trusting the OpenSandbox mitmproxy CA.
 
 No new required external service is introduced by the MVP.
