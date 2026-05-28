@@ -180,10 +180,10 @@ func (s *Spec) applyDefaults() {
 
 type noopLogger struct{}
 
-func (noopLogger) Debugf(string, ...any)               {}
-func (noopLogger) Infof(string, ...any)                {}
-func (noopLogger) Warnf(string, ...any)                {}
-func (noopLogger) Errorf(string, ...any)               {}
-func (noopLogger) With(...logger.Field) logger.Logger  { return noopLogger{} }
-func (noopLogger) Named(string) logger.Logger          { return noopLogger{} }
-func (noopLogger) Sync() error                         { return nil }
+func (noopLogger) Debugf(string, ...any)              {}
+func (noopLogger) Infof(string, ...any)               {}
+func (noopLogger) Warnf(string, ...any)               {}
+func (noopLogger) Errorf(string, ...any)              {}
+func (noopLogger) With(...logger.Field) logger.Logger { return noopLogger{} }
+func (noopLogger) Named(string) logger.Logger         { return noopLogger{} }
+func (noopLogger) Sync() error                        { return nil }

@@ -42,9 +42,9 @@ func Run(ctx context.Context, spec Spec) error {
 	starts := newBurstTracker(spec.BurstMax, spec.BurstWindow, spec.Clock.Now)
 
 	var (
-		gen       uint64
-		attempt   int
-		backoff   time.Duration
+		gen     uint64
+		attempt int
+		backoff time.Duration
 	)
 
 	shutdown := func() error {

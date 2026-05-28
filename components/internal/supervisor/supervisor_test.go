@@ -79,8 +79,8 @@ func childCmd(mode string, extraEnv ...string) (cmd string, args []string, env [
 // implemented as a real-time short sleep so we don't have to build a full
 // scheduler; tests use sub-second backoffs.
 type fakeClock struct {
-	mu  sync.Mutex
-	t   time.Time
+	mu sync.Mutex
+	t  time.Time
 }
 
 func newFakeClock() *fakeClock {

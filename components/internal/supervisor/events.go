@@ -36,23 +36,23 @@ const (
 // Event is one structured record in the supervisor's event log. Only set
 // fields are emitted (omitempty everywhere) so different kinds share one type.
 type Event struct {
-	TS         time.Time `json:"ts"`
-	Name       string    `json:"name,omitempty"`
-	Event      string    `json:"event"`
-	PID        int       `json:"pid,omitempty"`
-	Gen        uint64    `json:"gen,omitempty"`
-	Attempt    int       `json:"attempt,omitempty"`
-	ExitCode   *int      `json:"exit_code,omitempty"`
-	Signal     string    `json:"signal,omitempty"`
-	DurationMS int64     `json:"duration_ms,omitempty"`
-	Reason     string    `json:"reason,omitempty"`
-	SleepMS    int64     `json:"sleep_ms,omitempty"`
-	NextAttempt int      `json:"next_attempt,omitempty"`
-	Hook       string    `json:"hook,omitempty"`
-	Attempts   int       `json:"attempts,omitempty"`
-	Window     string    `json:"window,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	ResetBackoff bool    `json:"reset_backoff,omitempty"`
+	TS           time.Time `json:"ts"`
+	Name         string    `json:"name,omitempty"`
+	Event        string    `json:"event"`
+	PID          int       `json:"pid,omitempty"`
+	Gen          uint64    `json:"gen,omitempty"`
+	Attempt      int       `json:"attempt,omitempty"`
+	ExitCode     *int      `json:"exit_code,omitempty"`
+	Signal       string    `json:"signal,omitempty"`
+	DurationMS   int64     `json:"duration_ms,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
+	SleepMS      int64     `json:"sleep_ms,omitempty"`
+	NextAttempt  int       `json:"next_attempt,omitempty"`
+	Hook         string    `json:"hook,omitempty"`
+	Attempts     int       `json:"attempts,omitempty"`
+	Window       string    `json:"window,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	ResetBackoff bool      `json:"reset_backoff,omitempty"`
 }
 
 // eventWriter serializes Event writes through a mutex; concurrent writers

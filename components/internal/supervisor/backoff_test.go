@@ -31,8 +31,8 @@ func TestNextBackoff_NoJitterDoublesAndClamps(t *testing.T) {
 		prev time.Duration
 		want time.Duration
 	}{
-		{0, min},                  // initial
-		{-1 * time.Second, min},   // negative
+		{0, min},                      // initial
+		{-1 * time.Second, min},       // negative
 		{500 * time.Millisecond, min}, // below min after doubling -> clamp up
 		{1 * time.Second, 2 * time.Second},
 		{2 * time.Second, 4 * time.Second},
