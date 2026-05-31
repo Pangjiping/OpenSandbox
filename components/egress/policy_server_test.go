@@ -405,3 +405,58 @@ func TestHandlePost_RejectsWhenOverMaxEgressRules(t *testing.T) {
 	require.Nil(t, proxy.updated, "policy should not update")
 	require.Equal(t, 0, nft.calls, "nft should not apply")
 }
+
+func mustRule(t *testing.T, action, target string) policy.EgressRule {
+	t.Helper()
+	r, err := policy.ParseValidatedEgressRule(action, target)
+	require.NoError(t, err)
+	return r
+}
+
+func TestFingerprintRules_OrderIndependent(t *testing.T) {
+	a := mustRule(t, policy.ActionDeny, "1.1.1.1")
+	b := mustRule(t, policy.ActionDeny, "2.2.2.2")
+	c := mustRule(t, policy.ActionAllow, "example.com")
+	d := mustRule(t, policy.ActionAllow, "foo.test")
+
+	fp1 := fingerprintRules([]policy.EgressRule{a, b}, []policy.EgressRule{c, d})
+	fp2 := fingerprintRules([]policy.EgressRule{b, a}, []policy.EgressRule{d, c})
+	require.Equal(t, fp1, fp2, "fingerprint must be order-independent within each set")
+}
+
+func TestFingerprintRules_DenyAllowSetsDistinct(t *testing.T) {
+	denyX := mustRule(t, policy.ActionDeny, "1.1.1.1")
+	allowX := mustRule(t, policy.ActionAllow, "1.1.1.1")
+
+	fpDeny := fingerprintRules([]policy.EgressRule{denyX}, nil)
+	fpAllow := fingerprintRules(nil, []policy.EgressRule{allowX})
+	require.NotEqual(t, fpDeny, fpAllow, "deny X and allow X must not collide via set separator")
+}
+
+func TestFingerprintRules_DetectsAddRemove(t *testing.T) {
+	a := mustRule(t, policy.ActionDeny, "1.1.1.1")
+	b := mustRule(t, policy.ActionDeny, "2.2.2.2")
+
+	fp1 := fingerprintRules([]policy.EgressRule{a}, nil)
+	fp2 := fingerprintRules([]policy.EgressRule{a, b}, nil)
+	require.NotEqual(t, fp1, fp2, "adding a rule must change fingerprint")
+
+	fp3 := fingerprintRules([]policy.EgressRule{a, b}, nil)
+	fp4 := fingerprintRules([]policy.EgressRule{a}, nil)
+	require.NotEqual(t, fp3, fp4, "removing a rule must change fingerprint")
+}
+
+func TestFingerprintRules_DetectsActionChange(t *testing.T) {
+	deny := mustRule(t, policy.ActionDeny, "1.1.1.1")
+	allow := mustRule(t, policy.ActionAllow, "1.1.1.1")
+
+	fp1 := fingerprintRules([]policy.EgressRule{deny}, nil)
+	fp2 := fingerprintRules([]policy.EgressRule{allow}, nil)
+	require.NotEqual(t, fp1, fp2, "flipping action on same target must change fingerprint")
+}
+
+func TestFingerprintRules_EmptyStable(t *testing.T) {
+	fp1 := fingerprintRules(nil, nil)
+	fp2 := fingerprintRules([]policy.EgressRule{}, []policy.EgressRule{})
+	require.Equal(t, fp1, fp2, "nil and empty slices must produce same fingerprint")
+}

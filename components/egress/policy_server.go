@@ -20,8 +20,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -125,6 +127,9 @@ type policyServer struct {
 
 	alwaysLoader     *policy.AlwaysRuleLoader
 	stopAlwaysReload chan struct{}
+
+	lastAlwaysFP    uint64
+	lastAlwaysFPSet bool
 }
 
 type policyStatusResponse struct {
@@ -398,7 +403,32 @@ func (s *policyServer) reloadAlwaysRulesJob() {
 			return
 		}
 	}
-	log.Infof("policy API: reloaded always rules applied (deny=%d allow=%d)", len(alwaysDeny), len(alwaysAllow))
+	fp := fingerprintRules(alwaysDeny, alwaysAllow)
+	if s.lastAlwaysFPSet && fp == s.lastAlwaysFP {
+		return
+	}
+	s.lastAlwaysFP = fp
+	s.lastAlwaysFPSet = true
+	log.Infof("policy API: reloaded always rules applied (deny=%d allow=%d fp=%016x)", len(alwaysDeny), len(alwaysAllow), fp)
+}
+
+func fingerprintRules(deny, allow []policy.EgressRule) uint64 {
+	h := fnv.New64a()
+	writeSet := func(rs []policy.EgressRule) {
+		keys := make([]string, len(rs))
+		for i, r := range rs {
+			keys[i] = r.Action + "|" + r.Target
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			_, _ = h.Write([]byte(k))
+			_, _ = h.Write([]byte{0})
+		}
+	}
+	writeSet(deny)
+	_, _ = h.Write([]byte{0xff})
+	writeSet(allow)
+	return h.Sum64()
 }
 
 func (s *policyServer) reloadAlwaysRules() (bool, error) {

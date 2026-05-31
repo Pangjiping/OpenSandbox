@@ -182,7 +182,6 @@ func (p *Proxy) serveDNS(w dns.ResponseWriter, r *dns.Msg) {
 	if err != nil {
 		telemetry.RecordDNSForward(elapsed)
 		logOutboundDNS(host, nil, "", err.Error())
-		log.Warnf("[dns] forward error for %s: %v", domain, err)
 		fail := new(dns.Msg)
 		fail.SetRcode(r, dns.RcodeServerFailure)
 		_ = w.WriteMsg(fail)
