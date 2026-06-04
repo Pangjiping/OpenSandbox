@@ -72,7 +72,41 @@ Only deviations from the mitm built-in defaults are declared in `config.yaml` (t
 
 Precedence: command-line `--set` (from env overrides) > `config.yaml` > mitmproxy built-in defaults.
 
-To change a static option for the whole fleet: edit `config.yaml`, rebuild the egress image, redeploy. To bypass decryption for a specific host **temporarily** in one deployment, the option is to edit and remount `config.yaml` rather than pass an env override.
+#### Overriding the built-in config.yaml
+
+There is no env var to point mitm at an alternate config file. Operators who need different static defaults (e.g. a different `ignore_hosts` list, `connection_strategy`, or `stream_large_bodies`) should pick one of the following:
+
+1. **Build a downstream image** that derives from the official egress image and replaces the file:
+
+   ```dockerfile
+   FROM <opensandbox-egress-image>:<tag>
+   COPY my-config.yaml /var/lib/mitmproxy/.mitmproxy/config.yaml
+   RUN chown mitmproxy:mitmproxy /var/lib/mitmproxy/.mitmproxy/config.yaml \
+       && chmod 0644 /var/lib/mitmproxy/.mitmproxy/config.yaml
+   ```
+
+   This is the recommended path because the override is version-controlled, reviewable, and reproducible.
+
+2. **Mount an override file at runtime** over the baked-in path. For Kubernetes, mount a `ConfigMap` as a file at `/var/lib/mitmproxy/.mitmproxy/config.yaml` (be aware that a `ConfigMap` file mount typically lands as read-only with the original UID, so verify the mitmproxy user can read it):
+
+   ```yaml
+   volumeMounts:
+     - name: mitm-config
+       mountPath: /var/lib/mitmproxy/.mitmproxy/config.yaml
+       subPath: config.yaml
+       readOnly: true
+   volumes:
+     - name: mitm-config
+       configMap:
+         name: egress-mitm-config
+         defaultMode: 0644
+   ```
+
+   Useful for staged rollouts or per-environment overrides without rebuilding the image.
+
+3. **Single-option escape hatch via env-driven `--set`** (already supported for the documented env variables above). This only works for options exposed via env and only for the single specific override; it cannot replace the whole file.
+
+Do not edit `config.yaml` inside a running container — the file lives in the container layer, edits are lost on restart, and the mitmproxy user has read-only access by design.
 
 ## Common Configuration Templates
 
