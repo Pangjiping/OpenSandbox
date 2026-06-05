@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from opensandbox_server.tenants.models import TenantEntry
-from opensandbox_server.tenants.provider import TenantProvider
 
 try:
     import tomllib

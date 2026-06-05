@@ -45,13 +45,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
 import httpx
 
 from opensandbox_server.tenants.models import TenantEntry
-from opensandbox_server.tenants.provider import TenantProvider, TenantProviderUnavailable
+from opensandbox_server.tenants.provider import TenantProviderUnavailable
 
 logger = logging.getLogger(__name__)
 

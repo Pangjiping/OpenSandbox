@@ -25,8 +25,6 @@ import threading
 import time
 import textwrap
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI, Request
@@ -43,7 +41,6 @@ from opensandbox_server.tenants import (
     get_current_tenant,
     set_current_tenant,
 )
-from opensandbox_server.tenants.context import _current_tenant
 
 
 # ---------------------------------------------------------------------------
