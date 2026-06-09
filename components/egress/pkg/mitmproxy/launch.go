@@ -135,13 +135,8 @@ func Launch(cfg Config) (*Running, error) {
 		Credential: &syscall.Credential{Uid: uid, Gid: gid},
 	}
 	// HOME determines mitm's confdir (~/.mitmproxy) which holds both the CA
-	// and the baked-in config.yaml. Env override takes precedence when a volume
-	// mount shadows the default path.
-	homeEnv := "HOME=" + home
-	if confdir := strings.TrimSpace(os.Getenv(constants.EnvMitmproxyConfdir)); confdir != "" {
-		args = append(args, "--set", "confdir="+confdir)
-	}
-	cmd.Env = append(os.Environ(), homeEnv)
+	// and the baked-in config.yaml.
+	cmd.Env = append(os.Environ(), "HOME="+home)
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("mitmproxy: start mitmdump: %w", err)
