@@ -19,7 +19,7 @@
 #
 # Behavior:
 #   Forces streaming for SSE / chunked responses so each chunk is forwarded
-#   immediately, bypassing the stream_large_bodies=10m buffer set in config.yaml
+#   immediately, bypassing the stream_large_bodies=1m buffer set in config.yaml
 #   (which otherwise stalls LLM-style small-chunk streams).
 #
 #   Implements SNI-aware ignore_hosts for transparent mode. mitmproxy's

@@ -27,10 +27,10 @@ connection_strategy: lazy
 # mitm on the LAN would route any inbound connection through it).
 listen_host: 127.0.0.1
 
-# mitm default None (whole body buffered in memory). 10m bounds RSS for
+# mitm default None (whole body buffered in memory). 1m bounds RSS for
 # the allow path; chunked / SSE responses are forced to stream regardless
 # by the system addon's responseheaders hook.
-stream_large_bodies: 10m
+stream_large_bodies: 1m
 
 # mitm default None (Python certifi bundle). Match the OS trust store so
 # private-CA additions land where mitm reads them.
