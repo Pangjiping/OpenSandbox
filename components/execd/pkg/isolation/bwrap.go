@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build linux
+
 package isolation
 
 import (
@@ -36,7 +38,7 @@ import (
 //  9. Env segment
 //  10. --seccomp <fd>
 //  11. -- setpriv ... <user cmd>
-func buildArgv(opts WrapOptions, seccompPath string) ([]string, error) {
+func buildArgv(opts WrapOptions, seccompFd string) ([]string, error) {
 	if err := validateWrapOptions(opts); err != nil {
 		return nil, err
 	}
@@ -79,12 +81,11 @@ func buildArgv(opts WrapOptions, seccompPath string) ([]string, error) {
 	// 9. Environment segment.
 	argv = append(argv, bwrapEnvSegment(opts.EnvPassthrough)...)
 
-	// 10. Seccomp (optional).
-	if seccompPath != "" {
-		// bwrap --seccomp takes an fd number. We pass the path and let
-		// the caller use --seccomp <fd> via the fd:// protocol. For now
-		// we pass the file path — the caller opens it and passes fd N.
-		argv = append(argv, "--seccomp", seccompPath)
+	// 10. Seccomp (optional). bwrap --seccomp takes a decimal fd number.
+	// The caller opens the BPF file, adds it to ExtraFiles, and passes the
+	// child-side fd number here.
+	if seccompFd != "" {
+		argv = append(argv, "--seccomp", seccompFd)
 	}
 
 	// 11. setpriv + user command.

@@ -23,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/alibaba/opensandbox/execd/pkg/runtime"
+	"github.com/alibaba/opensandbox/execd/pkg/telemetry"
 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
 )
 
@@ -146,8 +147,12 @@ func (c *IsolatedSessionController) Run() {
 		c.writeSingleEvent("IsolatedStdout", event.ToJSON(), false, event.Summary())
 	}
 
+	startTime := time.Now()
 	err := isolatedRunner.RunInIsolatedSession(ctx, sessionID, req.Code, onStdout)
+	durationMs := float64(time.Since(startTime)) / float64(time.Millisecond)
+
 	if err != nil {
+		telemetry.RecordIsolatedRun(ctx, "error", durationMs)
 		event := model.ServerStreamEvent{
 			Type:      model.StreamEventTypeError,
 			Text:      err.Error(),
@@ -156,6 +161,7 @@ func (c *IsolatedSessionController) Run() {
 		c.writeSingleEvent("IsolatedError", event.ToJSON(), true, event.Summary())
 		return
 	}
+	telemetry.RecordIsolatedRun(ctx, "success", durationMs)
 	event := model.ServerStreamEvent{
 		Type:      model.StreamEventTypeComplete,
 		Timestamp: time.Now().UnixMilli(),

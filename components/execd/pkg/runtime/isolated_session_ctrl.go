@@ -29,6 +29,7 @@ import (
 
 	"github.com/alibaba/opensandbox/execd/pkg/isolation"
 	"github.com/alibaba/opensandbox/execd/pkg/log"
+	"github.com/alibaba/opensandbox/execd/pkg/telemetry"
 )
 
 const isolatedRunEndMarker = "__ISOLATED_RUN_END__"
@@ -54,7 +55,25 @@ func NewIsolatedRunner(ctrl *Controller, iso isolation.Isolator, upperRoot strin
 		stopGC:   make(chan struct{}),
 	}
 	go r.gcLoop()
+
+	// Register with telemetry so gauges can read session/upper stats.
+	telemetry.SetIsolationStatsProvider(r.statsSnapshot)
+
 	return r, nil
+}
+
+// statsSnapshot returns current isolation stats for telemetry gauges.
+func (r *IsolatedRunner) statsSnapshot() telemetry.IsolationStats {
+	sessionCount := int64(0)
+	r.ctrl.isolatedSessionMap.Range(func(_, _ any) bool {
+		sessionCount++
+		return true
+	})
+	usage, _ := r.upperMgr.Usage()
+	return telemetry.IsolationStats{
+		ActiveSessions:  sessionCount,
+		UpperUsageBytes: usage,
+	}
 }
 
 // startGC begins periodic idle session cleanup.
