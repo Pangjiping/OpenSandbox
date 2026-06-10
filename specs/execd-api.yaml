@@ -43,9 +43,9 @@ tags:
     description: File and directory operations
   - name: Metric
     description: System resource monitoring and metrics
-
   - name: IsolatedExecution
     description: Per-session namespace isolation, code execution, and filesystem proxy
+
 paths:
   /ping:
     get:
@@ -1112,11 +1112,9 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
-
   /v1/isolated/session:
     post:
       summary: Create an isolated bash session
-      description: Starts a new long-lived bash process inside a bwrap namespace for isolated code execution.
       operationId: createIsolatedSession
       tags:
         - IsolatedExecution
@@ -1138,10 +1136,23 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /v1/isolated/capabilities:
+    get:
+      summary: Get isolator capabilities
+      operationId: isolatedCapabilities
+      tags:
+        - IsolatedExecution
+      responses:
+        "200":
+          description: Isolator capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapabilitiesResponse"
+
   /v1/isolated/session/{sessionId}:
     get:
       summary: Get isolated session state
-      description: Returns current state including idle timeout information.
       operationId: getIsolatedSession
       tags:
         - IsolatedExecution
@@ -1165,7 +1176,6 @@ paths:
           $ref: "#/components/responses/ServiceUnavailable"
     delete:
       summary: Delete an isolated session
-      description: Kills the bwrap+bash process group and releases all resources.
       operationId: deleteIsolatedSession
       tags:
         - IsolatedExecution
@@ -1186,8 +1196,7 @@ paths:
 
   /v1/isolated/session/{sessionId}/run:
     post:
-      summary: Run code in an isolated session
-      description: Executes code in the persistent bash session with SSE streaming output.
+      summary: Run code in an isolated session (SSE streaming)
       operationId: runInIsolatedSession
       tags:
         - IsolatedExecution
@@ -1221,7 +1230,6 @@ paths:
   /v1/isolated/session/{sessionId}/diff:
     get:
       summary: Download upper directory diff (stub)
-      description: Not implemented yet. Returns 503.
       operationId: isolatedSessionDiff
       tags:
         - IsolatedExecution
@@ -1239,7 +1247,6 @@ paths:
   /v1/isolated/session/{sessionId}/commit:
     post:
       summary: Commit upper changes to workspace (stub)
-      description: Not implemented yet. Returns 503.
       operationId: isolatedSessionCommit
       tags:
         - IsolatedExecution
@@ -1257,7 +1264,6 @@ paths:
   /v1/isolated/session/{sessionId}/files/info:
     get:
       summary: Get file information
-      description: Returns metadata for files in the isolated session filesystem.
       operationId: isolatedGetFilesInfo
       tags:
         - IsolatedExecution
@@ -1282,8 +1288,8 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
+                type: object
+                additionalProperties:
                   $ref: "#/components/schemas/FileInfo"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
@@ -1291,7 +1297,6 @@ paths:
   /v1/isolated/session/{sessionId}/files/download:
     get:
       summary: Download a file
-      description: Downloads a file from the isolated session filesystem.
       operationId: isolatedDownloadFile
       tags:
         - IsolatedExecution
@@ -1321,7 +1326,6 @@ paths:
   /v1/isolated/session/{sessionId}/files/upload:
     post:
       summary: Upload a file
-      description: Uploads a file to the isolated session filesystem.
       operationId: isolatedUploadFile
       tags:
         - IsolatedExecution
@@ -1338,14 +1342,14 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required:
-                - file
               properties:
+                metadata:
+                  type: string
+                  description: JSON-encoded file metadata
                 file:
                   type: string
                   format: binary
-                path:
-                  type: string
+                  description: File to upload
       responses:
         "200":
           description: File uploaded
@@ -1355,7 +1359,6 @@ paths:
   /v1/isolated/session/{sessionId}/files:
     delete:
       summary: Remove files
-      description: Removes files from the isolated session filesystem.
       operationId: isolatedRemoveFiles
       tags:
         - IsolatedExecution
@@ -1383,7 +1386,6 @@ paths:
   /v1/isolated/session/{sessionId}/files/mv:
     post:
       summary: Rename or move files
-      description: Moves/renames files in the isolated session filesystem.
       operationId: isolatedRenameFiles
       tags:
         - IsolatedExecution
@@ -1399,8 +1401,8 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties:
+              type: array
+              items:
                 $ref: "#/components/schemas/RenameFileItem"
       responses:
         "200":
@@ -1411,7 +1413,6 @@ paths:
   /v1/isolated/session/{sessionId}/files/permissions:
     post:
       summary: Change file permissions
-      description: Changes file permissions in the isolated session filesystem.
       operationId: isolatedChmodFiles
       tags:
         - IsolatedExecution
@@ -1439,7 +1440,6 @@ paths:
   /v1/isolated/session/{sessionId}/files/replace:
     post:
       summary: Replace file content
-      description: Replaces content in files within the isolated session filesystem.
       operationId: isolatedReplaceContent
       tags:
         - IsolatedExecution
@@ -1461,13 +1461,18 @@ paths:
       responses:
         "200":
           description: Content replaced
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: "#/components/schemas/ReplaceFileContentResult"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
   /v1/isolated/session/{sessionId}/files/search:
     get:
       summary: Search files
-      description: Searches for files matching a glob pattern in the isolated session filesystem.
       operationId: isolatedSearchFiles
       tags:
         - IsolatedExecution
@@ -1485,20 +1490,19 @@ paths:
             type: string
       responses:
         "200":
-          description: Matched file paths
+          description: Matched files
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  type: string
+                  $ref: "#/components/schemas/FileInfo"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
   /v1/isolated/session/{sessionId}/directories:
     post:
       summary: Create directories
-      description: Creates directories in the isolated session filesystem.
       operationId: isolatedMakeDirs
       tags:
         - IsolatedExecution
@@ -1516,7 +1520,7 @@ paths:
             schema:
               type: object
               additionalProperties:
-                $ref: "#/components/schemas/FileInfo"
+                $ref: "#/components/schemas/Permission"
       responses:
         "200":
           description: Directories created
@@ -1524,7 +1528,6 @@ paths:
           $ref: "#/components/responses/ServiceUnavailable"
     delete:
       summary: Remove directories
-      description: Removes directories from the isolated session filesystem.
       operationId: isolatedRemoveDirs
       tags:
         - IsolatedExecution
@@ -1549,20 +1552,6 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /v1/isolated/capabilities:
-    get:
-      summary: Get isolator capabilities
-      description: Returns the current isolator capabilities and version.
-      operationId: isolatedCapabilities
-      tags:
-        - IsolatedExecution
-      responses:
-        "200":
-          description: Isolator capabilities
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CapabilitiesResponse"
 components:
   securitySchemes:
     AccessToken:
@@ -1970,6 +1959,7 @@ components:
           description: Human-readable error message
           example: "error parsing request, MAYBE invalid body format"
       required: [code, message]
+
     CreateIsolatedSessionRequest:
       type: object
       required:
@@ -2109,7 +2099,6 @@ components:
           type: boolean
         diff_supported:
           type: boolean
-
 
   responses:
     ServiceUnavailable:
