@@ -35,6 +35,7 @@ from opensandbox_server.services.constants import SANDBOX_EGRESS_AUTH_TOKEN_META
 from opensandbox_server.services.k8s.agent_sandbox_provider import AgentSandboxProvider
 from opensandbox_server.services.constants import OPENSANDBOX_EGRESS_TOKEN
 
+
 def _app_config(
     shutdown_policy: str = "Delete",
     service_account: str | None = None,
@@ -54,8 +55,8 @@ def _app_config(
         egress=egress,
     )
 
-class TestAgentSandboxProvider:
 
+class TestAgentSandboxProvider:
     def test_init_sets_crd_constants_correctly(self, mock_k8s_client):
         provider = AgentSandboxProvider(mock_k8s_client)
 
@@ -209,7 +210,9 @@ class TestAgentSandboxProvider:
                 platform=PlatformSpec(os="windows", arch="amd64"),
             )
 
-    def test_create_workload_rejects_platform_conflict_with_template_selector(self, mock_k8s_client, tmp_path):
+    def test_create_workload_rejects_platform_conflict_with_template_selector(
+        self, mock_k8s_client, tmp_path
+    ):
         template_file = tmp_path / "agent_template.yaml"
         template_file.write_text(
             """
@@ -342,7 +345,9 @@ spec:
 
         assert result["metadata"]["name"] == "sandbox-test-id"
         assert mock_k8s_client.get_custom_object.call_args_list[0].kwargs["name"] == "test-id"
-        assert mock_k8s_client.get_custom_object.call_args_list[1].kwargs["name"] == "sandbox-test-id"
+        assert (
+            mock_k8s_client.get_custom_object.call_args_list[1].kwargs["name"] == "sandbox-test-id"
+        )
 
     def test_get_workload_reraises_non_404_exceptions(self, mock_k8s_client):
         provider = AgentSandboxProvider(mock_k8s_client)
@@ -394,9 +399,7 @@ spec:
         provider.update_expiration("test-id", "test-ns", expires_at)
 
         call_kwargs = mock_k8s_client.patch_custom_object.call_args.kwargs
-        assert call_kwargs["body"] == {
-            "spec": {"shutdownTime": "2025-12-31T00:00:00+00:00"}
-        }
+        assert call_kwargs["body"] == {"spec": {"shutdownTime": "2025-12-31T00:00:00+00:00"}}
 
     def test_get_expiration_parses_z_suffix(self):
         provider = AgentSandboxProvider(MagicMock())
@@ -454,9 +457,7 @@ spec:
     def test_get_status_falls_back_to_pod_state(self, mock_k8s_client):
         provider = AgentSandboxProvider(mock_k8s_client)
         mock_k8s_client.list_pods.return_value = [
-            SimpleNamespace(
-                status=SimpleNamespace(phase="Running", pod_ip="10.0.0.2")
-            )
+            SimpleNamespace(status=SimpleNamespace(phase="Running", pod_ip="10.0.0.2"))
         ]
         workload = {
             "status": {"conditions": [], "selector": "app=sandbox"},
@@ -471,9 +472,7 @@ spec:
     def test_get_status_falls_back_to_allocated_when_ip_assigned_not_running(self, mock_k8s_client):
         provider = AgentSandboxProvider(mock_k8s_client)
         mock_k8s_client.list_pods.return_value = [
-            SimpleNamespace(
-                status=SimpleNamespace(phase="Pending", pod_ip="10.0.0.2")
-            )
+            SimpleNamespace(status=SimpleNamespace(phase="Pending", pod_ip="10.0.0.2"))
         ]
         workload = {
             "status": {"conditions": [], "selector": "app=sandbox"},
@@ -585,7 +584,9 @@ spec:
         assert result["state"] == "Pending"
         assert result["reason"] in {"POD_SCHEDULED", "POD_PENDING"}
 
-    def test_get_status_keeps_pending_for_mixed_capacity_and_affinity_message(self, mock_k8s_client):
+    def test_get_status_keeps_pending_for_mixed_capacity_and_affinity_message(
+        self, mock_k8s_client
+    ):
         provider = AgentSandboxProvider(mock_k8s_client)
         mock_k8s_client.list_pods.return_value = [
             SimpleNamespace(
@@ -629,9 +630,7 @@ spec:
     def test_get_endpoint_info_prefers_running_pod(self, mock_k8s_client):
         provider = AgentSandboxProvider(mock_k8s_client)
         mock_k8s_client.list_pods.return_value = [
-            SimpleNamespace(
-                status=SimpleNamespace(phase="Running", pod_ip="10.0.0.9")
-            )
+            SimpleNamespace(status=SimpleNamespace(phase="Running", pod_ip="10.0.0.9"))
         ]
         workload = {
             "status": {"selector": "app=sandbox"},
@@ -655,6 +654,7 @@ spec:
 
         assert endpoint.endpoint == "svc.example.com:9000"
         assert endpoint.headers is None
+
 
 class TestAgentSandboxProviderExecdInit:
     """AgentSandboxProvider execd init container resource tests"""
@@ -685,10 +685,12 @@ class TestAgentSandboxProviderExecdInit:
     def test_init_container_has_resources_when_configured(self, mock_k8s_client):
         provider = AgentSandboxProvider(
             mock_k8s_client,
-            _app_config(execd_init_resources=ExecdInitResources(
-                limits={"cpu": "100m", "memory": "128Mi"},
-                requests={"cpu": "50m", "memory": "64Mi"},
-            )),
+            _app_config(
+                execd_init_resources=ExecdInitResources(
+                    limits={"cpu": "100m", "memory": "128Mi"},
+                    requests={"cpu": "50m", "memory": "64Mi"},
+                )
+            ),
         )
         mock_k8s_client.create_custom_object.return_value = {
             "metadata": {"name": "test-id", "uid": "test-uid"}
@@ -710,6 +712,7 @@ class TestAgentSandboxProviderExecdInit:
         init_containers = body["spec"]["podTemplate"]["spec"]["initContainers"]
         assert init_containers[0]["resources"]["limits"] == {"cpu": "100m", "memory": "128Mi"}
         assert init_containers[0]["resources"]["requests"] == {"cpu": "50m", "memory": "64Mi"}
+
 
 class TestAgentSandboxProviderEgress:
     """AgentSandboxProvider egress sidecar tests"""
@@ -739,12 +742,14 @@ class TestAgentSandboxProviderEgress:
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
         pod_spec = body["spec"]["podTemplate"]["spec"]
         containers = pod_spec["containers"]
-        
+
         # Should only have main container
         assert len(containers) == 1
         assert containers[0]["name"] == "sandbox"
         # Should not have securityContext with sysctls
-        assert "securityContext" not in pod_spec or "sysctls" not in pod_spec.get("securityContext", {})
+        assert "securityContext" not in pod_spec or "sysctls" not in pod_spec.get(
+            "securityContext", {}
+        )
 
     def test_create_workload_with_network_policy_adds_sidecar(self, mock_k8s_client):
         provider = AgentSandboxProvider(
@@ -778,15 +783,15 @@ class TestAgentSandboxProviderEgress:
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
         pod_spec = body["spec"]["podTemplate"]["spec"]
         containers = pod_spec["containers"]
-        
+
         # Should have both main container and sidecar
         assert len(containers) == 2
-        
+
         # Find sidecar container
         sidecar = next((c for c in containers if c["name"] == "egress"), None)
         assert sidecar is not None
         assert sidecar["image"] == "opensandbox/egress:v1.0.12"
-        
+
         # Verify sidecar has environment variable
         env_vars = {e["name"]: e["value"] for e in sidecar.get("env", [])}
         assert "OPENSANDBOX_EGRESS_RULES" in env_vars
@@ -805,7 +810,9 @@ class TestAgentSandboxProviderEgress:
         assert execd_init.get("securityContext", {}).get("privileged") is True
         assert "/proc/sys/net/ipv6/conf/all/disable_ipv6" in execd_init["args"][0]
 
-    def test_create_workload_with_network_policy_persists_annotation_and_sidecar_token(self, mock_k8s_client):
+    def test_create_workload_with_network_policy_persists_annotation_and_sidecar_token(
+        self, mock_k8s_client
+    ):
         provider = AgentSandboxProvider(mock_k8s_client)
         mock_k8s_client.create_custom_object.return_value = {
             "metadata": {"name": "test-id", "uid": "test-uid"}
@@ -828,7 +835,10 @@ class TestAgentSandboxProviderEgress:
         )
 
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
-        assert body["metadata"]["annotations"][SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY] == "egress-token"
+        assert (
+            body["metadata"]["annotations"][SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY]
+            == "egress-token"
+        )
 
         containers = body["spec"]["podTemplate"]["spec"]["containers"]
         sidecar = next((c for c in containers if c["name"] == "egress"), None)
@@ -865,7 +875,9 @@ class TestAgentSandboxProviderEgress:
         env_vars = {e["name"]: e["value"] for e in sidecar.get("env", [])}
         assert env_vars["OPENSANDBOX_EGRESS_MODE"] == EGRESS_MODE_DNS_NFT
 
-    def test_create_workload_with_network_policy_does_not_add_pod_ipv6_sysctls(self, mock_k8s_client):
+    def test_create_workload_with_network_policy_does_not_add_pod_ipv6_sysctls(
+        self, mock_k8s_client
+    ):
         provider = AgentSandboxProvider(
             mock_k8s_client,
             _app_config(egress=EgressConfig()),
@@ -897,7 +909,9 @@ class TestAgentSandboxProviderEgress:
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
         pod_spec = body["spec"]["podTemplate"]["spec"]
 
-        assert "securityContext" not in pod_spec or "sysctls" not in pod_spec.get("securityContext", {})
+        assert "securityContext" not in pod_spec or "sysctls" not in pod_spec.get(
+            "securityContext", {}
+        )
 
         sidecar = next(c for c in pod_spec["containers"] if c["name"] == "egress")
         assert "command" not in sidecar
@@ -905,7 +919,9 @@ class TestAgentSandboxProviderEgress:
         assert execd_init["name"] == "execd-installer"
         assert "/proc/sys/net/ipv6/conf/all/disable_ipv6" in execd_init["args"][0]
 
-    def test_create_workload_with_egress_skips_ipv6_disable_when_not_configured(self, mock_k8s_client):
+    def test_create_workload_with_egress_skips_ipv6_disable_when_not_configured(
+        self, mock_k8s_client
+    ):
         """With ``egress.disable_ipv6`` false, execd init stays unprivileged without sysctl writes."""
         provider = AgentSandboxProvider(
             mock_k8s_client,
@@ -941,7 +957,9 @@ class TestAgentSandboxProviderEgress:
         assert "securityContext" not in execd_init
         assert "/proc/sys/net/ipv6/conf/all/disable_ipv6" not in execd_init["args"][0]
 
-    def test_create_workload_with_network_policy_drops_net_admin_from_main_container(self, mock_k8s_client):
+    def test_create_workload_with_network_policy_drops_net_admin_from_main_container(
+        self, mock_k8s_client
+    ):
         provider = AgentSandboxProvider(mock_k8s_client)
         mock_k8s_client.create_custom_object.return_value = {
             "metadata": {"name": "test-id", "uid": "test-uid"}
@@ -970,11 +988,11 @@ class TestAgentSandboxProviderEgress:
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
         pod_spec = body["spec"]["podTemplate"]["spec"]
         containers = pod_spec["containers"]
-        
+
         # Find main container
         main_container = next((c for c in containers if c["name"] == "sandbox"), None)
         assert main_container is not None
-        
+
         # Verify main container has securityContext
         assert "securityContext" in main_container
         assert "capabilities" in main_container["securityContext"]
@@ -1010,7 +1028,7 @@ class TestAgentSandboxProviderEgress:
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
         pod_spec = body["spec"]["podTemplate"]["spec"]
         containers = pod_spec["containers"]
-        
+
         # Should only have main container
         assert len(containers) == 1
         assert containers[0]["name"] == "sandbox"
@@ -1047,15 +1065,16 @@ class TestAgentSandboxProviderEgress:
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
         pod_spec = body["spec"]["podTemplate"]["spec"]
         containers = pod_spec["containers"]
-        
+
         sidecar = next((c for c in containers if c["name"] == "egress"), None)
         assert sidecar is not None
-        
+
         env_vars = {e["name"]: e["value"] for e in sidecar.get("env", [])}
         assert "OPENSANDBOX_EGRESS_RULES" in env_vars
-        
+
         # Verify the environment variable contains valid JSON with network policy
         import json
+
         policy_json = json.loads(env_vars["OPENSANDBOX_EGRESS_RULES"])
         assert policy_json["defaultAction"] == "deny"
         assert len(policy_json["egress"]) == 2
@@ -1087,7 +1106,7 @@ class TestAgentSandboxProviderEgress:
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
         pod_spec = body["spec"]["podTemplate"]["spec"]
         containers = pod_spec["containers"]
-        
+
         main_container = containers[0]
         # Main container should not have securityContext when no network policy
         assert "securityContext" not in main_container

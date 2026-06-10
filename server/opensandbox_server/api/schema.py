@@ -29,10 +29,12 @@ from pydantic import BaseModel, Field, RootModel, model_validator
 # Image Specification
 # ============================================================================
 
+
 class ImageAuth(BaseModel):
     """
     Registry authentication credentials for private container registries.
     """
+
     username: str = Field(..., description="Registry username or service account")
     password: str = Field(..., description="Registry password or authentication token")
 
@@ -43,6 +45,7 @@ class ImageSpec(BaseModel):
 
     Supports public registry images and private registry images with authentication.
     """
+
     uri: str = Field(
         ...,
         description="Container image URI in standard format (e.g., 'python:3.11', 'gcr.io/my-project/app:v1.0')",
@@ -72,6 +75,7 @@ class PlatformSpec(BaseModel):
 # Resource Limits
 # ============================================================================
 
+
 class ResourceLimits(RootModel[Dict[str, str]]):
     """
     Runtime resource constraints as key-value pairs.
@@ -79,6 +83,7 @@ class ResourceLimits(RootModel[Dict[str, str]]):
     Similar to Kubernetes resource specifications, allows flexible definition
     of resource limits. Common resource types include cpu, memory, and gpu.
     """
+
     root: Dict[str, str] = Field(
         default_factory=dict,
         example={"cpu": "500m", "memory": "512Mi", "gpu": "1"},
@@ -90,7 +95,9 @@ class NetworkRule(BaseModel):
     Egress rule: allow/deny a specific domain or wildcard.
     """
 
-    action: str = Field(..., description="Whether to allow or deny matching targets (allow | deny).")
+    action: str = Field(
+        ..., description="Whether to allow or deny matching targets (allow | deny)."
+    )
     target: str = Field(
         ...,
         description="FQDN or wildcard domain (e.g., 'example.com', '*.example.com').",
@@ -263,6 +270,7 @@ class OSSFS(BaseModel):
         description="OSS access key secret for inline credentials mode.",
         min_length=1,
     )
+
     class Config:
         populate_by_name = True
 
@@ -330,9 +338,13 @@ class Volume(BaseModel):
         backends = [self.host, self.pvc, self.ossfs]
         specified = [b for b in backends if b is not None]
         if len(specified) == 0:
-            raise ValueError("Exactly one backend (host, pvc, ossfs) must be specified, but none was provided.")
+            raise ValueError(
+                "Exactly one backend (host, pvc, ossfs) must be specified, but none was provided."
+            )
         if len(specified) > 1:
-            raise ValueError("Exactly one backend (host, pvc, ossfs) must be specified, but multiple were provided.")
+            raise ValueError(
+                "Exactly one backend (host, pvc, ossfs) must be specified, but multiple were provided."
+            )
         return self
 
 
@@ -340,10 +352,12 @@ class Volume(BaseModel):
 # Sandbox Status
 # ============================================================================
 
+
 class SandboxStatus(BaseModel):
     """
     Detailed status information with lifecycle state and transition details.
     """
+
     state: str = Field(
         ...,
         description="Current lifecycle state (Pending, Running, Pausing, Paused, Resuming, Stopping, Terminated, Failed)",
@@ -370,10 +384,12 @@ class SandboxStatus(BaseModel):
 # Sandbox Models
 # ============================================================================
 
+
 class CreateSandboxRequest(BaseModel):
     """
     Request to create a new sandbox from either a container image or a snapshot.
     """
+
     image: Optional[ImageSpec] = Field(
         None,
         description="Container image specification for the sandbox",
@@ -500,9 +516,14 @@ class CreateSandboxResponse(BaseModel):
 
     Contains essential information without image and updatedAt.
     """
+
     id: str = Field(..., description="Unique sandbox identifier")
-    status: SandboxStatus = Field(..., description="Current lifecycle status and detailed state information")
-    metadata: Optional[Dict[str, str]] = Field(None, description="Custom metadata from creation request")
+    status: SandboxStatus = Field(
+        ..., description="Current lifecycle status and detailed state information"
+    )
+    metadata: Optional[Dict[str, str]] = Field(
+        None, description="Custom metadata from creation request"
+    )
     platform: Optional[PlatformSpec] = Field(
         None,
         description=(
@@ -516,7 +537,9 @@ class CreateSandboxResponse(BaseModel):
         description="Timestamp when sandbox will auto-terminate. Null when manual cleanup is enabled.",
     )
     created_at: datetime = Field(..., alias="createdAt", description="Sandbox creation timestamp")
-    entrypoint: Optional[List[str]] = Field(None, description="Entry process specification from creation request")
+    entrypoint: Optional[List[str]] = Field(
+        None, description="Entry process specification from creation request"
+    )
 
     class Config:
         populate_by_name = True
@@ -528,8 +551,11 @@ class Sandbox(BaseModel):
 
     This is the complete representation of the sandbox resource.
     """
+
     id: str = Field(..., description="Unique sandbox identifier")
-    image: Optional[ImageSpec] = Field(None, description="Container image specification used to provision this sandbox")
+    image: Optional[ImageSpec] = Field(
+        None, description="Container image specification used to provision this sandbox"
+    )
     snapshot_id: Optional[str] = Field(
         None,
         alias="snapshotId",
@@ -542,9 +568,15 @@ class Sandbox(BaseModel):
             "Null when no scheduling constraint is provided."
         ),
     )
-    status: SandboxStatus = Field(..., description="Current lifecycle status and detailed state information")
-    metadata: Optional[Dict[str, str]] = Field(None, description="Custom metadata from creation request")
-    entrypoint: Optional[List[str]] = Field(None, description="The command to execute as the sandbox's entry process")
+    status: SandboxStatus = Field(
+        ..., description="Current lifecycle status and detailed state information"
+    )
+    metadata: Optional[Dict[str, str]] = Field(
+        None, description="Custom metadata from creation request"
+    )
+    entrypoint: Optional[List[str]] = Field(
+        None, description="The command to execute as the sandbox's entry process"
+    )
     expires_at: Optional[datetime] = Field(
         None,
         alias="expiresAt",
@@ -563,10 +595,12 @@ PatchSandboxMetadataRequest = Dict[str, Optional[str]]
 # Snapshot Models
 # ============================================================================
 
+
 class SnapshotStatus(BaseModel):
     """
     Detailed snapshot status information with lifecycle state and transition details.
     """
+
     state: str = Field(
         ...,
         description="Current snapshot lifecycle state (Creating, Deleting, Ready, Failed)",
@@ -593,6 +627,7 @@ class CreateSnapshotRequest(BaseModel):
     """
     Request to create a snapshot from a sandbox.
     """
+
     name: Optional[str] = Field(
         None,
         min_length=1,
@@ -604,6 +639,7 @@ class Snapshot(BaseModel):
     """
     Persistent point-in-time capture of a sandbox.
     """
+
     id: str = Field(..., description="Unique snapshot identifier")
     sandbox_id: str = Field(
         ...,
@@ -632,6 +668,7 @@ class SnapshotFilter(BaseModel):
     """
     Filtering criteria for listing snapshots.
     """
+
     sandbox_id: Optional[str] = Field(
         None,
         alias="sandboxId",
@@ -651,6 +688,7 @@ class ListSnapshotsRequest(BaseModel):
     """
     Request body for snapshot listing queries.
     """
+
     filter: SnapshotFilter = Field(
         default_factory=SnapshotFilter,
         description="Filtering criteria (all conditions combined with AND logic)",
@@ -662,6 +700,7 @@ class ListSnapshotsResponse(BaseModel):
     """
     Paginated collection of snapshots.
     """
+
     items: List[Snapshot] = Field(..., description="List of snapshots")
     pagination: "PaginationInfo" = Field(..., description="Pagination metadata")
 
@@ -670,10 +709,12 @@ class ListSnapshotsResponse(BaseModel):
 # List Sandboxes
 # ============================================================================
 
+
 class SandboxFilter(BaseModel):
     """
     Filtering criteria for listing sandboxes.
     """
+
     state: Optional[List[str]] = Field(
         None,
         min_length=1,
@@ -689,6 +730,7 @@ class PaginationRequest(BaseModel):
     """
     Pagination parameters for list requests.
     """
+
     page: int = Field(1, ge=1, description="Page number")
     page_size: int = Field(
         20,
@@ -706,6 +748,7 @@ class ListSandboxesRequest(BaseModel):
     """
     Request body for complex listing queries.
     """
+
     filter: SandboxFilter = Field(
         default_factory=SandboxFilter,
         description="Filtering criteria (all conditions combined with AND logic)",
@@ -717,11 +760,16 @@ class PaginationInfo(BaseModel):
     """
     Pagination metadata for list responses.
     """
+
     page: int = Field(..., ge=1, description="Current page number")
     page_size: int = Field(..., ge=1, alias="pageSize", description="Number of items per page")
-    total_items: int = Field(..., ge=0, alias="totalItems", description="Total number of items matching the filter")
+    total_items: int = Field(
+        ..., ge=0, alias="totalItems", description="Total number of items matching the filter"
+    )
     total_pages: int = Field(..., ge=0, alias="totalPages", description="Total number of pages")
-    has_next_page: bool = Field(..., alias="hasNextPage", description="Whether there are more pages after the current one")
+    has_next_page: bool = Field(
+        ..., alias="hasNextPage", description="Whether there are more pages after the current one"
+    )
 
     class Config:
         populate_by_name = True
@@ -731,6 +779,7 @@ class ListSandboxesResponse(BaseModel):
     """
     Paginated collection of sandboxes.
     """
+
     items: List[Sandbox] = Field(..., description="List of sandboxes")
     pagination: PaginationInfo = Field(..., description="Pagination metadata")
 
@@ -739,10 +788,12 @@ class ListSandboxesResponse(BaseModel):
 # Renew Expiration
 # ============================================================================
 
+
 class RenewSandboxExpirationRequest(BaseModel):
     """
     Request to renew sandbox expiration time.
     """
+
     expires_at: datetime = Field(
         ...,
         alias="expiresAt",
@@ -757,6 +808,7 @@ class RenewSandboxExpirationResponse(BaseModel):
     """
     Response for renewing sandbox expiration.
     """
+
     expires_at: datetime = Field(
         ...,
         alias="expiresAt",
@@ -771,10 +823,12 @@ class RenewSandboxExpirationResponse(BaseModel):
 # Endpoint
 # ============================================================================
 
+
 class Endpoint(BaseModel):
     """
     Endpoint for accessing a service running in the sandbox.
     """
+
     endpoint: str = Field(
         ...,
         description="Public endpoint string (host[:port]/path) exposed for the sandbox service",
@@ -783,6 +837,7 @@ class Endpoint(BaseModel):
         default=None,
         description="Optional headers required when accessing the endpoint (e.g., for header-based routing).",
     )
+
     class Config:
         populate_by_name = True
 
@@ -791,12 +846,14 @@ class Endpoint(BaseModel):
 # Error Response
 # ============================================================================
 
+
 class ErrorResponse(BaseModel):
     """
     Standard error response for all non-2xx HTTP responses.
 
     HTTP status code indicates the error category; code and message provide details.
     """
+
     code: str = Field(
         ...,
         description="Machine-readable error code (e.g., INVALID_REQUEST, NOT_FOUND, INTERNAL_ERROR)",
@@ -811,10 +868,12 @@ class ErrorResponse(BaseModel):
 # Pool Models
 # ============================================================================
 
+
 class PoolCapacitySpec(BaseModel):
     """
     Capacity configuration that controls the size of the resource pool.
     """
+
     buffer_max: int = Field(
         ...,
         alias="bufferMax",
@@ -851,6 +910,7 @@ class CreatePoolRequest(BaseModel):
     A Pool manages a set of pre-warmed pods that can be rapidly allocated
     to sandboxes, reducing cold-start latency.
     """
+
     name: str = Field(
         ...,
         description="Unique name for the pool (must be a valid Kubernetes resource name).",
@@ -881,6 +941,7 @@ class UpdatePoolRequest(BaseModel):
     Only capacity settings can be updated after pool creation.
     Updating the pod template requires recreating the pool.
     """
+
     capacity_spec: PoolCapacitySpec = Field(
         ...,
         alias="capacitySpec",
@@ -895,6 +956,7 @@ class PoolStatus(BaseModel):
     """
     Observed runtime state of a pool.
     """
+
     total: int = Field(..., description="Total number of nodes in the pool.")
     allocated: int = Field(..., description="Number of nodes currently allocated to sandboxes.")
     available: int = Field(..., description="Number of nodes currently available in the pool.")
@@ -905,6 +967,7 @@ class PoolResponse(BaseModel):
     """
     Full representation of a Pool resource.
     """
+
     name: str = Field(..., description="Unique pool name.")
     capacity_spec: PoolCapacitySpec = Field(
         ...,
@@ -929,4 +992,5 @@ class ListPoolsResponse(BaseModel):
     """
     Collection of pools.
     """
+
     items: List[PoolResponse] = Field(..., description="List of pools.")

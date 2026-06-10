@@ -34,9 +34,7 @@ from opensandbox_server.api.schema import (
 )
 
 
-
 class TestHost:
-
     def test_valid_path(self):
         backend = Host(path="/data/opensandbox")
         assert backend.path == "/data/opensandbox"
@@ -63,7 +61,6 @@ class TestHost:
 
 
 class TestPVC:
-
     def test_valid_claim_name(self):
         backend = PVC(claim_name="my-pvc")
         assert backend.claim_name == "my-pvc"
@@ -108,7 +105,6 @@ class TestPVC:
 
 
 class TestOSSFS:
-
     def test_valid_ossfs(self):
         backend = OSSFS(
             bucket="bucket-test-3",
@@ -140,7 +136,6 @@ class TestOSSFS:
 
 
 class TestVolume:
-
     def test_valid_host_volume(self):
         volume = Volume(
             name="workdir",
@@ -186,7 +181,7 @@ class TestVolume:
             ossfs=OSSFS(
                 bucket="bucket-test-3",
                 endpoint="oss-cn-hangzhou.aliyuncs.com",
-                    access_key_id="AKIDEXAMPLE",
+                access_key_id="AKIDEXAMPLE",
                 access_key_secret="SECRETEXAMPLE",
             ),
             mount_path="/mnt/data",
@@ -272,7 +267,6 @@ class TestVolume:
 
 
 class TestSnapshots:
-
     def test_create_snapshot_request_accepts_optional_name(self):
         request = CreateSnapshotRequest(name="checkpoint-before-import")
         assert request.name == "checkpoint-before-import"
@@ -318,7 +312,6 @@ class TestSnapshots:
 
 
 class TestCreateSandboxRequestSnapshotCompat:
-
     def test_accepts_snapshot_id_without_entrypoint(self):
         request = CreateSandboxRequest(
             snapshotId="snap-001",
@@ -372,7 +365,7 @@ class TestCreateSandboxRequestSnapshotCompat:
             ossfs=OSSFS(
                 bucket="bucket-test-3",
                 endpoint="oss-cn-hangzhou.aliyuncs.com",
-                    access_key_id="AKIDEXAMPLE",
+                access_key_id="AKIDEXAMPLE",
                 access_key_secret="SECRETEXAMPLE",
             ),
             mount_path="/mnt/data",
@@ -386,7 +379,6 @@ class TestCreateSandboxRequestSnapshotCompat:
 
 
 class TestCreateSandboxRequestWithVolumes:
-
     def test_request_without_timeout_uses_manual_cleanup(self):
         request = CreateSandboxRequest(
             image=ImageSpec(uri="python:3.11"),
@@ -657,5 +649,3 @@ class TestCreateSandboxRequestPoolMode:
             CreateSandboxRequest(
                 extensions={"poolRef": "   "},
             )
-
-

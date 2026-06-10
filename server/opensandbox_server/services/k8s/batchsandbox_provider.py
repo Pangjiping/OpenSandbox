@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 class BatchSandboxProvider(WorkloadProvider):
     """Workload provider for BatchSandbox CRDs."""
-    
+
     def __init__(
         self,
         k8s_client: K8sClient,
@@ -79,9 +79,7 @@ class BatchSandboxProvider(WorkloadProvider):
         self.image_pull_policy = k8s_config.image_pull_policy if k8s_config else "IfNotPresent"
 
         self.resolver = SecureRuntimeResolver(app_config) if app_config else None
-        self.runtime_class = (
-            self.resolver.get_k8s_runtime_class() if self.resolver else None
-        )
+        self.runtime_class = self.resolver.get_k8s_runtime_class() if self.resolver else None
 
         self.group = "sandbox.opensandbox.io"
         self.version = "v1alpha1"
@@ -124,7 +122,9 @@ class BatchSandboxProvider(WorkloadProvider):
         windows_profile = is_windows_profile(platform)
 
         if self.runtime_class:
-            logger.info(f"Using Kubernetes RuntimeClass '{self.runtime_class}' for sandbox {sandbox_id}")
+            logger.info(
+                f"Using Kubernetes RuntimeClass '{self.runtime_class}' for sandbox {sandbox_id}"
+            )
 
         if extensions.get("poolRef"):
             if platform is not None:
@@ -154,16 +154,14 @@ class BatchSandboxProvider(WorkloadProvider):
             validate_windows_profile_resource_limits(resource_limits)
 
         disable_ipv6_for_egress = (
-            network_policy is not None
-            and egress_image is not None
-            and self.egress_disable_ipv6
+            network_policy is not None and egress_image is not None and self.egress_disable_ipv6
         )
         init_container = _build_execd_init_container(
             execd_image,
             self.execd_init_resources,
             disable_ipv6_for_egress=disable_ipv6_for_egress,
         )
-        
+
         main_container = _build_main_container(
             image_spec=image_spec,
             entrypoint=entrypoint,
@@ -172,17 +170,12 @@ class BatchSandboxProvider(WorkloadProvider):
             has_network_policy=network_policy is not None,
             image_pull_policy=self.image_pull_policy,
         )
-        
+
         containers = [_container_to_dict(main_container)]
         pod_spec = {
             "initContainers": [_container_to_dict(init_container)],
             "containers": containers,
-            "volumes": [
-                {
-                    "name": "opensandbox-bin",
-                    "emptyDir": {}
-                }
-            ],
+            "volumes": [{"name": "opensandbox-bin", "emptyDir": {}}],
         }
         if windows_profile:
             apply_windows_profile_overrides(
@@ -193,11 +186,7 @@ class BatchSandboxProvider(WorkloadProvider):
                 disable_ipv6_for_egress=disable_ipv6_for_egress,
             )
             template = self.template_manager.get_base_template()
-            template_spec = (
-                template.get("spec", {})
-                .get("template", {})
-                .get("spec", {})
-            )
+            template_spec = template.get("spec", {}).get("template", {}).get("spec", {})
             apply_windows_profile_arch_selector(
                 pod_spec=pod_spec,
                 template_spec=template_spec if isinstance(template_spec, dict) else {},
@@ -280,7 +269,9 @@ class BatchSandboxProvider(WorkloadProvider):
                 self.k8s_client.create_secret(namespace=namespace, body=secret)
                 logger.info(f"Created imagePullSecret for sandbox {sandbox_id}")
             except Exception:
-                logger.warning(f"Failed to create imagePullSecret for sandbox {sandbox_id}, rolling back BatchSandbox")
+                logger.warning(
+                    f"Failed to create imagePullSecret for sandbox {sandbox_id}, rolling back BatchSandbox"
+                )
                 try:
                     self.k8s_client.delete_custom_object(
                         group=self.group,
@@ -308,11 +299,7 @@ class BatchSandboxProvider(WorkloadProvider):
             return
 
         template = self.template_manager.get_base_template()
-        template_spec = (
-            template.get("spec", {})
-            .get("template", {})
-            .get("spec", {})
-        )
+        template_spec = template.get("spec", {}).get("template", {}).get("spec", {})
         WorkloadProvider.apply_platform_node_selector(
             pod_spec=pod_spec,
             template_spec=template_spec if isinstance(template_spec, dict) else {},
@@ -360,7 +347,7 @@ class BatchSandboxProvider(WorkloadProvider):
             plural=self.plural,
             body=runtime_manifest,
         )
-        
+
         return {
             "name": created["metadata"]["name"],
             "uid": created["metadata"]["uid"],
@@ -439,9 +426,9 @@ class BatchSandboxProvider(WorkloadProvider):
         env: Dict[str, str],
     ) -> Dict[str, Any]:
         """Build pool taskTemplate with shell-escaped bootstrap command."""
-        escaped_entrypoint = ' '.join(shlex.quote(arg) for arg in entrypoint)
+        escaped_entrypoint = " ".join(shlex.quote(arg) for arg in entrypoint)
         user_process_cmd = f"/opt/opensandbox/bin/bootstrap.sh {escaped_entrypoint} &"
-        
+
         wrapped_command = ["/bin/sh", "-c", user_process_cmd]
 
         env_list = [{"name": k, "value": v} for k, v in env.items()] if env else []
@@ -454,7 +441,6 @@ class BatchSandboxProvider(WorkloadProvider):
                 }
             }
         }
-
 
     def get_workload(self, sandbox_id: str, namespace: str) -> Optional[Dict[str, Any]]:
         """Get BatchSandbox by sandbox ID."""
@@ -479,7 +465,7 @@ class BatchSandboxProvider(WorkloadProvider):
             )
 
         return None
-    
+
     def delete_workload(self, sandbox_id: str, namespace: str) -> None:
         """Delete BatchSandbox workload."""
         batchsandbox = self.get_workload(sandbox_id, namespace)
@@ -505,7 +491,9 @@ class BatchSandboxProvider(WorkloadProvider):
             label_selector=label_selector,
         )
 
-    def patch_workload(self, sandbox_id: str, namespace: str, spec_patch: Dict[str, Any]) -> Dict[str, Any]:
+    def patch_workload(
+        self, sandbox_id: str, namespace: str, spec_patch: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Patch BatchSandbox spec (e.g., spec.pause for pause/resume)."""
         batchsandbox = self.get_workload(sandbox_id, namespace)
         if not batchsandbox:
@@ -527,7 +515,9 @@ class BatchSandboxProvider(WorkloadProvider):
         return False
 
     @staticmethod
-    def _first_true_condition_message(conditions: List[Dict[str, Any]], condition_types: List[str]) -> Optional[str]:
+    def _first_true_condition_message(
+        conditions: List[Dict[str, Any]], condition_types: List[str]
+    ) -> Optional[str]:
         for condition_type in condition_types:
             for cond in conditions:
                 if cond.get("type") == condition_type and cond.get("status") == "True":
@@ -536,7 +526,9 @@ class BatchSandboxProvider(WorkloadProvider):
                         return message
         return None
 
-    def _patch_pause_with_retry_bridge(self, sandbox_id: str, namespace: str, target: Optional[bool]) -> None:
+    def _patch_pause_with_retry_bridge(
+        self, sandbox_id: str, namespace: str, target: Optional[bool]
+    ) -> None:
         self.patch_workload(sandbox_id, namespace, {"spec": {"pause": None}})
         try:
             self.patch_workload(sandbox_id, namespace, {"spec": {"pause": target}})
@@ -569,12 +561,8 @@ class BatchSandboxProvider(WorkloadProvider):
         if not batchsandbox:
             raise Exception(f"BatchSandbox for sandbox {sandbox_id} not found")
 
-        body = {
-            "spec": {
-                "expireTime": expires_at.isoformat()
-            }
-        }
-        
+        body = {"spec": {"expireTime": expires_at.isoformat()}}
+
         self.k8s_client.patch_custom_object(
             group=self.group,
             version=self.version,
@@ -662,7 +650,9 @@ class BatchSandboxProvider(WorkloadProvider):
             raise ValueError(f"Cannot resume sandbox in phase {phase}, expected Paused")
         elif phase == "Failed":
             if resume_failed:
-                raise ValueError("Cannot resume: sandbox is not available (resume caused pod start failure)")
+                raise ValueError(
+                    "Cannot resume: sandbox is not available (resume caused pod start failure)"
+                )
             else:
                 raise ValueError("Cannot resume: sandbox is not available")
         elif phase == "Pending":
@@ -681,12 +671,12 @@ class BatchSandboxProvider(WorkloadProvider):
         """Parse expiration timestamp from `spec.expireTime`."""
         spec = workload.get("spec", {})
         expire_time_str = spec.get("expireTime")
-        
+
         if not expire_time_str:
             return None
-        
+
         try:
-            return datetime.fromisoformat(expire_time_str.replace('Z', '+00:00'))
+            return datetime.fromisoformat(expire_time_str.replace("Z", "+00:00"))
         except (ValueError, TypeError) as e:
             logger.warning(f"Invalid expireTime format: {expire_time_str}, error: {e}")
             return None
@@ -705,11 +695,15 @@ class BatchSandboxProvider(WorkloadProvider):
             pass
         return None
 
-    def _platform_unschedulable_message_from_selector(self, workload: Dict[str, Any]) -> Optional[str]:
-        workload_has_platform_constraints, workload_has_non_platform_constraints = _workload_platform_constraint_scope(
-            workload,
-            "template",
-            self.analyze_platform_constraints_in_pod_spec,
+    def _platform_unschedulable_message_from_selector(
+        self, workload: Dict[str, Any]
+    ) -> Optional[str]:
+        workload_has_platform_constraints, workload_has_non_platform_constraints = (
+            _workload_platform_constraint_scope(
+                workload,
+                "template",
+                self.analyze_platform_constraints_in_pod_spec,
+            )
         )
         if not workload_has_platform_constraints:
             return None
@@ -801,8 +795,10 @@ class BatchSandboxProvider(WorkloadProvider):
             "message": message,
             "last_transition_at": creation_timestamp,
         }
-    
-    def get_endpoint_info(self, workload: Dict[str, Any], port: int, sandbox_id: str) -> Optional[Endpoint]:
+
+    def get_endpoint_info(
+        self, workload: Dict[str, Any], port: int, sandbox_id: str
+    ) -> Optional[Endpoint]:
         """Resolve endpoint using gateway ingress or parsed pod IP."""
         if self.ingress_config and self.ingress_config.mode == INGRESS_MODE_GATEWAY:
             return format_ingress_endpoint(self.ingress_config, sandbox_id, port)
