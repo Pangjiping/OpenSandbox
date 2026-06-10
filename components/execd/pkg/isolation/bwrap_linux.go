@@ -18,12 +18,22 @@ package isolation
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/alibaba/opensandbox/execd/pkg/log"
 )
 
 // bwrapPath is the path to the bwrap binary. It is discovered at startup by
 // findBwrap and cached for subsequent use.
 var bwrapPath string
+
+// seccompBPF holds pre-generated seccomp BPF bytecode, initialised once at
+// startup by generateSeccompDenyBPF.
+var seccompBPF []byte
 
 // findBwrap locates the bwrap binary. Priority order:
 //
@@ -50,13 +60,19 @@ func findBwrap() string {
 }
 
 // bwrapImpl is the Linux bwrap Isolator.
-type bwrapImpl struct {
-	seccompPath string
-}
+type bwrapImpl struct{}
 
 // NewBwrap returns a bwrap Isolator for Linux.
 func NewBwrap() Isolator {
 	bwrapPath = findBwrap()
+
+	// Pre-generate seccomp BPF once at startup.
+	if bpf, err := generateSeccompDenyBPF(); err != nil {
+		log.Warning("seccomp: failed to generate BPF: %v", err)
+	} else {
+		seccompBPF = bpf
+	}
+
 	return &bwrapImpl{}
 }
 
@@ -102,8 +118,19 @@ func (b *bwrapImpl) Wrap(cmd *exec.Cmd, opts WrapOptions) error {
 		return fmt.Errorf("bwrap: binary not found")
 	}
 
-	seccompPath := b.seccompPath
-	argv, err := buildArgv(opts, seccompPath)
+	// Wire up seccomp BPF via memfd, if available.
+	var seccompFd string
+	if len(seccompBPF) > 0 {
+		fd, err := createMemfdWithData(seccompBPF)
+		if err != nil {
+			return fmt.Errorf("bwrap: seccomp memfd: %w", err)
+		}
+		// ExtraFiles are assigned fds starting at 3 in the child process.
+		seccompFd = strconv.Itoa(3 + len(cmd.ExtraFiles))
+		cmd.ExtraFiles = append(cmd.ExtraFiles, os.NewFile(uintptr(fd), "seccomp"))
+	}
+
+	argv, err := buildArgv(opts, seccompFd)
 	if err != nil {
 		return fmt.Errorf("bwrap: %w", err)
 	}
@@ -112,10 +139,24 @@ func (b *bwrapImpl) Wrap(cmd *exec.Cmd, opts WrapOptions) error {
 	return nil
 }
 
-// SetSeccompPath sets the path to a seccomp BPF profile for this bwrap
-// instance.
-func (b *bwrapImpl) SetSeccompPath(path string) {
-	b.seccompPath = path
+// createMemfdWithData creates an anonymous memfd, writes data to it, and
+// seeks back to the beginning. The returned fd is ready to be passed to bwrap
+// via ExtraFiles.
+func createMemfdWithData(data []byte) (int, error) {
+	fd, err := unix.MemfdCreate("seccomp", 0)
+	if err != nil {
+		return -1, fmt.Errorf("memfd_create: %w", err)
+	}
+	// Write data and seek back to 0 so bwrap reads from the start.
+	if _, err := unix.Write(fd, data); err != nil {
+		unix.Close(fd)
+		return -1, fmt.Errorf("write seccomp BPF: %w", err)
+	}
+	if _, err := unix.Seek(fd, 0, 0); err != nil {
+		unix.Close(fd)
+		return -1, fmt.Errorf("seek seccomp BPF: %w", err)
+	}
+	return fd, nil
 }
 
 // Ensure bwrapImpl satisfies Isolator.

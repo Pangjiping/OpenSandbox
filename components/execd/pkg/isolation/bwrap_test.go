@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build linux
+
 package isolation
 
 import (
@@ -20,6 +22,9 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func uidPtr(n uint32) *uint32 { return &n }
@@ -247,14 +252,10 @@ func TestBuildArgv_Setpriv(t *testing.T) {
 
 func TestBuildArgv_Seccomp(t *testing.T) {
 	opts := basicWrapOpts()
-	argv, err := buildArgv(opts, "/etc/execd/seccomp.bpf")
-	if err != nil {
-		t.Fatal(err)
-	}
+	argv, err := buildArgv(opts, "3") // fd number passed to --seccomp
+	require.NoError(t, err)
 	s := strings.Join(argv, " ")
-	if !strings.Contains(s, "/etc/execd/seccomp.bpf") {
-		t.Error("missing seccomp path")
-	}
+	assert.Contains(t, s, "--seccomp 3", "missing seccomp fd")
 }
 
 func TestBuildArgv_SegmentOrder(t *testing.T) {
@@ -265,7 +266,7 @@ func TestBuildArgv_SegmentOrder(t *testing.T) {
 	opts.ExtraWritable = []string{"/data"}
 	opts.EnvPassthrough = EnvSpec{Mode: EnvModeDeny, Keys: []string{"TOKEN"}}
 
-	argv, err := buildArgv(opts, "/etc/execd/seccomp.bpf")
+	argv, err := buildArgv(opts, "3") // fd number passed to --seccomp
 	if err != nil {
 		t.Fatal(err)
 	}

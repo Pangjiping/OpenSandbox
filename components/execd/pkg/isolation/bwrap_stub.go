@@ -21,9 +21,6 @@ import (
 	"os/exec"
 )
 
-// bwrapPath is empty on non-Linux platforms.
-var bwrapPath string
-
 // findBwrap returns empty string on non-Linux.
 func findBwrap() string { return "" }
 
