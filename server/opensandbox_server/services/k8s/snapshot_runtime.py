@@ -85,16 +85,18 @@ class KubernetesSnapshotRuntime:
         self,
         snapshot_id: str,
         sandbox_id: str,
+        *,
+        namespace: str = "default",
     ) -> Optional[SnapshotRuntimeStatus]:
         snapshot_name = build_public_snapshot_name(snapshot_id)
-        body = self._build_snapshot_body(snapshot_id, sandbox_id, snapshot_name)
+        body = self._build_snapshot_body(snapshot_id, sandbox_id, snapshot_name, namespace=namespace)
         should_validate_existing_source = False
 
         try:
             self._k8s_client.create_custom_object(
                 group=_GROUP,
                 version=_VERSION,
-                namespace=self._namespace,
+                namespace=namespace,
                 plural=_PLURAL,
                 body=body,
             )
@@ -136,13 +138,15 @@ class KubernetesSnapshotRuntime:
     def get_snapshot_status(self, snapshot_id: str) -> Optional[SnapshotRuntimeStatus]:
         return self.inspect_snapshot(snapshot_id)
 
-    def delete_snapshot(self, snapshot_id: str, image: Optional[str] = None) -> None:
+    def delete_snapshot(
+        self, snapshot_id: str, image: Optional[str] = None, *, namespace: str = "default"
+    ) -> None:
         snapshot_name = build_public_snapshot_name(snapshot_id)
         try:
             self._k8s_client.delete_custom_object(
                 group=_GROUP,
                 version=_VERSION,
-                namespace=self._namespace,
+                namespace=namespace,
                 plural=_PLURAL,
                 name=snapshot_name,
             )
@@ -179,13 +183,15 @@ class KubernetesSnapshotRuntime:
 
         return self._snapshot_status_from_cr(snapshot)
 
-    def _build_snapshot_body(self, snapshot_id: str, sandbox_id: str, snapshot_name: str) -> dict:
+    def _build_snapshot_body(
+        self, snapshot_id: str, sandbox_id: str, snapshot_name: str, *, namespace: str = "default"
+    ) -> dict:
         return {
             "apiVersion": f"{_GROUP}/{_VERSION}",
             "kind": "SandboxSnapshot",
             "metadata": {
                 "name": snapshot_name,
-                "namespace": self._namespace,
+                "namespace": namespace,
                 "labels": {
                     PUBLIC_SNAPSHOT_ID_LABEL: snapshot_id,
                     PUBLIC_SNAPSHOT_SOURCE_SANDBOX_ID_LABEL: sandbox_id,
