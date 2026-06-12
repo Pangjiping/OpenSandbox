@@ -154,7 +154,10 @@ func (c *FilesystemController) serveLineRange(file *os.File, rawOffset, rawLimit
 	c.ctx.Header("Content-Type", "text/plain; charset=utf-8")
 	c.ctx.Status(http.StatusOK)
 
+	const maxLineSize = 1024 * 1024 // 1 MiB
 	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+
 	var lineNum int64
 	var written int64
 	for scanner.Scan() {
@@ -170,6 +173,9 @@ func (c *FilesystemController) serveLineRange(file *os.File, rawOffset, rawLimit
 		}
 		_, _ = c.ctx.Writer.Write(scanner.Bytes())
 		written++
+	}
+	if err := scanner.Err(); err != nil {
+		c.ctx.Writer.Write([]byte(fmt.Sprintf("\n[error reading file: %v]", err)))
 	}
 }
 
