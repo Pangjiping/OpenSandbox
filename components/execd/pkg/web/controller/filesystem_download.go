@@ -175,7 +175,7 @@ func (c *FilesystemController) serveLineRange(file *os.File, rawOffset, rawLimit
 		written++
 	}
 	if err := scanner.Err(); err != nil {
-		c.ctx.Writer.Write([]byte(fmt.Sprintf("\n[error reading file: %v]", err)))
+		_, _ = c.ctx.Writer.Write([]byte(fmt.Sprintf("\n[error reading file: %v]", err)))
 	}
 }
 

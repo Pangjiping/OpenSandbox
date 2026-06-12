@@ -54,6 +54,13 @@ interface Filesystem {
     ): String
 
     /**
+     * Backward-compatible overload for Java callers using positional args.
+     */
+    fun readFile(path: String, encoding: String, range: String?): String {
+        return readFile(path, encoding, range, null, null)
+    }
+
+    /**
      * Convenience overload for reading a file as a string using UTF-8.
      *
      * Equivalent to: `readFile(path, "UTF-8", null)`
@@ -83,6 +90,13 @@ interface Filesystem {
     ): ByteArray
 
     /**
+     * Backward-compatible overload for Java callers using positional args.
+     */
+    fun readByteArray(path: String, range: String?): ByteArray {
+        return readByteArray(path, range, null, null)
+    }
+
+    /**
      * Convenience overload for reading a file as a byte array.
      *
      * Equivalent to: `readByteArray(path, null)`
@@ -110,6 +124,13 @@ interface Filesystem {
         offset: Int? = null,
         limit: Int? = null,
     ): InputStream
+
+    /**
+     * Backward-compatible overload for Java callers using positional args.
+     */
+    fun readStream(path: String, range: String?): InputStream {
+        return readStream(path, range, null, null)
+    }
 
     /**
      * Convenience overload for opening a file stream.
