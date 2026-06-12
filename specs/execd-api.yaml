@@ -1963,21 +1963,13 @@ components:
     CreateIsolatedSessionRequest:
       type: object
       required:
-        - isolation
-      properties:
-        isolation:
-          $ref: "#/components/schemas/IsolationSpec"
-
-    IsolationSpec:
-      type: object
-      required:
         - workspace
       properties:
         profile:
           type: string
           enum: ["strict", "balanced"]
         workspace:
-          $ref: "#/components/schemas/WorkspaceSpec"
+          $ref: "#/components/schemas/IsolatedWorkspaceSpec"
         extra_writable:
           type: array
           items:
@@ -1995,7 +1987,7 @@ components:
         idle_timeout_seconds:
           type: integer
 
-    WorkspaceSpec:
+    IsolatedWorkspaceSpec:
       type: object
       required:
         - path
@@ -2005,18 +1997,6 @@ components:
         mode:
           type: string
           enum: ["rw", "overlay", "ro"]
-        persist:
-          $ref: "#/components/schemas/PersistSpec"
-
-    PersistSpec:
-      type: object
-      properties:
-        enabled:
-          type: boolean
-        retain_seconds:
-          type: integer
-        max_size_bytes:
-          type: integer
 
     EnvPassthroughSpec:
       type: object
@@ -2038,18 +2018,6 @@ components:
         created_at:
           type: string
           format: date-time
-        isolation:
-          $ref: "#/components/schemas/IsolationSpec"
-        artifacts:
-          $ref: "#/components/schemas/ArtifactURLs"
-
-    ArtifactURLs:
-      type: object
-      properties:
-        diff_url:
-          type: string
-        commit_url:
-          type: string
 
     IsolatedRunRequest:
       type: object
@@ -2057,8 +2025,6 @@ components:
         - code
       properties:
         code:
-          type: string
-        cwd:
           type: string
         envs:
           type: object
@@ -2083,8 +2049,6 @@ components:
         idle_remaining_seconds:
           type: integer
           nullable: true
-        isolation:
-          $ref: "#/components/schemas/IsolationSpec"
 
     CapabilitiesResponse:
       type: object
