@@ -753,7 +753,14 @@ async def test_egress_sidecar_injection_and_capabilities(mock_docker):
     assert f"{OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT}=true" not in sidecar_env
     forwarded_env = main_kwargs["environment"]
     assert f"{OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT}=true" not in forwarded_env
-    mock_client.volumes.create.assert_not_called()
+    sandbox_id = main_kwargs["labels"][SANDBOX_ID_LABEL]
+    runtime_volume = f"opensandbox-runtime-{sandbox_id}"
+    mock_client.volumes.create.assert_called_once_with(
+        name=runtime_volume,
+        labels={SANDBOX_MANAGED_VOLUMES_LABEL: "server"},
+    )
+    sidecar_binds = sidecar_kwargs["host_config"].get("binds", [])
+    assert f"{runtime_volume}:{OPENSANDBOX_RUNTIME_MOUNT_PATH}:rw" in sidecar_binds
 
 
 @pytest.mark.asyncio

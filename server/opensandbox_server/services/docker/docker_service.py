@@ -814,21 +814,21 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
             container_exposed_ports: Optional[list[str]] = exposed_ports
 
             if request.network_policy:
-                if credential_proxy_enabled:
-                    runtime_volume_name = f"opensandbox-runtime-{sandbox_id}"
-                    with self._docker_operation(
-                        "create credential proxy runtime volume", sandbox_id
-                    ):
-                        self.docker_client.volumes.create(
-                            name=runtime_volume_name,
-                            labels={SANDBOX_MANAGED_VOLUMES_LABEL: "server"},
-                        )
-                    auto_created_volumes = list(auto_created_volumes or [])
-                    auto_created_volumes.append(runtime_volume_name)
-                    labels[SANDBOX_MANAGED_VOLUMES_LABEL] = json.dumps(
-                        auto_created_volumes,
-                        separators=(",", ":"),
+                runtime_volume_name = f"opensandbox-runtime-{sandbox_id}"
+                with self._docker_operation(
+                    "create egress runtime volume", sandbox_id
+                ):
+                    self.docker_client.volumes.create(
+                        name=runtime_volume_name,
+                        labels={SANDBOX_MANAGED_VOLUMES_LABEL: "server"},
                     )
+                auto_created_volumes = list(auto_created_volumes or [])
+                auto_created_volumes.append(runtime_volume_name)
+                labels[SANDBOX_MANAGED_VOLUMES_LABEL] = json.dumps(
+                    auto_created_volumes,
+                    separators=(",", ":"),
+                )
+                if credential_proxy_enabled:
                     environment = [
                         entry
                         for entry in environment
