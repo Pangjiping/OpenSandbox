@@ -64,6 +64,7 @@ curl -v http://localhost:44772/ping
 |---|---|
 | `JUPYTER_HOST` | Same as `--jupyter-host` (overridden by explicit flag). |
 | `JUPYTER_TOKEN` | Same as `--jupyter-token` (overridden by explicit flag). |
+| `EXECD_ACCESS_TOKEN` | Same as `--access-token` (overridden by explicit flag). |
 | `EXECD_API_GRACE_SHUTDOWN` | Same as `--graceful-shutdown-timeout`. |
 | `EXECD_JUPYTER_IDLE_POLL_INTERVAL` | Same as `--jupyter-idle-poll-interval`. |
 | `EXECD_CLONE3_COMPAT` | Linux clone3 compatibility switch (see below). |
