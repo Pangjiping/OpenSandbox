@@ -123,8 +123,8 @@ def _build_execd_init_container(
         "cp ./bootstrap.sh /opt/opensandbox/bootstrap.sh && "
         "chmod +x /opt/opensandbox/execd && "
         "chmod +x /opt/opensandbox/bootstrap.sh && "
-        "cp /usr/local/bin/bwrap /opt/opensandbox/bwrap 2>/dev/null && "
-        "chmod +x /opt/opensandbox/bwrap 2>/dev/null; true"
+        "(cp /usr/local/bin/bwrap /opt/opensandbox/bwrap && "
+        "chmod +x /opt/opensandbox/bwrap || true)"
     )
     security_context = None
     if disable_ipv6_for_egress:

@@ -139,7 +139,13 @@ func (c *IsolatedSessionController) Run() {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(c.ctx.Request.Context())
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if req.TimeoutSeconds > 0 {
+		ctx, cancel = context.WithTimeout(c.ctx.Request.Context(), time.Duration(req.TimeoutSeconds)*time.Second)
+	} else {
+		ctx, cancel = context.WithCancel(c.ctx.Request.Context())
+	}
 	defer cancel()
 
 	// SSE stdout callback.

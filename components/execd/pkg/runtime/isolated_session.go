@@ -97,8 +97,12 @@ func (s *isolatedSession) start() error {
 	if s.opts.ShareNet != nil {
 		wrapOpts.ShareNet = *s.opts.ShareNet
 	}
-	wrapOpts.EnvPassthrough.Mode = isolation.EnvMode(s.opts.EnvPassthroughMode)
-	wrapOpts.EnvPassthrough.Keys = s.opts.EnvPassthroughKeys
+	if s.opts.EnvPassthroughMode != "" {
+		wrapOpts.EnvPassthrough.Mode = isolation.EnvMode(s.opts.EnvPassthroughMode)
+		wrapOpts.EnvPassthrough.Keys = s.opts.EnvPassthroughKeys
+	} else {
+		wrapOpts.EnvPassthrough.Mode = isolation.EnvModeDeny
+	}
 	wrapOpts.Uid = s.opts.Uid
 	wrapOpts.Gid = s.opts.Gid
 	wrapOpts.UpperDir = s.upperDir

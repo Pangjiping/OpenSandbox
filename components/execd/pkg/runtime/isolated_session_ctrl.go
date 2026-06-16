@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -271,6 +272,7 @@ func scanUntilMarker(ctx context.Context, stdout io.ReadCloser, onStdout StdoutC
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
 	var exitCode int
+	markerSeen := false
 	scanDone := make(chan struct{})
 	go func() {
 		defer close(scanDone)
@@ -280,6 +282,7 @@ func scanUntilMarker(ctx context.Context, stdout io.ReadCloser, onStdout StdoutC
 			// output didn't end with a newline (e.g. cat of a file
 			// without trailing newline).
 			if idx := strings.Index(line, isolatedRunEndMarker); idx >= 0 {
+				markerSeen = true
 				if idx > 0 && onStdout != nil {
 					onStdout(line[:idx])
 				}
@@ -306,6 +309,9 @@ func scanUntilMarker(ctx context.Context, stdout io.ReadCloser, onStdout StdoutC
 
 	if err := scanner.Err(); err != nil {
 		return 0, fmt.Errorf("read stdout: %w", err)
+	}
+	if !markerSeen {
+		return 1, fmt.Errorf("session process exited without end marker (process may have died or called exit)")
 	}
 	return exitCode, nil
 }
@@ -399,9 +405,11 @@ func (r *IsolatedRunner) validateExtraWritable(paths []string) error {
 		return fmt.Errorf("extra_writable not allowed: no paths in allowlist")
 	}
 	for _, p := range paths {
+		cleaned := filepath.Clean(p)
 		found := false
 		for _, allowed := range r.allowedWritable {
-			if strings.HasPrefix(p, allowed) {
+			allowedClean := filepath.Clean(allowed)
+			if cleaned == allowedClean || strings.HasPrefix(cleaned, allowedClean+"/") {
 				found = true
 				break
 			}
