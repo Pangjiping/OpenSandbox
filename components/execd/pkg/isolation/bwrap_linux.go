@@ -38,7 +38,7 @@ var seccompBPF []byte
 // findBwrap locates the bwrap binary. Priority order:
 //
 //  1. $PATH lookup                 — respect user-installed bwrap
-//  2. /opt/opensandbox/bin/bwrap   — injected by init container alongside execd
+//  2. /opt/opensandbox/bwrap       — injected by init container alongside execd
 //  3. /usr/bin/bwrap               — system package (Alpine apk)
 //  4. /usr/local/bin/bwrap         — manual install
 func findBwrap() string {
@@ -48,7 +48,7 @@ func findBwrap() string {
 	}
 	// Fall back to known locations.
 	for _, p := range []string{
-		"/opt/opensandbox/bin/bwrap",
+		"/opt/opensandbox/bwrap",
 		"/usr/bin/bwrap",
 		"/usr/local/bin/bwrap",
 	} {

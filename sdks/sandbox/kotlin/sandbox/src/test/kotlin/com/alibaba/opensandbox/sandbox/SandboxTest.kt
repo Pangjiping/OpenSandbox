@@ -102,6 +102,7 @@ class SandboxTest {
                 metricsService = metricsService,
                 egressService = egressService,
                 credentialVaultService = credentialVaultService,
+                isolatedService = mockk(),
                 customHealthCheck = null,
                 httpClientProvider = httpClientProvider,
                 diagnosticsService = diagnosticsService,

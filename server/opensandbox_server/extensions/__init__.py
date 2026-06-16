@@ -23,6 +23,7 @@ from opensandbox_server.extensions.codec import (
 from opensandbox_server.extensions.keys import (
     ACCESS_RENEW_EXTEND_SECONDS_KEY,
     ACCESS_RENEW_EXTEND_SECONDS_METADATA_KEY,
+    BOOTSTRAP_EXECD_ISOLATION_KEY,
     EXTENSIONS_ANNOTATION_PREFIX,
     ANNOTATION_METADATA_PREFIX,
 )
@@ -42,4 +43,5 @@ __all__ = [
     "apply_extensions_to_annotations",
     "EXTENSIONS_ANNOTATION_PREFIX",
     "ANNOTATION_METADATA_PREFIX",
+    "BOOTSTRAP_EXECD_ISOLATION_KEY",
 ]

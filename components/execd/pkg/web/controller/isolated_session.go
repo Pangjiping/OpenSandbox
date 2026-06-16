@@ -22,6 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/alibaba/opensandbox/execd/pkg/isolation"
 	"github.com/alibaba/opensandbox/execd/pkg/runtime"
 	"github.com/alibaba/opensandbox/execd/pkg/telemetry"
 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
@@ -30,9 +31,17 @@ import (
 // isolatedRunner is set by InitIsolatedRunner during startup.
 var isolatedRunner *runtime.IsolatedRunner
 
+// isolatedProbeResult stores the probe result for capabilities reporting.
+var isolatedProbeResult *isolation.ProbeResult
+
 // InitIsolatedRunner wires the isolated session runner.
 func InitIsolatedRunner(r *runtime.IsolatedRunner) {
 	isolatedRunner = r
+}
+
+// InitIsolatedProbe stores the probe result for the capabilities endpoint.
+func InitIsolatedProbe(p *isolation.ProbeResult) {
+	isolatedProbeResult = p
 }
 
 // IsolatedSessionController handles /v1/isolated/* endpoints.
@@ -201,11 +210,15 @@ func (c *IsolatedSessionController) Commit() {
 // Capabilities handles GET /v1/isolated/capabilities.
 func (c *IsolatedSessionController) Capabilities() {
 	if isolatedRunner == nil {
-		c.RespondSuccess(model.CapabilitiesResponse{
+		resp := model.CapabilitiesResponse{
 			Available:       false,
 			CommitSupported: false,
 			DiffSupported:   false,
-		})
+		}
+		if isolatedProbeResult != nil {
+			resp.Message = isolatedProbeResult.Message
+		}
+		c.RespondSuccess(resp)
 		return
 	}
 	caps := isolatedRunner.Capabilities()

@@ -18,6 +18,11 @@
 ACCESS_RENEW_EXTEND_SECONDS_KEY = "access.renew.extend.seconds"
 ACCESS_RENEW_EXTEND_SECONDS_METADATA_KEY = "opensandbox.io/access-renew-extend-seconds"
 
+# bootstrap.execd.isolation extension key
+# When set to "enable", the sandbox container receives CAP_SYS_ADMIN so that
+# execd can use bwrap namespace isolation (OSEP-0013).
+BOOTSTRAP_EXECD_ISOLATION_KEY = "bootstrap.execd.isolation"
+
 # Extensions to annotations transformation prefix
 # User-specified extension keys starting with EXTENSIONS_ANNOTATION_PREFIX
 # are automatically propagated to Pod annotations with ANNOTATION_METADATA_PREFIX

@@ -90,6 +90,7 @@ type CapabilitiesResponse struct {
 	Available       bool   `json:"available"`
 	Isolator        string `json:"isolator,omitempty"`
 	Version         string `json:"version,omitempty"`
+	Message         string `json:"message,omitempty"`
 	CommitSupported bool   `json:"commit_supported"`
 	DiffSupported   bool   `json:"diff_supported"`
 }

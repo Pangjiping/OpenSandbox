@@ -62,12 +62,15 @@ func main() {
 
 	ctrl := controller.InitCodeRunner()
 
+	// Always store probe result for capabilities endpoint.
+	controller.InitIsolatedProbe(&isolationProbe)
+
 	// Init isolation runner if probe succeeded.
 	if isolationProbe.Available {
 		iso := isolation.NewBwrap(isoCfg)
 		runner, err := runtime.NewIsolatedRunner(ctrl, iso, isoCfg)
 		if err != nil {
-			log.Warn("isolation: runner init failed (continuing without isolation): %v", err)
+			log.Error("isolation: runner init failed (continuing without isolation): %v", err)
 		} else {
 			controller.InitIsolatedRunner(runner)
 			log.Info("isolation: runner ready, upper_root=%s", isoCfg.UpperRoot)

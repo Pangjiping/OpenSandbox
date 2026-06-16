@@ -41,6 +41,7 @@ import com.alibaba.opensandbox.sandbox.domain.services.Diagnostics
 import com.alibaba.opensandbox.sandbox.domain.services.Egress
 import com.alibaba.opensandbox.sandbox.domain.services.Filesystem
 import com.alibaba.opensandbox.sandbox.domain.services.Health
+import com.alibaba.opensandbox.sandbox.domain.services.IsolationService
 import com.alibaba.opensandbox.sandbox.domain.services.Metrics
 import com.alibaba.opensandbox.sandbox.domain.services.Sandboxes
 import com.alibaba.opensandbox.sandbox.infrastructure.factory.AdapterFactory
@@ -94,6 +95,7 @@ class Sandbox internal constructor(
     private val metricsService: Metrics,
     private val egressService: Egress,
     private val credentialVaultService: CredentialVault,
+    private val isolatedService: IsolationService,
     private val customHealthCheck: ((sandbox: Sandbox) -> Boolean)? = null,
     private val httpClientProvider: HttpClientProvider,
     private val diagnosticsService: Diagnostics,
@@ -141,6 +143,8 @@ class Sandbox internal constructor(
      * @return Service for sandbox diagnostics retrieval
      */
     fun diagnostics() = diagnosticsService
+
+    fun isolation() = isolatedService
 
     /**
      * Provides access to shared httpclient provider
@@ -235,6 +239,7 @@ class Sandbox internal constructor(
                     )
                 val egressStack = factory.createEgressStack(egressEndpoint)
                 val diagnosticsService = factory.createDiagnostics()
+                val isolatedService = factory.createIsolatedSessions(execdEndpoint)
 
                 val sandbox =
                     Sandbox(
@@ -246,6 +251,7 @@ class Sandbox internal constructor(
                         healthService = healthService,
                         egressService = egressStack.egress,
                         credentialVaultService = egressStack.credentialVault,
+                        isolatedService = isolatedService,
                         customHealthCheck = healthCheck,
                         httpClientProvider = httpClientProvider,
                         diagnosticsService = diagnosticsService,

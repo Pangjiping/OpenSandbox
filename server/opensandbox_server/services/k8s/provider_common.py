@@ -18,9 +18,13 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi import HTTPException, status
 from kubernetes.client import (
+    V1AppArmorProfile,
+    V1Capabilities,
     V1Container,
     V1EnvVar,
     V1ResourceRequirements,
+    V1SeccompProfile,
+    V1SecurityContext,
     V1VolumeMount,
 )
 
@@ -118,7 +122,9 @@ def _build_execd_init_container(
         "cp ./execd /opt/opensandbox/execd && "
         "cp ./bootstrap.sh /opt/opensandbox/bootstrap.sh && "
         "chmod +x /opt/opensandbox/execd && "
-        "chmod +x /opt/opensandbox/bootstrap.sh"
+        "chmod +x /opt/opensandbox/bootstrap.sh && "
+        "cp /usr/local/bin/bwrap /opt/opensandbox/bwrap 2>/dev/null && "
+        "chmod +x /opt/opensandbox/bwrap 2>/dev/null; true"
     )
     security_context = None
     if disable_ipv6_for_egress:
@@ -155,6 +161,7 @@ def _build_main_container(
     resource_limits: Dict[str, str],
     *,
     has_network_policy: bool = False,
+    isolation_enabled: bool = False,
     image_pull_policy: Optional[str] = None,
     resource_requests: Optional[Dict[str, str]] = None,
 ) -> V1Container:
@@ -185,6 +192,18 @@ def _build_main_container(
     if has_network_policy:
         security_context_dict = build_security_context_for_sandbox_container(True)
         security_context = build_security_context_from_dict(security_context_dict)
+
+    if isolation_enabled:
+        security_context = security_context or V1SecurityContext()
+        caps = ["SYS_ADMIN"]
+        if security_context.capabilities:
+            existing = security_context.capabilities.add or []
+            caps = sorted(set(existing + caps))
+            security_context.capabilities.add = caps
+        else:
+            security_context.capabilities = V1Capabilities(add=caps)
+        security_context.seccomp_profile = V1SeccompProfile(type="Unconfined")
+        security_context.app_armor_profile = V1AppArmorProfile(type="Unconfined")
 
     return V1Container(
         name="sandbox",

@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 from opensandbox_server.config import AppConfig, DEFAULT_EGRESS_DISABLE_IPV6, EGRESS_MODE_DNS
+from opensandbox_server.extensions.keys import BOOTSTRAP_EXECD_ISOLATION_KEY
 from opensandbox_server.services.constants import OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT
 from opensandbox_server.services.helpers import format_ingress_endpoint
 from opensandbox_server.api.schema import Endpoint, ImageSpec, NetworkPolicy, PlatformSpec, Volume
@@ -163,6 +164,7 @@ class AgentSandboxProvider(WorkloadProvider):
             credential_proxy_enabled=credential_proxy_enabled,
             resource_requests=resource_requests,
             egress_env=egress_env,
+            extensions=extensions,
         )
 
         if volumes:
@@ -256,6 +258,7 @@ class AgentSandboxProvider(WorkloadProvider):
         credential_proxy_enabled: bool = False,
         resource_requests: Optional[Dict[str, str]] = None,
         egress_env: Optional[Dict[str, Optional[str]]] = None,
+        extensions: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Build pod spec dict for the Sandbox CRD."""
         disable_ipv6_for_egress = (
@@ -278,6 +281,7 @@ class AgentSandboxProvider(WorkloadProvider):
             env=main_env,
             resource_limits=resource_limits,
             has_network_policy=network_policy is not None,
+            isolation_enabled=(extensions or {}).get(BOOTSTRAP_EXECD_ISOLATION_KEY) == "enable",
             resource_requests=resource_requests,
         )
         

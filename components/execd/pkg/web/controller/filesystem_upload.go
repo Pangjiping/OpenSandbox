@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/alibaba/opensandbox/execd/pkg/log"
 	"github.com/alibaba/opensandbox/execd/pkg/util/pathutil"
 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
@@ -62,7 +64,11 @@ func (c *FilesystemController) UploadFile() {
 }
 
 func (c *FilesystemController) parseUploadForm() ([]*multipart.FileHeader, []*multipart.FileHeader, *uploadError) {
-	form, err := c.ctx.MultipartForm()
+	return parseUploadForm(c.ctx)
+}
+
+func parseUploadForm(ctx *gin.Context) ([]*multipart.FileHeader, []*multipart.FileHeader, *uploadError) {
+	form, err := ctx.MultipartForm()
 	if err != nil || form == nil {
 		return nil, nil, newUploadError(http.StatusBadRequest, model.ErrorCodeInvalidFile, "multipart form is empty")
 	}

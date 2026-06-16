@@ -20,6 +20,8 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+
+	"github.com/alibaba/opensandbox/execd/pkg/log"
 )
 
 // ProbeResult holds the result of startup isolation probing.
@@ -27,9 +29,10 @@ type ProbeResult struct {
 	Available        bool
 	Isolator         string
 	Version          string
-	CommitSupported  bool // Phase 2
-	DiffSupported    bool // Phase 2
-	PersistAvailable bool // Phase 2 — requires emptyDir
+	Message          string // diagnostic message when unavailable
+	CommitSupported  bool   // Phase 2
+	DiffSupported    bool   // Phase 2
+	PersistAvailable bool   // Phase 2 — requires emptyDir
 }
 
 // ProbeConfig controls Probe behaviour.
@@ -54,6 +57,8 @@ func Probe(cfg ProbeConfig) ProbeResult {
 	// Check if bwrap binary is available.
 	version, err := probeBwrapVersion()
 	if err != nil {
+		result.Message = fmt.Sprintf("bwrap not found: %v (searched: $PATH, /opt/opensandbox/bwrap, /usr/bin/bwrap, /usr/local/bin/bwrap)", err)
+		log.Warn("isolation probe: %s", result.Message)
 		return result
 	}
 
@@ -63,6 +68,8 @@ func Probe(cfg ProbeConfig) ProbeResult {
 
 	// Smoke test: verify bwrap can actually create a namespace.
 	if err := probeBwrapSmoke(); err != nil {
+		result.Message = fmt.Sprintf("bwrap found (v%s) but smoke test failed: %v", version, err)
+		log.Warn("isolation probe: %s", result.Message)
 		result.Available = false
 		return result
 	}

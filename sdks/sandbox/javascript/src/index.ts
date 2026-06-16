@@ -145,3 +145,13 @@ export type {
   WriteEntry,
 } from "./models/filesystem.js";
 export type { SandboxFiles } from "./services/filesystem.js";
+export type { IsolationService, IsolationSession } from "./services/isolatedSessions.js";
+export type {
+  CreateIsolatedSessionRequest,
+  IsolatedWorkspaceSpec,
+  EnvPassthroughSpec,
+  IsolatedSessionInfo,
+  IsolatedSessionState,
+  IsolatedRunOpts,
+  IsolatedCapabilities,
+} from "./models/isolated.js";

@@ -41,6 +41,15 @@ from opensandbox.models.filesystem import (
     SetPermissionEntry,
     WriteEntry,
 )
+from opensandbox.models.isolated import (
+    CreateIsolatedSessionRequest,
+    EnvPassthroughSpec,
+    IsolatedCapabilities,
+    IsolatedRunOpts,
+    IsolatedSessionInfo,
+    IsolatedSessionState,
+    IsolatedWorkspaceSpec,
+)
 from opensandbox.models.sandboxes import (
     PVC,
     Credential,
@@ -88,6 +97,14 @@ __all__ = [
     "ExecutionInit",
     "CommandStatus",
     "CommandLogs",
+    # Isolated session models
+    "CreateIsolatedSessionRequest",
+    "EnvPassthroughSpec",
+    "IsolatedCapabilities",
+    "IsolatedRunOpts",
+    "IsolatedSessionInfo",
+    "IsolatedSessionState",
+    "IsolatedWorkspaceSpec",
     # Filesystem models
     "EntryInfo",
     "WriteEntry",

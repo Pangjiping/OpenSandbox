@@ -64,6 +64,8 @@ public sealed class Sandbox : IAsyncDisposable
     /// </summary>
     public IExecdMetrics Metrics { get; }
 
+    public IIsolatedSessions Isolation { get; }
+
     /// <summary>
     /// Gets the sandbox-scoped Credential Vault service.
     /// </summary>
@@ -96,6 +98,7 @@ public sealed class Sandbox : IAsyncDisposable
         ISandboxFiles files,
         IExecdHealth health,
         IExecdMetrics metrics,
+        IIsolatedSessions isolated,
         IEgress egress,
         ICredentialVault? credentialVault)
     {
@@ -112,6 +115,7 @@ public sealed class Sandbox : IAsyncDisposable
         Files = files;
         Health = health;
         Metrics = metrics;
+        Isolation = isolated;
         _egress = egress;
         CredentialVault = credentialVault
             ?? egress as ICredentialVault
@@ -256,6 +260,7 @@ public sealed class Sandbox : IAsyncDisposable
                 execdStack.Files,
                 execdStack.Health,
                 execdStack.Metrics,
+                execdStack.Isolation,
                 egressStack.Egress,
                 egressStack.CredentialVault);
 
@@ -381,6 +386,7 @@ public sealed class Sandbox : IAsyncDisposable
                 execdStack.Files,
                 execdStack.Health,
                 execdStack.Metrics,
+                execdStack.Isolation,
                 egressStack.Egress,
                 egressStack.CredentialVault);
 

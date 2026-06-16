@@ -125,30 +125,47 @@ func (c *IsolatedSessionController) UploadFile() {
 		return
 	}
 
-	filePath := c.ctx.Query("path")
-	if filePath == "" {
-		c.RespondError(http.StatusBadRequest, model.ErrorCodeMissingQuery, "path is required")
+	metadataParts, fileParts, uerr := parseUploadForm(c.ctx)
+	if uerr != nil {
+		c.RespondError(uerr.status, uerr.code, uerr.message)
 		return
 	}
 
-	file, _, err := c.ctx.Request.FormFile("file")
-	if err != nil {
-		c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidFile, err.Error())
-		return
-	}
-	defer file.Close()
+	for i := range metadataParts {
+		meta, uerr := parseUploadMetadata(metadataParts[i])
+		if uerr != nil {
+			c.RespondError(uerr.status, uerr.code, uerr.message)
+			return
+		}
 
-	n, err := mv.WriteFileReader(filePath, file, 0o644)
-	if err != nil {
-		c.RespondError(http.StatusInternalServerError, model.ErrorCodeRuntimeError, err.Error())
-		return
+		file, err := fileParts[i].Open()
+		if err != nil {
+			c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidFile, err.Error())
+			return
+		}
+
+		filePath := filepath.Clean(meta.Path)
+		dir := filepath.Dir(filePath)
+		if dir != "." && dir != "/" {
+			if err := mv.MkdirAll(dir, 0o755); err != nil {
+				log.Warn("isolated upload: mkdir %s: %v", dir, err)
+			}
+		}
+
+		perm := os.FileMode(0o644)
+		if meta.Permission.Mode != 0 {
+			perm = os.FileMode(meta.Permission.Mode)
+		}
+
+		if _, err := mv.WriteFileReader(filePath, file, perm); err != nil {
+			file.Close()
+			c.RespondError(http.StatusInternalServerError, model.ErrorCodeRuntimeError, err.Error())
+			return
+		}
+		file.Close()
 	}
 
-	c.RespondSuccess(map[string]interface{}{
-		"path":      filePath,
-		"bytes":     n,
-		"overwrite": true,
-	})
+	c.RespondSuccess(nil)
 }
 
 func (c *IsolatedSessionController) RemoveFiles() {

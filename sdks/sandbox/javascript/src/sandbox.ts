@@ -31,6 +31,7 @@ import type { Sandboxes } from "./services/sandboxes.js";
 import type { ExecdCommands } from "./services/execdCommands.js";
 import type { ExecdHealth } from "./services/execdHealth.js";
 import type { ExecdMetrics } from "./services/execdMetrics.js";
+import type { IsolationService } from "./services/isolatedSessions.js";
 import type {
   CreateSandboxRequest,
   CredentialProxyConfig,
@@ -246,6 +247,7 @@ export class Sandbox {
   readonly files: SandboxFiles;
   readonly health: ExecdHealth;
   readonly metrics: ExecdMetrics;
+  readonly isolation: IsolationService;
   /**
    * Sandbox-scoped Credential Vault operations.
    */
@@ -277,6 +279,7 @@ export class Sandbox {
     files: SandboxFiles;
     health: ExecdHealth;
     metrics: ExecdMetrics;
+    isolation: IsolationService;
     egress: Egress;
     credentialVault?: CredentialVault;
   }) {
@@ -300,6 +303,7 @@ export class Sandbox {
     this.files = opts.files;
     this.health = opts.health;
     this.metrics = opts.metrics;
+    this.isolation = opts.isolation;
     this.credentialVault = credentialVault;
   }
 
@@ -402,7 +406,7 @@ export class Sandbox {
       const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
       const egressBaseUrl = `${connectionConfig.protocol}://${egressEndpoint.endpoint}`;
 
-      const { commands, files, health, metrics } =
+      const { commands, files, health, metrics, isolation } =
         adapterFactory.createExecdStack({
           connectionConfig,
           execdBaseUrl,
@@ -425,6 +429,7 @@ export class Sandbox {
         files,
         health,
         metrics,
+        isolation,
         egress,
         credentialVault,
       });
@@ -487,7 +492,7 @@ export class Sandbox {
       );
       const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
       const egressBaseUrl = `${connectionConfig.protocol}://${egressEndpoint.endpoint}`;
-      const { commands, files, health, metrics } =
+      const { commands, files, health, metrics, isolation } =
         adapterFactory.createExecdStack({
           connectionConfig,
           execdBaseUrl,
@@ -510,6 +515,7 @@ export class Sandbox {
         files,
         health,
         metrics,
+        isolation,
         egress,
         credentialVault,
       });

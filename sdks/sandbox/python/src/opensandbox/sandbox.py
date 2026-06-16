@@ -55,6 +55,7 @@ from opensandbox.services import (
     Egress,
     Filesystem,
     Health,
+    IsolationService,
     Metrics,
     Sandboxes,
 )
@@ -123,6 +124,7 @@ class Sandbox:
         egress_service: Egress,
         connection_config: ConnectionConfig,
         diagnostics_service: Diagnostics | None = None,
+        isolated_service: IsolationService | None = None,
         custom_health_check: Callable[["Sandbox"], Awaitable[bool]] | None = None,
     ) -> None:
         """
@@ -140,6 +142,16 @@ class Sandbox:
             connection_config
         ).create_diagnostics_service()
         self._custom_health_check = custom_health_check
+        self._isolated_service = isolated_service
+
+    @property
+    def isolation(self) -> IsolationService:
+        """Provides access to namespace-isolated session operations (OSEP-0013)."""
+        if self._isolated_service is None:
+            raise SandboxInternalException(
+                "isolated service not initialized"
+            )
+        return self._isolated_service
 
     @property
     def files(self) -> Filesystem:
@@ -590,6 +602,7 @@ class Sandbox:
                 metrics_service=factory.create_metrics_service(execd_endpoint),
                 egress_service=factory.create_egress_service(egress_endpoint),
                 diagnostics_service=factory.create_diagnostics_service(),
+                isolated_service=factory.create_isolated_session_service(execd_endpoint),
                 connection_config=config,
                 custom_health_check=health_check,
             )
@@ -687,6 +700,7 @@ class Sandbox:
                 metrics_service=factory.create_metrics_service(execd_endpoint),
                 egress_service=factory.create_egress_service(egress_endpoint),
                 diagnostics_service=factory.create_diagnostics_service(),
+                isolated_service=factory.create_isolated_session_service(execd_endpoint),
                 connection_config=config,
                 custom_health_check=health_check,
             )
@@ -763,6 +777,7 @@ class Sandbox:
                 metrics_service=factory.create_metrics_service(execd_endpoint),
                 egress_service=factory.create_egress_service(egress_endpoint),
                 diagnostics_service=factory.create_diagnostics_service(),
+                isolated_service=factory.create_isolated_session_service(execd_endpoint),
                 connection_config=config,
                 custom_health_check=health_check,
             )
