@@ -484,6 +484,7 @@ async def test_create_passes_new_signature_keywords_even_when_unused(
             secure_access=False,
             snapshot_id=None,
             credential_proxy=None,
+            resource_requests=None,
         ):
             assert spec is not None
             assert entrypoint is not None
@@ -567,6 +568,7 @@ async def test_create_restore_from_snapshot_passes_snapshot_id(
             secure_access=False,
             snapshot_id=None,
             credential_proxy=None,
+            resource_requests=None,
         ):
             self.create_calls.append((spec, entrypoint))
             assert isinstance(env, dict)
@@ -641,6 +643,7 @@ async def test_create_restore_from_snapshot_preserves_custom_entrypoint(
             secure_access=False,
             snapshot_id=None,
             credential_proxy=None,
+            resource_requests=None,
         ):
             assert isinstance(env, dict)
             assert isinstance(metadata, dict)
