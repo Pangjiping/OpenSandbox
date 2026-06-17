@@ -72,6 +72,10 @@ func (c *IsolatedSessionController) Create() {
 		c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidRequest, err.Error())
 		return
 	}
+	if err := req.Validate(); err != nil {
+		c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidRequest, err.Error())
+		return
+	}
 
 	opts := &runtime.IsolatedSessionOptions{
 		Profile:            req.Profile,
@@ -92,7 +96,7 @@ func (c *IsolatedSessionController) Create() {
 		return
 	}
 
-	c.RespondSuccess(model.IsolatedCreateSessionResponse{
+	c.ctx.JSON(http.StatusCreated, model.IsolatedCreateSessionResponse{
 		SessionID: sessionID,
 		CreatedAt: time.Now(),
 	})
@@ -135,6 +139,10 @@ func (c *IsolatedSessionController) Run() {
 
 	var req model.IsolatedRunRequest
 	if err := c.bindJSON(&req); err != nil {
+		c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidRequest, err.Error())
+		return
+	}
+	if err := req.Validate(); err != nil {
 		c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidRequest, err.Error())
 		return
 	}

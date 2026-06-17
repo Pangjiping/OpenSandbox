@@ -28,9 +28,9 @@ class IsolatedWorkspaceSpec(BaseModel):
     """Workspace configuration for an isolated session."""
 
     path: str = Field(description="Host path to bind as workspace")
-    mode: str = Field(
-        default="rw",
-        description="Bind mode: 'rw' (read-write), 'overlay' (copy-on-write), or 'ro' (read-only)",
+    mode: str | None = Field(
+        default=None,
+        description="Bind mode: 'rw' (read-write), 'overlay' (copy-on-write), or 'ro' (read-only). None = server default.",
     )
 
     model_config = ConfigDict(populate_by_name=True)
@@ -57,9 +57,9 @@ class CreateIsolatedSessionRequest(BaseModel):
     workspace: IsolatedWorkspaceSpec = Field(
         description="Workspace bind configuration"
     )
-    profile: str = Field(
-        default="balanced",
-        description="Isolation profile: 'strict' or 'balanced'",
+    profile: str | None = Field(
+        default=None,
+        description="Isolation profile: 'strict' or 'balanced'. None = server default.",
     )
     extra_writable: list[str] | None = Field(
         default=None,

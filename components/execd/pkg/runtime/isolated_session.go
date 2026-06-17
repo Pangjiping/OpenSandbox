@@ -129,6 +129,10 @@ func (s *isolatedSession) start() error {
 		return err
 	}
 
+	for _, f := range cmd.ExtraFiles {
+		f.Close()
+	}
+
 	s.cmd = cmd
 	s.stdin = stdin
 	s.stdout = stdout

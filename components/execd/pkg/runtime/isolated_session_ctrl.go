@@ -34,7 +34,7 @@ import (
 	"github.com/alibaba/opensandbox/execd/pkg/vfs"
 )
 
-const isolatedRunEndMarker = "__ISOLATED_RUN_END__"
+const isolatedRunEndMarkerPrefix = "__ISOLATED_RUN_END__"
 
 // IsolatedRunner is the concrete isolated session runner.
 type IsolatedRunner struct {
@@ -222,6 +222,8 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 	}
 
 	// Prepend env exports before user code.
+	runMarker := fmt.Sprintf("%s_%s", isolatedRunEndMarkerPrefix, uuid.New().String())
+
 	var script string
 	for k, v := range envs {
 		script += fmt.Sprintf("export %s=%s\n", shellescape(k), shellescape(v))
@@ -230,7 +232,7 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 	if !strings.HasSuffix(script, "\n") {
 		script += "\n"
 	}
-	script += fmt.Sprintf("echo %s $?\n", isolatedRunEndMarker)
+	script += fmt.Sprintf("echo %s $?\n", runMarker)
 
 	// Close stdin only if context is cancelled during the run.
 	// The done channel prevents the goroutine from closing stdin
@@ -249,7 +251,7 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 		return fmt.Errorf("write stdin: %w", err)
 	}
 
-	exitCode, err := scanUntilMarker(ctx, stdout, onStdout)
+	exitCode, err := scanUntilMarker(ctx, stdout, runMarker, onStdout)
 	if err != nil {
 		return err
 	}
@@ -267,7 +269,7 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 
 // scanUntilMarker reads stdout lines until the end marker is found.
 // Returns the exit code from the marker line.
-func scanUntilMarker(ctx context.Context, stdout io.ReadCloser, onStdout StdoutCallback) (int, error) {
+func scanUntilMarker(ctx context.Context, stdout io.ReadCloser, runMarker string, onStdout StdoutCallback) (int, error) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
@@ -281,7 +283,7 @@ func scanUntilMarker(ctx context.Context, stdout io.ReadCloser, onStdout StdoutC
 			// The marker may appear mid-line if the previous command's
 			// output didn't end with a newline (e.g. cat of a file
 			// without trailing newline).
-			if idx := strings.Index(line, isolatedRunEndMarker); idx >= 0 {
+			if idx := strings.Index(line, runMarker); idx >= 0 {
 				markerSeen = true
 				if idx > 0 && onStdout != nil {
 					onStdout(line[:idx])

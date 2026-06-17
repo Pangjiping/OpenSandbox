@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -54,8 +55,10 @@ func buildArgv(opts WrapOptions, seccompFd string) ([]string, error) {
 	// 2. Root filesystem (read-only).
 	argv = append(argv, "--ro-bind", "/", "/")
 
-	// 3. /tmp segment.
-	argv = append(argv, bwrapTmpSegment(opts.Profile)...)
+	// 3. /tmp segment — skip if workspace is /tmp (workspace bind would override).
+	if filepath.Clean(opts.Workspace.Path) != "/tmp" {
+		argv = append(argv, bwrapTmpSegment(opts.Profile)...)
+	}
 
 	// 4. /run.
 	argv = append(argv, "--tmpfs", "/run")
@@ -72,6 +75,12 @@ func buildArgv(opts WrapOptions, seccompFd string) ([]string, error) {
 		return nil, err
 	}
 	argv = append(argv, wsArgv...)
+
+	// 7b. Hide upper root from namespace to prevent cross-session data access.
+	if opts.UpperDir != "" {
+		upperRoot := filepath.Dir(opts.UpperDir)
+		argv = append(argv, "--tmpfs", upperRoot)
+	}
 
 	// 8. Extra writable paths.
 	for _, p := range opts.ExtraWritable {
