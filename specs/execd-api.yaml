@@ -2059,6 +2059,9 @@ components:
           type: string
         version:
           type: string
+        message:
+          type: string
+          description: Diagnostic message when isolation is unavailable
         commit_supported:
           type: boolean
         diff_supported:

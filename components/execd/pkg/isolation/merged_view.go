@@ -76,6 +76,20 @@ func (m *MergedView) safePath(path string) (string, error) {
 	return cleaned, nil
 }
 
+func (m *MergedView) rejectSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("symlink target denied: %s", path)
+	}
+	return nil
+}
+
 // Stat returns file info for a path. Checks upper first, then lower.
 func (m *MergedView) Stat(path string) (os.FileInfo, error) {
 	rel, err := m.safePath(path)
@@ -176,6 +190,9 @@ func (m *MergedView) WriteFile(path string, data []byte, perm os.FileMode) error
 	}
 
 	upperPath := m.resolveUpper(rel)
+	if err := m.rejectSymlink(upperPath); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(upperPath), 0o755); err != nil {
 		return err
 	}
@@ -200,6 +217,9 @@ func (m *MergedView) WriteFileReader(path string, r io.Reader, perm os.FileMode)
 	}
 
 	upperPath := m.resolveUpper(rel)
+	if err := m.rejectSymlink(upperPath); err != nil {
+		return 0, err
+	}
 	if err := os.MkdirAll(filepath.Dir(upperPath), 0o755); err != nil {
 		return 0, err
 	}

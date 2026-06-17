@@ -110,6 +110,10 @@ func (r *IsolatedRunner) CollectIdle() {
 		s.mu.RUnlock()
 
 		if timeout > 0 && idle > timeout {
+			if !s.runMu.TryLock() {
+				return true
+			}
+			s.runMu.Unlock()
 			log.Info("idle GC: deleting session %s (idle %v > timeout %v)", sessionID, idle, timeout)
 			if err := r.DeleteIsolatedSession(sessionID); err != nil {
 				log.Warning("idle GC: delete session %s: %v", sessionID, err)
@@ -225,12 +229,21 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 	runMarker := fmt.Sprintf("%s_%s", isolatedRunEndMarkerPrefix, uuid.New().String())
 
 	var script string
-	for k, v := range envs {
-		script += fmt.Sprintf("export %s=%s\n", shellescape(k), shellescape(v))
-	}
-	script += code
-	if !strings.HasSuffix(script, "\n") {
-		script += "\n"
+	if len(envs) > 0 {
+		script += "(\n"
+		for k, v := range envs {
+			script += fmt.Sprintf("export %s=%s\n", shellescape(k), shellescape(v))
+		}
+		script += code
+		if !strings.HasSuffix(script, "\n") {
+			script += "\n"
+		}
+		script += ")\n"
+	} else {
+		script += code
+		if !strings.HasSuffix(script, "\n") {
+			script += "\n"
+		}
 	}
 	script += fmt.Sprintf("echo %s $?\n", runMarker)
 

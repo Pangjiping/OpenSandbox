@@ -174,6 +174,10 @@ func (c *IsolatedSessionController) Run() {
 	durationMs := float64(time.Since(startTime)) / float64(time.Millisecond)
 
 	if err != nil {
+		if errors.Is(err, runtime.ErrContextNotFound) {
+			c.RespondError(http.StatusNotFound, model.ErrorCodeSessionNotFound, "session not found")
+			return
+		}
 		telemetry.RecordIsolatedRun(ctx, "error", durationMs)
 		event := model.ServerStreamEvent{
 			Type:      model.StreamEventTypeError,

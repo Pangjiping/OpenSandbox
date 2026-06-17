@@ -18,7 +18,7 @@ namespace OpenSandbox.Models;
 
 public record IsolatedWorkspaceSpec(
     [property: JsonPropertyName("path")] string Path,
-    [property: JsonPropertyName("mode")] string Mode = "rw"
+    [property: JsonPropertyName("mode")] string? Mode = null
 );
 
 public record EnvPassthroughSpec(
@@ -28,7 +28,7 @@ public record EnvPassthroughSpec(
 
 public record CreateIsolatedSessionRequest(
     [property: JsonPropertyName("workspace")] IsolatedWorkspaceSpec Workspace,
-    [property: JsonPropertyName("profile")] string? Profile = "balanced",
+    [property: JsonPropertyName("profile")] string? Profile = null,
     [property: JsonPropertyName("extra_writable")] List<string>? ExtraWritable = null,
     [property: JsonPropertyName("share_net")] bool? ShareNet = null,
     [property: JsonPropertyName("env_passthrough")] EnvPassthroughSpec? EnvPassthrough = null,

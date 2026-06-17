@@ -20,7 +20,7 @@ import java.time.OffsetDateTime
 
 data class IsolatedWorkspaceSpec(
     val path: String,
-    val mode: String = "rw",
+    val mode: String? = null,
 )
 
 data class EnvPassthroughSpec(
@@ -30,7 +30,7 @@ data class EnvPassthroughSpec(
 
 data class CreateIsolatedSessionRequest(
     val workspace: IsolatedWorkspaceSpec,
-    val profile: String = "balanced",
+    val profile: String? = null,
     val extraWritable: List<String>? = null,
     val shareNet: Boolean? = null,
     val envPassthrough: EnvPassthroughSpec? = null,
