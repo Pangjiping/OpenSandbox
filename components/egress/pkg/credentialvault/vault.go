@@ -15,6 +15,7 @@
 package credentialvault
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -366,7 +367,7 @@ func (v *Store) ValidateActiveAgainstPolicy(pol *policy.NetworkPolicy) error {
 	return v.validateCandidate(v.credentials, v.bindings, pol)
 }
 
-func (v *Store) Ready() error {
+func (v *Store) Ready(ctx context.Context) error {
 	if v.requireToken != nil && !v.requireToken() {
 		return fmt.Errorf("credential vault requires egress API auth token")
 	}
@@ -376,7 +377,7 @@ func (v *Store) Ready() error {
 	if constants.IsTruthy(os.Getenv(constants.EnvMitmproxySslInsecure)) {
 		return fmt.Errorf("credential vault rejects insecure upstream TLS mode")
 	}
-	if v.mitmGate != nil && v.mitmGate.MitmPending() {
+	if v.mitmGate != nil && !v.mitmGate.WaitReady(ctx) {
 		return fmt.Errorf("credential proxy is not ready")
 	}
 	return nil

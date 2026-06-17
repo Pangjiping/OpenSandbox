@@ -292,7 +292,7 @@ func (s *policyServer) handleCredentialVaultGet(w http.ResponseWriter) {
 }
 
 func (s *policyServer) handleCredentialVaultPost(w http.ResponseWriter, r *http.Request) {
-	if err := s.credentialVault.Ready(); err != nil {
+	if err := s.credentialVault.Ready(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusPreconditionFailed)
 		return
 	}
@@ -314,7 +314,7 @@ func (s *policyServer) handleCredentialVaultPost(w http.ResponseWriter, r *http.
 }
 
 func (s *policyServer) handleCredentialVaultPatch(w http.ResponseWriter, r *http.Request) {
-	if err := s.credentialVault.Ready(); err != nil {
+	if err := s.credentialVault.Ready(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusPreconditionFailed)
 		return
 	}
@@ -336,7 +336,7 @@ func (s *policyServer) handleCredentialVaultPatch(w http.ResponseWriter, r *http
 }
 
 func (s *policyServer) handleCredentialVaultDelete(w http.ResponseWriter, r *http.Request) {
-	if err := s.credentialVault.Ready(); err != nil {
+	if err := s.credentialVault.Ready(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusPreconditionFailed)
 		return
 	}

@@ -15,8 +15,10 @@
 package mitmproxy
 
 import (
+	"context"
 	"os"
 	"sync/atomic"
+	"time"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 )
@@ -51,4 +53,16 @@ func (g *HealthGate) MitmPending() bool {
 		return false
 	}
 	return g.required && !g.ready.Load()
+}
+
+// WaitReady polls until the gate is ready or ctx is cancelled.
+func (g *HealthGate) WaitReady(ctx context.Context) bool {
+	for g.MitmPending() {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return true
 }
