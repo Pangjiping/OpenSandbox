@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import DefaultTheme from "vitepress/theme";
-import { useData, useRouter, withBase } from "vitepress";
+import { useData, useRoute, useRouter, withBase } from "vitepress";
 import { onMounted, watch } from "vue";
 
 const { Layout } = DefaultTheme;
 const { page } = useData();
+const route = useRoute();
 const router = useRouter();
 
 // The #1090 refactor removed the Chinese i18n locale and the legacy
@@ -16,7 +17,13 @@ const EXACT: Record<string, string> = {
   "/overview/credential-vault": "/guides/credential-vault",
   "/overview/release-verification": "/community/release-verification",
   "/design/single-host-network": "/architecture/single-host-network",
+  "/single_host_network": "/architecture/single-host-network",
   "/kubernetes/development": "/kubernetes/deployment",
+  "/server/readme": "/components/server",
+  "/specs/readme": "/api/",
+  "/secure-container": "/guides/secure-container",
+  "/pause-resume": "/guides/pause-resume",
+  "/execd-path-migration": "/reference/execd-path-migration",
 };
 
 // Returns a base-relative best-effort target for a 404 path. The result may
@@ -46,7 +53,9 @@ function maybeRedirect() {
 }
 
 onMounted(maybeRedirect);
-watch(() => page.value.isNotFound, maybeRedirect);
+// Watch the path (not just isNotFound) so a redirect that lands on another
+// missing route re-evaluates and reaches the home fallback instead of sticking.
+watch(() => route.path, maybeRedirect);
 </script>
 
 <template>
