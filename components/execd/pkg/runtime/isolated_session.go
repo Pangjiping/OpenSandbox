@@ -17,6 +17,7 @@
 package runtime
 
 import (
+	"fmt"
 	"io"
 	"os/exec"
 	"sync"
@@ -49,7 +50,8 @@ type isolatedSession struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	stdout    io.ReadCloser
-	upperID   string // key in UpperManager, used for Release/Remove
+	doneCh    chan struct{} // closed when the bwrap process exits
+	upperID   string       // key in UpperManager, used for Release/Remove
 	upperDir  string
 	workDir   string
 	createdAt time.Time
@@ -62,6 +64,7 @@ func newIsolatedSession(id string, opts *IsolatedSessionOptions, iso isolation.I
 		id:        id,
 		opts:      opts,
 		isolator:  iso,
+		doneCh:    make(chan struct{}),
 		createdAt: time.Now(),
 		lastRunAt: time.Now(),
 	}
@@ -78,17 +81,17 @@ func (s *isolatedSession) start() error {
 	}
 
 	switch s.opts.Profile {
-	case "balanced":
+	case string(isolation.ProfileBalanced):
 		wrapOpts.Profile = isolation.ProfileBalanced
 	default:
 		wrapOpts.Profile = isolation.ProfileStrict
 	}
 
 	wrapOpts.Workspace.Path = s.opts.WorkspacePath
-	switch s.opts.WorkspaceMode {
-	case "rw":
+	switch isolation.WorkspaceMode(s.opts.WorkspaceMode) {
+	case isolation.WorkspaceRW:
 		wrapOpts.Workspace.Mode = isolation.WorkspaceRW
-	case "ro":
+	case isolation.WorkspaceRO:
 		wrapOpts.Workspace.Mode = isolation.WorkspaceRO
 	default:
 		wrapOpts.Workspace.Mode = isolation.WorkspaceOverlay
@@ -126,6 +129,9 @@ func (s *isolatedSession) start() error {
 	if err := cmd.Start(); err != nil {
 		stdin.Close()
 		stdout.Close()
+		for _, f := range cmd.ExtraFiles {
+			f.Close()
+		}
 		return err
 	}
 
@@ -136,6 +142,21 @@ func (s *isolatedSession) start() error {
 	s.cmd = cmd
 	s.stdin = stdin
 	s.stdout = stdout
+
+	go func() {
+		_ = cmd.Wait()
+		close(s.doneCh)
+	}()
+
+	// Brief startup check — if bwrap fails immediately (bad capabilities,
+	// missing binary inside namespace, etc.) we detect it here instead of
+	// waiting until the first Run call.
+	select {
+	case <-s.doneCh:
+		return fmt.Errorf("bwrap process exited immediately after start")
+	case <-time.After(100 * time.Millisecond):
+	}
+
 	return nil
 }
 
@@ -149,8 +170,18 @@ func (s *isolatedSession) stop() error {
 	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL)
-		// cmd.Wait reaps the zombie AND cleans up pipe goroutines from Start().
-		_ = s.cmd.Wait()
+		// Wait for the death-watch goroutine to finish cmd.Wait().
+		<-s.doneCh
 	}
 	return nil
+}
+
+// dead returns true if the bwrap process has exited.
+func (s *isolatedSession) dead() bool {
+	select {
+	case <-s.doneCh:
+		return true
+	default:
+		return false
+	}
 }

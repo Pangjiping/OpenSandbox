@@ -122,6 +122,7 @@ func probeBwrapSmoke() error {
 		return fmt.Errorf("bwrap not found")
 	}
 	cmd := exec.Command(p,
+		"--unshare-pid", "--unshare-uts", "--unshare-ipc",
 		"--ro-bind", "/", "/",
 		"--proc", "/proc",
 		"--", "true",

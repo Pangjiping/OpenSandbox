@@ -15,9 +15,17 @@
 package model
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/go-playground/validator/v10"
+)
+
+// Workspace mode values.
+const (
+	WorkspaceModeRW      = "rw"
+	WorkspaceModeOverlay = "overlay"
+	WorkspaceModeRO      = "ro"
 )
 
 // Create
@@ -55,7 +63,18 @@ type IsolatedCreateSessionResponse struct {
 // Validate checks CreateIsolatedSessionRequest fields.
 func (r *CreateIsolatedSessionRequest) Validate() error {
 	v := validator.New()
-	return v.Struct(r)
+	if err := v.Struct(r); err != nil {
+		return err
+	}
+	if r.Workspace.Mode != "" {
+		switch r.Workspace.Mode {
+		case WorkspaceModeRW, WorkspaceModeOverlay, WorkspaceModeRO:
+		default:
+			return fmt.Errorf("invalid workspace mode %q: must be %s, %s, or %s",
+				r.Workspace.Mode, WorkspaceModeRW, WorkspaceModeOverlay, WorkspaceModeRO)
+		}
+	}
+	return nil
 }
 
 // Run

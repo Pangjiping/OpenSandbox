@@ -132,6 +132,9 @@ func (b *bwrapImpl) Wrap(cmd *exec.Cmd, opts WrapOptions) error {
 
 	argv, err := buildArgv(opts, seccompFd)
 	if err != nil {
+		for _, f := range cmd.ExtraFiles {
+			f.Close()
+		}
 		return fmt.Errorf("bwrap: %w", err)
 	}
 

@@ -94,7 +94,8 @@ func (r *IsolatedRunner) gcLoop() {
 	}
 }
 
-// CollectIdle scans sessions and deletes those past their idle timeout.
+// CollectIdle scans sessions and deletes those past their idle timeout
+// or whose bwrap process has died.
 func (r *IsolatedRunner) CollectIdle() {
 	now := time.Now()
 	r.ctrl.isolatedSessionMap.Range(func(key, value any) bool {
@@ -103,10 +104,19 @@ func (r *IsolatedRunner) CollectIdle() {
 			return true
 		}
 
+		sessionID := s.id
+
+		if s.dead() {
+			log.Info("idle GC: cleaning up dead session %s", sessionID)
+			if err := r.DeleteIsolatedSession(sessionID); err != nil {
+				log.Warning("idle GC: delete dead session %s: %v", sessionID, err)
+			}
+			return true
+		}
+
 		s.mu.RLock()
 		timeout := time.Duration(s.opts.IdleTimeoutSeconds) * time.Second
 		idle := now.Sub(s.lastRunAt)
-		sessionID := s.id
 		s.mu.RUnlock()
 
 		if timeout > 0 && idle > timeout {
@@ -143,7 +153,7 @@ func (r *IsolatedRunner) CreateIsolatedSession(opts *IsolatedSessionOptions) (st
 	session := newIsolatedSession(id, opts, r.isolator)
 
 	// Allocate upper directory for overlay mode.
-	if opts.WorkspaceMode == "overlay" || opts.WorkspaceMode == "" {
+	if opts.WorkspaceMode == string(isolation.WorkspaceOverlay) || opts.WorkspaceMode == "" {
 		upperID, upperDir, workDir, err := r.upperMgr.Allocate()
 		if err != nil {
 			return "", fmt.Errorf("allocate upper: %w", err)
@@ -175,8 +185,13 @@ func (r *IsolatedRunner) GetIsolatedSession(id string) (*IsolatedSessionState, e
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	status := SessionStatusActive
+	if s.dead() {
+		status = SessionStatusDead
+	}
+
 	state := &IsolatedSessionState{
-		Status:    "active",
+		Status:    status,
 		CreatedAt: s.createdAt,
 		LastRunAt: s.lastRunAt,
 	}
@@ -191,6 +206,12 @@ func (r *IsolatedRunner) GetIsolatedSession(id string) (*IsolatedSessionState, e
 
 	return state, nil
 }
+
+// Session status values.
+const (
+	SessionStatusActive = "active"
+	SessionStatusDead   = "dead"
+)
 
 // IsolatedSessionState is returned by GetIsolatedSession.
 type IsolatedSessionState struct {
@@ -215,6 +236,10 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 	// Serialize concurrent runs on the same session.
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
+
+	if s.dead() {
+		return fmt.Errorf("session process has exited")
+	}
 
 	s.mu.RLock()
 	stdin := s.stdin
@@ -384,11 +409,11 @@ func (r *IsolatedRunner) GetMergedView(id string) (vfs.FS, error) {
 
 	mode := isolation.WorkspaceOverlay
 	upper := s.upperDir
-	switch s.opts.WorkspaceMode {
-	case "rw":
+	switch isolation.WorkspaceMode(s.opts.WorkspaceMode) {
+	case isolation.WorkspaceRW:
 		mode = isolation.WorkspaceRW
 		upper = s.opts.WorkspacePath // writes go directly to workspace
-	case "ro":
+	case isolation.WorkspaceRO:
 		mode = isolation.WorkspaceRO
 	}
 
