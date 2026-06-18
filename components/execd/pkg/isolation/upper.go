@@ -54,11 +54,24 @@ func NewUpperManager(root string, maxBytes int64) (*UpperManager, error) {
 	}, nil
 }
 
-// Allocate creates a new upper + work directory pair. Returns the session ID
-// and the directories.
-func (m *UpperManager) Allocate() (sessionID, upperDir, workDir string, err error) {
-	id := newSessionID()
+// ErrUpperLimitExceeded is returned when the upper directory size limit is exceeded.
+var ErrUpperLimitExceeded = errors.New("upper: total usage exceeds configured limit")
 
+// Allocate creates a new upper + work directory pair. Returns the session ID
+// and the directories. Returns ErrUpperLimitExceeded if maxBytes > 0 and
+// current usage already meets or exceeds the limit.
+func (m *UpperManager) Allocate() (sessionID, upperDir, workDir string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.maxBytes > 0 {
+		usage, usageErr := m.usageLocked()
+		if usageErr == nil && usage >= m.maxBytes {
+			return "", "", "", fmt.Errorf("%w: %d >= %d bytes", ErrUpperLimitExceeded, usage, m.maxBytes)
+		}
+	}
+
+	id := newSessionID()
 	upperDir = filepath.Join(m.root, id, "upper")
 	workDir = filepath.Join(m.root, id, "work")
 
@@ -70,13 +83,11 @@ func (m *UpperManager) Allocate() (sessionID, upperDir, workDir string, err erro
 		return "", "", "", fmt.Errorf("upper: mkdir %s: %w", workDir, err)
 	}
 
-	m.mu.Lock()
 	m.entries[id] = &UpperEntry{
 		UpperDir: upperDir,
 		WorkDir:  workDir,
 		InUse:    true,
 	}
-	m.mu.Unlock()
 
 	return id, upperDir, workDir, nil
 }
@@ -128,7 +139,11 @@ func (m *UpperManager) Collect() []string {
 func (m *UpperManager) Usage() (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.usageLocked()
+}
 
+// usageLocked calculates usage without acquiring the mutex. Caller must hold m.mu.
+func (m *UpperManager) usageLocked() (int64, error) {
 	var total int64
 	for _, e := range m.entries {
 		size, err := dirSize(e.UpperDir)

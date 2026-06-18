@@ -17,7 +17,9 @@ package isolation
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -74,8 +76,10 @@ func Probe(cfg ProbeConfig) ProbeResult {
 		return result
 	}
 
-	// Phase 2: probe commit support (overlay mount).
-	// result.CommitSupported = probeOverlayMount()
+	if probeOverlayMount() {
+		result.CommitSupported = true
+		result.DiffSupported = true
+	}
 
 	return result
 }
@@ -87,16 +91,16 @@ func probeBwrapVersion() (string, error) {
 		return "", fmt.Errorf("bwrap not found")
 	}
 
-	var stderr bytes.Buffer
+	var stdout bytes.Buffer
 	cmd := exec.Command(p, "--version")
-	cmd.Stderr = &stderr
+	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
 		return "", err
 	}
 
-	// bwrap v0.8+ prints version to stderr, e.g.:
+	// bwrap prints version to stdout, e.g.:
 	// "bubblewrap 0.8.0" or "bwrap 0.10.0"
-	out := stderr.String()
+	out := stdout.String()
 	return parseBwrapVersion(out), nil
 }
 
@@ -130,4 +134,34 @@ func probeBwrapSmoke() error {
 	return nil
 }
 
-// probeOverlayMount is deferred to Phase 2.
+// probeOverlayMount tests whether bwrap can create an overlay mount.
+func probeOverlayMount() bool {
+	p := findBwrap()
+	if p == "" {
+		return false
+	}
+
+	tmpDir, err := os.MkdirTemp("", "execd-probe-overlay-*")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(tmpDir)
+
+	lowerDir := filepath.Join(tmpDir, "lower")
+	upperDir := filepath.Join(tmpDir, "upper")
+	workDir := filepath.Join(tmpDir, "work")
+	for _, d := range []string{lowerDir, upperDir, workDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return false
+		}
+	}
+
+	cmd := exec.Command(p,
+		"--ro-bind", "/", "/",
+		"--proc", "/proc",
+		"--overlay-src", lowerDir,
+		"--overlay", upperDir, workDir, "/mnt",
+		"--", "true",
+	)
+	return cmd.Run() == nil
+}

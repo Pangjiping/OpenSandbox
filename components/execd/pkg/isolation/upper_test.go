@@ -15,6 +15,7 @@
 package isolation
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -223,6 +224,54 @@ func TestNewSessionID(t *testing.T) {
 	id := newSessionID()
 	if len(id) != 32 {
 		t.Errorf("session ID length = %d, want 32", len(id))
+	}
+}
+
+func TestUpperManager_AllocateLimitExceeded(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "isolation")
+	mgr, err := NewUpperManager(root, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Allocate and write enough data to exceed the 100-byte limit.
+	_, upper, _, err := mgr.Allocate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(upper, "big.bin"), make([]byte, 200), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Next allocation should fail.
+	_, _, _, err = mgr.Allocate()
+	if err == nil {
+		t.Fatal("expected error when upper limit exceeded")
+	}
+	if !errors.Is(err, ErrUpperLimitExceeded) {
+		t.Errorf("got %v, want ErrUpperLimitExceeded", err)
+	}
+}
+
+func TestUpperManager_AllocateNoLimitWhenZero(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "isolation")
+	mgr, err := NewUpperManager(root, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// maxBytes=0 means no limit. Allocation should always succeed.
+	_, upper, _, err := mgr.Allocate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(upper, "big.bin"), make([]byte, 1000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, err = mgr.Allocate()
+	if err != nil {
+		t.Errorf("unexpected error with maxBytes=0: %v", err)
 	}
 }
 
