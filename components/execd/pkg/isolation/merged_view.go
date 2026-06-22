@@ -90,6 +90,20 @@ func (m *MergedView) rejectSymlink(path string) error {
 	return nil
 }
 
+// createWhiteout creates a whiteout marker in upper to hide a lower entry.
+func (m *MergedView) createWhiteout(rel string) error {
+	whName := filepath.Join(filepath.Dir(rel), ".wh."+filepath.Base(rel))
+	whPath := m.resolveUpper(whName)
+	if err := os.MkdirAll(filepath.Dir(whPath), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(whPath)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
 // Stat returns file info for a path. Checks upper first, then lower.
 func (m *MergedView) Stat(path string) (os.FileInfo, error) {
 	rel, err := m.safePath(path)
@@ -98,11 +112,15 @@ func (m *MergedView) Stat(path string) (os.FileInfo, error) {
 	}
 
 	if m.UpperDir != "" {
-		if info, err := os.Stat(m.resolveUpper(rel)); err == nil {
+		upperPath := m.resolveUpper(rel)
+		if err := m.rejectSymlink(upperPath); err != nil {
+			return nil, err
+		}
+		if info, err := os.Lstat(upperPath); err == nil {
 			return info, nil
 		}
 	}
-	return os.Stat(m.resolveLower(rel))
+	return os.Lstat(m.resolveLower(rel))
 }
 
 // ReadDir lists directory contents, merging upper and lower entries.
@@ -151,7 +169,11 @@ func (m *MergedView) Open(path string) (*os.File, error) {
 	}
 
 	if m.UpperDir != "" {
-		if f, err := os.Open(m.resolveUpper(rel)); err == nil {
+		upperPath := m.resolveUpper(rel)
+		if err := m.rejectSymlink(upperPath); err != nil {
+			return nil, err
+		}
+		if f, err := os.Open(upperPath); err == nil {
 			return f, nil
 		}
 	}
@@ -166,7 +188,11 @@ func (m *MergedView) ReadFile(path string) ([]byte, error) {
 	}
 
 	if m.UpperDir != "" {
-		if data, err := os.ReadFile(m.resolveUpper(rel)); err == nil {
+		upperPath := m.resolveUpper(rel)
+		if err := m.rejectSymlink(upperPath); err != nil {
+			return nil, err
+		}
+		if data, err := os.ReadFile(upperPath); err == nil {
 			return data, nil
 		}
 	}
@@ -237,8 +263,8 @@ func (m *MergedView) WriteFileReader(path string, r io.Reader, perm os.FileMode)
 	return n, os.Chown(upperPath, int(m.Uid), int(m.Gid))
 }
 
-// Remove deletes a file. Upper takes priority; lower-only is reported as
-// unwritable (whiteout not yet implemented).
+// Remove deletes a file. For overlay mode, creates a whiteout to hide
+// lower-only files.
 func (m *MergedView) Remove(path string) error {
 	if m.Mode == WorkspaceRO {
 		return fmt.Errorf("remove denied: workspace is read-only")
@@ -252,14 +278,24 @@ func (m *MergedView) Remove(path string) error {
 	if m.UpperDir != "" {
 		upperPath := m.resolveUpper(rel)
 		if _, err := os.Stat(upperPath); err == nil {
-			return os.Remove(upperPath)
+			if err := os.Remove(upperPath); err != nil {
+				return err
+			}
+			// If it also exists in lower, create whiteout to hide it.
+			if _, err := os.Stat(m.resolveLower(rel)); err == nil {
+				return m.createWhiteout(rel)
+			}
+			return nil
 		}
 	}
 
-	// File exists only in lower — cannot delete without whiteout.
+	// File exists only in lower — create whiteout to mask it.
 	lowerPath := m.resolveLower(rel)
 	if _, err := os.Stat(lowerPath); err == nil {
-		return fmt.Errorf("cannot remove file from read-only workspace lower: %s", path)
+		if m.UpperDir == "" {
+			return fmt.Errorf("remove denied: no upper directory")
+		}
+		return m.createWhiteout(rel)
 	}
 
 	return fs.ErrNotExist
@@ -298,7 +334,8 @@ func (m *MergedView) MkdirAll(path string, perm os.FileMode) error {
 	return os.MkdirAll(m.resolveUpper(rel), perm)
 }
 
-// Rename moves a file within upper, or copies lower→upper then whites out.
+// Rename moves a file within upper, or copies lower→upper then creates
+// a whiteout to hide the lower source.
 func (m *MergedView) Rename(oldPath, newPath string) error {
 	if m.Mode == WorkspaceRO {
 		return fmt.Errorf("rename denied: workspace is read-only")
@@ -320,7 +357,7 @@ func (m *MergedView) Rename(oldPath, newPath string) error {
 	oldUpper := m.resolveUpper(oldRel)
 	newUpper := m.resolveUpper(newRel)
 
-	// If old file doesn't exist in upper, copy it up first.
+	copiedUp := false
 	if _, err := os.Stat(oldUpper); os.IsNotExist(err) {
 		data, err := os.ReadFile(m.resolveLower(oldRel))
 		if err != nil {
@@ -332,15 +369,29 @@ func (m *MergedView) Rename(oldPath, newPath string) error {
 		if err := os.WriteFile(oldUpper, data, 0o644); err != nil { //nolint:gosec
 			return err
 		}
+		copiedUp = true
 	}
 
 	if err := os.MkdirAll(filepath.Dir(newUpper), 0o755); err != nil {
 		return err
 	}
-	return os.Rename(oldUpper, newUpper)
+	if err := os.Rename(oldUpper, newUpper); err != nil {
+		return err
+	}
+
+	// If source existed in lower (either copied-up or both layers),
+	// create whiteout to hide the lower source.
+	if copiedUp {
+		return m.createWhiteout(oldRel)
+	}
+	if _, err := os.Stat(m.resolveLower(oldRel)); err == nil {
+		return m.createWhiteout(oldRel)
+	}
+	return nil
 }
 
-// Chmod changes permissions on a path. Upper takes priority.
+// Chmod changes permissions on a path. Copy-up from lower if needed
+// to avoid mutating the original workspace.
 func (m *MergedView) Chmod(path string, mode os.FileMode) error {
 	if m.Mode == WorkspaceRO {
 		return fmt.Errorf("chmod denied: workspace is read-only")
@@ -356,22 +407,70 @@ func (m *MergedView) Chmod(path string, mode os.FileMode) error {
 		if _, err := os.Stat(upperPath); err == nil {
 			return os.Chmod(upperPath, mode)
 		}
+		// File only in lower — copy-up first to avoid mutating original.
+		lowerPath := m.resolveLower(rel)
+		data, err := os.ReadFile(lowerPath)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(upperPath), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(upperPath, data, mode); err != nil {
+			return err
+		}
+		return os.Chown(upperPath, int(m.Uid), int(m.Gid))
 	}
-	return os.Chmod(m.resolveLower(rel), mode)
+
+	if m.Mode == WorkspaceRW {
+		return os.Chmod(m.resolveLower(rel), mode)
+	}
+	return fmt.Errorf("chmod denied: no upper directory")
 }
 
-// Search walks the merged view and returns matching paths.
-func (m *MergedView) Search(pattern string) ([]string, error) {
+// Search walks the merged view under root and returns matching file paths.
+// Directories are excluded from results. Whiteout entries are respected.
+func (m *MergedView) Search(root, pattern string) ([]string, error) {
+	rootRel, err := m.safePath(root)
+	if err != nil {
+		return nil, err
+	}
+
 	var results []string
 	seen := make(map[string]bool)
+	whiteouts := make(map[string]bool)
+
+	// Collect whiteouts from upper first.
+	if m.UpperDir != "" {
+		upperRoot := m.resolveUpper(rootRel)
+		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if strings.HasPrefix(d.Name(), ".wh.") {
+				rel, _ := filepath.Rel(m.UpperDir, p)
+				origName := strings.TrimPrefix(d.Name(), ".wh.")
+				origRel := filepath.Join(filepath.Dir(rel), origName)
+				whiteouts[origRel] = true
+			}
+			return nil
+		})
+	}
 
 	// Walk lower.
 	if m.LowerDir != "" {
-		_ = filepath.WalkDir(m.LowerDir, func(p string, d fs.DirEntry, err error) error {
+		lowerRoot := m.resolveLower(rootRel)
+		_ = filepath.WalkDir(lowerRoot, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
-				return err
+				return nil
+			}
+			if d.IsDir() {
+				return nil
 			}
 			rel, _ := filepath.Rel(m.LowerDir, p)
+			if whiteouts[rel] {
+				return nil
+			}
 			if matched, _ := filepath.Match(pattern, filepath.Base(rel)); matched {
 				seen[rel] = true
 				results = append(results, rel)
@@ -382,11 +481,14 @@ func (m *MergedView) Search(pattern string) ([]string, error) {
 
 	// Walk upper.
 	if m.UpperDir != "" {
-		_ = filepath.WalkDir(m.UpperDir, func(p string, d fs.DirEntry, err error) error {
+		upperRoot := m.resolveUpper(rootRel)
+		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
-				return err
+				return nil
 			}
-			// Skip whiteout files.
+			if d.IsDir() {
+				return nil
+			}
 			if strings.HasPrefix(d.Name(), ".wh.") {
 				return nil
 			}

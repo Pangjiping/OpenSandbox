@@ -77,8 +77,9 @@ func buildArgv(opts WrapOptions, seccompFd string) ([]string, error) {
 	argv = append(argv, wsArgv...)
 
 	// 7b. Hide upper root from namespace to prevent cross-session data access.
+	// UpperDir is <root>/<id>/upper, so Dir(Dir(UpperDir)) gives the shared root.
 	if opts.UpperDir != "" {
-		upperRoot := filepath.Dir(opts.UpperDir)
+		upperRoot := filepath.Dir(filepath.Dir(opts.UpperDir))
 		argv = append(argv, "--tmpfs", upperRoot)
 	}
 

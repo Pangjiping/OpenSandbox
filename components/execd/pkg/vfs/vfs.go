@@ -34,6 +34,6 @@ type FS interface {
 	Chmod(path string, mode os.FileMode) error
 	ReadDir(path string) ([]os.DirEntry, error)
 	Open(path string) (*os.File, error)
-	Search(pattern string) ([]string, error)
+	Search(root, pattern string) ([]string, error)
 	ReplaceContent(path, old, newStr string) error
 }
