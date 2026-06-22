@@ -184,7 +184,17 @@ func bwrapWorkspaceSegment(opts WrapOptions) ([]string, error) {
 // bwrapEnvSegment returns environment passthrough args.
 func bwrapEnvSegment(spec EnvSpec) []string {
 	if spec.Mode == "" {
-		return nil
+		// Default: apply strict blacklist to strip secrets from the inherited env.
+		var argv []string
+		for _, pattern := range strictEnvBlacklist {
+			for _, env := range os.Environ() {
+				kv := strings.SplitN(env, "=", 2)
+				if matchEnvPattern(kv[0], pattern) {
+					argv = append(argv, "--unsetenv", kv[0])
+				}
+			}
+		}
+		return argv
 	}
 
 	switch spec.Mode {

@@ -328,7 +328,8 @@ func (m *MergedView) Remove(path string) error {
 	return fs.ErrNotExist
 }
 
-// RemoveAll deletes a path recursively.
+// RemoveAll deletes a path recursively. In overlay mode, removes the upper
+// tree and creates a whiteout to hide any lower entry at the same path.
 func (m *MergedView) RemoveAll(path string) error {
 	if m.Mode == WorkspaceRO {
 		return fmt.Errorf("remove denied: workspace is read-only")
@@ -339,10 +340,19 @@ func (m *MergedView) RemoveAll(path string) error {
 		return err
 	}
 
-	if m.UpperDir != "" {
-		return os.RemoveAll(m.resolveUpper(rel))
+	if m.UpperDir == "" {
+		return fmt.Errorf("remove denied: no upper directory")
 	}
-	return fmt.Errorf("read-only workspace")
+
+	upperPath := m.resolveUpper(rel)
+	if err := os.RemoveAll(upperPath); err != nil {
+		return err
+	}
+
+	if _, err := os.Stat(m.resolveLower(rel)); err == nil {
+		return m.createWhiteout(rel)
+	}
+	return nil
 }
 
 // MkdirAll creates directories in upper.
