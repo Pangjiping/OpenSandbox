@@ -76,7 +76,7 @@ func Probe(cfg ProbeConfig) ProbeResult {
 		return result
 	}
 
-	if probeOverlayMount() {
+	if probeOverlayMount(cfg.UpperRoot) {
 		result.CommitSupported = true
 		result.DiffSupported = true
 	}
@@ -136,14 +136,22 @@ func probeBwrapSmoke() error {
 }
 
 // probeOverlayMount tests whether bwrap can create an overlay mount.
-func probeOverlayMount() bool {
+func probeOverlayMount(upperRoot string) bool {
 	p := findBwrap()
 	if p == "" {
 		return false
 	}
 
-	tmpDir, err := os.MkdirTemp("", "execd-probe-overlay-*")
+	// Probe on the upper root filesystem (typically tmpfs/emptyDir) rather
+	// than /tmp, because overlayfs cannot nest on Docker's overlay2 layer
+	// but works fine on tmpfs.
+	base := upperRoot
+	if base == "" {
+		base = os.TempDir()
+	}
+	tmpDir, err := os.MkdirTemp(base, "execd-probe-overlay-*")
 	if err != nil {
+		log.Warn("isolation probe: overlay: MkdirTemp(%s): %v", base, err)
 		return false
 	}
 	defer os.RemoveAll(tmpDir)
@@ -153,6 +161,7 @@ func probeOverlayMount() bool {
 	workDir := filepath.Join(tmpDir, "work")
 	for _, d := range []string{lowerDir, upperDir, workDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
+			log.Warn("isolation probe: overlay: MkdirAll(%s): %v", d, err)
 			return false
 		}
 	}
@@ -164,5 +173,11 @@ func probeOverlayMount() bool {
 		"--overlay", upperDir, workDir, "/mnt",
 		"--", "true",
 	)
-	return cmd.Run() == nil
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		log.Warn("isolation probe: overlay mount failed: %v (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		return false
+	}
+	return true
 }

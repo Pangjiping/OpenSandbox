@@ -245,13 +245,18 @@ func (c *IsolatedSessionController) Capabilities() {
 		return
 	}
 	caps := isolatedRunner.Capabilities()
-	c.RespondSuccess(model.CapabilitiesResponse{
+	resp := model.CapabilitiesResponse{
 		Available:       caps.Available,
 		Isolator:        caps.Isolator,
 		Version:         caps.Version,
 		CommitSupported: caps.CommitSupported,
 		DiffSupported:   caps.DiffSupported,
-	})
+	}
+	if isolatedProbeResult != nil {
+		resp.CommitSupported = resp.CommitSupported || isolatedProbeResult.CommitSupported
+		resp.DiffSupported = resp.DiffSupported || isolatedProbeResult.DiffSupported
+	}
+	c.RespondSuccess(resp)
 }
 
 // Filesystem proxy handlers are in isolated_session_files.go.

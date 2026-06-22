@@ -112,6 +112,16 @@ func (m *MergedView) createWhiteout(rel string) error {
 	return f.Close()
 }
 
+// hasWhiteout checks if a whiteout marker exists for the given relative path.
+func (m *MergedView) hasWhiteout(rel string) bool {
+	if m.UpperDir == "" {
+		return false
+	}
+	whName := filepath.Join(filepath.Dir(rel), ".wh."+filepath.Base(rel))
+	_, err := os.Lstat(m.resolveUpper(whName))
+	return err == nil
+}
+
 // Stat returns file info for a path. Checks upper first, then lower.
 func (m *MergedView) Stat(path string) (os.FileInfo, error) {
 	rel, err := m.safePath(path)
@@ -126,6 +136,9 @@ func (m *MergedView) Stat(path string) (os.FileInfo, error) {
 		}
 		if info, err := os.Lstat(upperPath); err == nil {
 			return info, nil
+		}
+		if m.hasWhiteout(rel) {
+			return nil, &os.PathError{Op: "stat", Path: path, Err: os.ErrNotExist}
 		}
 	}
 	return os.Lstat(m.resolveLower(rel))
@@ -184,6 +197,9 @@ func (m *MergedView) Open(path string) (*os.File, error) {
 		if f, err := os.Open(upperPath); err == nil {
 			return f, nil
 		}
+		if m.hasWhiteout(rel) {
+			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
+		}
 	}
 	return os.Open(m.resolveLower(rel))
 }
@@ -202,6 +218,9 @@ func (m *MergedView) ReadFile(path string) ([]byte, error) {
 		}
 		if data, err := os.ReadFile(upperPath); err == nil {
 			return data, nil
+		}
+		if m.hasWhiteout(rel) {
+			return nil, &os.PathError{Op: "read", Path: path, Err: os.ErrNotExist}
 		}
 	}
 	return os.ReadFile(m.resolveLower(rel))
