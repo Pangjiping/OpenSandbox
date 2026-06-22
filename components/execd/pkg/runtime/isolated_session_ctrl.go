@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -147,6 +148,10 @@ func (r *IsolatedRunner) Available() bool {
 func (r *IsolatedRunner) CreateIsolatedSession(opts *IsolatedSessionOptions) (string, error) {
 	if err := r.validateExtraWritable(opts.ExtraWritable); err != nil {
 		return "", err
+	}
+
+	if err := os.MkdirAll(opts.WorkspacePath, 0o755); err != nil {
+		return "", fmt.Errorf("create workspace: %w", err)
 	}
 
 	id := uuid.New().String()
@@ -399,7 +404,8 @@ func (r *IsolatedRunner) GetMergedView(id string) (vfs.FS, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var uid, gid uint32
+	uid := uint32(os.Getuid())
+	gid := uint32(os.Getgid())
 	if s.opts.Uid != nil {
 		uid = *s.opts.Uid
 	}

@@ -83,8 +83,10 @@ func (s *isolatedSession) start() error {
 	switch s.opts.Profile {
 	case string(isolation.ProfileBalanced):
 		wrapOpts.Profile = isolation.ProfileBalanced
-	default:
+	case string(isolation.ProfileStrict), "":
 		wrapOpts.Profile = isolation.ProfileStrict
+	default:
+		return fmt.Errorf("unknown isolation profile %q", s.opts.Profile)
 	}
 
 	wrapOpts.Workspace.Path = s.opts.WorkspacePath

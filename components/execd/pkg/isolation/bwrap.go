@@ -116,7 +116,7 @@ func buildArgv(opts WrapOptions, seccompFd string) ([]string, error) {
 			"setpriv",
 			fmt.Sprintf("--reuid=%d", uid),
 			fmt.Sprintf("--regid=%d", gid),
-			"--init-groups",
+			"--clear-groups",
 		}
 		argv = append(argv, setprivArgv...)
 	}

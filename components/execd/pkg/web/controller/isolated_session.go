@@ -23,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/alibaba/opensandbox/execd/pkg/isolation"
+	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
 	"github.com/alibaba/opensandbox/execd/pkg/runtime"
 	"github.com/alibaba/opensandbox/execd/pkg/telemetry"
 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
@@ -183,6 +184,10 @@ func (c *IsolatedSessionController) Run() {
 			Type:      model.StreamEventTypeError,
 			Text:      err.Error(),
 			Timestamp: time.Now().UnixMilli(),
+			Error: &execute.ErrorOutput{
+				EName:  "RuntimeError",
+				EValue: err.Error(),
+			},
 		}
 		c.writeSingleEvent("IsolatedError", event.ToJSON(), true, event.Summary())
 		return
