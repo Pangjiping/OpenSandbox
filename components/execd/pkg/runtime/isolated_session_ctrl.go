@@ -171,7 +171,7 @@ func (r *IsolatedRunner) CreateIsolatedSession(opts *IsolatedSessionOptions) (st
 
 	if err := session.start(); err != nil {
 		if session.upperID != "" {
-			r.upperMgr.Release(session.upperID)
+			_ = r.upperMgr.Remove(session.upperID)
 		}
 		return "", fmt.Errorf("start bwrap: %w", err)
 	}
@@ -352,6 +352,9 @@ func scanUntilMarker(ctx context.Context, stdout io.ReadCloser, runMarker string
 	select {
 	case <-scanDone:
 	case <-ctx.Done():
+		// Wait for scanner goroutine to finish so it doesn't consume the
+		// next run's output on the shared stdout pipe.
+		<-scanDone
 		return 0, ctx.Err()
 	}
 
@@ -379,7 +382,9 @@ func (r *IsolatedRunner) DeleteIsolatedSession(id string) error {
 	}
 
 	if s.upperID != "" {
-		r.upperMgr.Release(s.upperID)
+		if err := r.upperMgr.Remove(s.upperID); err != nil {
+			log.Warning("remove upper dir for session %s: %v", id, err)
+		}
 	}
 
 	r.ctrl.isolatedSessionMap.Delete(id)

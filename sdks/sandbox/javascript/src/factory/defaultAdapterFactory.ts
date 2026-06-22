@@ -72,7 +72,8 @@ export class DefaultAdapterFactory implements AdapterFactory {
 
     const isolated = new IsolatedSessionsAdapter({
       baseUrl: opts.execdBaseUrl,
-      fetch: opts.connectionConfig.sseFetch,
+      fetch: opts.connectionConfig.fetch,
+      sseFetch: opts.connectionConfig.sseFetch,
       headers,
     });
 

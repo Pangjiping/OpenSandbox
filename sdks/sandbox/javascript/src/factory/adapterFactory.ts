@@ -41,7 +41,7 @@ export interface ExecdStack {
   files: SandboxFiles;
   health: ExecdHealth;
   metrics: ExecdMetrics;
-  isolation: IsolationService;
+  isolation?: IsolationService;
 }
 
 export interface CreateEgressStackOptions {

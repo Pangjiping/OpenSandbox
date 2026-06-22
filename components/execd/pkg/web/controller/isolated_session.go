@@ -265,10 +265,10 @@ func (c *IsolatedSessionController) Capabilities() {
 		CommitSupported: caps.CommitSupported,
 		DiffSupported:   caps.DiffSupported,
 	}
-	if isolatedProbeResult != nil {
-		resp.CommitSupported = resp.CommitSupported || isolatedProbeResult.CommitSupported
-		resp.DiffSupported = resp.DiffSupported || isolatedProbeResult.DiffSupported
-	}
+	// Probe results indicate overlay capability, not diff/commit implementation.
+	// Diff and commit are Phase 2; do not advertise them as supported.
+	resp.CommitSupported = false
+	resp.DiffSupported = false
 	c.RespondSuccess(resp)
 }
 

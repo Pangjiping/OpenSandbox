@@ -31,7 +31,8 @@ import type { Sandboxes } from "./services/sandboxes.js";
 import type { ExecdCommands } from "./services/execdCommands.js";
 import type { ExecdHealth } from "./services/execdHealth.js";
 import type { ExecdMetrics } from "./services/execdMetrics.js";
-import type { IsolationService } from "./services/isolatedSessions.js";
+import type { IsolationService, IsolationSession } from "./services/isolatedSessions.js";
+import type { IsolatedCapabilities } from "./models/isolated.js";
 import type {
   CreateSandboxRequest,
   CredentialProxyConfig,
@@ -48,6 +49,15 @@ import type {
 import { SandboxReadyTimeoutException } from "./core/exceptions.js";
 
 const HOST_PATH_PATTERN = /^([/]|[A-Za-z]:[\\/])/;
+
+const unavailableIsolation: IsolationService = {
+  create(): Promise<IsolationSession> {
+    throw new Error("Isolation is not available: the adapter factory did not provide an IsolationService");
+  },
+  capabilities(): Promise<IsolatedCapabilities> {
+    return Promise.resolve({ available: false, commit_supported: false, diff_supported: false });
+  },
+};
 const CREDENTIAL_VAULT_METHODS = [
   "create",
   "get",
@@ -406,7 +416,7 @@ export class Sandbox {
       const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
       const egressBaseUrl = `${connectionConfig.protocol}://${egressEndpoint.endpoint}`;
 
-      const { commands, files, health, metrics, isolation } =
+      const execdStack =
         adapterFactory.createExecdStack({
           connectionConfig,
           execdBaseUrl,
@@ -417,6 +427,8 @@ export class Sandbox {
         egressBaseUrl,
         endpointHeaders: egressEndpoint.headers,
       });
+
+      const { commands, files, health, metrics, isolation } = execdStack;
 
       const sbx = new Sandbox({
         id: sandboxId,
@@ -429,7 +441,7 @@ export class Sandbox {
         files,
         health,
         metrics,
-        isolation,
+        isolation: isolation ?? unavailableIsolation,
         egress,
         credentialVault,
       });
@@ -492,7 +504,7 @@ export class Sandbox {
       );
       const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
       const egressBaseUrl = `${connectionConfig.protocol}://${egressEndpoint.endpoint}`;
-      const { commands, files, health, metrics, isolation } =
+      const execdStack =
         adapterFactory.createExecdStack({
           connectionConfig,
           execdBaseUrl,
@@ -503,6 +515,8 @@ export class Sandbox {
         egressBaseUrl,
         endpointHeaders: egressEndpoint.headers,
       });
+
+      const { commands, files, health, metrics, isolation } = execdStack;
 
       const sbx = new Sandbox({
         id: opts.sandboxId,
@@ -515,7 +529,7 @@ export class Sandbox {
         files,
         health,
         metrics,
-        isolation,
+        isolation: isolation ?? unavailableIsolation,
         egress,
         credentialVault,
       });

@@ -85,15 +85,24 @@ func (m *MergedView) safePath(path string) (string, error) {
 }
 
 func (m *MergedView) rejectSymlink(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+	// Check every existing component, not just the final element.
+	var check string
+	for _, seg := range strings.Split(filepath.Clean(path), string(filepath.Separator)) {
+		if seg == "" {
+			check = string(filepath.Separator)
+			continue
 		}
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("symlink target denied: %s", path)
+		check = filepath.Join(check, seg)
+		info, err := os.Lstat(check)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlink target denied: %s", check)
+		}
 	}
 	return nil
 }
@@ -154,14 +163,16 @@ func (m *MergedView) ReadDir(path string) ([]os.DirEntry, error) {
 	entryMap := make(map[string]os.DirEntry)
 
 	// Lower first.
-	lowerEntries, _ := os.ReadDir(m.resolveLower(rel))
+	lowerEntries, lowerErr := os.ReadDir(m.resolveLower(rel))
 	for _, e := range lowerEntries {
 		entryMap[e.Name()] = e
 	}
 
 	// Upper overlays — takes precedence over lower.
+	var upperErr error
 	if m.UpperDir != "" {
-		upperEntries, _ := os.ReadDir(m.resolveUpper(rel))
+		var upperEntries []os.DirEntry
+		upperEntries, upperErr = os.ReadDir(m.resolveUpper(rel))
 		for _, e := range upperEntries {
 			if strings.HasPrefix(e.Name(), ".wh.") {
 				origName := strings.TrimPrefix(e.Name(), ".wh.")
@@ -170,6 +181,10 @@ func (m *MergedView) ReadDir(path string) ([]os.DirEntry, error) {
 			}
 			entryMap[e.Name()] = e
 		}
+	}
+
+	if len(entryMap) == 0 && os.IsNotExist(lowerErr) && (m.UpperDir == "" || os.IsNotExist(upperErr)) {
+		return nil, &os.PathError{Op: "readdir", Path: path, Err: os.ErrNotExist}
 	}
 
 	entries := make([]os.DirEntry, 0, len(entryMap))

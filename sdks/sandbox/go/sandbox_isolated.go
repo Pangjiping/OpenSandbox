@@ -74,9 +74,12 @@ func (s *Sandbox) IsolationCreate(ctx context.Context, req CreateIsolatedSession
 	if err != nil {
 		return nil, err
 	}
-	// Create a file-operations client scoped to this session's path prefix.
 	sessionBaseURL := s.execd.client.baseURL + "/v1/isolated/session/" + info.SessionID
-	filesClient := NewExecdClient(sessionBaseURL, s.execd.client.apiKey)
+	var filesOpts []Option
+	if len(s.execd.client.headers) > 0 {
+		filesOpts = append(filesOpts, WithHeaders(s.execd.client.headers))
+	}
+	filesClient := NewExecdClient(sessionBaseURL, s.execd.client.apiKey, filesOpts...)
 	return &IsolationSession{info: info, sandbox: s, files: filesClient}, nil
 }
 

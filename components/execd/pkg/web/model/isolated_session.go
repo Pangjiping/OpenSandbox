@@ -74,6 +74,14 @@ func (r *CreateIsolatedSessionRequest) Validate() error {
 				r.Workspace.Mode, WorkspaceModeRW, WorkspaceModeOverlay, WorkspaceModeRO)
 		}
 	}
+	if r.EnvPassthrough.Mode != "" {
+		switch r.EnvPassthrough.Mode {
+		case "deny", "allow":
+		default:
+			return fmt.Errorf("invalid env_passthrough mode %q: must be \"deny\" or \"allow\"",
+				r.EnvPassthrough.Mode)
+		}
+	}
 	return nil
 }
 

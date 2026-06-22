@@ -54,6 +54,8 @@ function inferExitCode(execution: CommandExecution): number | null {
 export interface IsolatedSessionsAdapterOptions {
   baseUrl: string;
   fetch?: typeof fetch;
+  /** Unbounded-timeout fetch for SSE streaming (run endpoint). Falls back to `fetch`. */
+  sseFetch?: typeof fetch;
   headers?: Record<string, string>;
 }
 
@@ -97,9 +99,11 @@ class IsolationSessionHandle implements IsolationSession {
 
 export class IsolatedSessionsAdapter implements IsolationService {
   private readonly fetch: typeof fetch;
+  private readonly sseFetch: typeof fetch;
 
   constructor(readonly opts: IsolatedSessionsAdapterOptions) {
     this.fetch = opts.fetch ?? fetch;
+    this.sseFetch = opts.sseFetch ?? this.fetch;
   }
 
   private async jsonRequest<T>(
@@ -163,7 +167,7 @@ export class IsolatedSessionsAdapter implements IsolationService {
       this.opts.baseUrl,
       `/v1/isolated/session/${encodeURIComponent(sessionId)}/run`,
     );
-    const res = await this.fetch(url, {
+    const res = await this.sseFetch(url, {
       method: "POST",
       headers: {
         accept: "text/event-stream",

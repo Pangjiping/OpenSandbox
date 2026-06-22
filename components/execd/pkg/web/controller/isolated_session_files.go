@@ -33,6 +33,10 @@ import (
 )
 
 func (c *IsolatedSessionController) getMergedView() (vfs.FS, error) {
+	if isolatedRunner == nil || !isolatedRunner.Available() {
+		c.RespondError(http.StatusServiceUnavailable, model.ErrorCodeServiceUnavailable, "isolation unavailable")
+		return nil, fmt.Errorf("isolation unavailable")
+	}
 	sessionID := c.ctx.Param("sessionId")
 	mv, err := isolatedRunner.GetMergedView(sessionID)
 	if err != nil {
@@ -402,7 +406,12 @@ func (c *IsolatedSessionController) ReplaceContent() {
 		}
 
 		newContent := strings.ReplaceAll(contentStr, item.Old, item.New)
-		if err := mv.WriteFile(file, []byte(newContent), 0o644); err != nil {
+		origInfo, _ := mv.Stat(file)
+		perm := os.FileMode(0o644)
+		if origInfo != nil {
+			perm = origInfo.Mode().Perm()
+		}
+		if err := mv.WriteFile(file, []byte(newContent), perm); err != nil {
 			c.RespondError(http.StatusInternalServerError, model.ErrorCodeRuntimeError, err.Error())
 			return
 		}
