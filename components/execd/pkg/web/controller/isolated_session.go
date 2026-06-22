@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -93,7 +94,13 @@ func (c *IsolatedSessionController) Create() {
 
 	sessionID, err := isolatedRunner.CreateIsolatedSession(opts)
 	if err != nil {
-		c.RespondError(http.StatusInternalServerError, model.ErrorCodeRuntimeError, err.Error())
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not in allowlist") ||
+			strings.Contains(err.Error(), "not allowed") ||
+			strings.Contains(err.Error(), "unknown isolation profile") {
+			status = http.StatusBadRequest
+		}
+		c.RespondError(status, model.ErrorCodeRuntimeError, err.Error())
 		return
 	}
 
@@ -180,13 +187,19 @@ func (c *IsolatedSessionController) Run() {
 			return
 		}
 		telemetry.RecordIsolatedRun(ctx, "error", durationMs)
+		ename := "RuntimeError"
+		evalue := err.Error()
+		if strings.HasPrefix(evalue, "command exited with code ") {
+			ename = "ExitError"
+			evalue = strings.TrimPrefix(evalue, "command exited with code ")
+		}
 		event := model.ServerStreamEvent{
 			Type:      model.StreamEventTypeError,
 			Text:      err.Error(),
 			Timestamp: time.Now().UnixMilli(),
 			Error: &execute.ErrorOutput{
-				EName:  "RuntimeError",
-				EValue: err.Error(),
+				EName:  ename,
+				EValue: evalue,
 			},
 		}
 		c.writeSingleEvent("IsolatedError", event.ToJSON(), true, event.Summary())

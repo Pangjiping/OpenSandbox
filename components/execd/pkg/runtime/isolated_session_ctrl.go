@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -277,15 +278,17 @@ func (r *IsolatedRunner) RunInIsolatedSession(ctx context.Context, id string, co
 	}
 	script += fmt.Sprintf("echo %s $?\n", runMarker)
 
-	// Close stdin only if context is cancelled during the run.
-	// The done channel prevents the goroutine from closing stdin
-	// after a normal return (which would kill the persistent session).
+	// On timeout/cancel, send SIGINT to interrupt the running command
+	// without killing the persistent bash session. Closing stdin would
+	// terminate bash entirely.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
-			stdin.Close()
+			if s.cmd != nil && s.cmd.Process != nil {
+				_ = syscall.Kill(-s.cmd.Process.Pid, syscall.SIGINT)
+			}
 		case <-done:
 		}
 	}()

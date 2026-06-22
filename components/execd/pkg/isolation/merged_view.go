@@ -358,7 +358,11 @@ func (m *MergedView) MkdirAll(path string, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	return os.MkdirAll(m.resolveUpper(rel), perm)
+	upperPath := m.resolveUpper(rel)
+	if err := os.MkdirAll(upperPath, perm); err != nil {
+		return err
+	}
+	return os.Chown(upperPath, int(m.Uid), int(m.Gid))
 }
 
 // Rename moves a file within upper, or copies lower→upper then creates

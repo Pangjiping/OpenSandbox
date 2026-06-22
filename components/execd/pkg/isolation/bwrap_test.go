@@ -226,8 +226,8 @@ func TestBuildArgv_Setpriv(t *testing.T) {
 		if !strings.Contains(s, "setpriv") {
 			t.Error("missing setpriv")
 		}
-		if !strings.Contains(s, "--init-groups") {
-			t.Error("missing --init-groups")
+		if !strings.Contains(s, "--clear-groups") {
+			t.Error("missing --clear-groups")
 		}
 	})
 
@@ -368,7 +368,7 @@ func TestWrapWithArgv(t *testing.T) {
 		"--tmpfs", "/tmp", "--tmpfs", "/run",
 		"--dev", "/dev", "--proc", "/proc",
 		"--bind", "/workspace", "/workspace",
-		"--", "setpriv", "--reuid=1000", "--regid=1000", "--init-groups",
+		"--", "setpriv", "--reuid=1000", "--regid=1000", "--clear-groups",
 	}
 
 	wrapWithArgv(cmd, "/usr/bin/bwrap", argv)
