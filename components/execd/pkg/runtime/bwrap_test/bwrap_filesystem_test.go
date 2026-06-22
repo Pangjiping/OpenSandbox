@@ -260,7 +260,7 @@ func TestFilesystem_Search(t *testing.T) {
 	require.NoError(t, mv.WriteFile("b.log", []byte("b"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(wsDir, "c.txt"), []byte("c"), 0o644))
 
-	results, err := mv.Search("*.txt")
+	results, err := mv.Search(".", "*.txt")
 	require.NoError(t, err)
 	assert.Len(t, results, 2)
 	assert.Contains(t, results, "a.txt")
