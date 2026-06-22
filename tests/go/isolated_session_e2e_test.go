@@ -15,7 +15,10 @@
 package e2e
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
@@ -230,4 +233,744 @@ func TestIsolationOverlayMode(t *testing.T) {
 	text := hostCheck.Text()
 	assert.True(t, strings.Contains(text, "NOT_FOUND") || strings.Contains(text, "No such file"),
 		"overlay write should not be visible on host, got: %s", text)
+}
+
+// ---------------------------------------------------------------------------
+// RW filesystem API tests
+// ---------------------------------------------------------------------------
+
+func TestIsolationRWFilesUploadDownload(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	filePath := fmt.Sprintf("/tmp/test_upload_%d.txt", time.Now().UnixMilli())
+	content := "hello-upload-download"
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte(content)),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	rc, err := session.Files().DownloadFile(ctx, filePath, "")
+	require.NoError(t, err)
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(data))
+}
+
+func TestIsolationRWFilesInfo(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	filePath := fmt.Sprintf("/tmp/test_info_%d.txt", time.Now().UnixMilli())
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("info-content")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	info, err := session.Files().GetFileInfo(ctx, filePath)
+	require.NoError(t, err)
+	require.Contains(t, info, filePath)
+	assert.Greater(t, info[filePath].Size, int64(0))
+}
+
+func TestIsolationRWFilesSearch(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixMilli())
+	filePath := fmt.Sprintf("/tmp/test_search_%s.txt", suffix)
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("search-me")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	results, err := session.Files().SearchFiles(ctx, "/tmp", fmt.Sprintf("test_search_%s*", suffix))
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+
+	found := false
+	for _, fi := range results {
+		if strings.Contains(fi.Path, "test_search_"+suffix) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected to find uploaded file in search results")
+}
+
+func TestIsolationRWFilesMkdir(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	dirPath := fmt.Sprintf("/tmp/test_mkdir_%d", time.Now().UnixMilli())
+
+	err = session.Files().CreateDirectory(ctx, dirPath, 755)
+	require.NoError(t, err)
+
+	info, err := session.Files().GetFileInfo(ctx, dirPath)
+	require.NoError(t, err)
+	require.Contains(t, info, dirPath)
+	assert.Equal(t, "directory", info[dirPath].Type)
+}
+
+func TestIsolationRWFilesDelete(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	filePath := fmt.Sprintf("/tmp/test_delete_%d.txt", time.Now().UnixMilli())
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("delete-me")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	err = session.Files().DeleteFiles(ctx, []string{filePath})
+	require.NoError(t, err)
+
+	_, err = session.Files().GetFileInfo(ctx, filePath)
+	assert.Error(t, err, "expected error after deleting file")
+}
+
+func TestIsolationRWFilesMove(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	ts := time.Now().UnixMilli()
+	srcPath := fmt.Sprintf("/tmp/test_move_src_%d.txt", ts)
+	dstPath := fmt.Sprintf("/tmp/test_move_dst_%d.txt", ts)
+	content := "move-me"
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte(content)),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: srcPath}},
+	}})
+	require.NoError(t, err)
+
+	err = session.Files().MoveFiles(ctx, opensandbox.MoveRequest{{Src: srcPath, Dest: dstPath}})
+	require.NoError(t, err)
+
+	rc, err := session.Files().DownloadFile(ctx, dstPath, "")
+	require.NoError(t, err)
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(data))
+
+	_, err = session.Files().GetFileInfo(ctx, srcPath)
+	assert.Error(t, err, "source file should no longer exist after move")
+}
+
+func TestIsolationRWFilesChmod(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	filePath := fmt.Sprintf("/tmp/test_chmod_%d.txt", time.Now().UnixMilli())
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("chmod-me")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	err = session.Files().SetPermissions(ctx, opensandbox.PermissionsRequest{
+		filePath: {Mode: 755},
+	})
+	require.NoError(t, err)
+
+	info, err := session.Files().GetFileInfo(ctx, filePath)
+	require.NoError(t, err)
+	require.Contains(t, info, filePath)
+	assert.Equal(t, 755, info[filePath].Mode)
+}
+
+func TestIsolationRWFilesReplace(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	filePath := fmt.Sprintf("/tmp/test_replace_%d.txt", time.Now().UnixMilli())
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("old-content-here")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	err = session.Files().ReplaceInFiles(ctx, opensandbox.ReplaceRequest{
+		filePath: {Old: "old-content", New: "new-content"},
+	})
+	require.NoError(t, err)
+
+	rc, err := session.Files().DownloadFile(ctx, filePath, "")
+	require.NoError(t, err)
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, "new-content-here", string(data))
+}
+
+func TestIsolationRWFilesListDirectory(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	ts := time.Now().UnixMilli()
+	dirPath := fmt.Sprintf("/tmp/test_listdir_%d", ts)
+	err = session.Files().CreateDirectory(ctx, dirPath, 755)
+	require.NoError(t, err)
+
+	filePath := fmt.Sprintf("%s/child_%d.txt", dirPath, ts)
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("list-me")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	entries, err := session.Files().ListDirectory(ctx, dirPath)
+	require.NoError(t, err)
+	require.NotEmpty(t, entries)
+
+	found := false
+	for _, fi := range entries {
+		if strings.Contains(fi.Path, fmt.Sprintf("child_%d", ts)) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected child file in directory listing")
+}
+
+func TestIsolationRWHostVisible(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	ts := time.Now().UnixMilli()
+	filePath := fmt.Sprintf("/tmp/test_host_visible_%d.txt", ts)
+	content := "visible-on-host"
+
+	_, err = session.Run(ctx, opensandbox.IsolatedRunRequest{
+		Code: fmt.Sprintf("echo -n %s > %s", content, filePath),
+	}, nil)
+	require.NoError(t, err)
+
+	hostExec, err := sb.RunCommand(ctx, fmt.Sprintf("cat %s", filePath), nil)
+	require.NoError(t, err)
+	assert.Contains(t, hostExec.Text(), content)
+}
+
+// ---------------------------------------------------------------------------
+// RO mode tests
+// ---------------------------------------------------------------------------
+
+func TestIsolationROCanReadExistingFiles(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	ts := time.Now().UnixMilli()
+	filePath := fmt.Sprintf("/tmp/test_ro_read_%d.txt", ts)
+	content := "host-created-content"
+
+	_, err := sb.RunCommand(ctx, fmt.Sprintf("echo -n %s > %s", content, filePath), nil)
+	require.NoError(t, err)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "ro"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	exec, err := session.Run(ctx, opensandbox.IsolatedRunRequest{
+		Code: fmt.Sprintf("cat %s", filePath),
+	}, nil)
+	require.NoError(t, err)
+	assert.Contains(t, exec.Text(), content)
+}
+
+func TestIsolationROCannotWrite(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "ro"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	filePath := fmt.Sprintf("/tmp/test_ro_write_%d.txt", time.Now().UnixMilli())
+
+	exec, err := session.Run(ctx, opensandbox.IsolatedRunRequest{
+		Code: fmt.Sprintf("echo test > %s 2>&1; echo exit=$?", filePath),
+	}, nil)
+	require.NoError(t, err)
+	text := exec.Text()
+	assert.True(t,
+		strings.Contains(text, "Read-only") ||
+			strings.Contains(text, "read-only") ||
+			strings.Contains(text, "Permission denied") ||
+			strings.Contains(text, "exit=1"),
+		"expected write to fail in RO mode, got: %s", text)
+}
+
+func TestIsolationROFilesAPIRead(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	ts := time.Now().UnixMilli()
+	filePath := fmt.Sprintf("/tmp/test_ro_api_read_%d.txt", ts)
+	content := "ro-api-read-content"
+
+	_, err := sb.RunCommand(ctx, fmt.Sprintf("echo -n %s > %s", content, filePath), nil)
+	require.NoError(t, err)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "ro"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	rc, err := session.Files().DownloadFile(ctx, filePath, "")
+	require.NoError(t, err)
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(data))
+}
+
+func TestIsolationROFilesAPISearch(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	ts := time.Now().UnixMilli()
+	filePath := fmt.Sprintf("/tmp/test_ro_search_%d.txt", ts)
+
+	_, err := sb.RunCommand(ctx, fmt.Sprintf("echo -n data > %s", filePath), nil)
+	require.NoError(t, err)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "ro"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	results, err := session.Files().SearchFiles(ctx, "/tmp", fmt.Sprintf("test_ro_search_%d*", ts))
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+
+	found := false
+	for _, fi := range results {
+		if strings.Contains(fi.Path, fmt.Sprintf("test_ro_search_%d", ts)) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected to find file via search in RO session")
+}
+
+func TestIsolationROFilesAPIListDirectory(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	ts := time.Now().UnixMilli()
+	dirPath := fmt.Sprintf("/tmp/test_ro_listdir_%d", ts)
+
+	_, err := sb.RunCommand(ctx, fmt.Sprintf("mkdir -p %s && echo -n data > %s/child.txt", dirPath, dirPath), nil)
+	require.NoError(t, err)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "ro"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	entries, err := session.Files().ListDirectory(ctx, dirPath)
+	require.NoError(t, err)
+	require.NotEmpty(t, entries)
+
+	found := false
+	for _, fi := range entries {
+		if strings.Contains(fi.Path, "child.txt") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected child.txt in RO directory listing")
+}
+
+// ---------------------------------------------------------------------------
+// Overlay mode tests
+// ---------------------------------------------------------------------------
+
+func skipIfOverlayNotSupported(t *testing.T, ctx context.Context, sb *opensandbox.Sandbox) {
+	t.Helper()
+	caps, err := sb.IsolationCapabilities(ctx)
+	require.NoError(t, err)
+	if !caps.CommitSupported && !caps.DiffSupported {
+		t.Skip("overlay mode not available")
+	}
+}
+
+func TestIsolationOverlayWritesNotVisibleOnHost(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+	skipIfOverlayNotSupported(t, ctx, sb)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "overlay"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	ts := time.Now().UnixMilli()
+	filePath := fmt.Sprintf("/tmp/test_overlay_invisible_%d.txt", ts)
+
+	_, err = session.Run(ctx, opensandbox.IsolatedRunRequest{
+		Code: fmt.Sprintf("echo -n overlay-data > %s", filePath),
+	}, nil)
+	require.NoError(t, err)
+
+	hostExec, err := sb.RunCommand(ctx, fmt.Sprintf("cat %s 2>&1 || echo NOT_FOUND", filePath), nil)
+	require.NoError(t, err)
+	text := hostExec.Text()
+	assert.True(t, strings.Contains(text, "NOT_FOUND") || strings.Contains(text, "No such file"),
+		"overlay write should not be visible on host, got: %s", text)
+}
+
+func TestIsolationOverlayCanReadHostFiles(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+	skipIfOverlayNotSupported(t, ctx, sb)
+
+	ts := time.Now().UnixMilli()
+	filePath := fmt.Sprintf("/tmp/test_overlay_hostread_%d.txt", ts)
+	content := "host-file-for-overlay"
+
+	_, err := sb.RunCommand(ctx, fmt.Sprintf("echo -n %s > %s", content, filePath), nil)
+	require.NoError(t, err)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "overlay"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	exec, err := session.Run(ctx, opensandbox.IsolatedRunRequest{
+		Code: fmt.Sprintf("cat %s", filePath),
+	}, nil)
+	require.NoError(t, err)
+	assert.Contains(t, exec.Text(), content)
+}
+
+func TestIsolationOverlayCOWDoesNotMutateHost(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+	skipIfOverlayNotSupported(t, ctx, sb)
+
+	ts := time.Now().UnixMilli()
+	filePath := fmt.Sprintf("/tmp/test_overlay_cow_%d.txt", ts)
+	originalContent := "original-content"
+
+	_, err := sb.RunCommand(ctx, fmt.Sprintf("echo -n %s > %s", originalContent, filePath), nil)
+	require.NoError(t, err)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "overlay"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	_, err = session.Run(ctx, opensandbox.IsolatedRunRequest{
+		Code: fmt.Sprintf("echo -n modified-content > %s", filePath),
+	}, nil)
+	require.NoError(t, err)
+
+	// Verify session sees modified content
+	exec, err := session.Run(ctx, opensandbox.IsolatedRunRequest{
+		Code: fmt.Sprintf("cat %s", filePath),
+	}, nil)
+	require.NoError(t, err)
+	assert.Contains(t, exec.Text(), "modified-content")
+
+	// Verify host still has original content
+	hostExec, err := sb.RunCommand(ctx, fmt.Sprintf("cat %s", filePath), nil)
+	require.NoError(t, err)
+	assert.Contains(t, hostExec.Text(), originalContent)
+}
+
+func TestIsolationOverlayFilesAPIUploadDownload(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+	skipIfOverlayNotSupported(t, ctx, sb)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "overlay"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	filePath := fmt.Sprintf("/tmp/test_overlay_upload_%d.txt", time.Now().UnixMilli())
+	content := "overlay-upload-content"
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte(content)),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	rc, err := session.Files().DownloadFile(ctx, filePath, "")
+	require.NoError(t, err)
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(data))
+
+	// Verify not visible on host
+	hostExec, err := sb.RunCommand(ctx, fmt.Sprintf("cat %s 2>&1 || echo NOT_FOUND", filePath), nil)
+	require.NoError(t, err)
+	hostText := hostExec.Text()
+	assert.True(t, strings.Contains(hostText, "NOT_FOUND") || strings.Contains(hostText, "No such file"),
+		"overlay upload should not be visible on host, got: %s", hostText)
+}
+
+func TestIsolationOverlayFilesAPISearch(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+	skipIfOverlayNotSupported(t, ctx, sb)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "overlay"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	suffix := fmt.Sprintf("%d", time.Now().UnixMilli())
+	filePath := fmt.Sprintf("/tmp/test_overlay_search_%s.txt", suffix)
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("overlay-search")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	results, err := session.Files().SearchFiles(ctx, "/tmp", fmt.Sprintf("test_overlay_search_%s*", suffix))
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+
+	found := false
+	for _, fi := range results {
+		if strings.Contains(fi.Path, "test_overlay_search_"+suffix) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected to find uploaded file in overlay search results")
+}
+
+func TestIsolationOverlayFilesAPIDelete(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+	skipIfOverlayNotSupported(t, ctx, sb)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "overlay"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	filePath := fmt.Sprintf("/tmp/test_overlay_delete_%d.txt", time.Now().UnixMilli())
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("overlay-delete-me")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	err = session.Files().DeleteFiles(ctx, []string{filePath})
+	require.NoError(t, err)
+
+	_, err = session.Files().GetFileInfo(ctx, filePath)
+	assert.Error(t, err, "expected error after deleting file in overlay session")
+}
+
+func TestIsolationOverlayFilesAPIMove(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+	skipIfOverlayNotSupported(t, ctx, sb)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "overlay"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	ts := time.Now().UnixMilli()
+	srcPath := fmt.Sprintf("/tmp/test_overlay_move_src_%d.txt", ts)
+	dstPath := fmt.Sprintf("/tmp/test_overlay_move_dst_%d.txt", ts)
+	content := "overlay-move-me"
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte(content)),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: srcPath}},
+	}})
+	require.NoError(t, err)
+
+	err = session.Files().MoveFiles(ctx, opensandbox.MoveRequest{{Src: srcPath, Dest: dstPath}})
+	require.NoError(t, err)
+
+	rc, err := session.Files().DownloadFile(ctx, dstPath, "")
+	require.NoError(t, err)
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(data))
+
+	_, err = session.Files().GetFileInfo(ctx, srcPath)
+	assert.Error(t, err, "source file should no longer exist after move in overlay")
+}
+
+func TestIsolationOverlayFilesAPIChmod(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+	skipIfOverlayNotSupported(t, ctx, sb)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "overlay"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	filePath := fmt.Sprintf("/tmp/test_overlay_chmod_%d.txt", time.Now().UnixMilli())
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("overlay-chmod")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	err = session.Files().SetPermissions(ctx, opensandbox.PermissionsRequest{
+		filePath: {Mode: 755},
+	})
+	require.NoError(t, err)
+
+	info, err := session.Files().GetFileInfo(ctx, filePath)
+	require.NoError(t, err)
+	require.Contains(t, info, filePath)
+	assert.Equal(t, 755, info[filePath].Mode)
+}
+
+func TestIsolationOverlayFilesAPIReplace(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+	skipIfOverlayNotSupported(t, ctx, sb)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "overlay"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	filePath := fmt.Sprintf("/tmp/test_overlay_replace_%d.txt", time.Now().UnixMilli())
+
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("old-overlay-text")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	err = session.Files().ReplaceInFiles(ctx, opensandbox.ReplaceRequest{
+		filePath: {Old: "old-overlay", New: "new-overlay"},
+	})
+	require.NoError(t, err)
+
+	rc, err := session.Files().DownloadFile(ctx, filePath, "")
+	require.NoError(t, err)
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, "new-overlay-text", string(data))
+}
+
+func TestIsolationOverlayFilesAPIListDirectory(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+	skipIfOverlayNotSupported(t, ctx, sb)
+
+	session, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "overlay"},
+	})
+	require.NoError(t, err)
+	defer session.Delete(ctx)
+
+	ts := time.Now().UnixMilli()
+	dirPath := fmt.Sprintf("/tmp/test_overlay_listdir_%d", ts)
+
+	err = session.Files().CreateDirectory(ctx, dirPath, 755)
+	require.NoError(t, err)
+
+	filePath := fmt.Sprintf("%s/overlay_child_%d.txt", dirPath, ts)
+	err = session.Files().UploadFiles(ctx, []opensandbox.UploadFileEntry{{
+		File:    bytes.NewReader([]byte("overlay-list-child")),
+		Options: opensandbox.UploadFileOptions{Metadata: opensandbox.FileMetadata{Path: filePath}},
+	}})
+	require.NoError(t, err)
+
+	entries, err := session.Files().ListDirectory(ctx, dirPath)
+	require.NoError(t, err)
+	require.NotEmpty(t, entries)
+
+	found := false
+	for _, fi := range entries {
+		if strings.Contains(fi.Path, fmt.Sprintf("overlay_child_%d", ts)) {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected child file in overlay directory listing")
 }

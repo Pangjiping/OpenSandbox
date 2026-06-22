@@ -189,4 +189,489 @@ describe("IsolatedSession E2E", () => {
       await session.delete();
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // RW filesystem API tests
+  // ---------------------------------------------------------------------------
+
+  it("test_rw_host_visible", async () => {
+    const tag = `rw_host_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      await session.run(`echo ${tag} > ${filePath}`);
+      const hostCheck = await sandbox.commands.run(`cat ${filePath}`);
+      expect(hostCheck.logs.stdout.map(m => m.text).join("")).toContain(tag);
+    } finally {
+      await sandbox.commands.run(`rm -f ${filePath}`);
+      await session.delete();
+    }
+  });
+
+  it("test_rw_files_upload_download", async () => {
+    const tag = `rw_updown_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const content = `hello-upload-${tag}`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: content }]);
+      const downloaded = await session.files.readFile(filePath, { encoding: "utf-8" });
+      expect(downloaded).toContain(content);
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_rw_files_info", async () => {
+    const tag = `rw_info_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: "info-test" }]);
+      const info = await session.files.getFileInfo([filePath]);
+      expect(info[filePath]).toBeTruthy();
+      expect(info[filePath].path).toBe(filePath);
+      expect(info[filePath].type).toBe("file");
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_rw_files_search", async () => {
+    const tag = `rw_search_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: "search-content" }]);
+      const results = await session.files.search({ path: "/tmp", pattern: `${tag}*` });
+      const paths = results.map(r => r.path);
+      expect(paths).toContain(filePath);
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_rw_files_mkdir", async () => {
+    const tag = `rw_mkdir_${Date.now()}`;
+    const dirPath = `/tmp/${tag}_dir`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      await session.files.createDirectories([{ path: dirPath }]);
+      const info = await session.files.getFileInfo([dirPath]);
+      expect(info[dirPath]).toBeTruthy();
+      expect(info[dirPath].type).toBe("directory");
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_rw_files_delete", async () => {
+    const tag = `rw_del_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: "delete-me" }]);
+      await session.files.deleteFiles([filePath]);
+      const exec = await session.run(`cat ${filePath} 2>&1 || echo NOT_FOUND`);
+      expect(exec.logs.stdout.map(m => m.text).join("")).toContain("NOT_FOUND");
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_rw_files_move", async () => {
+    const tag = `rw_move_${Date.now()}`;
+    const srcPath = `/tmp/${tag}_src.txt`;
+    const destPath = `/tmp/${tag}_dest.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      await session.files.writeFiles([{ path: srcPath, data: "move-content" }]);
+      await session.files.moveFiles([{ src: srcPath, dest: destPath }]);
+      const downloaded = await session.files.readFile(destPath, { encoding: "utf-8" });
+      expect(downloaded).toContain("move-content");
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_rw_files_chmod", async () => {
+    const tag = `rw_chmod_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: "chmod-test" }]);
+      await session.files.setPermissions([{ path: filePath, mode: 0o755 }]);
+      const exec = await session.run(`stat -c '%a' ${filePath}`);
+      expect(exec.logs.stdout.map(m => m.text).join("")).toContain("755");
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_rw_files_replace", async () => {
+    const tag = `rw_replace_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: "old-value-here" }]);
+      await session.files.replaceContents([
+        { path: filePath, oldContent: "old-value", newContent: "new-value" },
+      ]);
+      const downloaded = await session.files.readFile(filePath, { encoding: "utf-8" });
+      expect(downloaded).toContain("new-value");
+      expect(downloaded).not.toContain("old-value");
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_rw_files_list_directory", async () => {
+    const tag = `rw_listdir_${Date.now()}`;
+    const dirPath = `/tmp/${tag}_dir`;
+    const filePath = `${dirPath}/child.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      await session.files.createDirectories([{ path: dirPath }]);
+      await session.files.writeFiles([{ path: filePath, data: "child-content" }]);
+      const entries = await session.files.listDirectory({ path: dirPath, depth: 1 });
+      const paths = entries.map(e => e.path);
+      expect(paths.some(p => p.includes("child.txt"))).toBe(true);
+    } finally {
+      await session.delete();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // RO mode tests
+  // ---------------------------------------------------------------------------
+
+  it("test_ro_can_read_existing_files", async () => {
+    const tag = `ro_read_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    await sandbox.commands.run(`echo readable-${tag} > ${filePath}`);
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "ro" },
+    });
+    try {
+      const exec = await session.run(`cat ${filePath}`);
+      expect(exec.logs.stdout.map(m => m.text).join("")).toContain(`readable-${tag}`);
+    } finally {
+      await sandbox.commands.run(`rm -f ${filePath}`);
+      await session.delete();
+    }
+  });
+
+  it("test_ro_cannot_write", async () => {
+    const tag = `ro_write_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "ro" },
+    });
+    try {
+      const exec = await session.run(
+        `echo test > ${filePath} 2>&1 || echo WRITE_FAILED`
+      );
+      const output = exec.logs.stdout.map(m => m.text).join("")
+        + exec.logs.stderr.map(m => m.text).join("");
+      expect(
+        output.includes("WRITE_FAILED") ||
+        output.includes("Read-only") ||
+        output.includes("read-only") ||
+        output.includes("Permission denied")
+      ).toBe(true);
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_ro_files_api_read", async () => {
+    const tag = `ro_api_read_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    await sandbox.commands.run(`echo api-readable-${tag} > ${filePath}`);
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "ro" },
+    });
+    try {
+      const content = await session.files.readFile(filePath, { encoding: "utf-8" });
+      expect(content).toContain(`api-readable-${tag}`);
+    } finally {
+      await sandbox.commands.run(`rm -f ${filePath}`);
+      await session.delete();
+    }
+  });
+
+  it("test_ro_files_api_search", async () => {
+    const tag = `ro_api_search_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    await sandbox.commands.run(`echo searchable > ${filePath}`);
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "ro" },
+    });
+    try {
+      const results = await session.files.search({ path: "/tmp", pattern: `${tag}*` });
+      const paths = results.map(r => r.path);
+      expect(paths).toContain(filePath);
+    } finally {
+      await sandbox.commands.run(`rm -f ${filePath}`);
+      await session.delete();
+    }
+  });
+
+  it("test_ro_files_api_list_directory", async () => {
+    const tag = `ro_api_listdir_${Date.now()}`;
+    const dirPath = `/tmp/${tag}_dir`;
+    await sandbox.commands.run(`mkdir -p ${dirPath} && echo content > ${dirPath}/file.txt`);
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "ro" },
+    });
+    try {
+      const entries = await session.files.listDirectory({ path: dirPath, depth: 1 });
+      const paths = entries.map(e => e.path);
+      expect(paths.some(p => p.includes("file.txt"))).toBe(true);
+    } finally {
+      await sandbox.commands.run(`rm -rf ${dirPath}`);
+      await session.delete();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Overlay mode tests (skip if not supported)
+  // ---------------------------------------------------------------------------
+
+  it("test_overlay_writes_not_visible_on_host", async () => {
+    const caps = await sandbox.isolation.capabilities();
+    const overlaySupported = caps.commit_supported || caps.diff_supported;
+    if (!overlaySupported) return;
+
+    const tag = `ovl_nohost_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "overlay" },
+    });
+    try {
+      await session.run(`echo overlay-secret > ${filePath}`);
+      const hostCheck = await sandbox.commands.run(
+        `cat ${filePath} 2>&1 || echo NOT_FOUND`
+      );
+      const out = hostCheck.logs.stdout.map(m => m.text).join("");
+      expect(out.includes("NOT_FOUND") || out.includes("No such file")).toBe(true);
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_overlay_can_read_host_files", async () => {
+    const caps = await sandbox.isolation.capabilities();
+    const overlaySupported = caps.commit_supported || caps.diff_supported;
+    if (!overlaySupported) return;
+
+    const tag = `ovl_readhost_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    await sandbox.commands.run(`echo host-content-${tag} > ${filePath}`);
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "overlay" },
+    });
+    try {
+      const exec = await session.run(`cat ${filePath}`);
+      expect(exec.logs.stdout.map(m => m.text).join("")).toContain(`host-content-${tag}`);
+    } finally {
+      await sandbox.commands.run(`rm -f ${filePath}`);
+      await session.delete();
+    }
+  });
+
+  it("test_overlay_cow_does_not_mutate_host", async () => {
+    const caps = await sandbox.isolation.capabilities();
+    const overlaySupported = caps.commit_supported || caps.diff_supported;
+    if (!overlaySupported) return;
+
+    const tag = `ovl_cow_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    await sandbox.commands.run(`echo original-${tag} > ${filePath}`);
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "overlay" },
+    });
+    try {
+      await session.run(`echo modified-${tag} > ${filePath}`);
+      const sessionCheck = await session.run(`cat ${filePath}`);
+      expect(sessionCheck.logs.stdout.map(m => m.text).join("")).toContain(`modified-${tag}`);
+      const hostCheck = await sandbox.commands.run(`cat ${filePath}`);
+      expect(hostCheck.logs.stdout.map(m => m.text).join("")).toContain(`original-${tag}`);
+    } finally {
+      await sandbox.commands.run(`rm -f ${filePath}`);
+      await session.delete();
+    }
+  });
+
+  it("test_overlay_files_api_upload_download", async () => {
+    const caps = await sandbox.isolation.capabilities();
+    const overlaySupported = caps.commit_supported || caps.diff_supported;
+    if (!overlaySupported) return;
+
+    const tag = `ovl_updown_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const content = `overlay-upload-${tag}`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "overlay" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: content }]);
+      const downloaded = await session.files.readFile(filePath, { encoding: "utf-8" });
+      expect(downloaded).toContain(content);
+      // Verify not visible on host
+      const hostCheck = await sandbox.commands.run(
+        `cat ${filePath} 2>&1 || echo NOT_FOUND`
+      );
+      const hostOut = hostCheck.logs.stdout.map(m => m.text).join("");
+      expect(hostOut.includes("NOT_FOUND") || hostOut.includes("No such file")).toBe(true);
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_overlay_files_api_search", async () => {
+    const caps = await sandbox.isolation.capabilities();
+    const overlaySupported = caps.commit_supported || caps.diff_supported;
+    if (!overlaySupported) return;
+
+    const tag = `ovl_search_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "overlay" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: "overlay-search-data" }]);
+      const results = await session.files.search({ path: "/tmp", pattern: `${tag}*` });
+      const paths = results.map(r => r.path);
+      expect(paths).toContain(filePath);
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_overlay_files_api_delete", async () => {
+    const caps = await sandbox.isolation.capabilities();
+    const overlaySupported = caps.commit_supported || caps.diff_supported;
+    if (!overlaySupported) return;
+
+    const tag = `ovl_del_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "overlay" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: "to-delete" }]);
+      await session.files.deleteFiles([filePath]);
+      const exec = await session.run(`cat ${filePath} 2>&1 || echo NOT_FOUND`);
+      expect(exec.logs.stdout.map(m => m.text).join("")).toContain("NOT_FOUND");
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_overlay_files_api_move", async () => {
+    const caps = await sandbox.isolation.capabilities();
+    const overlaySupported = caps.commit_supported || caps.diff_supported;
+    if (!overlaySupported) return;
+
+    const tag = `ovl_move_${Date.now()}`;
+    const srcPath = `/tmp/${tag}_src.txt`;
+    const destPath = `/tmp/${tag}_dest.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "overlay" },
+    });
+    try {
+      await session.files.writeFiles([{ path: srcPath, data: "overlay-move-data" }]);
+      await session.files.moveFiles([{ src: srcPath, dest: destPath }]);
+      const downloaded = await session.files.readFile(destPath, { encoding: "utf-8" });
+      expect(downloaded).toContain("overlay-move-data");
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_overlay_files_api_chmod", async () => {
+    const caps = await sandbox.isolation.capabilities();
+    const overlaySupported = caps.commit_supported || caps.diff_supported;
+    if (!overlaySupported) return;
+
+    const tag = `ovl_chmod_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "overlay" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: "chmod-overlay" }]);
+      await session.files.setPermissions([{ path: filePath, mode: 0o755 }]);
+      const exec = await session.run(`stat -c '%a' ${filePath}`);
+      expect(exec.logs.stdout.map(m => m.text).join("")).toContain("755");
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_overlay_files_api_replace", async () => {
+    const caps = await sandbox.isolation.capabilities();
+    const overlaySupported = caps.commit_supported || caps.diff_supported;
+    if (!overlaySupported) return;
+
+    const tag = `ovl_replace_${Date.now()}`;
+    const filePath = `/tmp/${tag}.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "overlay" },
+    });
+    try {
+      await session.files.writeFiles([{ path: filePath, data: "old-overlay-text" }]);
+      await session.files.replaceContents([
+        { path: filePath, oldContent: "old-overlay", newContent: "new-overlay" },
+      ]);
+      const downloaded = await session.files.readFile(filePath, { encoding: "utf-8" });
+      expect(downloaded).toContain("new-overlay");
+      expect(downloaded).not.toContain("old-overlay");
+    } finally {
+      await session.delete();
+    }
+  });
+
+  it("test_overlay_files_api_list_directory", async () => {
+    const caps = await sandbox.isolation.capabilities();
+    const overlaySupported = caps.commit_supported || caps.diff_supported;
+    if (!overlaySupported) return;
+
+    const tag = `ovl_listdir_${Date.now()}`;
+    const dirPath = `/tmp/${tag}_dir`;
+    const filePath = `${dirPath}/overlay_child.txt`;
+    const session = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "overlay" },
+    });
+    try {
+      await session.files.createDirectories([{ path: dirPath }]);
+      await session.files.writeFiles([{ path: filePath, data: "overlay-child" }]);
+      const entries = await session.files.listDirectory({ path: dirPath, depth: 1 });
+      const paths = entries.map(e => e.path);
+      expect(paths.some(p => p.includes("overlay_child.txt"))).toBe(true);
+    } finally {
+      await session.delete();
+    }
+  });
 });

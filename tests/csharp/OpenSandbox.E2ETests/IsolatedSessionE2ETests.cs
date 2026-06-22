@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using OpenSandbox.Core;
 using OpenSandbox.Models;
 using Xunit;
 using Xunit.Abstractions;
@@ -172,6 +173,619 @@ public sealed class IsolatedSessionE2ETests : IAsyncLifetime
         {
             await sessionA.DeleteAsync();
             await sessionB.DeleteAsync();
+        }
+    }
+
+    // ── RW mode: filesystem API tests ───────────────────────────────
+
+    [Fact]
+    public async Task TestRwFilesUploadDownload()
+    {
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "rw")));
+        try
+        {
+            var path = $"/tmp/upload_rw_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.txt";
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = path, Data = "rw upload", Mode = 644 }
+            });
+            var content = await session.Files.ReadFileAsync(path);
+            Assert.Equal("rw upload", content);
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestRwFilesInfo()
+    {
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "rw")));
+        try
+        {
+            var path = "/tmp/info_rw.txt";
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = path, Data = "info", Mode = 644 }
+            });
+            var infoMap = await session.Files.GetFileInfoAsync(new[] { path });
+            Assert.True(infoMap.ContainsKey(path));
+            Assert.Equal(4, infoMap[path].Size);
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestRwFilesSearch()
+    {
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "rw")));
+        try
+        {
+            var prefix = $"/tmp/search_rw_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+            await session.RunAsync($"mkdir -p {prefix}");
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = $"{prefix}/a.txt", Data = "a", Mode = 644 },
+                new WriteEntry { Path = $"{prefix}/b.txt", Data = "b", Mode = 644 },
+                new WriteEntry { Path = $"{prefix}/c.log", Data = "c", Mode = 644 },
+            });
+            var results = await session.Files.SearchAsync(
+                new SearchEntry { Path = prefix, Pattern = "*.txt" });
+            Assert.Equal(2, results.Count);
+            var paths = results.Select(r => r.Path).ToList();
+            Assert.Contains(paths, p => p.Contains("a.txt"));
+            Assert.Contains(paths, p => p.Contains("b.txt"));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestRwFilesMkdir()
+    {
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "rw")));
+        try
+        {
+            var d = $"/tmp/mkdir_rw_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+            await session.Files.CreateDirectoriesAsync(new[]
+            {
+                new CreateDirectoryEntry { Path = d, Mode = 755 }
+            });
+            var infoMap = await session.Files.GetFileInfoAsync(new[] { d });
+            Assert.True(infoMap.ContainsKey(d));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestRwFilesDelete()
+    {
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "rw")));
+        try
+        {
+            var path = "/tmp/delete_rw.txt";
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = path, Data = "del", Mode = 644 }
+            });
+            await session.Files.DeleteFilesAsync(new[] { path });
+            await Assert.ThrowsAsync<SandboxApiException>(
+                () => session.Files.GetFileInfoAsync(new[] { path }));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestRwFilesMove()
+    {
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "rw")));
+        try
+        {
+            var src = "/tmp/mv_rw_src.txt";
+            var dst = "/tmp/mv_rw_dst.txt";
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = src, Data = "move", Mode = 644 }
+            });
+            await session.Files.MoveFilesAsync(new[]
+            {
+                new MoveEntry { Src = src, Dest = dst }
+            });
+            var content = await session.Files.ReadFileAsync(dst);
+            Assert.Equal("move", content);
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestRwFilesChmod()
+    {
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "rw")));
+        try
+        {
+            var path = "/tmp/chmod_rw.txt";
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = path, Data = "ch", Mode = 644 }
+            });
+            await session.Files.SetPermissionsAsync(new[]
+            {
+                new SetPermissionEntry { Path = path, Mode = 755 }
+            });
+            var infoMap = await session.Files.GetFileInfoAsync(new[] { path });
+            Assert.Equal(755, infoMap[path].Mode);
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestRwFilesReplace()
+    {
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "rw")));
+        try
+        {
+            var path = "/tmp/replace_rw.txt";
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = path, Data = "hello old world", Mode = 644 }
+            });
+            await session.Files.ReplaceContentsAsync(new[]
+            {
+                new ContentReplaceEntry { Path = path, OldContent = "old", NewContent = "new" }
+            });
+            var content = await session.Files.ReadFileAsync(path);
+            Assert.Contains("new", content);
+            Assert.DoesNotContain("old", content);
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestRwFilesListDirectory()
+    {
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "rw")));
+        try
+        {
+            var prefix = $"/tmp/listdir_rw_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+            await session.RunAsync($"mkdir -p {prefix}/sub");
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = $"{prefix}/f1.txt", Data = "f1", Mode = 644 },
+                new WriteEntry { Path = $"{prefix}/sub/f2.txt", Data = "f2", Mode = 644 },
+            });
+            var entries = await session.Files.ListDirectoryAsync(prefix, depth: 1);
+            var names = entries.Select(e => e.Path).ToList();
+            Assert.Contains(names, n => n.Contains("f1.txt"));
+            Assert.Contains(names, n => n.Contains("sub"));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestRwHostVisible()
+    {
+        var marker = $"rw_visible_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.txt";
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "rw")));
+        try
+        {
+            await session.RunAsync($"echo rw-data > /tmp/{marker}");
+            var hostCheck = await _sandbox.Commands.RunAsync($"cat /tmp/{marker}");
+            Assert.Contains("rw-data", StdoutText(hostCheck));
+        }
+        finally
+        {
+            await session.RunAsync($"rm -f /tmp/{marker}");
+            await session.DeleteAsync();
+        }
+    }
+
+    // ── RO mode tests ───────────────────────────────────────────────
+
+    [Fact]
+    public async Task TestRoCanReadExistingFiles()
+    {
+        var marker = $"ro_read_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.txt";
+        await _sandbox!.Commands.RunAsync($"echo ro-data > /tmp/{marker}");
+        var session = await _sandbox.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "ro")));
+        try
+        {
+            var exec = await session.RunAsync($"cat /tmp/{marker}");
+            Assert.Contains("ro-data", StdoutText(exec));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -f /tmp/{marker}");
+        }
+    }
+
+    [Fact]
+    public async Task TestRoCannotWrite()
+    {
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "ro")));
+        try
+        {
+            var exec = await session.RunAsync(
+                "echo fail > /tmp/ro_write_test.txt 2>&1; echo EXIT=$?");
+            var text = StdoutText(exec);
+            Assert.True(
+                text.Contains("EXIT=1") || text.Contains("Read-only") || text.Contains("Permission denied"),
+                $"expected RO rejection, got: {text}");
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestRoFilesApiRead()
+    {
+        var marker = $"ro_api_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.txt";
+        await _sandbox!.Commands.RunAsync($"echo ro-api-data > /tmp/{marker}");
+        var session = await _sandbox.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "ro")));
+        try
+        {
+            var content = await session.Files.ReadFileAsync($"/tmp/{marker}");
+            Assert.Contains("ro-api-data", content);
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -f /tmp/{marker}");
+        }
+    }
+
+    [Fact]
+    public async Task TestRoFilesApiSearch()
+    {
+        var prefix = $"/tmp/ro_search_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        await _sandbox!.Commands.RunAsync($"mkdir -p {prefix} && echo x > {prefix}/file.txt");
+        var session = await _sandbox.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "ro")));
+        try
+        {
+            var results = await session.Files.SearchAsync(
+                new SearchEntry { Path = prefix, Pattern = "*.txt" });
+            Assert.True(results.Count >= 1);
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -rf {prefix}");
+        }
+    }
+
+    [Fact]
+    public async Task TestRoFilesApiListDirectory()
+    {
+        var prefix = $"/tmp/ro_listdir_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        await _sandbox!.Commands.RunAsync($"mkdir -p {prefix} && echo x > {prefix}/f.txt");
+        var session = await _sandbox.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "ro")));
+        try
+        {
+            var entries = await session.Files.ListDirectoryAsync(prefix, depth: 1);
+            Assert.True(entries.Count >= 1);
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -rf {prefix}");
+        }
+    }
+
+    // ── Overlay mode tests ──────────────────────────────────────────
+
+    private async Task<bool> OverlaySupported()
+    {
+        var caps = await _sandbox!.Isolation.CapabilitiesAsync();
+        return caps.CommitSupported || caps.DiffSupported;
+    }
+
+    [Fact]
+    public async Task TestOverlayWritesNotVisibleOnHost()
+    {
+        if (!await OverlaySupported()) return;
+
+        var marker = $"overlay_invis_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.txt";
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "overlay")));
+        try
+        {
+            await session.RunAsync($"echo overlay-data > /tmp/{marker}");
+            var hostCheck = await _sandbox.Commands.RunAsync(
+                $"cat /tmp/{marker} 2>&1 || echo NOT_FOUND");
+            var text = StdoutText(hostCheck);
+            Assert.True(
+                text.Contains("NOT_FOUND") || text.Contains("No such file"),
+                $"expected overlay isolation, got: {text}");
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestOverlayCanReadHostFiles()
+    {
+        if (!await OverlaySupported()) return;
+
+        var marker = $"overlay_lower_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.txt";
+        await _sandbox!.Commands.RunAsync($"echo lower-data > /tmp/{marker}");
+        var session = await _sandbox.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "overlay")));
+        try
+        {
+            var exec = await session.RunAsync($"cat /tmp/{marker}");
+            Assert.Contains("lower-data", StdoutText(exec));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -f /tmp/{marker}");
+        }
+    }
+
+    [Fact]
+    public async Task TestOverlayCowDoesNotMutateHost()
+    {
+        if (!await OverlaySupported()) return;
+
+        var marker = $"overlay_cow_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.txt";
+        await _sandbox!.Commands.RunAsync($"echo original > /tmp/{marker}");
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "overlay")));
+        try
+        {
+            await session.RunAsync($"echo modified > /tmp/{marker}");
+            var inSession = await session.RunAsync($"cat /tmp/{marker}");
+            Assert.Contains("modified", StdoutText(inSession));
+            var hostCheck = await _sandbox.Commands.RunAsync($"cat /tmp/{marker}");
+            Assert.Contains("original", StdoutText(hostCheck));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -f /tmp/{marker}");
+        }
+    }
+
+    [Fact]
+    public async Task TestOverlayFilesApiUploadDownload()
+    {
+        if (!await OverlaySupported()) return;
+
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "overlay")));
+        try
+        {
+            var path = $"/tmp/ov_upload_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.txt";
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = path, Data = "overlay file", Mode = 644 }
+            });
+            var content = await session.Files.ReadFileAsync(path);
+            Assert.Equal("overlay file", content);
+            // Host should NOT see it
+            var hostCheck = await _sandbox.Commands.RunAsync(
+                $"cat {path} 2>&1 || echo NOT_FOUND");
+            var hostText = StdoutText(hostCheck);
+            Assert.True(
+                hostText.Contains("NOT_FOUND") || hostText.Contains("No such file"),
+                $"expected file not visible on host, got: {hostText}");
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestOverlayFilesApiSearch()
+    {
+        if (!await OverlaySupported()) return;
+
+        var prefix = $"/tmp/ov_search_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        await _sandbox!.Commands.RunAsync($"mkdir -p {prefix} && echo lower > {prefix}/lower.txt");
+        var session = await _sandbox.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "overlay")));
+        try
+        {
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = $"{prefix}/upper.txt", Data = "upper", Mode = 644 }
+            });
+            var results = await session.Files.SearchAsync(
+                new SearchEntry { Path = prefix, Pattern = "*.txt" });
+            var paths = results.Select(r => r.Path).ToList();
+            Assert.Contains(paths, p => p.Contains("lower.txt"));
+            Assert.Contains(paths, p => p.Contains("upper.txt"));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -rf {prefix}");
+        }
+    }
+
+    [Fact]
+    public async Task TestOverlayFilesApiDelete()
+    {
+        if (!await OverlaySupported()) return;
+
+        var prefix = $"/tmp/ov_del_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        await _sandbox!.Commands.RunAsync($"mkdir -p {prefix} && echo x > {prefix}/target.txt");
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "overlay")));
+        try
+        {
+            await session.Files.DeleteFilesAsync(new[] { $"{prefix}/target.txt" });
+            await Assert.ThrowsAsync<SandboxApiException>(
+                () => session.Files.GetFileInfoAsync(new[] { $"{prefix}/target.txt" }));
+            // Host file should be untouched
+            var hostCheck = await _sandbox.Commands.RunAsync($"cat {prefix}/target.txt");
+            Assert.Contains("x", StdoutText(hostCheck));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -rf {prefix}");
+        }
+    }
+
+    [Fact]
+    public async Task TestOverlayFilesApiMove()
+    {
+        if (!await OverlaySupported()) return;
+
+        var session = await _sandbox!.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "overlay")));
+        try
+        {
+            var src = "/tmp/ov_mv_src.txt";
+            var dst = "/tmp/ov_mv_dst.txt";
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = src, Data = "moveme", Mode = 644 }
+            });
+            await session.Files.MoveFilesAsync(new[]
+            {
+                new MoveEntry { Src = src, Dest = dst }
+            });
+            var content = await session.Files.ReadFileAsync(dst);
+            Assert.Equal("moveme", content);
+        }
+        finally
+        {
+            await session.DeleteAsync();
+        }
+    }
+
+    [Fact]
+    public async Task TestOverlayFilesApiChmod()
+    {
+        if (!await OverlaySupported()) return;
+
+        var marker = $"ov_chmod_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.txt";
+        await _sandbox!.Commands.RunAsync($"echo ch > /tmp/{marker} && chmod 644 /tmp/{marker}");
+        var session = await _sandbox.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "overlay")));
+        try
+        {
+            await session.Files.SetPermissionsAsync(new[]
+            {
+                new SetPermissionEntry { Path = $"/tmp/{marker}", Mode = 755 }
+            });
+            var infoMap = await session.Files.GetFileInfoAsync(new[] { $"/tmp/{marker}" });
+            Assert.Equal(755, infoMap[$"/tmp/{marker}"].Mode);
+            // Host should still be 644
+            var hostCheck = await _sandbox.Commands.RunAsync($"stat -c %a /tmp/{marker}");
+            Assert.Contains("644", StdoutText(hostCheck));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -f /tmp/{marker}");
+        }
+    }
+
+    [Fact]
+    public async Task TestOverlayFilesApiReplace()
+    {
+        if (!await OverlaySupported()) return;
+
+        var marker = $"ov_repl_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.txt";
+        await _sandbox!.Commands.RunAsync($"printf 'hello old world' > /tmp/{marker}");
+        var session = await _sandbox.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "overlay")));
+        try
+        {
+            await session.Files.ReplaceContentsAsync(new[]
+            {
+                new ContentReplaceEntry
+                {
+                    Path = $"/tmp/{marker}",
+                    OldContent = "old",
+                    NewContent = "new"
+                }
+            });
+            var content = await session.Files.ReadFileAsync($"/tmp/{marker}");
+            Assert.Contains("new", content);
+            Assert.DoesNotContain("old", content);
+            // Host unchanged
+            var hostCheck = await _sandbox.Commands.RunAsync($"cat /tmp/{marker}");
+            Assert.Contains("old", StdoutText(hostCheck));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -f /tmp/{marker}");
+        }
+    }
+
+    [Fact]
+    public async Task TestOverlayFilesApiListDirectory()
+    {
+        if (!await OverlaySupported()) return;
+
+        var prefix = $"/tmp/ov_ls_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+        await _sandbox!.Commands.RunAsync($"mkdir -p {prefix} && echo l > {prefix}/lower.txt");
+        var session = await _sandbox.Isolation.CreateAsync(
+            new CreateIsolatedSessionRequest(new IsolatedWorkspaceSpec("/tmp", "overlay")));
+        try
+        {
+            await session.Files.WriteFilesAsync(new[]
+            {
+                new WriteEntry { Path = $"{prefix}/upper.txt", Data = "u", Mode = 644 }
+            });
+            var entries = await session.Files.ListDirectoryAsync(prefix, depth: 1);
+            var names = entries.Select(e => e.Path).ToList();
+            Assert.Contains(names, n => n.Contains("lower.txt"));
+            Assert.Contains(names, n => n.Contains("upper.txt"));
+        }
+        finally
+        {
+            await session.DeleteAsync();
+            await _sandbox.Commands.RunAsync($"rm -rf {prefix}");
         }
     }
 }
