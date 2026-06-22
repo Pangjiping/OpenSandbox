@@ -313,7 +313,7 @@ internal class IsolatedFilesystemAdapter(
     override fun replaceContents(entries: List<ContentReplaceEntry>) {
         try {
             val replaceMap = entries.toApiReplaceFileContentMap()
-            val response = api.isolatedReplaceContentWithHttpInfo(sessionUuid, replaceMap)
+            val response = api.isolatedReplaceContentWithHttpInfo(sessionUuid, replaceMap, verbose = false)
             if (response.statusCode !in 200..299) {
                 throw SandboxApiException(
                     message = "Replace contents failed. Status: ${response.statusCode}",
@@ -330,7 +330,7 @@ internal class IsolatedFilesystemAdapter(
     override fun replaceContentsDetailed(entries: List<ContentReplaceEntry>): List<ContentReplaceResult> {
         return try {
             val replaceMap = entries.toApiReplaceFileContentMap()
-            val response = api.isolatedReplaceContentWithHttpInfo(sessionUuid, replaceMap)
+            val response = api.isolatedReplaceContentWithHttpInfo(sessionUuid, replaceMap, verbose = true)
             if (response is com.alibaba.opensandbox.sandbox.api.execd.infrastructure.Success) {
                 response.data?.map { (path, item) ->
                     ContentReplaceResult(
