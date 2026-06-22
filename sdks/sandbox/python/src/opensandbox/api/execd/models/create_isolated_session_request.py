@@ -1,0 +1,167 @@
+#
+# Copyright 2026 Alibaba Group Holding Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, TypeVar, cast
+
+from attrs import define as _attrs_define
+from attrs import field as _attrs_field
+
+from ..models.create_isolated_session_request_profile import CreateIsolatedSessionRequestProfile
+from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.env_passthrough_spec import EnvPassthroughSpec
+    from ..models.isolated_workspace_spec import IsolatedWorkspaceSpec
+
+
+T = TypeVar("T", bound="CreateIsolatedSessionRequest")
+
+
+@_attrs_define
+class CreateIsolatedSessionRequest:
+    """
+    Attributes:
+        workspace (IsolatedWorkspaceSpec):
+        profile (CreateIsolatedSessionRequestProfile | Unset):
+        extra_writable (list[str] | Unset):
+        share_net (bool | Unset):
+        env_passthrough (EnvPassthroughSpec | Unset):
+        uid (int | Unset):
+        gid (int | Unset):
+        idle_timeout_seconds (int | Unset):
+    """
+
+    workspace: IsolatedWorkspaceSpec
+    profile: CreateIsolatedSessionRequestProfile | Unset = UNSET
+    extra_writable: list[str] | Unset = UNSET
+    share_net: bool | Unset = UNSET
+    env_passthrough: EnvPassthroughSpec | Unset = UNSET
+    uid: int | Unset = UNSET
+    gid: int | Unset = UNSET
+    idle_timeout_seconds: int | Unset = UNSET
+    additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        workspace = self.workspace.to_dict()
+
+        profile: str | Unset = UNSET
+        if not isinstance(self.profile, Unset):
+            profile = self.profile.value
+
+        extra_writable: list[str] | Unset = UNSET
+        if not isinstance(self.extra_writable, Unset):
+            extra_writable = self.extra_writable
+
+        share_net = self.share_net
+
+        env_passthrough: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.env_passthrough, Unset):
+            env_passthrough = self.env_passthrough.to_dict()
+
+        uid = self.uid
+
+        gid = self.gid
+
+        idle_timeout_seconds = self.idle_timeout_seconds
+
+        field_dict: dict[str, Any] = {}
+        field_dict.update(self.additional_properties)
+        field_dict.update(
+            {
+                "workspace": workspace,
+            }
+        )
+        if profile is not UNSET:
+            field_dict["profile"] = profile
+        if extra_writable is not UNSET:
+            field_dict["extra_writable"] = extra_writable
+        if share_net is not UNSET:
+            field_dict["share_net"] = share_net
+        if env_passthrough is not UNSET:
+            field_dict["env_passthrough"] = env_passthrough
+        if uid is not UNSET:
+            field_dict["uid"] = uid
+        if gid is not UNSET:
+            field_dict["gid"] = gid
+        if idle_timeout_seconds is not UNSET:
+            field_dict["idle_timeout_seconds"] = idle_timeout_seconds
+
+        return field_dict
+
+    @classmethod
+    def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.env_passthrough_spec import EnvPassthroughSpec
+        from ..models.isolated_workspace_spec import IsolatedWorkspaceSpec
+
+        d = dict(src_dict)
+        workspace = IsolatedWorkspaceSpec.from_dict(d.pop("workspace"))
+
+        _profile = d.pop("profile", UNSET)
+        profile: CreateIsolatedSessionRequestProfile | Unset
+        if isinstance(_profile, Unset):
+            profile = UNSET
+        else:
+            profile = CreateIsolatedSessionRequestProfile(_profile)
+
+        extra_writable = cast(list[str], d.pop("extra_writable", UNSET))
+
+        share_net = d.pop("share_net", UNSET)
+
+        _env_passthrough = d.pop("env_passthrough", UNSET)
+        env_passthrough: EnvPassthroughSpec | Unset
+        if isinstance(_env_passthrough, Unset):
+            env_passthrough = UNSET
+        else:
+            env_passthrough = EnvPassthroughSpec.from_dict(_env_passthrough)
+
+        uid = d.pop("uid", UNSET)
+
+        gid = d.pop("gid", UNSET)
+
+        idle_timeout_seconds = d.pop("idle_timeout_seconds", UNSET)
+
+        create_isolated_session_request = cls(
+            workspace=workspace,
+            profile=profile,
+            extra_writable=extra_writable,
+            share_net=share_net,
+            env_passthrough=env_passthrough,
+            uid=uid,
+            gid=gid,
+            idle_timeout_seconds=idle_timeout_seconds,
+        )
+
+        create_isolated_session_request.additional_properties = d
+        return create_isolated_session_request
+
+    @property
+    def additional_keys(self) -> list[str]:
+        return list(self.additional_properties.keys())
+
+    def __getitem__(self, key: str) -> Any:
+        return self.additional_properties[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.additional_properties[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self.additional_properties[key]
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.additional_properties

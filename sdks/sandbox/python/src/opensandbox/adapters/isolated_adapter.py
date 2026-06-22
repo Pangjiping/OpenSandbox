@@ -30,7 +30,7 @@ from opensandbox.adapters.converter.execution_event_dispatcher import (
     ExecutionEventDispatcher,
 )
 from opensandbox.adapters.converter.response_handler import extract_request_id
-from opensandbox.adapters.filesystem_adapter import FilesystemAdapter
+from opensandbox.adapters.isolated_filesystem_adapter import IsolatedFilesystemAdapter
 from opensandbox.config import ConnectionConfig
 from opensandbox.exceptions import InvalidArgumentException, SandboxApiException
 from opensandbox.models.execd import Execution, ExecutionHandlers
@@ -94,12 +94,10 @@ class IsolationSessionHandle(IsolationSession):
     @property
     def files(self) -> Filesystem:
         if self._files is None:
-            session_endpoint = SandboxEndpoint(
-                endpoint=f"{self._adapter.execd_endpoint.endpoint}/v1/isolated/session/{self._info.session_id}",
-                headers=self._adapter.execd_endpoint.headers,
-            )
-            self._files = FilesystemAdapter(
-                self._adapter.connection_config, session_endpoint
+            self._files = IsolatedFilesystemAdapter(
+                self._adapter.connection_config,
+                self._adapter.execd_endpoint,
+                self._info.session_id,
             )
         return self._files
 

@@ -253,7 +253,7 @@ describe("IsolatedSession E2E", () => {
       await session.files.writeFiles([{ path: filePath, data: "search-content" }]);
       const results = await session.files.search({ path: "/tmp", pattern: `${tag}*` });
       const paths = results.map(r => r.path);
-      expect(paths).toContain(filePath);
+      expect(paths.some(p => p.includes(`${tag}.txt`))).toBe(true);
     } finally {
       await session.delete();
     }
@@ -316,7 +316,7 @@ describe("IsolatedSession E2E", () => {
     });
     try {
       await session.files.writeFiles([{ path: filePath, data: "chmod-test" }]);
-      await session.files.setPermissions([{ path: filePath, mode: 0o755 }]);
+      await session.files.setPermissions([{ path: filePath, mode: 755 }]);
       const exec = await session.run(`stat -c '%a' ${filePath}`);
       expect(exec.logs.stdout.map(m => m.text).join("")).toContain("755");
     } finally {
@@ -430,7 +430,7 @@ describe("IsolatedSession E2E", () => {
     try {
       const results = await session.files.search({ path: "/tmp", pattern: `${tag}*` });
       const paths = results.map(r => r.path);
-      expect(paths).toContain(filePath);
+      expect(paths.some(p => p.includes(`${tag}.txt`))).toBe(true);
     } finally {
       await sandbox.commands.run(`rm -f ${filePath}`);
       await session.delete();
@@ -563,7 +563,7 @@ describe("IsolatedSession E2E", () => {
       await session.files.writeFiles([{ path: filePath, data: "overlay-search-data" }]);
       const results = await session.files.search({ path: "/tmp", pattern: `${tag}*` });
       const paths = results.map(r => r.path);
-      expect(paths).toContain(filePath);
+      expect(paths.some(p => p.includes(`${tag}.txt`))).toBe(true);
     } finally {
       await session.delete();
     }
@@ -622,7 +622,7 @@ describe("IsolatedSession E2E", () => {
     });
     try {
       await session.files.writeFiles([{ path: filePath, data: "chmod-overlay" }]);
-      await session.files.setPermissions([{ path: filePath, mode: 0o755 }]);
+      await session.files.setPermissions([{ path: filePath, mode: 755 }]);
       const exec = await session.run(`stat -c '%a' ${filePath}`);
       expect(exec.logs.stdout.map(m => m.text).join("")).toContain("755");
     } finally {

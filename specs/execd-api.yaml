@@ -1274,14 +1274,16 @@ paths:
           schema:
             type: string
             format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties:
-                $ref: "#/components/schemas/FileInfo"
+        - name: path
+          in: query
+          required: true
+          description: File path(s) to get info for (can be specified multiple times)
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
       responses:
         "200":
           description: File metadata
@@ -1291,6 +1293,8 @@ paths:
                 type: object
                 additionalProperties:
                   $ref: "#/components/schemas/FileInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1312,6 +1316,26 @@ paths:
           required: true
           schema:
             type: string
+        - name: offset
+          in: query
+          required: false
+          description: Starting line number (1-based) for line-based reading. Mutually exclusive with Range header.
+          schema:
+            type: integer
+            minimum: 1
+        - name: limit
+          in: query
+          required: false
+          description: Number of lines to return for line-based reading. Mutually exclusive with Range header.
+          schema:
+            type: integer
+            minimum: 1
+        - name: Range
+          in: header
+          required: false
+          description: HTTP Range header for partial content requests. Mutually exclusive with offset/limit.
+          schema:
+            type: string
       responses:
         "200":
           description: File content
@@ -1320,6 +1344,19 @@ paths:
               schema:
                 type: string
                 format: binary
+            text/plain:
+              schema:
+                type: string
+                description: Line-based content returned when offset/limit parameters are used
+        "206":
+          description: Partial file content (when Range header is provided)
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "#/components/responses/NotFound"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1369,14 +1406,16 @@ paths:
           schema:
             type: string
             format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties:
-                $ref: "#/components/schemas/FileInfo"
+        - name: path
+          in: query
+          required: true
+          description: File path(s) to delete (can be specified multiple times)
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
       responses:
         "200":
           description: Files removed
@@ -1483,11 +1522,19 @@ paths:
           schema:
             type: string
             format: uuid
-        - name: pattern
+        - name: path
           in: query
           required: true
+          description: Root directory path to search in
           schema:
             type: string
+        - name: pattern
+          in: query
+          required: false
+          description: Glob pattern to match files (default is **)
+          schema:
+            type: string
+            default: "**"
       responses:
         "200":
           description: Matched files
@@ -1497,6 +1544,51 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/FileInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/isolated/session/{sessionId}/directories/list:
+    get:
+      summary: List directory contents
+      operationId: isolatedListDirectory
+      tags:
+        - IsolatedExecution
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: path
+          in: query
+          required: true
+          description: Directory path to list
+          schema:
+            type: string
+        - name: depth
+          in: query
+          required: false
+          description: Maximum depth to traverse (default 1)
+          schema:
+            type: integer
+            minimum: 0
+            default: 1
+      responses:
+        "200":
+          description: Directory entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FileInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
@@ -1538,14 +1630,16 @@ paths:
           schema:
             type: string
             format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties:
-                $ref: "#/components/schemas/FileInfo"
+        - name: path
+          in: query
+          required: true
+          description: Directory path(s) to delete (can be specified multiple times)
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
       responses:
         "200":
           description: Directories removed
@@ -2039,7 +2133,7 @@ components:
       properties:
         status:
           type: string
-          enum: ["active", "destroyed"]
+          enum: ["active", "dead", "destroyed"]
         created_at:
           type: string
           format: date-time

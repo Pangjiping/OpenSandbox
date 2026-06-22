@@ -94,15 +94,13 @@ class IsolationSessionHandleSync(IsolationSessionSync):
     @property
     def files(self):
         if self._files is None:
-            from opensandbox.sync.adapters.filesystem_adapter import (
-                FilesystemAdapterSync,
+            from opensandbox.sync.adapters.isolated_filesystem_adapter import (
+                IsolatedFilesystemAdapterSync,
             )
-            session_endpoint = SandboxEndpoint(
-                endpoint=f"{self._adapter.execd_endpoint.endpoint}/v1/isolated/session/{self._info.session_id}",
-                headers=self._adapter.execd_endpoint.headers,
-            )
-            self._files = FilesystemAdapterSync(
-                self._adapter.connection_config, session_endpoint
+            self._files = IsolatedFilesystemAdapterSync(
+                self._adapter.connection_config,
+                self._adapter.execd_endpoint,
+                self._info.session_id,
             )
         return self._files
 

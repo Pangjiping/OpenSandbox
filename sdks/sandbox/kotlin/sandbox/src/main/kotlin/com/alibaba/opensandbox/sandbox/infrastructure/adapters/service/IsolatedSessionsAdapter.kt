@@ -104,12 +104,7 @@ private class IsolationSessionHandle(
     override val sessionId: String get() = info.sessionId
 
     override val files: Filesystem by lazy {
-        val sessionEndpoint =
-            SandboxEndpoint(
-                endpoint = "${adapter.execdEndpoint.endpoint}/v1/isolated/session/${info.sessionId}",
-                headers = adapter.execdEndpoint.headers,
-            )
-        FilesystemAdapter(adapter.httpClientProvider, sessionEndpoint)
+        IsolatedFilesystemAdapter(adapter.httpClientProvider, adapter.execdEndpoint, info.sessionId)
     }
 
     override fun run(request: IsolatedRunRequest): Execution = adapter.runInternal(info.sessionId, request)

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { createExecdClient } from "../openapi/execdClient.js";
-import { FilesystemAdapter } from "./filesystemAdapter.js";
+import { IsolatedFilesystemAdapter } from "./isolatedFilesystemAdapter.js";
 import { parseJsonEventStream } from "./sse.js";
 import type { CommandExecution, ServerStreamEvent } from "../models/execd.js";
 import type { ExecutionHandlers } from "../models/execution.js";
@@ -69,17 +69,14 @@ class IsolationSessionHandle implements IsolationSession {
   get info(): IsolatedSessionInfo { return this._info; }
   get files(): SandboxFiles {
     if (!this._files) {
-      const sessionBaseUrl = joinUrl(
-        this.adapter.opts.baseUrl,
-        `/v1/isolated/session/${encodeURIComponent(this._info.session_id)}`,
-      );
-      const sessionClient = createExecdClient({
-        baseUrl: sessionBaseUrl,
+      const client = createExecdClient({
+        baseUrl: this.adapter.opts.baseUrl,
         headers: this.adapter.opts.headers,
         fetch: this.adapter.opts.fetch,
       });
-      this._files = new FilesystemAdapter(sessionClient, {
-        baseUrl: sessionBaseUrl,
+      this._files = new IsolatedFilesystemAdapter(client, {
+        baseUrl: this.adapter.opts.baseUrl,
+        sessionId: this._info.session_id,
         fetch: this.adapter.opts.fetch,
         headers: this.adapter.opts.headers,
       });
