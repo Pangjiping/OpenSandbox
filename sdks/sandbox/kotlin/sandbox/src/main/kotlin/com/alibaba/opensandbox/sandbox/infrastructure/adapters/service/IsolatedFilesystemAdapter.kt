@@ -40,8 +40,6 @@ import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.isFileN
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.parseSandboxError
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.toSandboxException
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.Headers.Companion.toHeaders
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -92,8 +90,7 @@ internal class IsolatedFilesystemAdapter(
                 .build(),
         )
 
-    private fun resolvedPath(template: String): String =
-        template.replace("{sessionId}", sessionId)
+    private fun resolvedPath(template: String): String = template.replace("{sessionId}", sessionId)
 
     override fun readFile(
         path: String,
@@ -192,42 +189,49 @@ internal class IsolatedFilesystemAdapter(
                 val data = entry.data
                 requireNotNull(path) { "File path cannot be null" }
                 requireNotNull(data) { "File data cannot be null" }
-                val metadataJson = buildJsonObject {
-                    put("path", path)
-                    put("owner", entry.owner)
-                    put("group", entry.group)
-                    put("mode", entry.mode)
-                }.toString()
+                val metadataJson =
+                    buildJsonObject {
+                        put("path", path)
+                        put("owner", entry.owner)
+                        put("group", entry.group)
+                        put("mode", entry.mode)
+                    }.toString()
 
                 builder.addFormDataPart(
-                    "metadata", "metadata",
+                    "metadata",
+                    "metadata",
                     metadataJson.toRequestBody("application/json".toMediaType()),
                 )
 
-                val fileBody = when (data) {
-                    is ByteArray -> data.toRequestBody("application/octet-stream".toMediaType())
-                    is String -> {
-                        val charset = getCharsetFromEncoding(entry.encoding)
-                        data.toRequestBody("text/plain; charset=${charset.name()}".toMediaType())
-                    }
-                    is InputStream -> object : RequestBody() {
-                        override fun contentType() = "application/octet-stream".toMediaTypeOrNull()
-                        override fun contentLength() = -1L
-                        override fun writeTo(sink: BufferedSink) {
-                            data.source().use { source -> sink.writeAll(source) }
+                val fileBody =
+                    when (data) {
+                        is ByteArray -> data.toRequestBody("application/octet-stream".toMediaType())
+                        is String -> {
+                            val charset = getCharsetFromEncoding(entry.encoding)
+                            data.toRequestBody("text/plain; charset=${charset.name()}".toMediaType())
                         }
+                        is InputStream ->
+                            object : RequestBody() {
+                                override fun contentType() = "application/octet-stream".toMediaTypeOrNull()
+
+                                override fun contentLength() = -1L
+
+                                override fun writeTo(sink: BufferedSink) {
+                                    data.source().use { source -> sink.writeAll(source) }
+                                }
+                            }
+                        else -> throw IllegalArgumentException("Unsupported file data type: ${data::class.java}")
                     }
-                    else -> throw IllegalArgumentException("Unsupported file data type: ${data::class.java}")
-                }
                 builder.addFormDataPart("file", path, fileBody)
             }
 
             val url = "$execdBaseUrl${resolvedPath(UPLOAD_PATH)}"
-            val request = Request.Builder()
-                .url(url)
-                .headers(execdEndpoint.headers.toHeaders())
-                .post(builder.build())
-                .build()
+            val request =
+                Request.Builder()
+                    .url(url)
+                    .headers(execdEndpoint.headers.toHeaders())
+                    .post(builder.build())
+                    .build()
 
             httpClientProvider.httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
@@ -249,13 +253,15 @@ internal class IsolatedFilesystemAdapter(
 
     override fun createDirectories(entries: List<WriteEntry>) {
         try {
-            val permissionMap = entries.associate { entry ->
-                entry.path to com.alibaba.opensandbox.sandbox.api.models.execd.Permission(
-                    mode = entry.mode,
-                    group = entry.group,
-                    owner = entry.owner,
-                )
-            }
+            val permissionMap =
+                entries.associate { entry ->
+                    entry.path to
+                        com.alibaba.opensandbox.sandbox.api.models.execd.Permission(
+                            mode = entry.mode,
+                            group = entry.group,
+                            owner = entry.owner,
+                        )
+                }
             api.isolatedMakeDirs(sessionUuid, permissionMap)
         } catch (e: Exception) {
             logger.error("Failed to create directories", e)
@@ -281,7 +287,10 @@ internal class IsolatedFilesystemAdapter(
         }
     }
 
-    override fun listDirectory(path: String, depth: Int?): List<EntryInfo> {
+    override fun listDirectory(
+        path: String,
+        depth: Int?,
+    ): List<EntryInfo> {
         return try {
             api.isolatedListDirectory(sessionUuid, path, depth).map { it.toEntryInfo() }
         } catch (e: Exception) {
@@ -365,7 +374,10 @@ internal class IsolatedFilesystemAdapter(
         }
     }
 
-    private fun logReadFailure(message: String, e: Exception) {
+    private fun logReadFailure(
+        message: String,
+        e: Exception,
+    ) {
         if (e.isFileNotFound()) {
             logger.debug(message, e)
         } else {
@@ -388,15 +400,17 @@ internal class IsolatedFilesystemAdapter(
         limit: Int? = null,
     ): Request {
         val url = "$execdBaseUrl${resolvedPath(DOWNLOAD_PATH)}"
-        val urlBuilder = url.toHttpUrl().newBuilder()
-            .addQueryParameter("path", path)
+        val urlBuilder =
+            url.toHttpUrl().newBuilder()
+                .addQueryParameter("path", path)
         if (offset != null) urlBuilder.addQueryParameter("offset", offset.toString())
         if (limit != null) urlBuilder.addQueryParameter("limit", limit.toString())
 
-        val requestBuilder = Request.Builder()
-            .url(urlBuilder.build())
-            .headers(execdEndpoint.headers.toHeaders())
-            .get()
+        val requestBuilder =
+            Request.Builder()
+                .url(urlBuilder.build())
+                .headers(execdEndpoint.headers.toHeaders())
+                .get()
         if (range != null) requestBuilder.header("Range", range)
         return requestBuilder.build()
     }

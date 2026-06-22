@@ -111,7 +111,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
         offset: int | None = None,
         limit: int | None = None,
     ) -> str:
-        content = self.read_bytes(path, range_header=range_header, offset=offset, limit=limit)
+        content = self.read_bytes(
+            path, range_header=range_header, offset=offset, limit=limit
+        )
         return content.decode(encoding)
 
     def read_bytes(
@@ -158,7 +160,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
         if limit is not None:
             params["limit"] = str(limit)
 
-        request = self._httpx_client.build_request("GET", url, headers=headers, params=params)
+        request = self._httpx_client.build_request(
+            "GET", url, headers=headers, params=params
+        )
         response = self._httpx_client.send(request, stream=True)
 
         if response.status_code >= 300:
@@ -197,7 +201,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
                     "group": entry.group,
                     "mode": entry.mode,
                 }
-                multipart_parts.append(("metadata", ("metadata", json.dumps(metadata), "application/json")))
+                multipart_parts.append(
+                    ("metadata", ("metadata", json.dumps(metadata), "application/json"))
+                )
 
                 if isinstance(entry.data, bytes):
                     content = entry.data
@@ -214,7 +220,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
                     content = entry.data
                     content_type = "application/octet-stream"
                 else:
-                    raise InvalidArgumentException(f"Unsupported file data type: {type(entry.data)}")
+                    raise InvalidArgumentException(
+                        f"Unsupported file data type: {type(entry.data)}"
+                    )
 
                 multipart_parts.append(("file", (entry.path, content, content_type)))
 
@@ -234,7 +242,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
         owner: str | None = None,
         group: str | None = None,
     ) -> None:
-        entry = WriteEntry(path=path, data=data, mode=mode, owner=owner, group=group, encoding=encoding)
+        entry = WriteEntry(
+            path=path, data=data, mode=mode, owner=owner, group=group, encoding=encoding
+        )
         self.write_files([entry])
 
     def create_directories(self, entries: list[WriteEntry]) -> None:
@@ -252,7 +262,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
 
     def delete_files(self, paths: list[str]) -> None:
         try:
-            from opensandbox.api.execd.api.isolated_execution import isolated_remove_files
+            from opensandbox.api.execd.api.isolated_execution import (
+                isolated_remove_files,
+            )
 
             response_obj = isolated_remove_files.sync_detailed(
                 self._session_uuid,
@@ -265,7 +277,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
 
     def delete_directories(self, paths: list[str]) -> None:
         try:
-            from opensandbox.api.execd.api.isolated_execution import isolated_remove_dirs
+            from opensandbox.api.execd.api.isolated_execution import (
+                isolated_remove_dirs,
+            )
 
             response_obj = isolated_remove_dirs.sync_detailed(
                 self._session_uuid,
@@ -278,7 +292,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
 
     def move_files(self, entries: list[MoveEntry]) -> None:
         try:
-            from opensandbox.api.execd.api.isolated_execution import isolated_rename_files
+            from opensandbox.api.execd.api.isolated_execution import (
+                isolated_rename_files,
+            )
 
             rename_items = FilesystemModelConverter.to_api_rename_file_items(entries)
             response_obj = isolated_rename_files.sync_detailed(
@@ -292,7 +308,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
 
     def set_permissions(self, entries: list[SetPermissionEntry]) -> None:
         try:
-            from opensandbox.api.execd.api.isolated_execution import isolated_chmod_files
+            from opensandbox.api.execd.api.isolated_execution import (
+                isolated_chmod_files,
+            )
 
             response_obj = isolated_chmod_files.sync_detailed(
                 self._session_uuid,
@@ -307,13 +325,17 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
         try:
             from json import JSONDecodeError
 
-            from opensandbox.api.execd.api.isolated_execution import isolated_replace_content
+            from opensandbox.api.execd.api.isolated_execution import (
+                isolated_replace_content,
+            )
 
             try:
                 response_obj = isolated_replace_content.sync_detailed(
                     self._session_uuid,
                     client=self._client,
-                    body=FilesystemModelConverter.to_api_isolated_replace_content_body(entries),
+                    body=FilesystemModelConverter.to_api_isolated_replace_content_body(
+                        entries
+                    ),
                 )
                 handle_api_error(response_obj, "Replace contents")
             except JSONDecodeError:
@@ -321,14 +343,20 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
         except Exception as e:
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
-    def replace_contents_detailed(self, entries: list[ContentReplaceEntry]) -> list[ContentReplaceResult]:
+    def replace_contents_detailed(
+        self, entries: list[ContentReplaceEntry]
+    ) -> list[ContentReplaceResult]:
         try:
-            from opensandbox.api.execd.api.isolated_execution import isolated_replace_content
+            from opensandbox.api.execd.api.isolated_execution import (
+                isolated_replace_content,
+            )
 
             response_obj = isolated_replace_content.sync_detailed(
                 self._session_uuid,
                 client=self._client,
-                body=FilesystemModelConverter.to_api_isolated_replace_content_body(entries),
+                body=FilesystemModelConverter.to_api_isolated_replace_content_body(
+                    entries
+                ),
             )
             handle_api_error(response_obj, "Replace contents")
             return FilesystemModelConverter.to_replace_results(response_obj.parsed)
@@ -337,7 +365,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
 
     def search(self, entry: SearchEntry) -> list[EntryInfo]:
         try:
-            from opensandbox.api.execd.api.isolated_execution import isolated_search_files
+            from opensandbox.api.execd.api.isolated_execution import (
+                isolated_search_files,
+            )
             from opensandbox.api.execd.models import FileInfo
 
             response_obj = isolated_search_files.sync_detailed(
@@ -351,7 +381,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
             parsed = response_obj.parsed
             if not parsed:
                 return []
-            if isinstance(parsed, list) and all(isinstance(x, FileInfo) for x in parsed):
+            if isinstance(parsed, list) and all(
+                isinstance(x, FileInfo) for x in parsed
+            ):
                 return FilesystemModelConverter.to_entry_info_list(parsed)
             raise SandboxApiException(
                 message="Search files failed: unexpected response type",
@@ -362,7 +394,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
 
     def list_directory(self, entry: DirectoryListEntry) -> list[EntryInfo]:
         try:
-            from opensandbox.api.execd.api.isolated_execution import isolated_list_directory
+            from opensandbox.api.execd.api.isolated_execution import (
+                isolated_list_directory,
+            )
             from opensandbox.api.execd.models import FileInfo
             from opensandbox.api.execd.types import UNSET
 
@@ -377,7 +411,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
             parsed = response_obj.parsed
             if not parsed:
                 return []
-            if isinstance(parsed, list) and all(isinstance(x, FileInfo) for x in parsed):
+            if isinstance(parsed, list) and all(
+                isinstance(x, FileInfo) for x in parsed
+            ):
                 return FilesystemModelConverter.to_entry_info_list(parsed)
             raise SandboxApiException(
                 message="List directory failed: unexpected response type",
@@ -388,7 +424,9 @@ class IsolatedFilesystemAdapterSync(FilesystemSync):
 
     def get_file_info(self, paths: list[str]) -> dict[str, EntryInfo]:
         try:
-            from opensandbox.api.execd.api.isolated_execution import isolated_get_files_info
+            from opensandbox.api.execd.api.isolated_execution import (
+                isolated_get_files_info,
+            )
 
             response_obj = isolated_get_files_info.sync_detailed(
                 self._session_uuid,
