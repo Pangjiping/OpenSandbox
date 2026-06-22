@@ -23,6 +23,10 @@ ACCESS_RENEW_EXTEND_SECONDS_METADATA_KEY = "opensandbox.io/access-renew-extend-s
 # execd can use bwrap namespace isolation (OSEP-0013).
 BOOTSTRAP_EXECD_ISOLATION_KEY = "bootstrap.execd.isolation"
 
+# Default mount path for the isolation upper directory.
+# Must match the execd DefaultConfig().UpperRoot value.
+ISOLATION_UPPER_MOUNT_PATH = "/var/lib/execd/isolation"
+
 # Extensions to annotations transformation prefix
 # User-specified extension keys starting with EXTENSIONS_ANNOTATION_PREFIX
 # are automatically propagated to Pod annotations with ANNOTATION_METADATA_PREFIX

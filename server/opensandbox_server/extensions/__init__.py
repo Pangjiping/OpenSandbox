@@ -26,6 +26,7 @@ from opensandbox_server.extensions.keys import (
     BOOTSTRAP_EXECD_ISOLATION_KEY,
     EXTENSIONS_ANNOTATION_PREFIX,
     ANNOTATION_METADATA_PREFIX,
+    ISOLATION_UPPER_MOUNT_PATH,
 )
 from opensandbox_server.extensions.validation import (
     ACCESS_RENEW_EXTEND_SECONDS_MAX,
@@ -44,4 +45,5 @@ __all__ = [
     "EXTENSIONS_ANNOTATION_PREFIX",
     "ANNOTATION_METADATA_PREFIX",
     "BOOTSTRAP_EXECD_ISOLATION_KEY",
+    "ISOLATION_UPPER_MOUNT_PATH",
 ]

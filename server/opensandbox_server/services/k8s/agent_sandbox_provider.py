@@ -286,15 +286,21 @@ class AgentSandboxProvider(WorkloadProvider):
         )
         
         containers = [_container_to_dict(main_container)]
+        volumes: list[Dict[str, Any]] = [
+            {
+                "name": "opensandbox-bin",
+                "emptyDir": {},
+            }
+        ]
+        if (extensions or {}).get(BOOTSTRAP_EXECD_ISOLATION_KEY) == "enable":
+            volumes.append({
+                "name": "isolation-upper",
+                "emptyDir": {},
+            })
         pod_spec: Dict[str, Any] = {
             "initContainers": [_container_to_dict(init_container)],
             "containers": containers,
-            "volumes": [
-                {
-                    "name": "opensandbox-bin",
-                    "emptyDir": {},
-                }
-            ],
+            "volumes": volumes,
         }
 
         if self.runtime_class:

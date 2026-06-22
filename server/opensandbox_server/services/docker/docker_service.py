@@ -40,6 +40,7 @@ from fastapi import HTTPException, status
 from opensandbox_server.extensions import (
     ACCESS_RENEW_EXTEND_SECONDS_METADATA_KEY,
     BOOTSTRAP_EXECD_ISOLATION_KEY,
+    ISOLATION_UPPER_MOUNT_PATH,
 )
 from opensandbox_server.api.schema import (
     CreateSandboxRequest,
@@ -981,8 +982,11 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
                 security_opt.append("apparmor=unconfined")
                 security_opt.append("seccomp=unconfined")
                 host_config_kwargs["security_opt"] = security_opt
+                tmpfs = dict(host_config_kwargs.get("tmpfs") or {})
+                tmpfs[ISOLATION_UPPER_MOUNT_PATH] = ""
+                host_config_kwargs["tmpfs"] = tmpfs
                 logger.warning(
-                    "sandbox %s: granting CAP_SYS_ADMIN + apparmor/seccomp=unconfined for bwrap isolation (bootstrap.execd.isolation=enable)",
+                    "sandbox %s: granting CAP_SYS_ADMIN + apparmor/seccomp=unconfined + tmpfs for bwrap isolation (bootstrap.execd.isolation=enable)",
                     sandbox_id,
                 )
 

@@ -67,9 +67,17 @@ func (m *MergedView) resolveLower(rel string) string {
 	return filepath.Join(m.LowerDir, rel)
 }
 
-// safePath validates and cleans a relative path.
+// safePath validates and returns a path relative to the workspace.
+// Absolute paths under LowerDir are stripped to relative; all others
+// are cleaned normally.
 func (m *MergedView) safePath(path string) (string, error) {
 	cleaned := filepath.Clean(path)
+	// Strip workspace prefix from absolute paths so Join works correctly.
+	if m.LowerDir != "" && strings.HasPrefix(cleaned, m.LowerDir+"/") {
+		cleaned = strings.TrimPrefix(cleaned, m.LowerDir+"/")
+	} else if m.LowerDir != "" && cleaned == m.LowerDir {
+		cleaned = "."
+	}
 	if strings.HasPrefix(cleaned, "..") {
 		return "", fmt.Errorf("path traversal denied: %s", path)
 	}

@@ -184,15 +184,21 @@ class BatchSandboxProvider(WorkloadProvider):
         )
         
         containers = [_container_to_dict(main_container)]
+        volumes = [
+            {
+                "name": "opensandbox-bin",
+                "emptyDir": {}
+            }
+        ]
+        if (extensions or {}).get(BOOTSTRAP_EXECD_ISOLATION_KEY) == "enable":
+            volumes.append({
+                "name": "isolation-upper",
+                "emptyDir": {}
+            })
         pod_spec = {
             "initContainers": [_container_to_dict(init_container)],
             "containers": containers,
-            "volumes": [
-                {
-                    "name": "opensandbox-bin",
-                    "emptyDir": {}
-                }
-            ],
+            "volumes": volumes,
         }
         if windows_profile:
             apply_windows_profile_overrides(

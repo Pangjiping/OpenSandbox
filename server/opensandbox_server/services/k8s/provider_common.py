@@ -29,6 +29,7 @@ from kubernetes.client import (
 )
 
 from opensandbox_server.api.schema import ImageSpec
+from opensandbox_server.extensions.keys import ISOLATION_UPPER_MOUNT_PATH
 from opensandbox_server.services.constants import SandboxErrorCodes
 from opensandbox_server.services.helpers import parse_gpu_request
 from opensandbox_server.services.k8s.egress_helper import (
@@ -204,6 +205,12 @@ def _build_main_container(
             security_context.capabilities = V1Capabilities(add=caps)
         security_context.seccomp_profile = V1SeccompProfile(type="Unconfined")
         security_context.app_armor_profile = V1AppArmorProfile(type="Unconfined")
+        volume_mounts.append(
+            V1VolumeMount(
+                name="isolation-upper",
+                mount_path=ISOLATION_UPPER_MOUNT_PATH,
+            )
+        )
 
     return V1Container(
         name="sandbox",
