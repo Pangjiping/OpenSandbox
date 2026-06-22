@@ -34,6 +34,7 @@ Usage:
 import argparse
 import json
 import os
+import shlex
 import time
 from datetime import timedelta
 from urllib.parse import urlparse
@@ -114,6 +115,8 @@ def _wait_http_ready(base_url: str, headers: dict, attempts: int = 60) -> bool:
 
 
 def _http_get(base_url: str, path: str, headers: dict) -> requests.Response:
+    if not path.startswith("/"):
+        path = "/" + path
     url = base_url.rstrip("/") + path
     resp = requests.get(url, headers=headers, timeout=10)
     print(f"[http] GET {path} -> {resp.status_code} ({len(resp.content)} bytes)")
@@ -224,10 +227,12 @@ def step_create() -> str:
         secure_access=True,
     )
 
-    _wait_sandbox_ready(sandbox)
-
+    # Print the ID before waiting so the sandbox can still be identified and
+    # deleted even if readiness polling times out (it already has a TTL here).
     print(f"\nSANDBOX_ID={sandbox.id}")
-    print(f"\nUse --sandbox-id {sandbox.id} for subsequent steps.")
+    print(f"Use --sandbox-id {sandbox.id} for subsequent steps.\n")
+
+    _wait_sandbox_ready(sandbox)
     return sandbox.id
 
 
@@ -236,6 +241,11 @@ def step_credentials(sandbox_id: str) -> None:
     azure_endpoint = _required_env("AZURE_OPENAI_ENDPOINT").rstrip("/")
     azure_api_key = _required_env("AZURE_OPENAI_API_KEY")
     azure_host = urlparse(azure_endpoint).hostname
+    if not azure_host:
+        raise RuntimeError(
+            "AZURE_OPENAI_ENDPOINT must be a full URL, e.g. "
+            "https://my-resource.openai.azure.com"
+        )
 
     sandbox = _connect(sandbox_id)
 
@@ -270,8 +280,6 @@ def step_llm(sandbox_id: str, question: str | None = None) -> None:
     sandbox = _connect(sandbox_id)
 
     prompt = question or "Compute 1+1. Reply with only the number."
-    # Escape single quotes in the prompt for the shell command
-    safe_prompt = prompt.replace("'", "'\\''")
 
     chat_url = (
         "$AZURE_OPENAI_ENDPOINT/openai/deployments/$AZURE_OPENAI_DEPLOYMENT"
@@ -281,18 +289,15 @@ def step_llm(sandbox_id: str, question: str | None = None) -> None:
         "messages": [{"role": "user", "content": prompt}],
         "max_completion_tokens": 256,
     })
+    # The `api-key` header is intentionally NOT set here: Credential Vault
+    # injects the real key at the egress sidecar, so the command stays
+    # secret-free. shlex.quote keeps the JSON payload safe even when the
+    # prompt contains apostrophes, while the $AZURE_OPENAI_* variables stay
+    # unquoted so the in-sandbox shell still expands them.
     chat_cmd = (
         f'curl -sS -X POST "{chat_url}" '
         '-H "Content-Type: application/json" '
-        '-H "api-key: $AZURE_OPENAI_API_KEY" '
-        f"-d '{safe_prompt}'"
-    )
-    # Build the actual command with proper payload escaping
-    chat_cmd = (
-        f"curl -sS -X POST \"{chat_url}\" "
-        f"-H \"Content-Type: application/json\" "
-        f"-H \"api-key: $AZURE_OPENAI_API_KEY\" "
-        f"-d '{chat_payload}'"
+        f"-d {shlex.quote(chat_payload)}"
     )
     exec_result = sandbox.commands.run(chat_cmd)
 

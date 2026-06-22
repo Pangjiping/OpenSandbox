@@ -114,14 +114,20 @@ kubectl rollout status deploy/opensandbox-controller-manager \
   -n opensandbox-system --timeout=90s
 ```
 
-> **Note:** Do **not** set `controller.snapshot.containerdSocketPath` — the deployed controller binary does not accept that flag.
+> **Note:** This example clears `controller.snapshot.containerdSocketPath` because the pinned controller image (`controller:v0.2.0`) does not accept the `--containerd-socket-path` flag. Current controller builds **do** accept it (see [`kubernetes/cmd/controller/main.go`](../../kubernetes/cmd/controller/main.go)); if your nodes use a non-default containerd socket and you deploy a controller image that supports the flag, set this value accordingly.
 
 ## 5. Use `main.py`
+
+All `main.py` commands below are run from the example directory:
+
+```bash
+cd examples/aks-kata
+```
 
 ### Run everything end to end
 
 ```bash
-python3 examples/aks-kata/main.py all
+python3 main.py all
 ```
 
 This creates a sandbox, runs every demo step, and deletes it at the end.
