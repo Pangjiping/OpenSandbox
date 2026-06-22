@@ -157,7 +157,7 @@ func (w *WebSocketProxy) serveH1(rw http.ResponseWriter, r *http.Request, backen
 		}
 		return
 	}
-	defer connBackend.CloseNow()
+	defer connBackend.CloseNow() //nolint:errcheck
 
 	// Accept the client-side WebSocket upgrade.
 	connPub, err := websocket.Accept(rw, r, &websocket.AcceptOptions{
@@ -168,7 +168,7 @@ func (w *WebSocketProxy) serveH1(rw http.ResponseWriter, r *http.Request, backen
 		Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("WebSocketProxy: couldn't upgrade websocket connection")
 		return
 	}
-	defer connPub.CloseNow()
+	defer connPub.CloseNow() //nolint:errcheck
 
 	// Bidirectional relay.
 	errClient := make(chan error, 1)
@@ -196,9 +196,12 @@ func (w *WebSocketProxy) serveH1(rw http.ResponseWriter, r *http.Request, backen
 func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, backendURL *url.URL, requestHeader http.Header) {
 	ctx := r.Context()
 
-	connBackend, _, err := websocket.Dial(ctx, backendURL.String(), &websocket.DialOptions{
+	connBackend, resp, err := websocket.Dial(ctx, backendURL.String(), &websocket.DialOptions{
 		HTTPHeader: requestHeader,
 	})
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("WebSocketProxy: couldn't dial to remote backend (h2 tunnel)")
 		http.Error(rw, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
@@ -222,9 +225,9 @@ func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		io.Copy(backendNetConn, r.Body)
+		_, _ = io.Copy(backendNetConn, r.Body)
 	}()
-	io.Copy(rw, backendNetConn)
+	_, _ = io.Copy(rw, backendNetConn)
 	<-done
 }
 
