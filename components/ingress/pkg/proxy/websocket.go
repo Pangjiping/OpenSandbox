@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +35,13 @@ import (
 )
 
 const backendHandshakeTimeout = 45 * time.Second
+
+type handshakeError struct {
+	statusCode int
+	statusLine string
+}
+
+func (e *handshakeError) Error() string { return e.statusLine }
 
 // WebSocketProxy is an HTTP Handler that takes an incoming WebSocket
 // connection and proxies it to another server.
@@ -154,7 +163,7 @@ func (w *WebSocketProxy) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 
 	// HTTP/2 Extended CONNECT (RFC 8441) — raw bidirectional tunnel.
 	if r.ProtoMajor >= 2 && r.Method == http.MethodConnect {
-		w.serveH2Tunnel(rw, r, backendURL, requestHeader)
+		w.serveH2Tunnel(rw, r, backendURL, requestHeader, clientSubprotocols)
 		return
 	}
 
@@ -230,7 +239,7 @@ func (w *WebSocketProxy) serveH1(rw http.ResponseWriter, r *http.Request, backen
 // the backend over raw HTTP/1.1 and tunneling bytes between the h2 stream
 // and the backend TCP connection. Both sides carry WebSocket frame bytes,
 // so no re-framing is needed.
-func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, backendURL *url.URL, requestHeader http.Header) {
+func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, backendURL *url.URL, requestHeader http.Header, clientSubprotocols []string) {
 	backendAddr := backendURL.Host
 	if !strings.Contains(backendAddr, ":") {
 		if backendURL.Scheme == "wss" || backendURL.Scheme == "https" {
@@ -248,10 +257,33 @@ func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, 
 	}
 	defer backendConn.Close()
 
+	// Wrap with TLS for wss/https backends.
+	if backendURL.Scheme == "wss" || backendURL.Scheme == "https" {
+		host, _, _ := net.SplitHostPort(backendAddr)
+		tlsConn := tls.Client(backendConn, &tls.Config{ServerName: host})
+		if err := tlsConn.SetDeadline(time.Now().Add(backendHandshakeTimeout)); err != nil {
+			Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("WebSocketProxy: TLS set deadline failed (h2 tunnel)")
+			http.Error(rw, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+			return
+		}
+		if err := tlsConn.Handshake(); err != nil {
+			Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("WebSocketProxy: TLS handshake failed (h2 tunnel)")
+			http.Error(rw, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+			return
+		}
+		_ = tlsConn.SetDeadline(time.Time{})
+		backendConn = tlsConn
+	}
+
 	// Perform the WebSocket handshake over the raw connection.
-	if err := rawWebSocketHandshake(backendConn, backendURL, requestHeader); err != nil {
-		Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("WebSocketProxy: backend WebSocket handshake failed (h2 tunnel)")
-		http.Error(rw, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+	if err := rawWebSocketHandshake(backendConn, backendURL, requestHeader, clientSubprotocols); err != nil {
+		var hsErr *handshakeError
+		if errors.As(err, &hsErr) {
+			http.Error(rw, hsErr.statusLine, hsErr.statusCode)
+		} else {
+			Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("WebSocketProxy: backend WebSocket handshake failed (h2 tunnel)")
+			http.Error(rw, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
+		}
 		return
 	}
 
@@ -274,16 +306,16 @@ func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, 
 	go func() {
 		defer close(done)
 		_, _ = io.Copy(backendConn, r.Body)
-		// Client disconnected — close backend to unblock the read side.
 		backendConn.Close()
 	}()
 	copyFlush(rw, backendConn, flusher)
+	r.Body.Close()
 	<-done
 }
 
 // rawWebSocketHandshake sends an HTTP/1.1 WebSocket upgrade request on conn
 // and verifies the 101 response. After success, conn carries raw WS frames.
-func rawWebSocketHandshake(conn net.Conn, target *url.URL, extraHeaders http.Header) error {
+func rawWebSocketHandshake(conn net.Conn, target *url.URL, extraHeaders http.Header, subprotocols []string) error {
 	key := make([]byte, 16)
 	if _, err := rand.Read(key); err != nil {
 		return fmt.Errorf("generate Sec-WebSocket-Key: %w", err)
@@ -302,8 +334,10 @@ func rawWebSocketHandshake(conn net.Conn, target *url.URL, extraHeaders http.Hea
 	buf.WriteString("Connection: Upgrade\r\n")
 	buf.WriteString("Sec-WebSocket-Version: 13\r\n")
 	buf.WriteString("Sec-WebSocket-Key: " + secKey + "\r\n")
+	if len(subprotocols) > 0 {
+		buf.WriteString("Sec-WebSocket-Protocol: " + strings.Join(subprotocols, ", ") + "\r\n")
+	}
 	for k, vs := range extraHeaders {
-		// Host is already written above; skip to avoid duplicate.
 		if k == "Host" {
 			continue
 		}
@@ -342,11 +376,22 @@ func rawWebSocketHandshake(conn net.Conn, target *url.URL, extraHeaders http.Hea
 	}
 	statusLine := string(resp[:end])
 	if !strings.Contains(statusLine, "101") {
-		return fmt.Errorf("unexpected handshake response: %s", statusLine)
+		code := parseHTTPStatusCode(statusLine)
+		return &handshakeError{statusCode: code, statusLine: statusLine}
 	}
 
 	// Clear deadline for the tunnel phase.
 	return conn.SetDeadline(time.Time{})
+}
+
+func parseHTTPStatusCode(statusLine string) int {
+	parts := strings.SplitN(statusLine, " ", 3)
+	if len(parts) >= 2 {
+		if code, err := strconv.Atoi(parts[1]); err == nil {
+			return code
+		}
+	}
+	return http.StatusBadGateway
 }
 
 func replicateConn(ctx context.Context, dst, src *websocket.Conn, errc chan error) {
