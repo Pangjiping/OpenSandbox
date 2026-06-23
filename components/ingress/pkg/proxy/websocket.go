@@ -291,7 +291,7 @@ func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, 
 		_, _ = io.Copy(backendConn, r.Body)
 		// Half-close the write side so backend can finish sending.
 		if tc, ok := backendConn.(interface{ CloseWrite() error }); ok {
-			tc.CloseWrite()
+			_ = tc.CloseWrite()
 		} else {
 			backendConn.Close()
 		}
