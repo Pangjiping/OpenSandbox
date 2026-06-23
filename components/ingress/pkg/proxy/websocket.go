@@ -179,6 +179,7 @@ func (w *WebSocketProxy) serveH1(rw http.ResponseWriter, r *http.Request, backen
 	connBackend, resp, err := websocket.Dial(dialCtx, backendURL.String(), &websocket.DialOptions{
 		HTTPHeader:   requestHeader,
 		Subprotocols: clientSubprotocols,
+		Host:         requestHeader.Get("Host"),
 	})
 	if err != nil {
 		Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("WebSocketProxy: couldn't dial to remote backend")
@@ -253,7 +254,8 @@ func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, 
 	defer backendConn.Close()
 
 	// Perform the WebSocket handshake over the raw connection.
-	if err := rawWebSocketHandshake(backendConn, backendURL, requestHeader, clientSubprotocols); err != nil {
+	respHeaders, err := rawWebSocketHandshake(backendConn, backendURL, requestHeader, clientSubprotocols)
+	if err != nil {
 		var hsErr *handshakeError
 		if errors.As(err, &hsErr) {
 			http.Error(rw, hsErr.statusLine, hsErr.statusCode)
@@ -270,6 +272,11 @@ func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, 
 		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
+
+	// Forward Set-Cookie from backend handshake before writing the h2 200.
+	for _, c := range respHeaders.Values("Set-Cookie") {
+		rw.Header().Add("Set-Cookie", c)
+	}
 	rw.WriteHeader(http.StatusOK)
 	if err := rc.Flush(); err != nil {
 		Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("WebSocketProxy: flush failed")
@@ -277,13 +284,17 @@ func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, 
 	}
 
 	// Both sides now carry raw WebSocket frame bytes — copy bidirectionally.
-	// Wrap rw in a flushing writer so small frames reach the h2 client promptly.
 	flusher, _ := rw.(http.Flusher)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_, _ = io.Copy(backendConn, r.Body)
-		backendConn.Close()
+		// Half-close the write side so backend can finish sending.
+		if tc, ok := backendConn.(interface{ CloseWrite() error }); ok {
+			tc.CloseWrite()
+		} else {
+			backendConn.Close()
+		}
 	}()
 	copyFlush(rw, backendConn, flusher)
 	r.Body.Close()
@@ -291,11 +302,11 @@ func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, 
 }
 
 // rawWebSocketHandshake sends an HTTP/1.1 WebSocket upgrade request on conn
-// and verifies the 101 response. After success, conn carries raw WS frames.
-func rawWebSocketHandshake(conn net.Conn, target *url.URL, extraHeaders http.Header, subprotocols []string) error {
+// and verifies the 101 response. Returns parsed response headers on success.
+func rawWebSocketHandshake(conn net.Conn, target *url.URL, extraHeaders http.Header, subprotocols []string) (http.Header, error) {
 	key := make([]byte, 16)
 	if _, err := rand.Read(key); err != nil {
-		return fmt.Errorf("generate Sec-WebSocket-Key: %w", err)
+		return nil, fmt.Errorf("generate Sec-WebSocket-Key: %w", err)
 	}
 	secKey := base64.StdEncoding.EncodeToString(key)
 
@@ -325,25 +336,26 @@ func rawWebSocketHandshake(conn net.Conn, target *url.URL, extraHeaders http.Hea
 	buf.WriteString("\r\n")
 
 	if err := conn.SetDeadline(time.Now().Add(backendHandshakeTimeout)); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := io.WriteString(conn, buf.String()); err != nil {
-		return fmt.Errorf("write handshake: %w", err)
+		return nil, fmt.Errorf("write handshake: %w", err)
 	}
 
 	// Read the full HTTP response up to the end-of-headers marker (\r\n\r\n).
+	const maxHandshakeResponseSize = 16384
 	var resp []byte
 	single := make([]byte, 1)
 	for {
 		if _, err := conn.Read(single); err != nil {
-			return fmt.Errorf("read handshake response: %w", err)
+			return nil, fmt.Errorf("read handshake response: %w", err)
 		}
 		resp = append(resp, single[0])
 		if len(resp) >= 4 && string(resp[len(resp)-4:]) == "\r\n\r\n" {
 			break
 		}
-		if len(resp) > 4096 {
-			return fmt.Errorf("handshake response too large")
+		if len(resp) > maxHandshakeResponseSize {
+			return nil, fmt.Errorf("handshake response too large")
 		}
 	}
 
@@ -354,11 +366,36 @@ func rawWebSocketHandshake(conn net.Conn, target *url.URL, extraHeaders http.Hea
 	statusLine := string(resp[:end])
 	if !strings.Contains(statusLine, "101") {
 		code := parseHTTPStatusCode(statusLine)
-		return &handshakeError{statusCode: code, statusLine: statusLine}
+		return nil, &handshakeError{statusCode: code, statusLine: statusLine}
 	}
 
-	// Clear deadline for the tunnel phase.
-	return conn.SetDeadline(time.Time{})
+	// Parse response headers.
+	respHeaders := http.Header{}
+	headerLines := strings.Split(string(resp), "\r\n")
+	for i := 1; i < len(headerLines); i++ {
+		line := headerLines[i]
+		if line == "" {
+			break
+		}
+		colonIdx := strings.IndexByte(line, ':')
+		if colonIdx < 0 {
+			continue
+		}
+		respHeaders.Add(
+			strings.TrimSpace(line[:colonIdx]),
+			strings.TrimSpace(line[colonIdx+1:]),
+		)
+	}
+
+	if !strings.EqualFold(respHeaders.Get("Upgrade"), "websocket") ||
+		!headerContainsToken(respHeaders, "Connection", "Upgrade") {
+		return nil, fmt.Errorf("invalid WebSocket handshake: missing Upgrade/Connection headers")
+	}
+
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return nil, err
+	}
+	return respHeaders, nil
 }
 
 func parseHTTPStatusCode(statusLine string) int {
