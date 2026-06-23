@@ -168,7 +168,9 @@ class FilesystemModelConverter:
     @staticmethod
     def to_api_isolated_make_dirs_body(entries: list[WriteEntry]):
         """Convert directory entries to IsolatedMakeDirsBody."""
-        from opensandbox.api.execd.models.isolated_make_dirs_body import IsolatedMakeDirsBody
+        from opensandbox.api.execd.models.isolated_make_dirs_body import (
+            IsolatedMakeDirsBody,
+        )
 
         dirs_data = {
             entry.path: {
@@ -183,7 +185,9 @@ class FilesystemModelConverter:
     @staticmethod
     def to_api_isolated_chmod_files_body(entries: list[SetPermissionEntry]):
         """Convert permission entries to IsolatedChmodFilesBody."""
-        from opensandbox.api.execd.models.isolated_chmod_files_body import IsolatedChmodFilesBody
+        from opensandbox.api.execd.models.isolated_chmod_files_body import (
+            IsolatedChmodFilesBody,
+        )
 
         permission_data = {
             entry.path: {
@@ -198,7 +202,9 @@ class FilesystemModelConverter:
     @staticmethod
     def to_api_isolated_replace_content_body(entries: list[ContentReplaceEntry]):
         """Convert content replacement entries to IsolatedReplaceContentBody."""
-        from opensandbox.api.execd.models.isolated_replace_content_body import IsolatedReplaceContentBody
+        from opensandbox.api.execd.models.isolated_replace_content_body import (
+            IsolatedReplaceContentBody,
+        )
 
         replace_data = {
             entry.path: {
