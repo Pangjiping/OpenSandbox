@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -242,11 +241,7 @@ func (w *WebSocketProxy) serveH1(rw http.ResponseWriter, r *http.Request, backen
 func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, backendURL *url.URL, requestHeader http.Header, clientSubprotocols []string) {
 	backendAddr := backendURL.Host
 	if !strings.Contains(backendAddr, ":") {
-		if backendURL.Scheme == "wss" || backendURL.Scheme == "https" {
-			backendAddr += ":443"
-		} else {
-			backendAddr += ":80"
-		}
+		backendAddr += ":80"
 	}
 
 	backendConn, err := net.DialTimeout("tcp", backendAddr, backendHandshakeTimeout)
@@ -256,24 +251,6 @@ func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, 
 		return
 	}
 	defer backendConn.Close()
-
-	// Wrap with TLS for wss/https backends.
-	if backendURL.Scheme == "wss" || backendURL.Scheme == "https" {
-		host, _, _ := net.SplitHostPort(backendAddr)
-		tlsConn := tls.Client(backendConn, &tls.Config{ServerName: host})
-		if err := tlsConn.SetDeadline(time.Now().Add(backendHandshakeTimeout)); err != nil {
-			Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("WebSocketProxy: TLS set deadline failed (h2 tunnel)")
-			http.Error(rw, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
-			return
-		}
-		if err := tlsConn.Handshake(); err != nil {
-			Logger.With(slogger.Field{Key: "error", Value: err}).Errorf("WebSocketProxy: TLS handshake failed (h2 tunnel)")
-			http.Error(rw, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
-			return
-		}
-		_ = tlsConn.SetDeadline(time.Time{})
-		backendConn = tlsConn
-	}
 
 	// Perform the WebSocket handshake over the raw connection.
 	if err := rawWebSocketHandshake(backendConn, backendURL, requestHeader, clientSubprotocols); err != nil {
