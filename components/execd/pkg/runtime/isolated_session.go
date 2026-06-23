@@ -51,7 +51,7 @@ type isolatedSession struct {
 	stdin     io.WriteCloser
 	stdout    io.ReadCloser
 	doneCh    chan struct{} // closed when the bwrap process exits
-	upperID   string       // key in UpperManager, used for Release/Remove
+	upperID   string        // key in UpperManager, used for Release/Remove
 	upperDir  string
 	workDir   string
 	createdAt time.Time
