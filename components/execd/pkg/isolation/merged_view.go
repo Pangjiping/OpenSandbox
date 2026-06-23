@@ -499,9 +499,9 @@ func (m *MergedView) Search(root, pattern string) ([]string, error) { //nolint:g
 	// Collect whiteouts from upper first.
 	if m.UpperDir != "" {
 		upperRoot := m.resolveUpper(rootRel)
-		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error { //nolint:nilerr
+		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
-				return nil
+				return nil //nolint:nilerr // skip unreadable dirs
 			}
 			if strings.HasPrefix(d.Name(), ".wh.") {
 				rel, _ := filepath.Rel(m.UpperDir, p)
@@ -516,9 +516,9 @@ func (m *MergedView) Search(root, pattern string) ([]string, error) { //nolint:g
 	// Walk lower.
 	if m.LowerDir != "" {
 		lowerRoot := m.resolveLower(rootRel)
-		_ = filepath.WalkDir(lowerRoot, func(p string, d fs.DirEntry, err error) error { //nolint:nilerr
+		_ = filepath.WalkDir(lowerRoot, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
-				return nil
+				return nil //nolint:nilerr // skip unreadable dirs
 			}
 			if d.IsDir() {
 				return nil
@@ -538,9 +538,9 @@ func (m *MergedView) Search(root, pattern string) ([]string, error) { //nolint:g
 	// Walk upper.
 	if m.UpperDir != "" {
 		upperRoot := m.resolveUpper(rootRel)
-		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error { //nolint:nilerr
+		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
-				return nil
+				return nil //nolint:nilerr // skip unreadable dirs
 			}
 			if d.IsDir() {
 				return nil
