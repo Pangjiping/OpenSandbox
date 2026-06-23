@@ -15,6 +15,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -267,12 +268,16 @@ func (w *WebSocketProxy) serveH2Tunnel(rw http.ResponseWriter, r *http.Request, 
 	}
 
 	// Both sides now carry raw WebSocket frame bytes — copy bidirectionally.
+	// Wrap rw in a flushing writer so small frames reach the h2 client promptly.
+	flusher, _ := rw.(http.Flusher)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_, _ = io.Copy(backendConn, r.Body)
+		// Client disconnected — close backend to unblock the read side.
+		backendConn.Close()
 	}()
-	_, _ = io.Copy(rw, backendConn)
+	copyFlush(rw, backendConn, flusher)
 	<-done
 }
 
@@ -298,6 +303,10 @@ func rawWebSocketHandshake(conn net.Conn, target *url.URL, extraHeaders http.Hea
 	buf.WriteString("Sec-WebSocket-Version: 13\r\n")
 	buf.WriteString("Sec-WebSocket-Key: " + secKey + "\r\n")
 	for k, vs := range extraHeaders {
+		// Host is already written above; skip to avoid duplicate.
+		if k == "Host" {
+			continue
+		}
 		for _, v := range vs {
 			buf.WriteString(k + ": " + v + "\r\n")
 		}
@@ -311,15 +320,29 @@ func rawWebSocketHandshake(conn net.Conn, target *url.URL, extraHeaders http.Hea
 		return fmt.Errorf("write handshake: %w", err)
 	}
 
-	// Read the response line — we only need to confirm "101".
-	var respBuf [1024]byte
-	n, err := conn.Read(respBuf[:])
-	if err != nil {
-		return fmt.Errorf("read handshake response: %w", err)
+	// Read the full HTTP response up to the end-of-headers marker (\r\n\r\n).
+	var resp []byte
+	single := make([]byte, 1)
+	for {
+		if _, err := conn.Read(single); err != nil {
+			return fmt.Errorf("read handshake response: %w", err)
+		}
+		resp = append(resp, single[0])
+		if len(resp) >= 4 && string(resp[len(resp)-4:]) == "\r\n\r\n" {
+			break
+		}
+		if len(resp) > 4096 {
+			return fmt.Errorf("handshake response too large")
+		}
 	}
-	respLine := string(respBuf[:n])
-	if !strings.Contains(respLine, "101") {
-		return fmt.Errorf("unexpected handshake response: %s", strings.SplitN(respLine, "\r\n", 2)[0])
+
+	end := bytes.IndexByte(resp, '\r')
+	if end < 0 {
+		end = len(resp)
+	}
+	statusLine := string(resp[:end])
+	if !strings.Contains(statusLine, "101") {
+		return fmt.Errorf("unexpected handshake response: %s", statusLine)
 	}
 
 	// Clear deadline for the tunnel phase.
@@ -370,6 +393,24 @@ func copyHeader(dst, src http.Header) {
 	for k, vv := range src {
 		for _, v := range vv {
 			dst.Add(k, v)
+		}
+	}
+}
+
+// copyFlush copies from src to dst, flushing after each read chunk so that
+// small WebSocket frames reach the h2 client without waiting for more data.
+func copyFlush(dst io.Writer, src io.Reader, flusher http.Flusher) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			_, _ = dst.Write(buf[:n])
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			break
 		}
 	}
 }
