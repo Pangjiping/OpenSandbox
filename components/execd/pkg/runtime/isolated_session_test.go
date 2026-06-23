@@ -19,6 +19,7 @@ package runtime
 import (
 	"context"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -77,7 +78,7 @@ func TestCreateIsolatedSession_HappyPath(t *testing.T) {
 
 	opts := &IsolatedSessionOptions{
 		Profile:       "strict",
-		WorkspacePath: "/workspace",
+		WorkspacePath: filepath.Join(t.TempDir(), "workspace"),
 		WorkspaceMode: "rw",
 	}
 
@@ -117,7 +118,7 @@ func TestGetIsolatedSession_Found(t *testing.T) {
 
 	opts := &IsolatedSessionOptions{
 		Profile:       "balanced",
-		WorkspacePath: "/ws",
+		WorkspacePath: filepath.Join(t.TempDir(), "ws"),
 		WorkspaceMode: "overlay",
 	}
 
@@ -176,7 +177,7 @@ func TestRunInIsolatedSession_HappyPath(t *testing.T) {
 
 	opts := &IsolatedSessionOptions{
 		Profile:       "strict",
-		WorkspacePath: "/workspace",
+		WorkspacePath: filepath.Join(t.TempDir(), "workspace"),
 		WorkspaceMode: "rw",
 	}
 

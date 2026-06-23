@@ -101,7 +101,16 @@ func TestMergedView_Remove_LowerOnly(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(mv.LowerDir, "lower-only.txt"), []byte("x"), 0o644))
 
 	err := mv.Remove("lower-only.txt")
-	assert.Error(t, err, "cannot remove lower-only file without whiteout")
+	require.NoError(t, err)
+
+	// Whiteout should be created
+	whPath := filepath.Join(mv.UpperDir, ".wh.lower-only.txt")
+	_, err = os.Stat(whPath)
+	assert.NoError(t, err, "whiteout marker should exist")
+
+	// File should no longer be visible via Stat
+	_, err = mv.Stat("lower-only.txt")
+	assert.True(t, os.IsNotExist(err))
 }
 
 func TestMergedView_RemoveAll(t *testing.T) {
