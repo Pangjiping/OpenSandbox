@@ -181,40 +181,34 @@ func bwrapWorkspaceSegment(opts WrapOptions) ([]string, error) {
 	}
 }
 
+// unsetBlacklistedEnv returns --unsetenv args for all env vars matching strictEnvBlacklist.
+func unsetBlacklistedEnv() []string {
+	var argv []string
+	for _, pattern := range strictEnvBlacklist {
+		for _, env := range os.Environ() {
+			kv := strings.SplitN(env, "=", 2)
+			if matchEnvPattern(kv[0], pattern) {
+				argv = append(argv, "--unsetenv", kv[0])
+			}
+		}
+	}
+	return argv
+}
+
 // bwrapEnvSegment returns environment passthrough args.
 func bwrapEnvSegment(spec EnvSpec) []string {
 	if spec.Mode == "" {
-		// Default: apply strict blacklist to strip secrets from the inherited env.
-		var argv []string
-		for _, pattern := range strictEnvBlacklist {
-			for _, env := range os.Environ() {
-				kv := strings.SplitN(env, "=", 2)
-				if matchEnvPattern(kv[0], pattern) {
-					argv = append(argv, "--unsetenv", kv[0])
-				}
-			}
-		}
-		return argv
+		return unsetBlacklistedEnv()
 	}
 
 	switch spec.Mode {
 	case EnvModeDeny:
-		// Pass through current env, filter out deny-listed keys.
-		// bwrap inherits env from the parent; --unsetenv removes entries.
 		var argv []string
 		for _, key := range spec.Keys {
 			argv = append(argv, "--unsetenv", key)
 		}
-		// Apply strict blacklist if no explicit keys provided.
 		if len(spec.Keys) == 0 {
-			for _, pattern := range strictEnvBlacklist {
-				for _, env := range os.Environ() {
-					kv := strings.SplitN(env, "=", 2)
-					if matchEnvPattern(kv[0], pattern) {
-						argv = append(argv, "--unsetenv", kv[0])
-					}
-				}
-			}
+			argv = append(argv, unsetBlacklistedEnv()...)
 		}
 		return argv
 

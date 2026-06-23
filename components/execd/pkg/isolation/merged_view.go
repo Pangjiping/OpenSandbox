@@ -486,7 +486,7 @@ func (m *MergedView) Chmod(path string, mode os.FileMode) error {
 
 // Search walks the merged view under root and returns matching file paths.
 // Directories are excluded from results. Whiteout entries are respected.
-func (m *MergedView) Search(root, pattern string) ([]string, error) {
+func (m *MergedView) Search(root, pattern string) ([]string, error) { //nolint:gocognit
 	rootRel, err := m.safePath(root)
 	if err != nil {
 		return nil, err
@@ -499,7 +499,7 @@ func (m *MergedView) Search(root, pattern string) ([]string, error) {
 	// Collect whiteouts from upper first.
 	if m.UpperDir != "" {
 		upperRoot := m.resolveUpper(rootRel)
-		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error {
+		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error { //nolint:nilerr
 			if err != nil {
 				return nil
 			}
@@ -516,7 +516,7 @@ func (m *MergedView) Search(root, pattern string) ([]string, error) {
 	// Walk lower.
 	if m.LowerDir != "" {
 		lowerRoot := m.resolveLower(rootRel)
-		_ = filepath.WalkDir(lowerRoot, func(p string, d fs.DirEntry, err error) error {
+		_ = filepath.WalkDir(lowerRoot, func(p string, d fs.DirEntry, err error) error { //nolint:nilerr
 			if err != nil {
 				return nil
 			}
@@ -538,7 +538,7 @@ func (m *MergedView) Search(root, pattern string) ([]string, error) {
 	// Walk upper.
 	if m.UpperDir != "" {
 		upperRoot := m.resolveUpper(rootRel)
-		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error {
+		_ = filepath.WalkDir(upperRoot, func(p string, d fs.DirEntry, err error) error { //nolint:nilerr
 			if err != nil {
 				return nil
 			}
