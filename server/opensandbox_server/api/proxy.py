@@ -141,6 +141,24 @@ def _filter_proxy_headers(
     return forwarded
 
 
+def _set_forwarded_headers(
+    headers: dict[str, str], request: Request | WebSocket
+) -> None:
+    """Rebuild proxy headers from the connection observed by this server."""
+    scheme = request.url.scheme.lower()
+    if scheme == "ws":
+        scheme = "http"
+    elif scheme == "wss":
+        scheme = "https"
+    headers["X-Forwarded-Proto"] = scheme
+
+    inbound_host = request.headers.get("host", "")
+    if inbound_host:
+        headers["X-Forwarded-Host"] = inbound_host
+    if request.client:
+        headers["X-Forwarded-For"] = request.client.host
+
+
 def _schedule_proxy_renew(request: Request | WebSocket, sandbox_id: str) -> None:
     proxy_renew = getattr(request.app.state, "proxy_renew_coordinator", None)
     if proxy_renew is not None:
@@ -189,12 +207,7 @@ async def _proxy_http_request(
         )
         # Forwarded headers are stripped above and rebuilt from the connection
         # observed by this trusted proxy, so clients cannot spoof transport state.
-        headers["X-Forwarded-Proto"] = request.url.scheme
-        inbound_host = request.headers.get("host", "")
-        if inbound_host:
-            headers["X-Forwarded-Host"] = inbound_host
-        if request.client:
-            headers["X-Forwarded-For"] = request.client.host
+        _set_forwarded_headers(headers, request)
 
         stream_body = request.method in ("POST", "PUT", "PATCH", "DELETE")
         req = client.build_request(
@@ -342,6 +355,7 @@ async def _proxy_websocket_request(
         extra_excluded=WEBSOCKET_HANDSHAKE_HEADERS,
         connection_header=websocket.headers.get("connection"),
     )
+    _set_forwarded_headers(headers, websocket)
     subprotocols = list(websocket.scope.get("subprotocols", []))
     raw_origin = websocket.headers.get("origin")
     origin: Origin | None = Origin(raw_origin) if raw_origin else None
