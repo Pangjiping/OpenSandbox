@@ -55,11 +55,12 @@ func cloneEndpoint(ep *Endpoint) *Endpoint {
 
 // EndpointCache is a thread-safe LRU+TTL cache for sandbox endpoints.
 type EndpointCache struct {
-	mu      sync.Mutex
-	entries map[endpointCacheKey]*list.Element
-	order   *list.List
-	maxSize int
-	ttl     time.Duration
+	mu         sync.Mutex
+	entries    map[endpointCacheKey]*list.Element
+	order      *list.List
+	maxSize    int
+	ttl        time.Duration
+	generation uint64
 
 	group singleflight.Group
 }
@@ -135,6 +136,7 @@ func (c *EndpointCache) Invalidate(sandboxID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.generation++
 	for key, elem := range c.entries {
 		if key.sandboxID == sandboxID {
 			c.removeLocked(elem)
@@ -165,6 +167,10 @@ func (c *EndpointCache) GetOrFetch(ctx context.Context, key endpointCacheKey, fe
 		return ep, nil
 	}
 
+	c.mu.Lock()
+	genBefore := c.generation
+	c.mu.Unlock()
+
 	ch := c.group.DoChan(key.String(), func() (interface{}, error) {
 		if ep, ok := c.Get(key); ok {
 			return ep, nil
@@ -173,7 +179,13 @@ func (c *EndpointCache) GetOrFetch(ctx context.Context, key endpointCacheKey, fe
 		if err != nil {
 			return nil, err
 		}
-		c.Put(key, ep)
+		c.mu.Lock()
+		if c.generation == genBefore {
+			c.mu.Unlock()
+			c.Put(key, ep)
+		} else {
+			c.mu.Unlock()
+		}
 		return ep, nil
 	})
 

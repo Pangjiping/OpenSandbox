@@ -167,6 +167,72 @@ func TestEndpointCache_GetOrFetch_CacheHit(t *testing.T) {
 	}
 }
 
+func TestEndpointCache_InvalidateDuringFetch(t *testing.T) {
+	c := NewEndpointCache(10, time.Minute)
+	key := endpointCacheKey{sandboxID: "sb-1", port: 8080}
+
+	fetchStarted := make(chan struct{})
+	fetchContinue := make(chan struct{})
+
+	fetch := func() (*Endpoint, error) {
+		close(fetchStarted)
+		<-fetchContinue
+		return &Endpoint{Endpoint: "stale-result", Headers: map[string]string{"k": "v"}}, nil
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ep, err := c.GetOrFetch(context.Background(), key, fetch)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+			return
+		}
+		if ep.Endpoint != "stale-result" {
+			t.Errorf("got %q, want %q", ep.Endpoint, "stale-result")
+		}
+	}()
+
+	<-fetchStarted
+	c.Invalidate("sb-1")
+	close(fetchContinue)
+	wg.Wait()
+
+	if _, ok := c.Get(key); ok {
+		t.Fatal("stale endpoint should not be cached after invalidation during fetch")
+	}
+	if c.Len() != 0 {
+		t.Fatalf("expected 0 entries, got %d", c.Len())
+	}
+}
+
+func TestEndpointCache_DefensiveCopy(t *testing.T) {
+	c := NewEndpointCache(10, time.Minute)
+	key := endpointCacheKey{sandboxID: "sb-1", port: 8080}
+
+	original := &Endpoint{Endpoint: "host:8080", Headers: map[string]string{"auth": "token"}}
+	c.Put(key, original)
+
+	got, ok := c.Get(key)
+	if !ok {
+		t.Fatal("expected cache hit")
+	}
+	got.Endpoint = "mutated"
+	got.Headers["auth"] = "hacked"
+
+	got2, ok := c.Get(key)
+	if !ok {
+		t.Fatal("expected cache hit after mutation")
+	}
+	if got2.Endpoint != "host:8080" {
+		t.Fatalf("cache was mutated: got %q, want %q", got2.Endpoint, "host:8080")
+	}
+	if got2.Headers["auth"] != "token" {
+		t.Fatalf("cache headers mutated: got %q, want %q", got2.Headers["auth"], "token")
+	}
+}
+
 func TestEndpointCache_GetOrFetch_Error(t *testing.T) {
 	c := NewEndpointCache(10, time.Minute)
 	key := endpointCacheKey{sandboxID: "sb-1", port: 8080}

@@ -34,6 +34,10 @@ DEFAULT_ENDPOINT_CACHE_TTL = 600.0
 DEFAULT_ENDPOINT_CACHE_SIZE = 1024
 
 
+def _clone_endpoint(ep: SandboxEndpoint) -> SandboxEndpoint:
+    return SandboxEndpoint(endpoint=ep.endpoint, headers=dict(ep.headers))
+
+
 class EndpointCache:
     """Thread-safe LRU+TTL endpoint cache for sync usage."""
 
@@ -59,20 +63,21 @@ class EndpointCache:
                 del self._cache[key]
                 return None
             self._cache.move_to_end(key)
-            return endpoint
+            return _clone_endpoint(endpoint)
 
     def put(self, key: tuple, endpoint: SandboxEndpoint) -> None:
         with self._lock:
             self._put_locked(key, endpoint)
 
     def _put_locked(self, key: tuple, endpoint: SandboxEndpoint) -> None:
+        cloned = _clone_endpoint(endpoint)
         if key in self._cache:
             self._cache.move_to_end(key)
-            self._cache[key] = (endpoint, time.monotonic() + self._ttl)
+            self._cache[key] = (cloned, time.monotonic() + self._ttl)
             return
         while len(self._cache) >= self._maxsize:
             self._cache.popitem(last=False)
-        self._cache[key] = (endpoint, time.monotonic() + self._ttl)
+        self._cache[key] = (cloned, time.monotonic() + self._ttl)
 
     def invalidate(self, sandbox_id: str) -> None:
         with self._lock:
@@ -162,16 +167,17 @@ class AsyncEndpointCache:
             del self._cache[key]
             return None
         self._cache.move_to_end(key)
-        return endpoint
+        return _clone_endpoint(endpoint)
 
     def put(self, key: tuple, endpoint: SandboxEndpoint) -> None:
+        cloned = _clone_endpoint(endpoint)
         if key in self._cache:
             self._cache.move_to_end(key)
-            self._cache[key] = (endpoint, time.monotonic() + self._ttl)
+            self._cache[key] = (cloned, time.monotonic() + self._ttl)
             return
         while len(self._cache) >= self._maxsize:
             self._cache.popitem(last=False)
-        self._cache[key] = (endpoint, time.monotonic() + self._ttl)
+        self._cache[key] = (cloned, time.monotonic() + self._ttl)
 
     def invalidate(self, sandbox_id: str) -> None:
         self._generation += 1
@@ -192,22 +198,25 @@ class AsyncEndpointCache:
             return cached
 
         if key in self._inflight:
-            return await asyncio.shield(self._inflight[key])
+            return _clone_endpoint(await asyncio.shield(self._inflight[key]))
 
         gen_before = self._generation
         loop = asyncio.get_running_loop()
         future: asyncio.Future[SandboxEndpoint] = loop.create_future()
         self._inflight[key] = future
 
-        try:
-            endpoint = await fetch()
-            if self._generation == gen_before:
-                self.put(key, endpoint)
-            future.set_result(endpoint)
-            return endpoint
-        except BaseException as e:
-            if not future.done():
-                future.set_exception(e)
-            raise
-        finally:
-            self._inflight.pop(key, None)
+        async def _do_fetch() -> None:
+            try:
+                endpoint = await fetch()
+                if self._generation == gen_before:
+                    self.put(key, endpoint)
+                if not future.done():
+                    future.set_result(endpoint)
+            except BaseException as e:
+                if not future.done():
+                    future.set_exception(e)
+            finally:
+                self._inflight.pop(key, None)
+
+        asyncio.ensure_future(_do_fetch())
+        return _clone_endpoint(await asyncio.shield(future))

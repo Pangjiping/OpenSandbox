@@ -109,6 +109,36 @@ public class EndpointCacheTests
     }
 
     [Fact]
+    public void Get_ReturnsDefensiveCopy()
+    {
+        var cache = new EndpointCache(maxSize: 10, ttlSeconds: 60);
+        var key = new EndpointCacheKey("sb-1", 8080, false);
+        cache.Put(key, Ep("host:8080"));
+
+        var got = cache.Get(key)!;
+        got.EndpointAddress = "mutated";
+        got.Headers = new Dictionary<string, string> { ["evil"] = "value" };
+
+        var got2 = cache.Get(key)!;
+        Assert.Equal("host:8080", got2.EndpointAddress);
+        Assert.Empty(got2.Headers);
+    }
+
+    [Fact]
+    public void Put_StoresDefensiveCopy()
+    {
+        var cache = new EndpointCache(maxSize: 10, ttlSeconds: 60);
+        var key = new EndpointCacheKey("sb-1", 8080, false);
+        var ep = new Endpoint { EndpointAddress = "host:8080", Headers = new Dictionary<string, string> { ["auth"] = "token" } };
+        cache.Put(key, ep);
+
+        ((Dictionary<string, string>)ep.Headers)["auth"] = "hacked";
+
+        var got = cache.Get(key)!;
+        Assert.Equal("token", got.Headers["auth"]);
+    }
+
+    [Fact]
     public void LruEviction_WhenAtCapacity()
     {
         var cache = new EndpointCache(maxSize: 3, ttlSeconds: 60);

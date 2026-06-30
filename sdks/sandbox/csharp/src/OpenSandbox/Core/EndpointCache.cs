@@ -39,6 +39,12 @@ internal sealed class EndpointCache
 
     private sealed record CacheEntry(EndpointCacheKey Key, Endpoint Endpoint, long ExpiresAtTimestamp);
 
+    private static Endpoint CloneEndpoint(Endpoint ep) => new()
+    {
+        EndpointAddress = ep.EndpointAddress,
+        Headers = new Dictionary<string, string>(ep.Headers)
+    };
+
     public EndpointCache(int maxSize = 1024, int ttlSeconds = 600)
     {
         _maxSize = maxSize > 0 ? maxSize : 1024;
@@ -64,7 +70,7 @@ internal sealed class EndpointCache
 
             _order.Remove(node);
             _order.AddFirst(node);
-            return node.Value.Endpoint;
+            return CloneEndpoint(node.Value.Endpoint);
         }
     }
 
@@ -91,7 +97,7 @@ internal sealed class EndpointCache
             RemoveLocked(last);
         }
 
-        var entry = new CacheEntry(key, endpoint, GetTimestamp() + TtlInTicks);
+        var entry = new CacheEntry(key, CloneEndpoint(endpoint), GetTimestamp() + TtlInTicks);
         var node = _order.AddFirst(entry);
         _entries[key] = node;
     }
@@ -131,37 +137,37 @@ internal sealed class EndpointCache
         lock (_lock) { genBefore = _generation; }
         var lazy = _inflight.GetOrAdd(key, _ => new Lazy<Task<Endpoint>>(() => FetchAndCache(key, fetcher, genBefore)));
 
-        try
+        var fetchTask = lazy.Value;
+        if (cancellationToken.CanBeCanceled)
         {
-            var fetchTask = lazy.Value;
-            if (cancellationToken.CanBeCanceled)
+            var tcs = new TaskCompletionSource<bool>();
+            using (cancellationToken.Register(() => tcs.TrySetResult(true)))
             {
-                var tcs = new TaskCompletionSource<bool>();
-                using (cancellationToken.Register(() => tcs.TrySetResult(true)))
+                if (await Task.WhenAny(fetchTask, tcs.Task).ConfigureAwait(false) == tcs.Task)
                 {
-                    if (await Task.WhenAny(fetchTask, tcs.Task).ConfigureAwait(false) == tcs.Task)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                    }
+                    cancellationToken.ThrowIfCancellationRequested();
                 }
             }
-            return await fetchTask.ConfigureAwait(false);
+        }
+        return await fetchTask.ConfigureAwait(false);
+    }
+
+    private async Task<Endpoint> FetchAndCache(EndpointCacheKey key, Func<Task<Endpoint>> fetcher, long genBefore)
+    {
+        try
+        {
+            var endpoint = await fetcher().ConfigureAwait(false);
+            lock (_lock)
+            {
+                if (_generation == genBefore)
+                    PutLocked(key, endpoint);
+            }
+            return endpoint;
         }
         finally
         {
             _inflight.TryRemove(key, out _);
         }
-    }
-
-    private async Task<Endpoint> FetchAndCache(EndpointCacheKey key, Func<Task<Endpoint>> fetcher, long genBefore)
-    {
-        var endpoint = await fetcher().ConfigureAwait(false);
-        lock (_lock)
-        {
-            if (_generation == genBefore)
-                PutLocked(key, endpoint);
-        }
-        return endpoint;
     }
 
     public int Count

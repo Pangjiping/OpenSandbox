@@ -107,6 +107,29 @@ class TestEndpointCacheSync:
         assert fetch_count[0] == 0
 
 
+    def test_defensive_copy_on_get(self):
+        c = EndpointCache(maxsize=10, ttl=60.0)
+        key = ("sb-1", 8080, False)
+        c.put(key, _ep("host:8080"))
+
+        got = c.get(key)
+        got.headers["evil"] = "value"
+
+        got2 = c.get(key)
+        assert "evil" not in got2.headers
+
+    def test_defensive_copy_on_put(self):
+        c = EndpointCache(maxsize=10, ttl=60.0)
+        key = ("sb-1", 8080, False)
+        ep = SandboxEndpoint(endpoint="host:8080", headers={"auth": "token"})
+        c.put(key, ep)
+
+        ep.headers["auth"] = "hacked"
+
+        got = c.get(key)
+        assert got.headers["auth"] == "token"
+
+
 class TestAsyncEndpointCache:
     @pytest.mark.asyncio
     async def test_get_put(self):
@@ -159,6 +182,60 @@ class TestAsyncEndpointCache:
         results = await asyncio.gather(*[c.get_or_fetch(key, fetch) for _ in range(5)])
         assert fetch_count[0] == 1
         assert all(r.endpoint == "result" for r in results)
+
+    @pytest.mark.asyncio
+    async def test_defensive_copy_on_get(self):
+        c = AsyncEndpointCache(maxsize=10, ttl=60.0)
+        key = ("sb-1", 8080, False)
+        c.put(key, _ep("host:8080"))
+
+        got = c.get(key)
+        got.headers["evil"] = "value"
+
+        got2 = c.get(key)
+        assert "evil" not in got2.headers
+
+    @pytest.mark.asyncio
+    async def test_defensive_copy_on_put(self):
+        c = AsyncEndpointCache(maxsize=10, ttl=60.0)
+        key = ("sb-1", 8080, False)
+        ep = SandboxEndpoint(endpoint="host:8080", headers={"auth": "token"})
+        c.put(key, ep)
+
+        ep.headers["auth"] = "hacked"
+
+        got = c.get(key)
+        assert got.headers["auth"] == "token"
+
+    @pytest.mark.asyncio
+    async def test_owner_cancellation_does_not_kill_fetch(self):
+        c = AsyncEndpointCache(maxsize=10, ttl=60.0)
+        key = ("sb-1", 8080, False)
+        fetch_started = asyncio.Event()
+
+        async def slow_fetch():
+            fetch_started.set()
+            await asyncio.sleep(0.1)
+            return _ep("result")
+
+        async def owner():
+            return await c.get_or_fetch(key, slow_fetch)
+
+        async def waiter():
+            await fetch_started.wait()
+            return await c.get_or_fetch(key, slow_fetch)
+
+        owner_task = asyncio.create_task(owner())
+        waiter_task = asyncio.create_task(waiter())
+
+        await fetch_started.wait()
+        owner_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await owner_task
+
+        result = await waiter_task
+        assert result.endpoint == "result"
 
     @pytest.mark.asyncio
     async def test_get_or_fetch_error(self):

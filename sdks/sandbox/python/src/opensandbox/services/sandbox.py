@@ -253,4 +253,3 @@ class Sandboxes(Protocol):
 
     def invalidate_endpoint_cache(self, sandbox_id: str) -> None:
         """Remove all cached endpoints for a sandbox. No-op if caching is disabled."""
-        ...
