@@ -21,6 +21,7 @@ using Docker containers for sandbox lifecycle management.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -30,7 +31,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from threading import Lock, Timer
+from threading import Lock, Thread, Timer
 from typing import Any, Dict, Optional
 
 import docker
@@ -656,11 +657,26 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
 
         pvc_inspect_cache, auto_created_volumes = self._validate_volumes(request)
         sandbox_id, created_at, expires_at = self._prepare_creation_context(request)
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[CreateSandboxResponse] = loop.create_future()
+
+        def _run() -> None:
+            try:
+                result = self._provision_sandbox(
+                    sandbox_id, request, created_at, expires_at,
+                    pvc_inspect_cache, auto_created_volumes,
+                    sandbox_env=sandbox_env, egress_env=egress_env,
+                )
+                loop.call_soon_threadsafe(future.set_result, result)
+            except BaseException as exc:
+                try:
+                    loop.call_soon_threadsafe(future.set_exception, exc)
+                except RuntimeError:
+                    pass
+
+        Thread(target=_run, daemon=True).start()
         try:
-            return self._provision_sandbox(
-                sandbox_id, request, created_at, expires_at, pvc_inspect_cache, auto_created_volumes,
-                sandbox_env=sandbox_env, egress_env=egress_env,
-            )
+            return await future
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
