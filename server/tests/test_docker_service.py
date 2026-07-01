@@ -1348,6 +1348,119 @@ def test_build_labels_stores_extensions_json():
 
     assert labels[ACCESS_RENEW_EXTEND_SECONDS_METADATA_KEY] == "3600"
 
+
+def test_build_labels_stores_opensandbox_extensions():
+    service = DockerSandboxService(config=_app_config())
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        entrypoint=["python"],
+        extensions={
+            "opensandbox.extensions.pool-ref": "my-pool",
+            "opensandbox.extensions.custom": "value",
+            "access.renew.extend.seconds": "1800",
+        },
+    )
+
+    labels, _ = service._build_labels_and_env("sandbox-ext2", request, None)
+
+    assert labels["opensandbox.io/extensions.pool-ref"] == "my-pool"
+    assert labels["opensandbox.io/extensions.custom"] == "value"
+    assert "opensandbox.io/extensions.access.renew.extend.seconds" not in labels
+
+
+@patch("opensandbox_server.services.docker.docker_service.docker")
+def test_container_to_sandbox_returns_extensions(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+    container = MagicMock()
+    container.attrs = {
+        "Config": {
+            "Labels": {
+                SANDBOX_ID_LABEL: "sandbox-ext",
+                "opensandbox.io/extensions.pool-ref": "my-pool",
+                "opensandbox.io/extensions.custom": "value",
+                "opensandbox.io/access-renew-extend-seconds": "1800",
+            },
+            "Cmd": ["python"],
+        },
+        "Created": "2025-01-01T00:00:00Z",
+        "State": {
+            "Status": "running",
+            "Running": True,
+            "FinishedAt": "0001-01-01T00:00:00Z",
+            "ExitCode": 0,
+        },
+    }
+    container.image = MagicMock(tags=["python:3.11"], short_id="sha-img")
+
+    sandbox = service._container_to_sandbox(container)
+
+    assert sandbox.extensions == {
+        "opensandbox.extensions.pool-ref": "my-pool",
+        "opensandbox.extensions.custom": "value",
+    }
+    assert sandbox.metadata is None
+
+
+@pytest.mark.asyncio
+@patch("opensandbox_server.services.docker.docker_service.docker")
+async def test_create_sandbox_response_includes_extensions(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+    request = CreateSandboxRequest(
+        image=ImageSpec(uri="python:3.11"),
+        resourceLimits=ResourceLimits(root={}),
+        env={},
+        entrypoint=["python"],
+        extensions={"opensandbox.extensions.test-key": "test-value"},
+    )
+
+    with patch.object(service, "_create_and_start_container") as mock_create:
+        mock_container = MagicMock()
+        mock_container.image = MagicMock(tags=["python:3.11"])
+        mock_create.return_value = mock_container
+        response = await service.create_sandbox(request)
+
+    assert response.extensions == {"opensandbox.extensions.test-key": "test-value"}
+
+
+@patch("opensandbox_server.services.docker.docker_service.docker")
+def test_pending_sandbox_includes_extensions(mock_docker):
+    mock_client = MagicMock()
+    mock_client.containers.list.return_value = []
+    mock_docker.from_env.return_value = mock_client
+
+    service = DockerSandboxService(config=_app_config())
+    pending = PendingSandbox(
+        request=MagicMock(
+            metadata=None,
+            entrypoint=["python"],
+            image=ImageSpec(uri="python:3.11"),
+            platform=None,
+            snapshot_id=None,
+            extensions={
+                "opensandbox.extensions.pool-ref": "my-pool",
+                "access.renew.extend.seconds": "1800",
+            },
+        ),
+        created_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc),
+        status=SandboxStatus(state="Pending"),
+    )
+
+    sandbox = service._pending_to_sandbox("sandbox-pending-ext", pending)
+
+    assert sandbox.extensions == {"opensandbox.extensions.pool-ref": "my-pool"}
+
+
 def test_build_labels_store_platform_constraints():
     service = DockerSandboxService(config=_app_config())
     request = CreateSandboxRequest(

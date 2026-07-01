@@ -41,7 +41,9 @@ from opensandbox_server.extensions import (
     ACCESS_RENEW_EXTEND_SECONDS_METADATA_KEY,
     BOOTSTRAP_EXECD_ISOLATION_KEY,
     ISOLATION_UPPER_MOUNT_PATH,
+    extract_extensions_from_mapping,
 )
+from opensandbox_server.extensions.keys import EXTENSIONS_ANNOTATION_PREFIX
 from opensandbox_server.api.schema import (
     CreateSandboxRequest,
     CreateSandboxResponse,
@@ -594,6 +596,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
             platform=platform_spec,
             status=status_info,
             metadata=metadata,
+            extensions=extract_extensions_from_mapping(labels),
             entrypoint=entrypoint,
             expiresAt=expires_at,
             createdAt=created_at,
@@ -762,6 +765,10 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
         snapshot_id = getattr(pending.request, "snapshot_id", None)
         if not isinstance(snapshot_id, str) or not snapshot_id:
             snapshot_id = None
+        extensions = {
+            k: v for k, v in (pending.request.extensions or {}).items()
+            if k.startswith(EXTENSIONS_ANNOTATION_PREFIX)
+        } or None
         return Sandbox(
             id=sandbox_id,
             image=None if snapshot_id else pending.request.image,
@@ -769,6 +776,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
             platform=pending.request.platform,
             status=pending.status,
             metadata=pending.request.metadata,
+            extensions=extensions,
             entrypoint=pending.request.entrypoint,
             expiresAt=pending.expires_at,
             createdAt=pending.created_at,
@@ -1029,6 +1037,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
             id=sandbox_id,
             status=status_info,
             metadata=request.metadata,
+            extensions=extract_extensions_from_mapping(labels),
             platform=effective_platform or request.platform,
             expiresAt=expires_at,
             createdAt=created_at,

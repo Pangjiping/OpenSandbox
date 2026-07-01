@@ -46,7 +46,7 @@ def apply_access_renew_extend_seconds_to_mapping(
     mapping[metadata_key] = s
 
 
-def apply_extensions_to_annotations(
+def apply_extensions_to_mapping(
     annotations: MutableMapping[str, str],
     extensions: Optional[Dict[str, str]],
 ) -> None:
@@ -70,7 +70,7 @@ def apply_extensions_to_annotations(
             annotations[annotation_key] = value
 
 
-def extract_extensions_from_annotations(
+def extract_extensions_from_mapping(
     annotations: Optional[Mapping[str, str]],
 ) -> Optional[Dict[str, str]]:
     """

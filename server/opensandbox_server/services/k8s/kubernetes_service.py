@@ -30,8 +30,8 @@ from fastapi import HTTPException, status
 
 from opensandbox_server.extensions import (
     apply_access_renew_extend_seconds_to_mapping,
-    apply_extensions_to_annotations,
-    extract_extensions_from_annotations,
+    apply_extensions_to_mapping,
+    extract_extensions_from_mapping,
 )
 from opensandbox_server.extensions.keys import ACCESS_RENEW_EXTEND_SECONDS_METADATA_KEY
 from opensandbox_server.api.schema import (
@@ -677,7 +677,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                 secure_access_token_factory=generate_secure_access_token,
             )
             apply_access_renew_extend_seconds_to_mapping(context.annotations, request.extensions)
-            apply_extensions_to_annotations(context.annotations, request.extensions)
+            apply_extensions_to_mapping(context.annotations, request.extensions)
 
             ensure_volumes_valid(
                 request.volumes,
@@ -832,7 +832,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                     created_at=created_at,
                     expires_at=context.expires_at,
                     metadata=request.metadata,
-                    extensions=extract_extensions_from_annotations(annotations),
+                    extensions=extract_extensions_from_mapping(annotations),
                     entrypoint=request.entrypoint,
                     platform=effective_platform or request.platform,
                 )
