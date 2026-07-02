@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from opensandbox_server.api.schema import ImageSpec, PlatformSpec, Sandbox, SandboxStatus
-from opensandbox_server.extensions import extract_extensions_from_annotations
+from opensandbox_server.extensions import extract_extensions_from_mapping
 from opensandbox_server.services.constants import SANDBOX_ID_LABEL, SANDBOX_SNAPSHOT_ID_LABEL
 
 
@@ -78,7 +78,7 @@ def _build_sandbox_from_workload(workload: Any, workload_provider: Any) -> Sandb
         created_at=creation_timestamp,
         expires_at=expires_at,
         metadata=user_metadata if user_metadata else None,
-        extensions=extract_extensions_from_annotations(annotations),
+        extensions=extract_extensions_from_mapping(annotations),
         image=image_spec,
         snapshotId=snapshot_id,
         entrypoint=entrypoint,
