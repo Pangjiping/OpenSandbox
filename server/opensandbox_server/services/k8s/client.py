@@ -32,6 +32,11 @@ from opensandbox_server.services.k8s.rate_limiter import TokenBucketRateLimiter
 
 logger = logging.getLogger(__name__)
 
+OPENSANDBOX_API_GROUP = "sandbox.opensandbox.io"
+OPENSANDBOX_API_VERSION = "v1alpha1"
+POOL_KIND = "Pool"
+POOL_PLURAL = "pools"
+
 _InformerKey = Tuple[str, str, str, str]  # (group, version, plural, namespace)
 
 

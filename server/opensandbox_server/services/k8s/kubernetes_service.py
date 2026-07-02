@@ -89,7 +89,12 @@ from opensandbox_server.services.validators import (
     ensure_timeout_within_limit,
     ensure_volumes_valid,
 )
-from opensandbox_server.services.k8s.client import K8sClient
+from opensandbox_server.services.k8s.client import (
+    K8sClient,
+    OPENSANDBOX_API_GROUP,
+    OPENSANDBOX_API_VERSION,
+    POOL_PLURAL,
+)
 from opensandbox_server.services.k8s.provider_factory import create_workload_provider
 from opensandbox_server.services.snapshot_restore import resolve_sandbox_image_from_request
 
@@ -306,6 +311,37 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                 ),
             },
         )
+
+    def _ensure_pool_ref_exists(self, pool_ref: str) -> None:
+        """Validate that the referenced Pool exists before creating a BatchSandbox."""
+        try:
+            pool = self.k8s_client.get_custom_object(
+                group=OPENSANDBOX_API_GROUP,
+                version=OPENSANDBOX_API_VERSION,
+                namespace=self.namespace,
+                plural=POOL_PLURAL,
+                name=pool_ref,
+            )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to validate poolRef {pool_ref}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "code": SandboxErrorCodes.K8S_POOL_API_ERROR,
+                    "message": f"Failed to validate pool '{pool_ref}': {str(e)}",
+                },
+            ) from e
+
+        if pool is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "code": SandboxErrorCodes.K8S_POOL_NOT_FOUND,
+                    "message": f"Pool '{pool_ref}' not found.",
+                },
+            )
 
     def _ensure_pvc_volumes(self, volumes: list, sandbox_id: str) -> list[str]:
         """
@@ -633,7 +669,8 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
         Raises:
             HTTPException: If creation fails, timeout, or invalid parameters
         """
-        has_pool_ref = bool((request.extensions or {}).get("poolRef", "").strip())
+        pool_ref = (request.extensions or {}).get("poolRef", "").strip()
+        has_pool_ref = bool(pool_ref)
 
         if not has_pool_ref:
             request = resolve_sandbox_image_from_request(request)
@@ -702,6 +739,9 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                         ),
                     },
                 )
+
+            if has_pool_ref:
+                await asyncio.to_thread(self._ensure_pool_ref_exists, pool_ref)
 
             # Auto-create PVCs that don't exist yet
             if request.volumes:

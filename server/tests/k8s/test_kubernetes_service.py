@@ -668,6 +668,36 @@ class TestKubernetesSandboxServiceCreate:
         k8s_service.workload_provider.create_workload.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_create_sandbox_pool_mode_missing_pool_fails_fast(
+        self, k8s_service
+    ):
+        """Pool mode validates poolRef before creating the BatchSandbox."""
+        from opensandbox_server.api.schema import CreateSandboxRequest
+
+        pool_request = CreateSandboxRequest(
+            extensions={"poolRef": "does-not-exist-pool"},
+        )
+        k8s_service.k8s_client.get_custom_object.return_value = None
+
+        with pytest.raises(HTTPException) as exc_info:
+            await k8s_service.create_sandbox(pool_request)
+
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == {
+            "code": SandboxErrorCodes.K8S_POOL_NOT_FOUND,
+            "message": "Pool 'does-not-exist-pool' not found.",
+        }
+        k8s_service.k8s_client.get_custom_object.assert_called_once_with(
+            group="sandbox.opensandbox.io",
+            version="v1alpha1",
+            namespace=k8s_service.namespace,
+            plural="pools",
+            name="does-not-exist-pool",
+        )
+        k8s_service.workload_provider.create_workload.assert_not_called()
+        k8s_service.workload_provider.delete_workload.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_create_sandbox_pool_mode_skips_image_and_entrypoint_validation(
         self, k8s_service, mock_workload
     ):
