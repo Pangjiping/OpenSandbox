@@ -12,8 +12,8 @@ info:
 
     A sandbox follows this lifecycle:
 
-    1. **Creation** → Sandbox enters `Pending` state (auto-starts)
-    2. **Execution** → Transitions to `Running` state
+    1. **Creation** → Sandbox is provisioned and enters `Running` state
+    2. **Execution** → Sandbox is running and ready to accept requests
     3. **Pause** (optional) → `Pausing` → `Paused` (asynchronous process)
     4. **Resume** (optional) → `Resuming` → `Running` (asynchronous process)
     5. **Termination** → `Stopping` → `Terminated` (can be triggered by kill action, TTL expiry, or error)
