@@ -893,7 +893,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
 
                 egress_token = generate_egress_token()
                 labels[SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY] = egress_token
-                sidecar_port_bindings = allocate_port_bindings([*exposed_ports, "18080"])
+                sidecar_port_bindings = allocate_port_bindings([*exposed_ports, "18080"], min_port=self.app_config.docker.port_range_min, max_port=self.app_config.docker.port_range_max)
                 host_execd_port = sidecar_port_bindings["44772"][1]
                 host_http_port = sidecar_port_bindings["8080"][1]
                 egress_api_binding = sidecar_port_bindings.get("18080")
@@ -936,7 +936,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
                     gpu_count=effective_gpu_count,
                 )
                 if self.network_mode != HOST_NETWORK_MODE:
-                    port_bindings = allocate_port_bindings(exposed_ports)
+                    port_bindings = allocate_port_bindings(exposed_ports, min_port=self.app_config.docker.port_range_min, max_port=self.app_config.docker.port_range_max)
                     host_execd_port = port_bindings["44772"][1]
                     host_http_port = port_bindings["8080"][1]
                     host_config_kwargs["port_bindings"] = normalize_port_bindings(port_bindings)

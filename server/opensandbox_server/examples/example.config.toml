@@ -49,6 +49,11 @@ path = "~/.opensandbox/opensandbox.db"
 
 [docker]
 network_mode = "bridge"
+# Host port range for bridge-mode sandbox port allocation.
+# Each sandbox needs 2–3 host ports (2 without egress, 3 with egress sidecar).
+# Narrow the range to match your firewall policy — e.g., 100 concurrent sandboxes ≈ 300 ports.
+port_range_min = 40000
+port_range_max = 60000
 # Drop dangerous capabilities and block privilege escalation
 drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
 no_new_privileges = true

@@ -834,11 +834,44 @@ class DockerConfig(BaseModel):
             "Optional seccomp profile name or path applied to sandbox containers. Leave unset to use Docker's default profile."
         ),
     )
+    port_range_min: int = Field(
+        default=40000,
+        ge=1024,
+        le=65535,
+        description=(
+            "Lower bound of the host port range for bridge-mode sandbox port allocation. "
+            "Must be less than port_range_max. Narrow the range to match your firewall policy."
+        ),
+    )
+    port_range_max: int = Field(
+        default=60000,
+        ge=1024,
+        le=65535,
+        description=(
+            "Upper bound of the host port range for bridge-mode sandbox port allocation. "
+            "Range must span at least 100 ports for reliable allocation. "
+            "Each sandbox needs 2–3 host ports (2 without egress, 3 with egress sidecar)."
+        ),
+    )
     pids_limit: Optional[int] = Field(
         default=4096,
         ge=1,
         description="Maximum number of processes allowed per sandbox container. Set to null to disable the limit.",
     )
+
+    @model_validator(mode="after")
+    def validate_port_range(self) -> "DockerConfig":
+        if self.port_range_min >= self.port_range_max:
+            raise ValueError(
+                f"docker.port_range_min ({self.port_range_min}) must be less than "
+                f"docker.port_range_max ({self.port_range_max})."
+            )
+        if self.port_range_max - self.port_range_min < 100:
+            raise ValueError(
+                f"Port range ({self.port_range_min}-{self.port_range_max}) is too narrow. "
+                f"Need at least 100 ports for reliable allocation."
+            )
+        return self
 
 
 class StoreConfig(BaseModel):
