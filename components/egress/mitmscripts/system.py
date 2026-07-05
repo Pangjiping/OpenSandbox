@@ -45,6 +45,7 @@ import re
 import socket
 import time
 from typing import Any
+from urllib.parse import unquote
 
 from mitmproxy import ctx, http
 from mitmproxy.tls import ClientHelloData
@@ -172,6 +173,30 @@ def _request_path(flow: http.HTTPFlow) -> str:
     return path.split("?", 1)[0] or "/"
 
 
+def _path_is_ambiguous(raw_path: str) -> bool:
+    """Return True if the raw request path contains dot-segment traversal sequences.
+
+    Legitimate HTTP clients resolve dot segments before sending. Raw ``..``
+    or percent-encoded variants on the wire indicate an attempt to confuse
+    path-based authorization checks (the canonical path seen by the upstream
+    server would differ from the raw prefix matched here).
+    """
+    # Strip query string for the check (consistent with _request_path).
+    path = raw_path.split("?", 1)[0]
+    # Check raw path for literal dot segments.
+    if "/.." in path:
+        return True
+    # Percent-decode and re-check to catch %2e%2e, %2E%2e, etc.
+    decoded = unquote(path)
+    if "/.." in decoded:
+        return True
+    # Reject encoded forward-slash (%2f / %2F) which can confuse path routing.
+    lower = path.lower()
+    if "%2f" in lower:
+        return True
+    return False
+
+
 def _host_matches(host: str, pattern: str) -> tuple[bool, int]:
     pattern = pattern.rstrip(".").lower()
     if pattern.startswith("*."):
@@ -240,6 +265,23 @@ def _select_binding(flow: http.HTTPFlow, vault: ActiveVault) -> dict[str, Any] |
 def request(flow: http.HTTPFlow) -> None:
     vault = _load_active_vault()
     if vault is None:
+        return
+
+    # Reject requests with ambiguous path segments before credential injection.
+    # Raw dot-segments or encoded variants on the wire are not produced by
+    # legitimate HTTP clients and can trick prefix-based path matching into
+    # injecting credentials for a scope the canonical path does not belong to.
+    raw_path = flow.request.path or "/"
+    if _path_is_ambiguous(raw_path):
+        flow.response = http.Response.make(
+            403,
+            b"request path contains ambiguous segments\n",
+            {"content-type": "text/plain"},
+        )
+        ctx.log.warn(
+            "credential proxy: rejected request with ambiguous path: "
+            f"{flow.request.method} {_request_host(flow)}{_request_path(flow)}"
+        )
         return
 
     binding = _select_binding(flow, vault)

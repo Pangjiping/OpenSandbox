@@ -102,7 +102,15 @@ class _Flow:
 def _load_system_module() -> Any:
     mitmproxy = types.ModuleType("mitmproxy")
     mitmproxy.ctx = types.SimpleNamespace(log=_Log(), options=types.SimpleNamespace(ignore_hosts=[]))
-    mitmproxy.http = types.SimpleNamespace(HTTPFlow=object, Response=types.SimpleNamespace(make=lambda *args: None))
+    def _make_response(status: int, body: bytes = b"", headers: dict | None = None):
+        resp = _Response()
+        resp.status_code = status
+        resp.body = body.decode("utf-8") if isinstance(body, bytes) else body
+        if headers:
+            resp.headers = _Headers(headers)
+        return resp
+
+    mitmproxy.http = types.SimpleNamespace(HTTPFlow=object, Response=types.SimpleNamespace(make=_make_response))
     mitmproxy_tls = types.ModuleType("mitmproxy.tls")
     mitmproxy_tls.ClientHelloData = object
 
@@ -234,6 +242,121 @@ class SystemAddonRedactionTest(unittest.TestCase):
         system.responseheaders(flow)
 
         self.assertEqual("[REDACTED]", flow.response.headers.get("x-token-echo"))
+
+
+class SystemAddonPathTraversalTest(unittest.TestCase):
+    """Regression tests for CVE-like path traversal credential injection bypass."""
+
+    def _make_system_with_vault(self):
+        system = _load_system_module()
+        system._load_active_vault = lambda: system.ActiveVault(
+            1,
+            [
+                {
+                    "name": "gitlab-api",
+                    "match": {
+                        "hosts": ["code.example.com"],
+                        "methods": ["GET"],
+                        "paths": ["/api/v8/projects/123/*"],
+                    },
+                    "headers": [{"name": "Private-Token", "value": "secret-token"}],
+                }
+            ],
+            ["secret-token"],
+        )
+        return system
+
+    def test_dot_dot_traversal_rejected(self) -> None:
+        """Raw .. traversal escaping path scope must be rejected with 403."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123/../456/variables"
+
+        system.request(flow)
+
+        self.assertIsNotNone(flow.response)
+        self.assertEqual(403, flow.response.status_code)
+        self.assertNotIn("Private-Token", flow.request.headers._values)
+
+    def test_encoded_dot_dot_traversal_rejected(self) -> None:
+        """%2e%2e encoded traversal must be rejected with 403."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123/%2e%2e/456/variables"
+
+        system.request(flow)
+
+        self.assertIsNotNone(flow.response)
+        self.assertEqual(403, flow.response.status_code)
+        self.assertNotIn("Private-Token", flow.request.headers._values)
+
+    def test_mixed_case_encoded_dot_dot_rejected(self) -> None:
+        """%2E%2e mixed-case encoded traversal must be rejected."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123/%2E%2e/456/variables"
+
+        system.request(flow)
+
+        self.assertIsNotNone(flow.response)
+        self.assertEqual(403, flow.response.status_code)
+        self.assertNotIn("Private-Token", flow.request.headers._values)
+
+    def test_encoded_slash_rejected(self) -> None:
+        """%2f encoded path separator must be rejected."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123%2f..%2f456/variables"
+
+        system.request(flow)
+
+        self.assertIsNotNone(flow.response)
+        self.assertEqual(403, flow.response.status_code)
+        self.assertNotIn("Private-Token", flow.request.headers._values)
+
+    def test_dot_dot_in_query_string_not_rejected(self) -> None:
+        """.. in query string is harmless and should not trigger rejection."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123/variables?ref=../../main"
+
+        system.request(flow)
+
+        # Should inject credential normally (path matches the binding).
+        self.assertEqual("secret-token", flow.request.headers.get("Private-Token"))
+
+    def test_normal_path_within_scope_injects_credential(self) -> None:
+        """Normal path within scope still receives credential injection."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123/variables"
+
+        system.request(flow)
+
+        self.assertEqual("secret-token", flow.request.headers.get("Private-Token"))
+
+    def test_normal_path_outside_scope_no_injection(self) -> None:
+        """Normal path outside scope does not receive credential injection."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/456/variables"
+
+        system.request(flow)
+
+        self.assertNotIn("Private-Token", flow.request.headers._values)
+
+    def test_no_vault_active_allows_dot_dot_through(self) -> None:
+        """When no vault is active, ambiguous paths are not blocked (no credential risk)."""
+        system = _load_system_module()
+        system._load_active_vault = lambda: None
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123/../456/variables"
+
+        system.request(flow)
+
+        # No response set means the request passes through unmodified.
+        # (flow.response is the pre-initialized _Response, not a 403)
+        self.assertNotIn("Private-Token", flow.request.headers._values)
 
 
 if __name__ == "__main__":
