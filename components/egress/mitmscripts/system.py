@@ -201,8 +201,9 @@ def _credential_destination_mismatch(flow: http.HTTPFlow) -> bool:
         # SNI is certificate-verified – require it to match Host.
         return sni != presented
 
-    # No SNI: Host header is the only FQDN source and is spoofable.
-    return True
+    # No SNI: HTTPS is unverifiable; HTTP is an accepted residual risk
+    # mitigated by egress network policy and DNS enforcement.
+    return (flow.request.scheme or "").lower() == "https"
 
 
 def _request_host(flow: http.HTTPFlow) -> str:

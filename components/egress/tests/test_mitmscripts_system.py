@@ -367,8 +367,8 @@ class SystemAddonRedactionTest(unittest.TestCase):
             "expected a mismatch warning in the log",
         )
 
-    def test_http_ip_spoofed_host_blocks_injection(self) -> None:
-        """HTTP with IP destination and spoofed Host header must block."""
+    def test_http_ip_transparent_allows_injection(self) -> None:
+        """Transparent HTTP with IP destination is accepted risk – allow."""
         system = _load_system_module()
         system._load_active_vault = lambda: system.ActiveVault(
             1,
@@ -395,7 +395,7 @@ class SystemAddonRedactionTest(unittest.TestCase):
 
         system.request(flow)
 
-        self.assertEqual("", flow.request.headers.get("Private-Token"))
+        self.assertEqual("secret-token", flow.request.headers.get("Private-Token"))
 
     def test_ip_host_with_mismatched_sni_blocks_injection(self) -> None:
         """Host=IP matches actual IP, but SNI diverges – must block."""
