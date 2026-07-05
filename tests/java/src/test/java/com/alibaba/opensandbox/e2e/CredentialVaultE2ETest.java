@@ -327,7 +327,6 @@ class CredentialVaultE2ETest extends BaseE2ETest {
                 .match(
                         CredentialMatch.builder()
                                 .schemes(CredentialMatch.Scheme.HTTP)
-                                .ports(80)
                                 .hosts(credentialVaultTargetHost())
                                 .methods("GET")
                                 .paths(path)

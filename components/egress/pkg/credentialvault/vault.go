@@ -1016,7 +1016,6 @@ func stringSlicesOverlap(a, b []string) bool {
 	return false
 }
 
-
 func canonicalHeaderName(name string) string {
 	return http.CanonicalHeaderKey(name)
 }
@@ -1033,7 +1032,6 @@ func dedupeStringsInPlace(values *[]string) {
 	}
 	*values = out
 }
-
 
 func ReadJSON(r *http.Request, dst any) error {
 	defer r.Body.Close()

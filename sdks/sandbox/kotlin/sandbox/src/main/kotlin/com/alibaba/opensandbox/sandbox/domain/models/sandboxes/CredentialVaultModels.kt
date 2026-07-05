@@ -130,7 +130,6 @@ class Credential private constructor(
  */
 class CredentialMatch private constructor(
     val schemes: List<Scheme>?,
-    val ports: List<Int>?,
     val hosts: List<String>,
     val methods: List<String>?,
     val paths: List<String>?,
@@ -147,7 +146,6 @@ class CredentialMatch private constructor(
 
     class Builder {
         private var schemes: List<Scheme>? = null
-        private var ports: List<Int>? = null
         private var hosts: List<String>? = null
         private var methods: List<String>? = null
         private var paths: List<String>? = null
@@ -159,15 +157,6 @@ class CredentialMatch private constructor(
         }
 
         fun schemes(vararg schemes: Scheme): Builder = schemes(schemes.toList())
-
-        fun ports(ports: List<Int>): Builder {
-            require(ports.isNotEmpty()) { "Credential match ports cannot be empty when provided" }
-            require(ports.all { it in 1..65535 }) { "Credential match ports must be between 1 and 65535" }
-            this.ports = ports.toList()
-            return this
-        }
-
-        fun ports(vararg ports: Int): Builder = ports(ports.toList())
 
         fun hosts(hosts: List<String>): Builder {
             require(hosts.isNotEmpty()) { "Credential match hosts cannot be empty" }
@@ -200,7 +189,6 @@ class CredentialMatch private constructor(
             val hostsValue = hosts ?: throw IllegalArgumentException("Credential match hosts must be specified")
             return CredentialMatch(
                 schemes = schemes,
-                ports = ports,
                 hosts = hostsValue,
                 methods = methods,
                 paths = paths,
