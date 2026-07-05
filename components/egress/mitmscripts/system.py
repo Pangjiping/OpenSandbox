@@ -173,6 +173,9 @@ def _request_path(flow: http.HTTPFlow) -> str:
     return path.split("?", 1)[0] or "/"
 
 
+_DOT_SEGMENT_RE = re.compile(r"/\.\.(/|$)")
+
+
 def _path_is_ambiguous(raw_path: str) -> bool:
     """Return True if the raw request path contains dot-segment traversal sequences.
 
@@ -181,19 +184,29 @@ def _path_is_ambiguous(raw_path: str) -> bool:
     path-based authorization checks (the canonical path seen by the upstream
     server would differ from the raw prefix matched here).
     """
-    # Strip query string for the check (consistent with _request_path).
     path = raw_path.split("?", 1)[0]
-    # Check raw path for literal dot segments.
-    if "/.." in path:
+
+    # Only match ``..`` as a complete path segment (/../ or trailing /..).
+    if _DOT_SEGMENT_RE.search(path):
         return True
-    # Percent-decode and re-check to catch %2e%2e, %2E%2e, etc.
-    decoded = unquote(path)
-    if "/.." in decoded:
+
+    # Iteratively decode to catch nested encodings like %252e%252e.
+    decoded = path
+    for _ in range(10):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    if _DOT_SEGMENT_RE.search(decoded):
         return True
-    # Reject encoded forward-slash (%2f / %2F) which can confuse path routing.
+
+    # Reject encoded separators (%2f, %5c) and raw backslashes.
     lower = path.lower()
-    if "%2f" in lower:
+    if "%2f" in lower or "%5c" in lower:
         return True
+    if "\\" in path:
+        return True
+
     return False
 
 

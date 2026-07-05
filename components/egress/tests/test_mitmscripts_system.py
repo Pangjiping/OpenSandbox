@@ -345,6 +345,58 @@ class SystemAddonPathTraversalTest(unittest.TestCase):
 
         self.assertNotIn("Private-Token", flow.request.headers._values)
 
+    def test_dot_dot_substring_not_rejected(self) -> None:
+        """'..' not as a complete segment (e.g. '/.../') must NOT be blocked."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123/.../data"
+        system.request(flow)
+        self.assertEqual("secret-token", flow.request.headers.get("Private-Token"))
+
+    def test_dot_dot_metadata_path_not_rejected(self) -> None:
+        """``/..metadata`` is not a traversal segment."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123/..metadata"
+        system.request(flow)
+        self.assertEqual("secret-token", flow.request.headers.get("Private-Token"))
+
+    def test_encoded_backslash_rejected(self) -> None:
+        """%5c encoded backslash must be rejected."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123/%5c..%5c456/variables"
+
+        system.request(flow)
+
+        self.assertIsNotNone(flow.response)
+        self.assertEqual(403, flow.response.status_code)
+        self.assertNotIn("Private-Token", flow.request.headers._values)
+
+    def test_raw_backslash_rejected(self) -> None:
+        """Raw backslash in path must be rejected."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123\\..\\456/variables"
+
+        system.request(flow)
+
+        self.assertIsNotNone(flow.response)
+        self.assertEqual(403, flow.response.status_code)
+        self.assertNotIn("Private-Token", flow.request.headers._values)
+
+    def test_double_encoded_dot_dot_rejected(self) -> None:
+        """Double percent-encoded traversal (%252e%252e) must be rejected."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.path = "/api/v8/projects/123/%252e%252e/456/variables"
+
+        system.request(flow)
+
+        self.assertIsNotNone(flow.response)
+        self.assertEqual(403, flow.response.status_code)
+        self.assertNotIn("Private-Token", flow.request.headers._values)
+
     def test_no_vault_active_allows_dot_dot_through(self) -> None:
         """When no vault is active, ambiguous paths are not blocked (no credential risk)."""
         system = _load_system_module()
