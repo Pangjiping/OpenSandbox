@@ -16,6 +16,7 @@
 HTTP and WebSocket proxy routes for reaching services inside sandboxes via the lifecycle API.
 """
 
+import hmac
 import logging
 from collections.abc import AsyncIterator, Mapping
 from typing import Optional
@@ -54,6 +55,7 @@ SENSITIVE_HEADERS = {
     "authorization",
     "cookie",
     SANDBOX_API_KEY_HEADER.lower(),
+    OPEN_SANDBOX_SECURE_ACCESS_HEADER.lower(),
 }
 
 FORWARDED_HEADERS = {
@@ -180,14 +182,47 @@ async def _stream_backend_response(resp: httpx.Response) -> AsyncIterator[bytes]
         await resp.aclose()
 
 
+def _verify_secure_access(endpoint: Endpoint, caller_headers: Mapping[str, str]) -> None:
+    """Enforce OpenSandbox-Secure-Access validation on server-proxy requests.
+
+    When endpoint resolution returns a secure-access token, the caller must
+    supply the same header value.  Raises 401 for missing or mismatched tokens.
+    Uses constant-time comparison to avoid timing side-channels.
+    """
+    if not endpoint.headers:
+        return
+    expected_token = endpoint.headers.get(OPEN_SANDBOX_SECURE_ACCESS_HEADER)
+    if not expected_token:
+        return
+    caller_token = None
+    for key, value in caller_headers.items():
+        if key.lower() == OPEN_SANDBOX_SECURE_ACCESS_HEADER.lower():
+            caller_token = value
+            break
+    if not caller_token or not hmac.compare_digest(
+        caller_token.encode(), expected_token.encode()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "MISSING_OR_INVALID_SECURE_ACCESS",
+                "message": (
+                    "This sandbox requires the "
+                    f"{OPEN_SANDBOX_SECURE_ACCESS_HEADER} header for access."
+                ),
+            },
+        )
+
+
 async def _proxy_http_request(
     request: Request,
     sandbox_id: str,
     port: int,
     full_path: str,
 ) -> StreamingResponse:
-    _schedule_proxy_renew(request, sandbox_id)
     endpoint = lifecycle.sandbox_service.get_endpoint(sandbox_id, port, resolve_internal=True)
+    _verify_secure_access(endpoint, request.headers)
+    _schedule_proxy_renew(request, sandbox_id)
     query_string = request.url.query
     target_url = _build_proxy_target_url(endpoint, full_path, query_string, websocket=False)
     client: httpx.AsyncClient = request.app.state.http_client
@@ -324,8 +359,6 @@ async def _proxy_websocket_request(
     port: int,
     full_path: str,
 ) -> None:
-    _schedule_proxy_renew(websocket, sandbox_id)
-
     try:
         endpoint = lifecycle.sandbox_service.get_endpoint(sandbox_id, port, resolve_internal=True)
     except HTTPException as exc:
@@ -341,6 +374,18 @@ async def _proxy_websocket_request(
             str(exc.detail) if exc.detail else "",
         )
         return
+
+    try:
+        _verify_secure_access(endpoint, dict(websocket.headers))
+    except HTTPException:
+        await _fail_client_websocket(
+            websocket,
+            status.WS_1008_POLICY_VIOLATION,
+            "Missing or invalid secure-access token",
+        )
+        return
+
+    _schedule_proxy_renew(websocket, sandbox_id)
 
     query_string = websocket.url.query or ""
     target_url = _build_proxy_target_url(
