@@ -198,8 +198,8 @@ def _binding_matches(flow: http.HTTPFlow, binding: dict[str, Any]) -> tuple[bool
     schemes = match.get("schemes") or ["https"]
     if scheme not in schemes:
         return False, 0
-    allowed_ports = {443 if s == "https" else 80 for s in schemes}
-    if port not in allowed_ports:
+    canonical_port = 443 if scheme == "https" else 80
+    if port != canonical_port:
         return False, 0
     if method not in [m.upper() for m in (match.get("methods") or ["GET", "POST", "PUT", "PATCH", "DELETE"])]:
         return False, 0
