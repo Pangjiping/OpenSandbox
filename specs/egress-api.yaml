@@ -556,11 +556,6 @@ components:
             type: string
             enum: [https, http]
           default: [https]
-        ports:
-          type: array
-          items:
-            type: integer
-          default: [443]
         hosts:
           type: array
           items:

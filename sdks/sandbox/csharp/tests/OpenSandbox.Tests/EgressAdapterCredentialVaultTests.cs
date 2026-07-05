@@ -51,7 +51,6 @@ public class EgressAdapterCredentialVaultTests
                     {
                         Hosts = ["api.example.com"],
                         Schemes = ["https"],
-                        Ports = [443],
                         Methods = ["GET"],
                         Paths = ["/v1/*"]
                     },

@@ -191,12 +191,6 @@ public class CredentialMatch
     public IReadOnlyList<string>? Schemes { get; set; }
 
     /// <summary>
-    /// Gets or sets the request ports to match.
-    /// </summary>
-    [JsonPropertyName("ports")]
-    public IReadOnlyList<int>? Ports { get; set; }
-
-    /// <summary>
     /// Gets or sets exact FQDNs or leftmost-label wildcards.
     /// </summary>
     [JsonPropertyName("hosts")]

@@ -33,14 +33,12 @@ class CredentialMatch:
     Attributes:
         hosts (list[str]):
         schemes (list[CredentialMatchSchemesItem] | Unset):
-        ports (list[int] | Unset):
         methods (list[str] | Unset):
         paths (list[str] | Unset):
     """
 
     hosts: list[str]
     schemes: list[CredentialMatchSchemesItem] | Unset = UNSET
-    ports: list[int] | Unset = UNSET
     methods: list[str] | Unset = UNSET
     paths: list[str] | Unset = UNSET
 
@@ -53,10 +51,6 @@ class CredentialMatch:
             for schemes_item_data in self.schemes:
                 schemes_item = schemes_item_data.value
                 schemes.append(schemes_item)
-
-        ports: list[int] | Unset = UNSET
-        if not isinstance(self.ports, Unset):
-            ports = self.ports
 
         methods: list[str] | Unset = UNSET
         if not isinstance(self.methods, Unset):
@@ -75,8 +69,6 @@ class CredentialMatch:
         )
         if schemes is not UNSET:
             field_dict["schemes"] = schemes
-        if ports is not UNSET:
-            field_dict["ports"] = ports
         if methods is not UNSET:
             field_dict["methods"] = methods
         if paths is not UNSET:
@@ -98,8 +90,6 @@ class CredentialMatch:
 
                 schemes.append(schemes_item)
 
-        ports = cast(list[int], d.pop("ports", UNSET))
-
         methods = cast(list[str], d.pop("methods", UNSET))
 
         paths = cast(list[str], d.pop("paths", UNSET))
@@ -107,7 +97,6 @@ class CredentialMatch:
         credential_match = cls(
             hosts=hosts,
             schemes=schemes,
-            ports=ports,
             methods=methods,
             paths=paths,
         )

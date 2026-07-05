@@ -310,7 +310,6 @@ const (
 // applies.
 type CredentialMatch struct {
 	Schemes []CredentialScheme `json:"schemes,omitempty"`
-	Ports   []int              `json:"ports,omitempty"`
 	Hosts   []string           `json:"hosts"`
 	Methods []string           `json:"methods,omitempty"`
 	Paths   []string           `json:"paths,omitempty"`
