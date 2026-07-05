@@ -69,10 +69,10 @@ Without cross-component tracing, diagnosing latency (e.g. "why did sandbox creat
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | R1 | Server exports HTTP and business metrics via OTLP | Must Have |
-| R2 | Controller exports reconcile and business metrics via OTLP | Must Have |
+| R2 | Controller exports custom business metrics (pool, sandbox, snapshot) via OTLP; built-in controller-runtime Prometheus metrics remain unchanged | Must Have |
 | R3 | Server creates trace spans for inbound HTTP requests and outbound K8s API calls | Must Have |
 | R4 | Controller creates trace spans for reconcile loops | Must Have |
-| R5 | All spans and metrics include `sandbox_id` where applicable, enabling cross-component queries | Must Have |
+| R5 | All trace spans include `sandbox_id` where applicable, enabling cross-component queries; metrics use only low-cardinality aggregated dimensions (do NOT use `sandbox_id` as a metric label) | Must Have |
 | R6 | Default config (OTLP unset) produces no export and no errors | Must Have |
 | R7 | Traces include key attributes (pool name, sandbox count, operation type) for filtering | Should Have |
 
@@ -95,7 +95,7 @@ This approach is lightweight and requires no CRD schema changes or annotation in
 
 ### Notes/Constraints/Caveats
 
-- **Python OpenTelemetry SDK** must be compatible with the project's Python version (≥3.11 per `pyproject.toml`).
+- **Python OpenTelemetry SDK** must be compatible with the project's Python version (≥3.10 per `pyproject.toml`).
 - **Controller-runtime** already exposes Prometheus metrics via `metricsserver`; OpenTelemetry metrics are additive and can coexist or replace depending on deployment preference.
 - `sandbox_id` on the server side is generated at creation time; on the controller side it is derived from the CRD object name or a label.
 - Server and controller traces are **not linked** via `trace_id` — they are independent traces correlated by `sandbox_id`. This means no single "trace waterfall" view across both components; instead, the backend shows two traces that can be navigated by the shared attribute.
@@ -104,7 +104,7 @@ This approach is lightweight and requires no CRD schema changes or annotation in
 
 | Risk | Mitigation |
 |------|------------|
-| High-cardinality metric dimensions (per-sandbox traces) | Use `sandbox_id` only on trace spans (unbounded by nature), not on metric label sets; metrics use aggregated dimensions (operation, status, pool_name) |
+| High-cardinality metric dimensions | `sandbox_id` is used only on trace span attributes (unbounded by nature), never on metric label sets; metrics use aggregated dimensions (operation, status, pool_name) |
 | OTLP export failures block request path | Use async/batch exporters with bounded queues; drop on overflow |
 | Python auto-instrumentation overhead on FastAPI hot path | Use manual instrumentation for critical spans; benchmark before enabling auto-instrumentation middleware |
 | No single trace waterfall across server + controller | Acceptable tradeoff for simplicity; `sandbox_id` attribute query provides equivalent debugging capability without CRD annotation coupling |
@@ -185,9 +185,11 @@ This returns both the server's `POST /sandboxes` trace and the controller's reco
 | `server.delete_sandbox` | `DELETE /sandboxes/{id}` | `sandbox_id` |
 | `server.allocate_from_pool` | Pool allocation path | `pool_name`, `sandbox_id` |
 | `server.create_snapshot` | `POST /sandboxes/{id}/snapshot` | `sandbox_id`, `snapshot_id` |
-| `k8s.{verb}.{resource}` | Each K8s API call (client wrapper) | `k8s.verb`, `k8s.resource`, `k8s.namespace`, `k8s.status_code` |
+| `k8s.{verb}.{resource}` | Each K8s API call (wrapper around `K8sClient` / `kubernetes` Python client) | `k8s.verb`, `k8s.resource`, `k8s.namespace`, `k8s.status_code` |
 
 The HTTP span is the root span for each request. Business operation spans are children. K8s API call spans are children of the operation span.
+
+Note: The server calls the Kubernetes API via `K8sClient` (wrapping the `kubernetes` Python client library), not via `httpx`. Instrumentation should wrap `K8sClient` methods or the underlying `urllib3` transport used by the `kubernetes` client — `opentelemetry-instrumentation-httpx` does NOT cover these calls.
 
 #### 2.3 Controller spans
 
@@ -216,11 +218,15 @@ OSEP-0010 components (execd, egress, ingress) have metrics and logs with `sandbo
 
 ```python
 # opensandbox_server/telemetry.py
-def init_telemetry() -> None:
+def init_telemetry() -> Callable[[], None]:
     """
     Initialize OpenTelemetry TracerProvider and MeterProvider.
     Called once at app startup (lifespan).
     No-op if OTEL_EXPORTER_OTLP_ENDPOINT is unset.
+
+    Returns a shutdown function that flushes and shuts down
+    providers. Must be called during app lifespan shutdown
+    to avoid losing buffered spans/metrics.
     """
 ```
 
@@ -246,7 +252,9 @@ func InitTelemetry(ctx context.Context, serviceName string) (shutdown func(conte
 
 | Variable | Description |
 |----------|-------------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint (unset = no export) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint (unset = no export); generic fallback for all signals |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Per-signal override: OTLP endpoint for traces (takes precedence over generic) |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Per-signal override: OTLP endpoint for metrics (takes precedence over generic) |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` or `http/protobuf` (default `http/protobuf`) |
 | `OTEL_SERVICE_NAME` | Override service name |
 | `OTEL_RESOURCE_ATTRIBUTES` | Additional resource attributes |
@@ -254,6 +262,8 @@ func InitTelemetry(ctx context.Context, serviceName string) (shutdown func(conte
 | `OTEL_METRICS_EXPORTER` | `otlp` or `none` |
 | `OTEL_TRACES_SAMPLER` | Sampler type (default `parentbased_traceidratio`) |
 | `OTEL_TRACES_SAMPLER_ARG` | Sampler argument (default `1.0` = sample all) |
+
+Per-signal endpoints allow operators to route traces and metrics to different collectors (e.g. traces → Tempo, metrics → Mimir). This is consistent with OSEP-0010 and the existing `components/internal/telemetry` implementation.
 
 ## Test Plan
 
@@ -271,11 +281,12 @@ func InitTelemetry(ctx context.Context, serviceName string) (shutdown func(conte
   - Create a sandbox via API; verify:
     - Server span `server.create_sandbox` exported with `sandbox_id`.
     - Controller span `controller.reconcile.batchsandbox` exported with same `sandbox_id`.
-    - Metrics (`server.sandbox.create.duration`, `controller.reconcile.duration`) present.
+    - Server metrics (`server.sandbox.create.duration`) present in OTLP export.
+    - Controller business metrics (`controller.batchsandbox.pod.create.total`) present in OTLP export.
   - Query by `sandbox_id` in the backend returns traces from both services.
 
 - **Sampling**
-  - With `OTEL_TRACES_SAMPLER_ARG=0`, no spans exported. Verify no errors and no overhead beyond propagation bookkeeping.
+  - With `OTEL_TRACES_SAMPLER=traceidratio` and `OTEL_TRACES_SAMPLER_ARG=0`, no root spans exported. Verify no errors and no overhead beyond propagation bookkeeping. Note: if using the default `parentbased_traceidratio`, inbound requests carrying a sampled `traceparent` header will still be recorded; use a non-parent-based sampler to guarantee zero sampling.
 
 ## Drawbacks
 
@@ -300,7 +311,7 @@ func InitTelemetry(ctx context.Context, serviceName string) (shutdown func(conte
   - `opentelemetry-sdk`
   - `opentelemetry-exporter-otlp-proto-http` (or `-grpc`)
   - `opentelemetry-instrumentation-fastapi` (optional, for HTTP auto-spans)
-  - `opentelemetry-instrumentation-httpx` (for outbound K8s/httpx calls)
+  - `opentelemetry-instrumentation-urllib3` (for outbound K8s API calls via the `kubernetes` client's urllib3 transport)
 
 - **Go dependencies**
   - `go.opentelemetry.io/otel`
