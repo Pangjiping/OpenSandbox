@@ -90,15 +90,16 @@ class KubernetesSnapshotRuntime:
         namespace: str = "default",
     ) -> Optional[SnapshotRuntimeStatus]:
         snapshot_name = build_public_snapshot_name(snapshot_id)
-        self._snapshot_namespaces[snapshot_id] = namespace
-        body = self._build_snapshot_body(snapshot_id, sandbox_id, snapshot_name, namespace=namespace)
+        ns = namespace if namespace != "default" else self._namespace
+        self._snapshot_namespaces[snapshot_id] = ns
+        body = self._build_snapshot_body(snapshot_id, sandbox_id, snapshot_name, namespace=ns)
         should_validate_existing_source = False
 
         try:
             self._k8s_client.create_custom_object(
                 group=_GROUP,
                 version=_VERSION,
-                namespace=namespace,
+                namespace=ns,
                 plural=_PLURAL,
                 body=body,
             )
@@ -121,7 +122,7 @@ class KubernetesSnapshotRuntime:
 
         if should_validate_existing_source:
             try:
-                current = self._get_snapshot_cr(snapshot_name, namespace=namespace)
+                current = self._get_snapshot_cr(snapshot_name, namespace=ns)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Failed to inspect existing Kubernetes SandboxSnapshot %s after create conflict: %s",
@@ -133,7 +134,7 @@ class KubernetesSnapshotRuntime:
                 if conflict is not None:
                     return conflict
 
-        return self._wait_for_terminal_snapshot(snapshot_id, namespace=namespace)
+        return self._wait_for_terminal_snapshot(snapshot_id, namespace=ns)
 
     def get_snapshot_status(self, snapshot_id: str) -> Optional[SnapshotRuntimeStatus]:
         ns = self._snapshot_namespaces.get(snapshot_id)
@@ -141,7 +142,8 @@ class KubernetesSnapshotRuntime:
 
     def delete_snapshot(self, snapshot_id: str, image: Optional[str] = None, *, namespace: str = "default") -> None:
         snapshot_name = build_public_snapshot_name(snapshot_id)
-        ns = self._snapshot_namespaces.pop(snapshot_id, namespace)
+        fallback = namespace if namespace != "default" else self._namespace
+        ns = self._snapshot_namespaces.pop(snapshot_id, fallback)
         try:
             self._k8s_client.delete_custom_object(
                 group=_GROUP,

@@ -110,7 +110,7 @@ class HTTPTenantProvider:
                     self._cache.pop(api_key, None)
                 return None
             except Exception:
-                if age > self._config.max_stale_seconds:
+                if age > cached.ttl + self._config.max_stale_seconds:
                     raise TenantProviderUnavailable(
                         f"HTTP tenant endpoint unreachable and cache stale "
                         f"beyond {self._config.max_stale_seconds}s"

@@ -361,7 +361,7 @@ def test_http_provider_stale_beyond_max_stale_raises():
         from opensandbox_server.tenants.http_provider import _CacheEntry
 
         entry = TenantEntry(name="old", namespace="ns-old", api_keys=("key-o",))
-        # Fetched 100s ago, TTL=1, max_stale=5 → way past stale
+        # Fetched 100s ago, TTL=1, max_stale=5 → age(100) > ttl(1)+max_stale(5) → reject
         provider._cache["key-o"] = _CacheEntry(
             tenant=entry, fetched_at=time.monotonic() - 100, ttl=1
         )
