@@ -190,13 +190,15 @@ class HTTPTenantProvider:
             return self._do_fetch(api_key, now)
         except Exception as e:
             with self._lock:
-                if api_key in self._inflight:
-                    self._inflight_error[api_key] = e
+                self._inflight_error[api_key] = e
             raise
         finally:
             with self._lock:
                 self._inflight.pop(api_key, None)
             event.set()
+            with self._lock:
+                self._inflight_result.pop(api_key, None)
+                self._inflight_error.pop(api_key, None)
 
     def _do_fetch(self, api_key: str, now: float) -> Optional[TenantEntry]:
         """GET the endpoint for a single api_key. Returns TenantEntry or raises."""
