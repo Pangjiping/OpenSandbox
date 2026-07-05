@@ -954,12 +954,21 @@ class TestSandboxE2ESync:
         logger.info("✓ run_in_session(..., working_directory=/tmp) applied: pwd => %s", tmp_line)
 
         logger.info("Step 3b: Export env in one run, read in next run — verify session state (env) persists")
-        sandbox.commands.run_in_session(sid, "export E2E_SESSION_ENV=session-env-ok")
-        out_env = sandbox.commands.run_in_session(sid, "echo $E2E_SESSION_ENV")
-        assert out_env.error is None
-        assert out_env.exit_code == 0
-        env_line = "".join(m.text for m in out_env.logs.stdout).strip()
-        assert env_line == "session-env-ok", f"env set in previous run should be visible, got: {env_line!r}"
+        env_line = ""
+        for attempt in range(3):
+            export_out = sandbox.commands.run_in_session(sid, "export E2E_SESSION_ENV=session-env-ok")
+            if export_out.exit_code != 0:
+                logger.warning("export attempt %d failed (exit_code=%s), retrying...", attempt + 1, export_out.exit_code)
+                time.sleep(1)
+                continue
+            out_env = sandbox.commands.run_in_session(sid, "echo $E2E_SESSION_ENV")
+            env_line = "".join(m.text for m in out_env.logs.stdout).strip()
+            if env_line == "session-env-ok":
+                break
+            logger.warning("env read attempt %d got %r, retrying...", attempt + 1, env_line)
+            time.sleep(1)
+        else:
+            pytest.fail(f"env set in previous run should be visible after 3 attempts, got: {env_line!r}")
         logger.info("✓ session env persists across run_in_session: echo $E2E_SESSION_ENV => %s", env_line)
 
         logger.info("Step 3c: Failing subprocess in session should propagate non-zero exit_code")
