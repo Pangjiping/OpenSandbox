@@ -224,7 +224,6 @@ try:
                 name="anthropic-api",
                 match={
                     "schemes": ["https"],
-                    "ports": [443],
                     "hosts": [ANTHROPIC_HOST],
                     "methods": ["GET", "POST"],
                     "paths": ["/v1/*"],
@@ -271,7 +270,6 @@ CredentialBinding(
     name="git-basic",
     match={
         "schemes": ["https"],
-        "ports": [443],
         "hosts": ["git.example.com"],
         "paths": ["/org/private-repo.git*"],
     },
@@ -295,7 +293,6 @@ CredentialBinding(
     name="api-token",
     match={
         "schemes": ["https"],
-        "ports": [443],
         "hosts": ["api.example.com"],
         "methods": ["GET"],
         "paths": ["/v1/projects/123/variables"],
