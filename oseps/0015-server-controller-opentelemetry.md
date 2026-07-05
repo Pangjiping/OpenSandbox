@@ -143,9 +143,9 @@ HTTP metrics use route templates (e.g. `/sandboxes/{sandbox_id}`) not raw paths,
 | **BatchSandbox** | `controller.batchsandbox.pod.create.duration` | Histogram | Time to create a Pod for a BatchSandbox, by `result` |
 | **BatchSandbox** | `controller.batchsandbox.pod.create.total` | Counter | Pod creation attempts by `result` |
 | **BatchSandbox** | `controller.batchsandbox.task.schedule.duration` | Histogram | Task scheduling latency |
-| **Pool** | `controller.pool.scale.total` | Counter | Pool scale operations by `direction` (`up`/`down`), `pool_name` |
-| **Pool** | `controller.pool.size` | Gauge (Observable) | Current pool size by `pool_name`, `state` (`ready`/`pending`/`evicting`) |
-| **Pool** | `controller.pool.allocation.duration` | Histogram | Time from allocation request seen to Pod assigned, by `pool_name` |
+| **Pool** | `controller.pool.scale.total` | Counter | Pool scale operations by `direction` (`up`/`down`), `namespace`, `pool_name` |
+| **Pool** | `controller.pool.size` | Gauge (Observable) | Current pool size by `namespace`, `pool_name`, `state` (`ready`/`pending`/`evicting`) |
+| **Pool** | `controller.pool.allocation.duration` | Histogram | Time from allocation request seen to Pod assigned, by `namespace`, `pool_name` |
 | **Snapshot** | `controller.snapshot.commit.duration` | Histogram | Image commit job duration by `result` |
 | **Snapshot** | `controller.snapshot.commit.total` | Counter | Commit job attempts by `result` |
 
