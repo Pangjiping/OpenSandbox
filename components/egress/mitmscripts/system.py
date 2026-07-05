@@ -156,9 +156,89 @@ def _load_active_vault() -> ActiveVault | None:
     return _vault_cache
 
 
+def _is_ip_address(host: str) -> bool:
+    """Return True if *host* looks like an IP address literal (v4 or v6)."""
+    if not host:
+        return False
+    # IPv6 – bare or bracketed
+    bare = host.strip("[]")
+    if ":" in bare:
+        return True
+    # IPv4
+    parts = bare.split(".")
+    return len(parts) == 4 and all(p.isdigit() for p in parts)
+
+
+def _flow_sni(flow: http.HTTPFlow) -> str:
+    """Extract the TLS SNI hostname from the client connection, if available."""
+    client_conn = getattr(flow, "client_conn", None)
+    if client_conn is None:
+        return ""
+    sni = getattr(client_conn, "sni", None) or ""
+    return sni.rstrip(".").lower()
+
+
+def _credential_destination_mismatch(flow: http.HTTPFlow) -> bool:
+    """Return True when the Host header diverges from the actual upstream.
+
+    A mismatch indicates a potential credential-destination-confusion attack:
+    the sandbox sets the Host header to a protected binding domain while the
+    TCP connection targets a different (possibly attacker-controlled) host.
+    """
+    actual = (flow.request.host or "").rstrip(".").lower()
+    presented = (flow.request.pretty_host or "").rstrip(".").lower()
+
+    if not actual or not presented:
+        return False
+    if actual == presented:
+        return False
+
+    # Actual destination is an FQDN – a direct mismatch with Host header.
+    if not _is_ip_address(actual):
+        return True
+
+    # Actual destination is an IP (transparent mode).
+    # For HTTPS the TLS SNI is validated against the upstream certificate;
+    # if the SNI differs from the Host header the Host header is spoofed.
+    sni = _flow_sni(flow)
+    if sni and sni != presented:
+        return True
+
+    # Transparent HTTP with IP destination: the Host header is the only FQDN
+    # source and cannot be verified against the TCP connection.  The egress
+    # network policy and DNS enforcement provide the remaining protection.
+    return False
+
+
 def _request_host(flow: http.HTTPFlow) -> str:
-    host = flow.request.pretty_host or flow.request.host or ""
-    return host.rstrip(".").lower()
+    """Return the hostname to match against credential-vault bindings.
+
+    Prefers the actual upstream authority over the client-controlled Host
+    header to prevent credential-destination-confusion attacks.
+
+    Resolution order:
+      1. ``flow.request.host`` when it is already an FQDN (non-transparent
+         mode or upstream-resolved).
+      2. TLS SNI from the client connection – mitmproxy validates the upstream
+         certificate against this value so it cannot diverge from the real
+         destination (``ssl_insecure`` is rejected by vault readiness checks).
+      3. ``flow.request.pretty_host`` (Host header) as a last resort for
+         transparent HTTP where the destination is an IP and no SNI exists.
+    """
+    actual = (flow.request.host or "").rstrip(".").lower()
+
+    # Already an FQDN – use directly.
+    if actual and not _is_ip_address(actual):
+        return actual
+
+    # Transparent HTTPS – SNI is certificate-verified.
+    sni = _flow_sni(flow)
+    if sni:
+        return sni
+
+    # Transparent HTTP fallback – weakest signal.
+    presented = (flow.request.pretty_host or "").rstrip(".").lower()
+    return presented or actual or ""
 
 
 def _request_port(flow: http.HTTPFlow) -> int:
@@ -240,6 +320,17 @@ def _select_binding(flow: http.HTTPFlow, vault: ActiveVault) -> dict[str, Any] |
 def request(flow: http.HTTPFlow) -> None:
     vault = _load_active_vault()
     if vault is None:
+        return
+
+    # Guard: reject credential injection when the Host header diverges from
+    # the actual upstream destination (credential-destination-confusion).
+    if _credential_destination_mismatch(flow):
+        presented = (flow.request.pretty_host or "").rstrip(".").lower()
+        actual = (flow.request.host or "").rstrip(".").lower()
+        ctx.log.warn(
+            f"credential proxy: Host header {presented!r} does not match "
+            f"upstream destination {actual!r}; skipping credential injection"
+        )
         return
 
     binding = _select_binding(flow, vault)
