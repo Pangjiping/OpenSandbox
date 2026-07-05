@@ -310,9 +310,11 @@ const (
 // applies.
 type CredentialMatch struct {
 	Schemes []CredentialScheme `json:"schemes,omitempty"`
-	Hosts   []string           `json:"hosts"`
-	Methods []string           `json:"methods,omitempty"`
-	Paths   []string           `json:"paths,omitempty"`
+	// Deprecated: Ports is ignored; port is derived from Schemes (https→443, http→80).
+	Ports   []int    `json:"ports,omitempty"`
+	Hosts   []string `json:"hosts"`
+	Methods []string `json:"methods,omitempty"`
+	Paths   []string `json:"paths,omitempty"`
 }
 
 // CustomHeaderEntry describes one custom header injection rule.

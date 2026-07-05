@@ -522,6 +522,11 @@ export interface components {
              *     ]
              */
             schemes: ("https" | "http")[];
+            /**
+             * @deprecated
+             * @description Ignored. Port is derived from scheme (https→443, http→80).
+             */
+            ports?: number[];
             hosts: string[];
             /**
              * @default [

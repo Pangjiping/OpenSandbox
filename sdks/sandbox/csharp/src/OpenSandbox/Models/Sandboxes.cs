@@ -191,6 +191,13 @@ public class CredentialMatch
     public IReadOnlyList<string>? Schemes { get; set; }
 
     /// <summary>
+    /// Deprecated: ignored, port is derived from scheme.
+    /// </summary>
+    [JsonPropertyName("ports")]
+    [Obsolete("Ports is ignored; port is derived from Schemes (https→443, http→80).")]
+    public IReadOnlyList<int>? Ports { get; set; }
+
+    /// <summary>
     /// Gets or sets exact FQDNs or leftmost-label wildcards.
     /// </summary>
     [JsonPropertyName("hosts")]

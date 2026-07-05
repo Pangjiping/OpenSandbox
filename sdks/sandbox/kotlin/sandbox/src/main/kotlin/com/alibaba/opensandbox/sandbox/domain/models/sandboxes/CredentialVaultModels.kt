@@ -130,6 +130,8 @@ class Credential private constructor(
  */
 class CredentialMatch private constructor(
     val schemes: List<Scheme>?,
+    @Deprecated("Ignored; port is derived from schemes (HTTPS→443, HTTP→80)")
+    val ports: List<Int>? = null,
     val hosts: List<String>,
     val methods: List<String>?,
     val paths: List<String>?,
@@ -157,6 +159,12 @@ class CredentialMatch private constructor(
         }
 
         fun schemes(vararg schemes: Scheme): Builder = schemes(schemes.toList())
+
+        @Deprecated("Ignored; port is derived from schemes")
+        fun ports(ports: List<Int>): Builder = this
+
+        @Deprecated("Ignored; port is derived from schemes")
+        fun ports(vararg ports: Int): Builder = this
 
         fun hosts(hosts: List<String>): Builder {
             require(hosts.isNotEmpty()) { "Credential match hosts cannot be empty" }

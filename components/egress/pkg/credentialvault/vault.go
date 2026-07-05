@@ -117,6 +117,7 @@ type Binding struct {
 
 type Match struct {
 	Schemes []string `json:"schemes,omitempty"`
+	Ports   []int    `json:"ports,omitempty"` // Deprecated: ignored, port is derived from scheme.
 	Hosts   []string `json:"hosts"`
 	Methods []string `json:"methods,omitempty"`
 	Paths   []string `json:"paths,omitempty"`
@@ -474,6 +475,7 @@ func normalizeMatch(m *Match) error {
 		}
 		m.Schemes[i] = scheme
 	}
+	m.Ports = nil
 	for i, host := range m.Hosts {
 		normalized, err := normalizeCredentialHost(host)
 		if err != nil {

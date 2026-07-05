@@ -556,6 +556,12 @@ components:
             type: string
             enum: [https, http]
           default: [https]
+        ports:
+          type: array
+          items:
+            type: integer
+          deprecated: true
+          description: "Ignored. Port is derived from scheme (https→443, http→80)."
         hosts:
           type: array
           items:
