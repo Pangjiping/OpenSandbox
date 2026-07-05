@@ -349,6 +349,24 @@ class SystemAddonRedactionTest(unittest.TestCase):
 
         self.assertEqual("code.example.com", system._request_host(flow))
 
+    def test_https_ip_no_sni_blocks_injection(self) -> None:
+        """HTTPS with IP destination and no SNI is unverifiable – must block."""
+        system = _load_system_module()
+        flow = _Flow()
+        flow.request.host = "93.184.216.34"
+        flow.request.pretty_host = "code.example.com"
+        flow.request.scheme = "https"
+        flow.client_conn = _ClientConn(sni="")
+        self._make_vault(system)
+
+        system.request(flow)
+
+        self.assertEqual("", flow.request.headers.get("Private-Token"))
+        self.assertTrue(
+            any("does not match" in m for m in system.ctx.log.messages),
+            "expected a mismatch warning in the log",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

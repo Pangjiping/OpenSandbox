@@ -204,6 +204,11 @@ def _credential_destination_mismatch(flow: http.HTTPFlow) -> bool:
     if sni and sni != presented:
         return True
 
+    # HTTPS with IP destination and no SNI is unverifiable – block it.
+    scheme = (flow.request.scheme or "").lower()
+    if not sni and scheme == "https":
+        return True
+
     # Transparent HTTP with IP destination: the Host header is the only FQDN
     # source and cannot be verified against the TCP connection.  The egress
     # network policy and DNS enforcement provide the remaining protection.
