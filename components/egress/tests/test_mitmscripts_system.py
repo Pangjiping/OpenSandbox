@@ -367,6 +367,36 @@ class SystemAddonRedactionTest(unittest.TestCase):
             "expected a mismatch warning in the log",
         )
 
+    def test_http_ip_spoofed_host_blocks_injection(self) -> None:
+        """HTTP with IP destination and spoofed Host header must block."""
+        system = _load_system_module()
+        system._load_active_vault = lambda: system.ActiveVault(
+            1,
+            [
+                {
+                    "name": "gitlab-api",
+                    "match": {
+                        "hosts": ["code.example.com"],
+                        "schemes": ["http"],
+                        "ports": [80],
+                        "paths": ["/api/v8/*"],
+                    },
+                    "headers": [{"name": "Private-Token", "value": "secret-token"}],
+                }
+            ],
+            ["secret-token"],
+        )
+        flow = _Flow()
+        flow.request.host = "93.184.216.34"
+        flow.request.pretty_host = "code.example.com"
+        flow.request.scheme = "http"
+        flow.request.port = 80
+        flow.client_conn = _ClientConn(sni="")
+
+        system.request(flow)
+
+        self.assertEqual("", flow.request.headers.get("Private-Token"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -198,21 +198,13 @@ def _credential_destination_mismatch(flow: http.HTTPFlow) -> bool:
         return True
 
     # Actual destination is an IP (transparent mode).
-    # For HTTPS the TLS SNI is validated against the upstream certificate;
-    # if the SNI differs from the Host header the Host header is spoofed.
     sni = _flow_sni(flow)
-    if sni and sni != presented:
-        return True
+    if sni:
+        # SNI is certificate-verified – block only if it diverges from Host.
+        return sni != presented
 
-    # HTTPS with IP destination and no SNI is unverifiable – block it.
-    scheme = (flow.request.scheme or "").lower()
-    if not sni and scheme == "https":
-        return True
-
-    # Transparent HTTP with IP destination: the Host header is the only FQDN
-    # source and cannot be verified against the TCP connection.  The egress
-    # network policy and DNS enforcement provide the remaining protection.
-    return False
+    # No SNI: Host header is the only FQDN source and is spoofable.
+    return True
 
 
 def _request_host(flow: http.HTTPFlow) -> str:
