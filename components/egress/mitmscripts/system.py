@@ -190,17 +190,15 @@ def _credential_destination_mismatch(flow: http.HTTPFlow) -> bool:
 
     if not actual or not presented:
         return False
-    if actual == presented:
-        return False
 
-    # Actual destination is an FQDN – a direct mismatch with Host header.
+    # Non-IP destination: trust the FQDN match.
     if not _is_ip_address(actual):
-        return True
+        return actual != presented
 
     # Actual destination is an IP (transparent mode).
     sni = _flow_sni(flow)
     if sni:
-        # SNI is certificate-verified – block only if it diverges from Host.
+        # SNI is certificate-verified – require it to match Host.
         return sni != presented
 
     # No SNI: Host header is the only FQDN source and is spoofable.

@@ -397,6 +397,20 @@ class SystemAddonRedactionTest(unittest.TestCase):
 
         self.assertEqual("", flow.request.headers.get("Private-Token"))
 
+    def test_ip_host_with_mismatched_sni_blocks_injection(self) -> None:
+        """Host=IP matches actual IP, but SNI diverges – must block."""
+        system = _load_system_module()
+        flow = _Flow()
+        flow.request.host = "93.184.216.34"
+        flow.request.pretty_host = "93.184.216.34"
+        flow.request.scheme = "https"
+        flow.client_conn = _ClientConn(sni="code.example.com")
+        self._make_vault(system)
+
+        system.request(flow)
+
+        self.assertEqual("", flow.request.headers.get("Private-Token"))
+
 
 if __name__ == "__main__":
     unittest.main()
