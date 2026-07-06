@@ -24,7 +24,7 @@ OpenSandbox adheres to a [Code of Conduct](CODE_OF_CONDUCT.md) that we expect al
 
 There are many ways to contribute to OpenSandbox:
 
-- **Report Bugs**: Submit detailed bug reports through [GitHub Issues](https://github.com/alibaba/OpenSandbox/issues)
+- **Report Bugs**: Submit detailed bug reports through [GitHub Issues](https://github.com/opensandbox-group/OpenSandbox/issues)
 - **Suggest Features**: Propose new features or improvements
 - **Write Code**: Fix bugs, implement features, or improve performance
 - **Improve Documentation**: Enhance README files, write tutorials, or fix typos

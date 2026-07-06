@@ -131,7 +131,7 @@ Verify the cosign keyless signature:
 ```bash
 cosign verify "$IMAGE_REF" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github.com/alibaba/OpenSandbox/.github/workflows/publish-components.yml@refs/tags/(docker|k8s)/[^/]+/v?[0-9].*$'
+  --certificate-identity-regexp '^https://github.com/opensandbox-group/OpenSandbox/.github/workflows/publish-components.yml@refs/tags/(docker|k8s)/[^/]+/v?[0-9].*$'
 ```
 
 Verify the registry provenance attestation:
@@ -153,7 +153,7 @@ IMAGE_REF="${IMAGE}@${DIGEST}"
 
 cosign verify "$IMAGE_REF" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github.com/alibaba/OpenSandbox/.github/workflows/publish-server.yml@refs/tags/server/v[0-9].*$'
+  --certificate-identity-regexp '^https://github.com/opensandbox-group/OpenSandbox/.github/workflows/publish-server.yml@refs/tags/server/v[0-9].*$'
 ```
 
 ACR images use the same digest and identity checks with the ACR image name, for
