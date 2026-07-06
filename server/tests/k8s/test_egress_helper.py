@@ -401,7 +401,7 @@ class TestApplyEgressToSpec:
             egress=[NetworkRule(action="allow", target="example.com")],
         )
         extra = {
-            "OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT": "/scripts/auth.py",
+            "OPENSANDBOX_EGRESS_DENY_WEBHOOK": "https://hook.example.com",
             "OPENSANDBOX_EGRESS_LOG_LEVEL": "debug",
         }
 
@@ -413,7 +413,7 @@ class TestApplyEgressToSpec:
         )
 
         env_by_name = {e["name"]: e["value"] for e in containers[0]["env"]}
-        assert env_by_name["OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT"] == "/scripts/auth.py"
+        assert env_by_name["OPENSANDBOX_EGRESS_DENY_WEBHOOK"] == "https://hook.example.com"
         assert env_by_name["OPENSANDBOX_EGRESS_LOG_LEVEL"] == "debug"
 
     def test_extra_env_none_value_becomes_empty_string(self):
