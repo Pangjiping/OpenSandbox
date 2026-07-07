@@ -429,7 +429,6 @@ sandbox.credentialVault().create(
                     .match(
                         CredentialMatch.builder()
                             .schemes(CredentialMatch.Scheme.HTTPS)
-                            .ports(443)
                             .hosts("api.example.com")
                             .paths("/v1/*")
                             .build()
