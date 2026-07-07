@@ -44,7 +44,6 @@ from opensandbox_server.services.constants import OPENSANDBOX_EGRESS_TOKEN
 
 def _app_config(
     shutdown_policy: str = "Delete",
-    service_account: str | None = None,
     execd_init_resources: ExecdInitResources | None = None,
     egress: EgressConfig | None = None,
 ) -> AppConfig:
@@ -53,7 +52,6 @@ def _app_config(
         runtime=RuntimeConfig(type="kubernetes", execd_image="execd:test"),
         kubernetes=KubernetesRuntimeConfig(
             namespace="test-ns",
-            service_account=service_account,
             workload_provider="agent-sandbox",
             execd_init_resources=execd_init_resources,
         ),
@@ -73,7 +71,7 @@ class TestAgentSandboxProvider:
     def test_create_workload_builds_correct_manifest_init_mode(self, mock_k8s_client):
         provider = AgentSandboxProvider(
             mock_k8s_client,
-            _app_config(shutdown_policy="Delete", service_account="agent-sa"),
+            _app_config(shutdown_policy="Delete"),
         )
         mock_k8s_client.create_custom_object.return_value = {
             "metadata": {"name": "test-id", "uid": "test-uid"}
@@ -103,7 +101,8 @@ class TestAgentSandboxProvider:
         assert body["spec"]["replicas"] == 1
         assert body["spec"]["shutdownTime"] == "2025-12-31T10:00:00+00:00"
         assert body["spec"]["shutdownPolicy"] == "Delete"
-        assert body["spec"]["podTemplate"]["spec"]["serviceAccountName"] == "agent-sa"
+        assert body["spec"]["podTemplate"]["spec"]["automountServiceAccountToken"] is False
+        assert "serviceAccountName" not in body["spec"]["podTemplate"]["spec"]
         assert "initContainers" in body["spec"]["podTemplate"]["spec"]
         assert "containers" in body["spec"]["podTemplate"]["spec"]
         assert "volumes" in body["spec"]["podTemplate"]["spec"]

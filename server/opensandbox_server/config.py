@@ -582,10 +582,6 @@ class KubernetesRuntimeConfig(BaseModel):
         default=None,
         description="Namespace used for sandbox workloads.",
     )
-    service_account: Optional[str] = Field(
-        default=None,
-        description="Service account bound to sandbox workloads.",
-    )
     workload_provider: Optional[str] = Field(
         default=None,
         description="Workload provider type. If not specified, uses the first registered provider.",

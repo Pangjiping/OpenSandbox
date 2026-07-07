@@ -196,6 +196,7 @@ class BatchSandboxProvider(WorkloadProvider):
                 "emptyDir": {}
             })
         pod_spec = {
+            "automountServiceAccountToken": False,
             "initContainers": [_container_to_dict(init_container)],
             "containers": containers,
             "volumes": pod_volumes,
