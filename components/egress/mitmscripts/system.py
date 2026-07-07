@@ -203,6 +203,13 @@ def _credential_destination_mismatch(flow: http.HTTPFlow) -> bool:
 
     # No SNI: HTTPS is unverifiable; HTTP is an accepted residual risk
     # mitigated by egress network policy and DNS enforcement.
+    # FIXME: HTTP + IP destination + no SNI still trusts the spoofable Host
+    # header via _request_host()'s pretty_host fallback, keeping the
+    # destination-confusion path open for http bindings. Proper fix is to
+    # reject `http` scheme bindings at the Go validation layer
+    # (components/egress/pkg/credentialvault/vault.go); blocking it here would
+    # break the transparent-HTTP credential-vault E2E
+    # (tests/go/credential_vault_e2e_test.go), which relies on this fallback.
     return (flow.request.scheme or "").lower() == "https"
 
 
