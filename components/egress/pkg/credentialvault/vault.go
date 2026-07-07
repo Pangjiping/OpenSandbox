@@ -64,15 +64,14 @@ var (
 )
 
 type Store struct {
-	mu             sync.RWMutex
-	exists         bool
-	revision       int64
-	credentials    map[string]record
-	bindings       map[string]Binding
-	interceptPorts map[int]struct{}
-	mitmGate       *mitmproxy.HealthGate
-	requireToken   func() bool
-	sources        *SourceRegistry
+	mu           sync.RWMutex
+	exists       bool
+	revision     int64
+	credentials  map[string]record
+	bindings     map[string]Binding
+	mitmGate     *mitmproxy.HealthGate
+	requireToken func() bool
+	sources      *SourceRegistry
 }
 
 type record struct {
@@ -118,7 +117,7 @@ type Binding struct {
 
 type Match struct {
 	Schemes []string `json:"schemes,omitempty"`
-	Ports   []int    `json:"ports,omitempty"`
+	Ports   []int    `json:"ports,omitempty"` // Deprecated: ignored, port is derived from scheme.
 	Hosts   []string `json:"hosts"`
 	Methods []string `json:"methods,omitempty"`
 	Paths   []string `json:"paths,omitempty"`
@@ -198,12 +197,11 @@ func NewStoreWithRegistry(mitmGate *mitmproxy.HealthGate, requireToken func() bo
 		registry = NewSourceRegistry()
 	}
 	return &Store{
-		credentials:    make(map[string]record),
-		bindings:       make(map[string]Binding),
-		interceptPorts: map[int]struct{}{80: {}, 443: {}},
-		mitmGate:       mitmGate,
-		requireToken:   requireToken,
-		sources:        registry,
+		credentials:  make(map[string]record),
+		bindings:     make(map[string]Binding),
+		mitmGate:     mitmGate,
+		requireToken: requireToken,
+		sources:      registry,
 	}
 }
 
@@ -419,11 +417,6 @@ func (v *Store) validateCandidate(credentials map[string]record, bindings map[st
 }
 
 func (v *Store) validateBindingPolicy(b Binding, pol *policy.NetworkPolicy) error {
-	for _, port := range b.Match.Ports {
-		if _, ok := v.interceptPorts[port]; !ok {
-			return fmt.Errorf("binding %q port %d is not a configured transparent intercept port", b.Name, port)
-		}
-	}
 	for _, host := range b.Match.Hosts {
 		if !explicitAllowCoversHost(pol, host) {
 			return fmt.Errorf("binding %q host %q is not allowed by egress policy", b.Name, host)
@@ -465,9 +458,6 @@ func normalizeMatch(m *Match) error {
 	if len(m.Schemes) == 0 {
 		m.Schemes = []string{"https"}
 	}
-	if len(m.Ports) == 0 {
-		m.Ports = []int{443}
-	}
 	if len(m.Methods) == 0 {
 		m.Methods = []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
 	}
@@ -485,10 +475,13 @@ func normalizeMatch(m *Match) error {
 		}
 		m.Schemes[i] = scheme
 	}
-	for _, port := range m.Ports {
-		if port <= 0 || port > 65535 {
-			return fmt.Errorf("invalid port %d", port)
+	if len(m.Ports) > 0 {
+		for _, port := range m.Ports {
+			if port != 80 && port != 443 {
+				return fmt.Errorf("unsupported port %d: only ports 80 and 443 are supported (derived from scheme)", port)
+			}
 		}
+		m.Ports = nil
 	}
 	for i, host := range m.Hosts {
 		normalized, err := normalizeCredentialHost(host)
@@ -512,7 +505,6 @@ func normalizeMatch(m *Match) error {
 		m.Paths[i] = path
 	}
 	dedupeStringsInPlace(&m.Schemes)
-	dedupeIntsInPlace(&m.Ports)
 	dedupeStringsInPlace(&m.Hosts)
 	dedupeStringsInPlace(&m.Methods)
 	dedupeStringsInPlace(&m.Paths)
@@ -955,7 +947,6 @@ func validateBindingAmbiguity(bindings map[string]Binding) error {
 
 func bindingsAmbiguous(a, b Binding) bool {
 	if !stringSlicesOverlap(a.Match.Schemes, b.Match.Schemes) ||
-		!intSlicesOverlap(a.Match.Ports, b.Match.Ports) ||
 		!stringSlicesOverlap(a.Match.Methods, b.Match.Methods) ||
 		!pathPatternsOverlap(a.Match.Paths, b.Match.Paths) {
 		return false
@@ -1034,38 +1025,12 @@ func stringSlicesOverlap(a, b []string) bool {
 	return false
 }
 
-func intSlicesOverlap(a, b []int) bool {
-	set := make(map[int]struct{}, len(a))
-	for _, x := range a {
-		set[x] = struct{}{}
-	}
-	for _, y := range b {
-		if _, ok := set[y]; ok {
-			return true
-		}
-	}
-	return false
-}
-
 func canonicalHeaderName(name string) string {
 	return http.CanonicalHeaderKey(name)
 }
 
 func dedupeStringsInPlace(values *[]string) {
 	seen := make(map[string]struct{}, len(*values))
-	out := (*values)[:0]
-	for _, value := range *values {
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	*values = out
-}
-
-func dedupeIntsInPlace(values *[]int) {
-	seen := make(map[int]struct{}, len(*values))
 	out := (*values)[:0]
 	for _, value := range *values {
 		if _, ok := seen[value]; ok {

@@ -60,7 +60,7 @@ def _decode_sse_event_line(line: str) -> EventNode | None:
         event_dict = json.loads(data)
         return EventNode(**event_dict)
     except Exception as e:
-        logger.error("Failed to parse SSE line: %s", line, exc_info=e)
+        logger.error(f"Failed to parse SSE line: {line}", exc_info=e)
         return None
 
 
@@ -78,7 +78,9 @@ def _infer_exit_code(execution: Execution) -> int | None:
 class IsolationSessionHandleSync(IsolationSessionSync):
     """Sync handle to a single isolated session."""
 
-    def __init__(self, info: IsolatedSessionInfo, adapter: "IsolatedSessionsAdapterSync"):
+    def __init__(
+        self, info: IsolatedSessionInfo, adapter: "IsolatedSessionsAdapterSync"
+    ):
         self._info = info
         self._adapter = adapter
         self._files = None
@@ -97,6 +99,7 @@ class IsolationSessionHandleSync(IsolationSessionSync):
             from opensandbox.sync.adapters.isolated_filesystem_adapter import (
                 IsolatedFilesystemAdapterSync,
             )
+
             self._files = IsolatedFilesystemAdapterSync(
                 self._adapter.connection_config,
                 self._adapter.execd_endpoint,
@@ -111,7 +114,9 @@ class IsolationSessionHandleSync(IsolationSessionSync):
         opts: IsolatedRunOpts | None = None,
         handlers: ExecutionHandlersSync | None = None,
     ) -> Execution:
-        return self._adapter._run(self._info.session_id, code, opts=opts, handlers=handlers)
+        return self._adapter._run(
+            self._info.session_id, code, opts=opts, handlers=handlers
+        )
 
     def get(self) -> IsolatedSessionState:
         return self._adapter._get(self._info.session_id)
@@ -170,7 +175,9 @@ class IsolatedSessionsAdapterSync(IsolationServiceSync):
         )
 
     def _get_url(self, path: str) -> str:
-        return f"{self.connection_config.protocol}://{self.execd_endpoint.endpoint}{path}"
+        return (
+            f"{self.connection_config.protocol}://{self.execd_endpoint.endpoint}{path}"
+        )
 
     def create(
         self, request: CreateIsolatedSessionRequest

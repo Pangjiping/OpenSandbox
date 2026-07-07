@@ -401,7 +401,7 @@ class TestApplyEgressToSpec:
             egress=[NetworkRule(action="allow", target="example.com")],
         )
         extra = {
-            "OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT": "/scripts/auth.py",
+            "OPENSANDBOX_EGRESS_DENY_WEBHOOK": "https://hook.example.com",
             "OPENSANDBOX_EGRESS_LOG_LEVEL": "debug",
         }
 
@@ -413,7 +413,7 @@ class TestApplyEgressToSpec:
         )
 
         env_by_name = {e["name"]: e["value"] for e in containers[0]["env"]}
-        assert env_by_name["OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT"] == "/scripts/auth.py"
+        assert env_by_name["OPENSANDBOX_EGRESS_DENY_WEBHOOK"] == "https://hook.example.com"
         assert env_by_name["OPENSANDBOX_EGRESS_LOG_LEVEL"] == "debug"
 
     def test_extra_env_none_value_becomes_empty_string(self):
@@ -538,6 +538,27 @@ class TestSplitEgressEnv:
         sandbox_env, egress_env = split_egress_env(env)
         assert sandbox_env == {"OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT": "true"}
         assert egress_env == {"OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT": "true"}
+
+    def test_allows_policy_file(self):
+        env = {"OPENSANDBOX_EGRESS_POLICY_FILE": "/var/egress/policy.json"}
+        sandbox_env, egress_env = split_egress_env(env)
+        assert sandbox_env == {}
+        assert egress_env == {"OPENSANDBOX_EGRESS_POLICY_FILE": "/var/egress/policy.json"}
+
+    def test_allows_policy_file_with_other_vars(self):
+        env = {
+            "OPENSANDBOX_EGRESS_POLICY_FILE": "/data/policy.json",
+            "OPENSANDBOX_EGRESS_LOG_LEVEL": "debug",
+            "APP_ENV": "production",
+        }
+        sandbox_env, egress_env = split_egress_env(env)
+        assert egress_env == {
+            "OPENSANDBOX_EGRESS_POLICY_FILE": "/data/policy.json",
+            "OPENSANDBOX_EGRESS_LOG_LEVEL": "debug",
+        }
+        assert sandbox_env == {
+            "APP_ENV": "production",
+        }
 
     def test_allows_all_permitted_vars(self):
         from opensandbox_server.services.constants import ALLOWED_EGRESS_ENV_VARS

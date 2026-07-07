@@ -154,6 +154,7 @@ class TestBatchSandboxProvider:
         assert body["spec"]["replicas"] == 1
         assert body["spec"]["expireTime"] == "2025-12-31T10:00:00+00:00"
         assert "template" in body["spec"]
+        assert body["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
         assert "initContainers" in body["spec"]["template"]["spec"]
         assert "containers" in body["spec"]["template"]["spec"]
         assert "volumes" in body["spec"]["template"]["spec"]

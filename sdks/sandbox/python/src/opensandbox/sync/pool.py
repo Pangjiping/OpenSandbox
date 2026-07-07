@@ -276,10 +276,7 @@ class SandboxPoolSync:
                     manager.kill_sandbox(sandbox_id)
                 except Exception as exc:
                     logger.warning(
-                        "release_all_idle: failed to kill sandbox: pool_name=%s sandbox_id=%s error=%s",
-                        pool_name,
-                        sandbox_id,
-                        exc,
+                        f"release_all_idle: failed to kill sandbox: pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
                     )
         finally:
             if temporary_manager is not None:
@@ -326,10 +323,7 @@ class SandboxPoolSync:
         drained = self._await_in_flight_drain(self._config.drain_timeout)
         if not drained:
             logger.warning(
-                "Pool graceful shutdown timed out waiting in-flight operations: pool_name=%s in_flight=%s timeout_ms=%s",
-                self._config.pool_name,
-                self._in_flight,
-                int(self._config.drain_timeout.total_seconds() * 1000),
+                f"Pool graceful shutdown timed out waiting in-flight operations: pool_name={self._config.pool_name} in_flight={self._in_flight} timeout_ms={int(self._config.drain_timeout.total_seconds() * 1000)}"
             )
         with self._lifecycle_lock:
             self._lifecycle_state = PoolLifecycleState.STOPPED
@@ -374,8 +368,7 @@ class SandboxPoolSync:
             )
         except Exception as exc:
             logger.error(
-                "Pool reconcile tick failed unexpectedly: pool_name=%s",
-                self._config.pool_name,
+                f"Pool reconcile tick failed unexpectedly: pool_name={self._config.pool_name}",
                 exc_info=exc,
             )
         finally:
@@ -556,10 +549,7 @@ class SandboxPoolSync:
             return True
         except Exception as exc:
             logger.warning(
-                "Pool sandbox cleanup failed: pool_name=%s sandbox_id=%s error=%s",
-                self._config.pool_name,
-                sandbox_id,
-                exc,
+                f"Pool sandbox cleanup failed: pool_name={self._config.pool_name} sandbox_id={sandbox_id} error={exc}"
             )
             return False
 
@@ -583,10 +573,7 @@ class SandboxPoolSync:
             executor.submit(self._kill_discarded_alive, pool_name, sandbox_ids, source)
         except Exception as exc:
             logger.debug(
-                "Discarded-alive kill submit rejected, running inline: pool_name=%s count=%d error=%s",
-                pool_name,
-                len(sandbox_ids),
-                exc,
+                f"Discarded-alive kill submit rejected, running inline: pool_name={pool_name} count={len(sandbox_ids)} error={exc}"
             )
             self._kill_discarded_alive(pool_name, sandbox_ids, source)
 
@@ -605,10 +592,7 @@ class SandboxPoolSync:
         for sandbox_id in sandbox_ids:
             if self._kill_sandbox_best_effort(sandbox_id):
                 logger.debug(
-                    "Killed near-expiry idle sandbox: pool_name=%s sandbox_id=%s source=%s",
-                    pool_name,
-                    sandbox_id,
-                    source,
+                    f"Killed near-expiry idle sandbox: pool_name={pool_name} sandbox_id={sandbox_id} source={source}"
                 )
 
     def _begin_operation(self) -> None:
@@ -678,10 +662,7 @@ class SandboxPoolSync:
             )
         except Exception as exc:
             logger.warning(
-                "Pool primary lock release failed: pool_name=%s owner_id=%s error=%s",
-                self._config.pool_name,
-                self._config.owner_id,
-                exc,
+                f"Pool primary lock release failed: pool_name={self._config.pool_name} owner_id={self._config.owner_id} error={exc}"
             )
 
     def _close_provider(self) -> None:
@@ -693,8 +674,5 @@ class SandboxPoolSync:
         if self._config.primary_lock_ttl > self._config.warmup_ready_timeout:
             return
         logger.warning(
-            "Pool primary lock TTL may expire during warmup: pool_name=%s primary_lock_ttl_ms=%s warmup_ready_timeout_ms=%s",
-            self._config.pool_name,
-            int(self._config.primary_lock_ttl.total_seconds() * 1000),
-            int(self._config.warmup_ready_timeout.total_seconds() * 1000),
+            f"Pool primary lock TTL may expire during warmup: pool_name={self._config.pool_name} primary_lock_ttl_ms={int(self._config.primary_lock_ttl.total_seconds() * 1000)} warmup_ready_timeout_ms={int(self._config.warmup_ready_timeout.total_seconds() * 1000)}"
         )

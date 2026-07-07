@@ -14,7 +14,7 @@
 
 # Example Docker Runtime Configuration for OpenSandbox Server
 #
-# 完整配置参考：https://github.com/alibaba/OpenSandbox/blob/main/server/configuration.md
+# 完整配置参考：https://github.com/opensandbox-group/OpenSandbox/blob/main/server/configuration.md
 
 [server]
 host = "127.0.0.1"

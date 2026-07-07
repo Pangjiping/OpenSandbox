@@ -21,7 +21,7 @@ metadata:
     {{- include "opensandbox-server.labels" . | nindent 4 }}
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/status", "events", "services", "configmaps"]
+    resources: ["pods", "pods/status", "pods/log", "events", "services", "configmaps"]
     verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
   - apiGroups: [""]
     resources: ["secrets"]

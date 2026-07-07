@@ -275,7 +275,6 @@ public class CredentialVaultE2ETests : IClassFixture<E2ETestFixture>
             Match = new CredentialMatch
             {
                 Schemes = new[] { "http" },
-                Ports = new[] { 80 },
                 Hosts = new[] { CredentialVaultTargetHost() },
                 Methods = new[] { "GET" },
                 Paths = new[] { path }

@@ -28,7 +28,7 @@ configs:
       no_new_privileges = true
       # TODO: For production environments, it is recommended to set this to '4096' or higher to avoid
       # "can't start new thread" errors when multiple sandboxes are running concurrently.
-      # See: https://github.com/alibaba/OpenSandbox/issues/447
+      # See: https://github.com/opensandbox-group/OpenSandbox/issues/447
       pids_limit = 4096
 
       [ingress]

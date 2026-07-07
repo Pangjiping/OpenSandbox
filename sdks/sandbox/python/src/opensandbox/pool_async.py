@@ -269,10 +269,7 @@ class SandboxPoolAsync:
                     await manager.kill_sandbox(sandbox_id)
                 except Exception as exc:
                     logger.warning(
-                        "release_all_idle: failed to kill sandbox: pool_name=%s sandbox_id=%s error=%s",
-                        pool_name,
-                        sandbox_id,
-                        exc,
+                        f"release_all_idle: failed to kill sandbox: pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
                     )
         finally:
             if temporary_manager is not None:
@@ -319,10 +316,7 @@ class SandboxPoolAsync:
         drained = await self._await_in_flight_drain(self._config.drain_timeout)
         if not drained:
             logger.warning(
-                "Async pool graceful shutdown timed out waiting in-flight operations: pool_name=%s in_flight=%s timeout_ms=%s",
-                self._config.pool_name,
-                self._in_flight,
-                int(self._config.drain_timeout.total_seconds() * 1000),
+                f"Async pool graceful shutdown timed out waiting in-flight operations: pool_name={self._config.pool_name} in_flight={self._in_flight} timeout_ms={int(self._config.drain_timeout.total_seconds() * 1000)}"
             )
         async with self._lifecycle_lock:
             self._lifecycle_state = PoolLifecycleState.STOPPED
@@ -382,8 +376,7 @@ class SandboxPoolAsync:
                 )
             except Exception as exc:
                 logger.error(
-                    "Async pool reconcile tick failed unexpectedly: pool_name=%s",
-                    self._config.pool_name,
+                    f"Async pool reconcile tick failed unexpectedly: pool_name={self._config.pool_name}",
                     exc_info=exc,
                 )
             finally:
@@ -567,10 +560,7 @@ class SandboxPoolAsync:
             return True
         except Exception as exc:
             logger.warning(
-                "Async pool sandbox cleanup failed: pool_name=%s sandbox_id=%s error=%s",
-                self._config.pool_name,
-                sandbox_id,
-                exc,
+                f"Async pool sandbox cleanup failed: pool_name={self._config.pool_name} sandbox_id={sandbox_id} error={exc}"
             )
             return False
 
@@ -594,10 +584,7 @@ class SandboxPoolAsync:
             # No running loop / loop is closed — fall back to inline cleanup so the work is
             # not silently dropped. The await here is safe because we are inside `acquire()`.
             logger.debug(
-                "Discarded-alive kill scheduling failed, running inline: pool_name=%s count=%d error=%s",
-                pool_name,
-                len(sandbox_ids),
-                exc,
+                f"Discarded-alive kill scheduling failed, running inline: pool_name={pool_name} count={len(sandbox_ids)} error={exc}"
             )
             # Caller is in an async function, so this is awaited via the original
             # `_kill_discarded_alive` directly by the caller. Since `_schedule_kill_discarded_alive`
@@ -627,10 +614,7 @@ class SandboxPoolAsync:
         for sandbox_id, killed in zip(sandbox_ids, results, strict=True):
             if killed:
                 logger.debug(
-                    "Killed near-expiry idle sandbox: pool_name=%s sandbox_id=%s source=%s",
-                    pool_name,
-                    sandbox_id,
-                    source,
+                    f"Killed near-expiry idle sandbox: pool_name={pool_name} sandbox_id={sandbox_id} source={source}"
                 )
 
     async def _begin_operation(self) -> None:
@@ -693,10 +677,7 @@ class SandboxPoolAsync:
             )
         except Exception as exc:
             logger.warning(
-                "Async pool primary lock release failed: pool_name=%s owner_id=%s error=%s",
-                self._config.pool_name,
-                self._config.owner_id,
-                exc,
+                f"Async pool primary lock release failed: pool_name={self._config.pool_name} owner_id={self._config.owner_id} error={exc}"
             )
 
     async def _close_provider(self) -> None:
@@ -708,10 +689,7 @@ class SandboxPoolAsync:
         if self._config.primary_lock_ttl > self._config.warmup_ready_timeout:
             return
         logger.warning(
-            "Async pool primary lock TTL may expire during warmup: pool_name=%s primary_lock_ttl_ms=%s warmup_ready_timeout_ms=%s",
-            self._config.pool_name,
-            int(self._config.primary_lock_ttl.total_seconds() * 1000),
-            int(self._config.warmup_ready_timeout.total_seconds() * 1000),
+            f"Async pool primary lock TTL may expire during warmup: pool_name={self._config.pool_name} primary_lock_ttl_ms={int(self._config.primary_lock_ttl.total_seconds() * 1000)} warmup_ready_timeout_ms={int(self._config.warmup_ready_timeout.total_seconds() * 1000)}"
         )
 
 

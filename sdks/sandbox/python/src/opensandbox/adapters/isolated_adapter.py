@@ -60,7 +60,7 @@ def _decode_sse_event_line(line: str) -> EventNode | None:
         event_dict = json.loads(data)
         return EventNode(**event_dict)
     except Exception as e:
-        logger.error("Failed to parse SSE line: %s", line, exc_info=e)
+        logger.error(f"Failed to parse SSE line: {line}", exc_info=e)
         return None
 
 
@@ -108,7 +108,9 @@ class IsolationSessionHandle(IsolationSession):
         opts: IsolatedRunOpts | None = None,
         handlers: ExecutionHandlers | None = None,
     ) -> Execution:
-        return await self._adapter._run(self._info.session_id, code, opts=opts, handlers=handlers)
+        return await self._adapter._run(
+            self._info.session_id, code, opts=opts, handlers=handlers
+        )
 
     async def get(self) -> IsolatedSessionState:
         return await self._adapter._get(self._info.session_id)
@@ -194,9 +196,7 @@ class IsolatedSessionsAdapter(IsolationService):
         if not (session_id and session_id.strip()):
             raise InvalidArgumentException("session_id cannot be empty")
         try:
-            url = self._get_url(
-                self.SESSION_PATH.format(session_id=session_id)
-            )
+            url = self._get_url(self.SESSION_PATH.format(session_id=session_id))
             response = await self._httpx_client.get(url)
             if response.status_code != 200:
                 raise SandboxApiException(
@@ -232,9 +232,7 @@ class IsolatedSessionsAdapter(IsolationService):
         url = self._get_url(self.RUN_PATH.format(session_id=session_id))
 
         try:
-            execution = Execution(
-                id=None, execution_count=None, result=[], error=None
-            )
+            execution = Execution(id=None, execution_count=None, result=[], error=None)
             client = self._sse_client
 
             async with client.stream("POST", url, json=json_body) as response:
@@ -262,9 +260,7 @@ class IsolatedSessionsAdapter(IsolationService):
         if not (session_id and session_id.strip()):
             raise InvalidArgumentException("session_id cannot be empty")
         try:
-            url = self._get_url(
-                self.SESSION_PATH.format(session_id=session_id)
-            )
+            url = self._get_url(self.SESSION_PATH.format(session_id=session_id))
             response = await self._httpx_client.delete(url)
             if response.status_code not in (200, 204):
                 raise SandboxApiException(

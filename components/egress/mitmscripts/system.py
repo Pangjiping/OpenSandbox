@@ -45,6 +45,7 @@ import re
 import socket
 import time
 from typing import Any
+from urllib.parse import unquote
 
 from mitmproxy import ctx, http
 from mitmproxy.tls import ClientHelloData
@@ -255,6 +256,43 @@ def _request_path(flow: http.HTTPFlow) -> str:
     return path.split("?", 1)[0] or "/"
 
 
+_DOT_SEGMENT_RE = re.compile(r"/\.\.(/|$)")
+
+
+def _path_is_ambiguous(raw_path: str) -> bool:
+    """Return True if the raw request path contains dot-segment traversal sequences.
+
+    Legitimate HTTP clients resolve dot segments before sending. Raw ``..``
+    or percent-encoded variants on the wire indicate an attempt to confuse
+    path-based authorization checks (the canonical path seen by the upstream
+    server would differ from the raw prefix matched here).
+    """
+    path = raw_path.split("?", 1)[0]
+
+    # Only match ``..`` as a complete path segment (/../ or trailing /..).
+    if _DOT_SEGMENT_RE.search(path):
+        return True
+
+    # Iteratively decode to catch nested encodings like %252e%252e.
+    decoded = path
+    for _ in range(10):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    if _DOT_SEGMENT_RE.search(decoded):
+        return True
+
+    # Reject encoded separators (%2f, %5c) and raw backslashes.
+    lower = path.lower()
+    if "%2f" in lower or "%5c" in lower:
+        return True
+    if "\\" in path:
+        return True
+
+    return False
+
+
 def _host_matches(host: str, pattern: str) -> tuple[bool, int]:
     pattern = pattern.rstrip(".").lower()
     if pattern.startswith("*."):
@@ -278,9 +316,11 @@ def _binding_matches(flow: http.HTTPFlow, binding: dict[str, Any]) -> tuple[bool
     method = (flow.request.method or "").upper()
     path = _request_path(flow)
 
-    if scheme not in (match.get("schemes") or ["https"]):
+    schemes = match.get("schemes") or ["https"]
+    if scheme not in schemes:
         return False, 0
-    if port not in (match.get("ports") or [443]):
+    canonical_port = 443 if scheme == "https" else 80
+    if port != canonical_port:
         return False, 0
     if method not in [m.upper() for m in (match.get("methods") or ["GET", "POST", "PUT", "PATCH", "DELETE"])]:
         return False, 0
@@ -333,6 +373,23 @@ def request(flow: http.HTTPFlow) -> None:
         ctx.log.warn(
             f"credential proxy: Host header {presented!r} does not match "
             f"upstream destination {actual!r}; skipping credential injection"
+        )
+        return
+
+    # Reject requests with ambiguous path segments before credential injection.
+    # Raw dot-segments or encoded variants on the wire are not produced by
+    # legitimate HTTP clients and can trick prefix-based path matching into
+    # injecting credentials for a scope the canonical path does not belong to.
+    raw_path = flow.request.path or "/"
+    if _path_is_ambiguous(raw_path):
+        flow.response = http.Response.make(
+            403,
+            b"request path contains ambiguous segments\n",
+            {"content-type": "text/plain"},
+        )
+        ctx.log.warn(
+            "credential proxy: rejected request with ambiguous path: "
+            f"{flow.request.method} {_request_host(flow)}{_request_path(flow)}"
         )
         return
 

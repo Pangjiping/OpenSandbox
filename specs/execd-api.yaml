@@ -18,7 +18,7 @@ info:
 
   contact:
     name: OpenSandbox Team
-    url: https://github.com/alibaba/OpenSandbox
+    url: https://github.com/opensandbox-group/OpenSandbox
   license:
     name: Apache 2.0
     url: https://www.apache.org/licenses/LICENSE-2.0.html

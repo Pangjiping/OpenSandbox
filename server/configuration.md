@@ -122,7 +122,6 @@ If `runtime.type = "kubernetes"` and the `[kubernetes]` table is absent, the ser
 |-----|------|---------|-------------|
 | `kubeconfig_path` | string \| omitted | `null` | Path to kubeconfig (expandable, e.g. `~/.kube/config`). In-cluster configs often leave this unset and rely on in-cluster credentials. |
 | `namespace` | string \| omitted | `null` | Namespace for sandbox workloads. |
-| `service_account` | string \| omitted | `null` | ServiceAccount name bound to workload pods. |
 | `workload_provider` | string \| omitted | `null` | One of: **`batchsandbox`**, **`agent-sandbox`**. If omitted, the **first registered** provider is used (currently **`batchsandbox`**). |
 | `batchsandbox_template_file` | string \| omitted | `null` | Path to **BatchSandbox** CR YAML template when `workload_provider = "batchsandbox"`. |
 | `image_pull_policy` | string \| omitted | `"IfNotPresent"` | Image pull policy for the BatchSandbox main container. Values: **`Always`**, **`IfNotPresent`**, **`Never`**. |

@@ -16,6 +16,7 @@
 HTTP and WebSocket proxy routes for reaching services inside sandboxes via the lifecycle API.
 """
 
+import hmac
 import logging
 from collections.abc import AsyncIterator, Mapping
 from typing import Optional
@@ -34,6 +35,8 @@ from opensandbox_server.api import lifecycle
 from opensandbox_server.api.schema import Endpoint
 from opensandbox_server.middleware.auth import SANDBOX_API_KEY_HEADER
 from opensandbox_server.services.constants import OPEN_SANDBOX_EGRESS_AUTH_HEADER, OPEN_SANDBOX_SECURE_ACCESS_HEADER
+from opensandbox_server.tenants.context import set_current_tenant
+from opensandbox_server.tenants.provider import TenantProviderUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,7 @@ SENSITIVE_HEADERS = {
     "authorization",
     "cookie",
     SANDBOX_API_KEY_HEADER.lower(),
+    OPEN_SANDBOX_SECURE_ACCESS_HEADER.lower(),
 }
 
 FORWARDED_HEADERS = {
@@ -165,6 +169,44 @@ def _schedule_proxy_renew(request: Request | WebSocket, sandbox_id: str) -> None
         proxy_renew.schedule(sandbox_id)
 
 
+async def _authenticate_websocket_tenant(websocket: WebSocket) -> bool:
+    """Authenticate WebSocket connections in multi-tenant mode.
+
+    BaseHTTPMiddleware only intercepts HTTP requests, so WebSocket
+    connections must be authenticated here to establish tenant context.
+    Returns True if the request is authorized (or single-tenant mode).
+    """
+    import asyncio
+
+    provider = getattr(websocket.app.state, "tenant_provider", None)
+    if provider is None:
+        return True
+
+    api_key = websocket.headers.get(SANDBOX_API_KEY_HEADER)
+    if not api_key:
+        await _fail_client_websocket(
+            websocket, status.WS_1008_POLICY_VIOLATION, "missing API key"
+        )
+        return False
+
+    try:
+        tenant = await asyncio.to_thread(provider.lookup, api_key)
+    except TenantProviderUnavailable:
+        await _fail_client_websocket(
+            websocket, status.WS_1011_INTERNAL_ERROR, "tenant provider unavailable"
+        )
+        return False
+
+    if tenant is None:
+        await _fail_client_websocket(
+            websocket, status.WS_1008_POLICY_VIOLATION, "invalid API key"
+        )
+        return False
+
+    set_current_tenant(tenant)
+    return True
+
+
 async def _stream_backend_response(resp: httpx.Response) -> AsyncIterator[bytes]:
     """
     Yield backend body chunks without httpx content decoding and always close the response.
@@ -180,14 +222,47 @@ async def _stream_backend_response(resp: httpx.Response) -> AsyncIterator[bytes]
         await resp.aclose()
 
 
+def _verify_secure_access(endpoint: Endpoint, caller_headers: Mapping[str, str]) -> None:
+    """Enforce OpenSandbox-Secure-Access validation on server-proxy requests.
+
+    When endpoint resolution returns a secure-access token, the caller must
+    supply the same header value.  Raises 401 for missing or mismatched tokens.
+    Uses constant-time comparison to avoid timing side-channels.
+    """
+    if not endpoint.headers:
+        return
+    expected_token = endpoint.headers.get(OPEN_SANDBOX_SECURE_ACCESS_HEADER)
+    if not expected_token:
+        return
+    caller_token = None
+    for key, value in caller_headers.items():
+        if key.lower() == OPEN_SANDBOX_SECURE_ACCESS_HEADER.lower():
+            caller_token = value
+            break
+    if not caller_token or not hmac.compare_digest(
+        caller_token.encode(), expected_token.encode()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "MISSING_OR_INVALID_SECURE_ACCESS",
+                "message": (
+                    "This sandbox requires the "
+                    f"{OPEN_SANDBOX_SECURE_ACCESS_HEADER} header for access."
+                ),
+            },
+        )
+
+
 async def _proxy_http_request(
     request: Request,
     sandbox_id: str,
     port: int,
     full_path: str,
 ) -> StreamingResponse:
-    _schedule_proxy_renew(request, sandbox_id)
     endpoint = lifecycle.sandbox_service.get_endpoint(sandbox_id, port, resolve_internal=True)
+    _verify_secure_access(endpoint, request.headers)
+    _schedule_proxy_renew(request, sandbox_id)
     query_string = request.url.query
     target_url = _build_proxy_target_url(endpoint, full_path, query_string, websocket=False)
     client: httpx.AsyncClient = request.app.state.http_client
@@ -324,7 +399,8 @@ async def _proxy_websocket_request(
     port: int,
     full_path: str,
 ) -> None:
-    _schedule_proxy_renew(websocket, sandbox_id)
+    if not await _authenticate_websocket_tenant(websocket):
+        return
 
     try:
         endpoint = lifecycle.sandbox_service.get_endpoint(sandbox_id, port, resolve_internal=True)
@@ -342,6 +418,17 @@ async def _proxy_websocket_request(
         )
         return
 
+    try:
+        _verify_secure_access(endpoint, dict(websocket.headers))
+    except HTTPException:
+        await _fail_client_websocket(
+            websocket,
+            status.WS_1008_POLICY_VIOLATION,
+            "Missing or invalid secure-access token",
+        )
+        return
+
+    _schedule_proxy_renew(websocket, sandbox_id)
     query_string = websocket.url.query or ""
     target_url = _build_proxy_target_url(
         endpoint,

@@ -286,7 +286,6 @@ def _binding(name: str, path: str, auth: dict[str, object]) -> CredentialBinding
         name=name,
         match={
             "schemes": ["http"],
-            "ports": [80],
             "hosts": [TARGET_HOST],
             "methods": ["GET"],
             "paths": [path],

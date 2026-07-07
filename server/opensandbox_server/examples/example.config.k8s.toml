@@ -14,7 +14,7 @@
 
 # Example Kubernetes Runtime Configuration for OpenSandbox Server
 #
-# Full configuration reference: https://github.com/alibaba/OpenSandbox/blob/main/server/configuration.md
+# Full configuration reference: https://github.com/opensandbox-group/OpenSandbox/blob/main/server/configuration.md
 
 [server]
 host = "0.0.0.0"
