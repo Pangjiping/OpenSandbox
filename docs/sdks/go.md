@@ -225,6 +225,8 @@ func main() {
     }
 
     _ = sb.Kill(context.Background())
+    // Drain idle sandboxes before shutdown (single-process cleanup).
+    pool.ReleaseAllIdle(ctx)
     _ = pool.Shutdown(ctx, true)
 }
 ```
@@ -244,11 +246,19 @@ redisClient := redis.NewClient(&redis.Options{
     Addr: "redis.example.com:6379",
 })
 
+store, err := poolredis.NewRedisPoolStateStore(poolredis.RedisPoolStateStoreConfig{
+    Client:    redisClient,
+    KeyPrefix: "opensandbox:pool:prod",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
 pool, err := opensandbox.NewSandboxPoolBuilder().
     PoolName("prod-pool").
     OwnerID("worker-1").
     MaxIdle(10).
-    StateStore(poolredis.NewRedisPoolStateStore(poolredis.RedisPoolStateStoreConfig{Client: redisClient, KeyPrefix: "opensandbox:pool:prod"})).
+    StateStore(store).
     ConnectionConfig(opensandbox.ConnectionConfig{
         Domain: "api.opensandbox.io",
     }).

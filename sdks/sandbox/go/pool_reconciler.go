@@ -16,6 +16,7 @@ package opensandbox
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -55,20 +56,34 @@ func (s *reconcileState) recordSuccess() {
 	s.healthState = PoolHealthy
 }
 
-// recordFailure increments the failure count. If the count reaches the degraded
-// threshold, it transitions the pool to degraded state and computes the next
-// exponential backoff duration.
+// recordFailure records a single failure. Delegates to recordFailures.
 func (s *reconcileState) recordFailure(err error) {
+	s.recordFailures(1, err)
+}
+
+// recordFailures records count failures in one call. If the cumulative count
+// reaches or exceeds the degraded threshold, the pool transitions to degraded
+// state and backoffAttempts is incremented (escalating the backoff duration).
+// In production, this is called once per reconcile tick, so backoff escalates
+// per failing tick, not per individual failed sandbox creation.
+func (s *reconcileState) recordFailures(count int, err error) {
+	if count <= 0 {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.failureCount++
+	s.failureCount += count
 	if err != nil {
 		s.lastError = err.Error()
 	}
 	if s.failureCount >= s.degradedThreshold {
 		s.healthState = PoolDegraded
 		s.backoffAttempts++
-		backoff := reconcileBackoffBase * (1 << (s.backoffAttempts - 1))
+		shift := s.backoffAttempts - 1
+		if shift > 15 {
+			shift = 15
+		}
+		backoff := reconcileBackoffBase * (1 << shift)
 		if backoff > reconcileMaxBackoff {
 			backoff = reconcileMaxBackoff
 		}
@@ -170,6 +185,8 @@ func reconcileTick(
 			"idle", idleCount,
 			"max_idle", maxIdle,
 			"to_remove", toRemove)
+		shrinkErr := false
+		removedCount := 0
 		for i := 0; i < toRemove; i++ {
 			renewed, renewErr := store.RenewPrimaryLock(ctx, poolName, ownerID, lockTTL)
 			if renewErr != nil || !renewed {
@@ -177,26 +194,33 @@ func reconcileTick(
 				return
 			}
 			sandboxID, takeErr := store.TryTakeIdle(ctx, poolName)
-			if takeErr != nil || sandboxID == "" {
+			if takeErr != nil {
+				logger.Warn("reconcile: TryTakeIdle error during shrink", "pool_name", poolName, "error", takeErr)
+				state.recordFailure(takeErr)
+				shrinkErr = true
+				break
+			}
+			if sandboxID == "" {
 				break
 			}
 			deleteFn(sandboxID)
+			removedCount++
 		}
-		store.RenewPrimaryLock(ctx, poolName, ownerID, lockTTL)
+		if !shrinkErr && removedCount > 0 {
+			state.recordSuccess()
+		}
 		return
 	}
 
 	// Step 5: If deficit > 0 and not in backoff, create sandboxes.
 	deficit := maxIdle - idleCount
 	if deficit <= 0 {
-		store.RenewPrimaryLock(ctx, poolName, ownerID, lockTTL)
 		return
 	}
 	if state.shouldBackoff() {
 		logger.Debug("reconcile: backoff active, skipping replenish",
 			"pool_name", poolName,
 			"deficit", deficit)
-		store.RenewPrimaryLock(ctx, poolName, ownerID, lockTTL)
 		return
 	}
 
@@ -224,6 +248,11 @@ func reconcileTick(
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					results[idx] = createResult{err: fmt.Errorf("panic in createFn: %v", r)}
+				}
+			}()
 			select {
 			case <-ctx.Done():
 				results[idx] = createResult{err: ctx.Err()}
@@ -236,15 +265,21 @@ func reconcileTick(
 	wg.Wait()
 
 	var createdIDs []string
+	var lastCreateErr error
+	failCount := 0
 	for _, r := range results {
 		if r.err != nil {
-			state.recordFailure(r.err)
+			failCount++
+			lastCreateErr = r.err
 			logger.Warn("reconcile: sandbox create failed",
 				"pool_name", poolName,
 				"error", r.err)
 		} else if r.sandboxID != "" {
 			createdIDs = append(createdIDs, r.sandboxID)
 		}
+	}
+	if failCount > 0 {
+		state.recordFailures(failCount, lastCreateErr)
 	}
 
 	// Place created sandboxes into idle pool; record success per-putIdle.
@@ -261,7 +296,11 @@ func reconcileTick(
 		}
 		if putErr := store.PutIdle(ctx, poolName, id); putErr != nil {
 			state.recordFailure(putErr)
-			for _, orphanID := range createdIDs[i:] {
+			// Remove potentially-stored entry and kill the current sandbox.
+			_ = store.RemoveIdle(ctx, poolName, id)
+			deleteFn(id)
+			// Kill remaining orphans.
+			for _, orphanID := range createdIDs[i+1:] {
 				deleteFn(orphanID)
 			}
 			logger.Warn("reconcile: putIdle failed, killing orphans",
@@ -282,13 +321,6 @@ func reconcileTick(
 
 func intMin(a, b int) int {
 	if a < b {
-		return a
-	}
-	return b
-}
-
-func intMax(a, b int) int {
-	if a > b {
 		return a
 	}
 	return b

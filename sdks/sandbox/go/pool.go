@@ -37,15 +37,15 @@ var _ SandboxPool = (*DefaultSandboxPool)(nil)
 
 // DefaultSandboxPool implements SandboxPool.
 type DefaultSandboxPool struct {
-	config     *PoolConfig
-	stateStore PoolStateStore
-	manager    *SandboxManager
+	config  *PoolConfig
+	manager *SandboxManager
 
 	mu             sync.Mutex
 	lifecycleState PoolLifecycleState
 	healthState    PoolHealthState
 
 	reconciler   *reconcileState
+	reconMu      sync.Mutex // serializes reconcile ticks
 	ticker       *time.Ticker
 	done         chan struct{}
 	doneClosed   bool
@@ -66,7 +66,7 @@ func (p *DefaultSandboxPool) Start(ctx context.Context) error {
 
 	if p.lifecycleState == PoolLifecycleDraining {
 		p.mu.Unlock()
-		return nil
+		return &PoolNotRunningError{PoolName: p.config.PoolName, State: PoolLifecycleDraining}
 	}
 
 	// If restarting from STOPPED, wait for the previous shutdown to fully
@@ -76,14 +76,49 @@ func (p *DefaultSandboxPool) Start(ctx context.Context) error {
 		p.mu.Unlock()
 		<-ch
 		p.mu.Lock()
-		// Re-check after re-acquiring lock — another goroutine may have started.
+		// Re-check after re-acquiring lock — another goroutine may have started or shutdown initiated.
 		if p.lifecycleState == PoolLifecycleRunning || p.lifecycleState == PoolLifecycleStarting {
 			p.mu.Unlock()
 			return nil
 		}
+		if p.lifecycleState == PoolLifecycleDraining {
+			p.mu.Unlock()
+			return &PoolNotRunningError{PoolName: p.config.PoolName, State: PoolLifecycleDraining}
+		}
 	}
 
 	p.lifecycleState = PoolLifecycleStarting
+	startMaxIdle := p.config.MaxIdle
+	p.mu.Unlock()
+
+	// Initialize state store with pool configuration.
+	if err := p.config.StateStore.SetMaxIdle(ctx, p.config.PoolName, startMaxIdle); err != nil {
+		p.mu.Lock()
+		if p.lifecycleState == PoolLifecycleStarting {
+			p.lifecycleState = PoolLifecycleNotStarted
+		}
+		p.mu.Unlock()
+		return fmt.Errorf("opensandbox: pool start: failed to set maxIdle: %w", err)
+	}
+	if err := p.config.StateStore.SetIdleEntryTTL(ctx, p.config.PoolName, p.config.IdleTimeout); err != nil {
+		p.mu.Lock()
+		if p.lifecycleState == PoolLifecycleStarting {
+			p.lifecycleState = PoolLifecycleNotStarted
+		}
+		p.mu.Unlock()
+		return fmt.Errorf("opensandbox: pool start: failed to set idle TTL: %w", err)
+	}
+
+	p.mu.Lock()
+	// Re-check: a concurrent Shutdown() may have run while we were unlocked.
+	if p.lifecycleState != PoolLifecycleStarting {
+		currentState := p.lifecycleState
+		p.mu.Unlock()
+		if currentState == PoolLifecycleRunning {
+			return nil
+		}
+		return &PoolNotRunningError{PoolName: p.config.PoolName, State: currentState}
+	}
 	if p.config.PrimaryLockTTL <= p.config.WarmupReadyTimeout {
 		p.config.Logger.Warn("pool primary lock TTL may expire during warmup; "+
 			"configure PrimaryLockTTL greater than WarmupReadyTimeout plus expected preparer time",
@@ -114,11 +149,12 @@ func (p *DefaultSandboxPool) Start(ctx context.Context) error {
 	}
 
 	p.lifecycleState = PoolLifecycleRunning
+	maxIdle := p.config.MaxIdle
 	p.mu.Unlock()
 
 	p.config.Logger.Info("pool started",
 		"pool_name", p.config.PoolName,
-		"max_idle", p.config.MaxIdle)
+		"max_idle", maxIdle)
 	return nil
 }
 
@@ -149,36 +185,29 @@ func (p *DefaultSandboxPool) syncHealthState() {
 }
 
 func (p *DefaultSandboxPool) runReconcileTick(ctx context.Context) {
+	p.reconMu.Lock()
+	defer p.reconMu.Unlock()
 	createFn := func(ctx context.Context, reason PooledSandboxCreateReason) (string, error) {
 		return p.createOneSandbox(ctx, reason)
 	}
 	deleteFn := func(sandboxID string) {
 		p.killSandboxBestEffort(sandboxID)
 	}
-	reconcileTick(ctx, p.config, p.stateStore, p.reconciler, p.config.Logger, createFn, deleteFn)
+	reconcileTick(ctx, p.config, p.config.StateStore, p.reconciler, p.config.Logger, createFn, deleteFn)
 }
 
 // Acquire takes or creates a sandbox from the pool.
 func (p *DefaultSandboxPool) Acquire(ctx context.Context, opts AcquireOptions) (*Sandbox, error) {
-	// Lifecycle guard.
+	// Lifecycle guard + in-flight tracking (atomic under lock).
 	p.mu.Lock()
 	state := p.lifecycleState
-	p.mu.Unlock()
 	if state != PoolLifecycleRunning {
+		p.mu.Unlock()
 		return nil, &PoolNotRunningError{PoolName: p.config.PoolName, State: state}
 	}
-
-	// Track in-flight operation.
 	atomic.AddInt32(&p.inFlight, 1)
-	defer atomic.AddInt32(&p.inFlight, -1)
-
-	// Re-check after incrementing (race with shutdown).
-	p.mu.Lock()
-	state = p.lifecycleState
 	p.mu.Unlock()
-	if state != PoolLifecycleRunning {
-		return nil, &PoolNotRunningError{PoolName: p.config.PoolName, State: state}
-	}
+	defer atomic.AddInt32(&p.inFlight, -1)
 
 	// Resolve policy.
 	policy := p.config.EmptyBehavior
@@ -196,9 +225,9 @@ func (p *DefaultSandboxPool) Acquire(ctx context.Context, opts AcquireOptions) (
 	var takeResult *TakeIdleResult
 	var err error
 	if minTTL > 0 {
-		takeResult, err = p.stateStore.TryTakeIdleWithMinTTL(ctx, p.config.PoolName, minTTL)
+		takeResult, err = p.config.StateStore.TryTakeIdleWithMinTTL(ctx, p.config.PoolName, minTTL)
 	} else {
-		sandboxID, takeErr := p.stateStore.TryTakeIdle(ctx, p.config.PoolName)
+		sandboxID, takeErr := p.config.StateStore.TryTakeIdle(ctx, p.config.PoolName)
 		if takeErr != nil {
 			err = takeErr
 		} else {
@@ -218,32 +247,12 @@ func (p *DefaultSandboxPool) Acquire(ctx context.Context, opts AcquireOptions) (
 			"error", err)
 	}
 
-	var idleConnectErr error
+	var idleAttemptErr error
 	if takeResult != nil && takeResult.SandboxID != "" {
-		// Try to connect to the idle sandbox.
+		// Try to connect to the idle sandbox (health check is integrated into ready-poll).
 		sb, connectErr := p.connectAndRenew(ctx, takeResult.SandboxID, opts)
 		if connectErr == nil {
-			// Success - do health check if configured.
-			if !opts.SkipHealthCheck && p.config.AcquireHealthCheck != nil {
-				hcCtx, hcCancel := context.WithTimeout(ctx, p.config.AcquireReadyTimeout)
-				hcErr := p.config.AcquireHealthCheck(hcCtx, sb)
-				hcCancel()
-				if hcErr != nil {
-					// Health check failed.
-					_ = p.stateStore.RemoveIdle(ctx, p.config.PoolName, takeResult.SandboxID)
-					go p.killSandboxBestEffort(takeResult.SandboxID)
-					go p.killDiscardedAliveSandboxes(takeResult.DiscardedAliveSandboxIDs)
-					if policy == AcquirePolicyFailFast {
-						return nil, &PoolAcquireFailedError{PoolName: p.config.PoolName, Cause: hcErr}
-					}
-					idleConnectErr = hcErr
-					p.config.Logger.Warn("acquire: idle health check failed, falling through to direct create",
-						"pool_name", p.config.PoolName,
-						"sandbox_id", takeResult.SandboxID,
-						"error", hcErr)
-					goto directCreate
-				}
-			}
+			// Connected and healthy — return it.
 			go p.killDiscardedAliveSandboxes(takeResult.DiscardedAliveSandboxIDs)
 			p.config.Logger.Debug("acquire: from idle",
 				"pool_name", p.config.PoolName,
@@ -251,10 +260,15 @@ func (p *DefaultSandboxPool) Acquire(ctx context.Context, opts AcquireOptions) (
 			return sb, nil
 		}
 
-		idleConnectErr = connectErr
-		_ = p.stateStore.RemoveIdle(ctx, p.config.PoolName, takeResult.SandboxID)
+		// Connect or health check failed — clean up and fall through.
+		idleAttemptErr = connectErr
+		_ = p.config.StateStore.RemoveIdle(ctx, p.config.PoolName, takeResult.SandboxID)
 		go p.killSandboxBestEffort(takeResult.SandboxID)
-		p.config.Logger.Warn("acquire: idle sandbox connect failed",
+		if policy == AcquirePolicyFailFast {
+			go p.killDiscardedAliveSandboxes(takeResult.DiscardedAliveSandboxIDs)
+			return nil, &PoolAcquireFailedError{PoolName: p.config.PoolName, Cause: connectErr}
+		}
+		p.config.Logger.Warn("acquire: idle sandbox connect/health check failed, falling through to direct create",
 			"pool_name", p.config.PoolName,
 			"sandbox_id", takeResult.SandboxID,
 			"error", connectErr)
@@ -265,10 +279,9 @@ func (p *DefaultSandboxPool) Acquire(ctx context.Context, opts AcquireOptions) (
 		go p.killDiscardedAliveSandboxes(takeResult.DiscardedAliveSandboxIDs)
 	}
 
-directCreate:
 	if policy == AcquirePolicyFailFast {
-		if idleConnectErr != nil {
-			return nil, &PoolAcquireFailedError{PoolName: p.config.PoolName, Cause: idleConnectErr}
+		if idleAttemptErr != nil {
+			return nil, &PoolAcquireFailedError{PoolName: p.config.PoolName, Cause: idleAttemptErr}
 		}
 		return nil, &PoolEmptyError{PoolName: p.config.PoolName, Policy: policy}
 	}
@@ -278,19 +291,23 @@ directCreate:
 }
 
 func (p *DefaultSandboxPool) connectAndRenew(ctx context.Context, sandboxID string, opts AcquireOptions) (*Sandbox, error) {
-	var readyOpts ReadyOptions
-	if !opts.SkipHealthCheck {
-		readyOpts = ReadyOptions{
+	var sb *Sandbox
+	var err error
+	if opts.SkipHealthCheck {
+		sb, err = ConnectSandbox(ctx, p.config.ConnectionConfig, sandboxID)
+	} else {
+		sb, err = ConnectSandbox(ctx, p.config.ConnectionConfig, sandboxID, ReadyOptions{
 			Timeout:         p.config.AcquireReadyTimeout,
 			PollingInterval: p.config.AcquireHealthCheckPollingInterval,
-		}
+			HealthCheck:     p.adaptAcquireHealthCheck(),
+		})
 	}
-	sb, err := ConnectSandbox(ctx, p.config.ConnectionConfig, sandboxID, readyOpts)
 	if err != nil {
 		return nil, err
 	}
 	if opts.SandboxTimeout > 0 {
 		if _, err := sb.Renew(ctx, opts.SandboxTimeout); err != nil {
+			_ = sb.Close()
 			return nil, fmt.Errorf("opensandbox: pool acquire: renew after connect failed: %w", err)
 		}
 	}
@@ -298,46 +315,35 @@ func (p *DefaultSandboxPool) connectAndRenew(ctx context.Context, sandboxID stri
 }
 
 func (p *DefaultSandboxPool) directCreate(ctx context.Context, opts AcquireOptions) (*Sandbox, error) {
+	var sb *Sandbox
+	var err error
+
 	if p.config.SandboxCreator != nil {
 		createCtx := PooledSandboxCreateContext{
-			PoolName:         p.config.PoolName,
-			OwnerID:          p.config.OwnerID,
-			IdleTimeout:      p.config.IdleTimeout,
-			Reason:           CreateReasonAcquire,
-			ReadyTimeout:     p.config.AcquireReadyTimeout,
-			SkipHealthCheck:  opts.SkipHealthCheck,
-			ConnectionConfig: p.config.ConnectionConfig,
-			CreationSpec:     p.config.CreationSpec,
+			PoolName:                   p.config.PoolName,
+			OwnerID:                    p.config.OwnerID,
+			IdleTimeout:                p.config.IdleTimeout,
+			Reason:                     CreateReasonAcquire,
+			ReadyTimeout:               p.config.AcquireReadyTimeout,
+			HealthCheckPollingInterval: p.config.AcquireHealthCheckPollingInterval,
+			SkipHealthCheck:            opts.SkipHealthCheck,
+			HealthCheck:                p.config.AcquireHealthCheck,
+			ConnectionConfig:           p.config.ConnectionConfig,
+			CreationSpec:               p.config.CreationSpec,
 		}
-		sb, err := p.config.SandboxCreator.Create(ctx, createCtx)
-		if err != nil {
-			return nil, err
-		}
-		if opts.SandboxTimeout > 0 {
-			if _, err := sb.Renew(ctx, opts.SandboxTimeout); err != nil {
-				go p.killSandboxBestEffort(sb.ID())
-				_ = sb.Close()
-				return nil, fmt.Errorf("opensandbox: pool direct create: renew failed: %w", err)
-			}
-		}
-		// Run acquire health check on direct-created sandbox.
-		if !opts.SkipHealthCheck && p.config.AcquireHealthCheck != nil {
-			hcCtx, hcCancel := context.WithTimeout(ctx, p.config.AcquireReadyTimeout)
-			hcErr := p.config.AcquireHealthCheck(hcCtx, sb)
-			hcCancel()
-			if hcErr != nil {
-				go p.killSandboxBestEffort(sb.ID())
-				_ = sb.Close()
-				return nil, fmt.Errorf("opensandbox: pool direct create: health check failed: %w", hcErr)
-			}
-		}
-		return sb, nil
+		sb, err = p.config.SandboxCreator.Create(ctx, createCtx)
+	} else {
+		sb, err = p.createSandboxFromSpec(ctx, p.config.AcquireReadyTimeout, p.config.AcquireHealthCheckPollingInterval, opts.SkipHealthCheck, p.adaptAcquireHealthCheck())
 	}
-
-	sb, err := p.createSandboxFromSpec(ctx, p.config.AcquireReadyTimeout, opts.SkipHealthCheck)
 	if err != nil {
 		return nil, err
 	}
+	return p.postCreateChecks(ctx, sb, opts)
+}
+
+// postCreateChecks applies renew to a freshly created sandbox.
+// Health check is already integrated into CreateSandbox's ready-poll via HealthCheck option.
+func (p *DefaultSandboxPool) postCreateChecks(ctx context.Context, sb *Sandbox, opts AcquireOptions) (*Sandbox, error) {
 	if opts.SandboxTimeout > 0 {
 		if _, err := sb.Renew(ctx, opts.SandboxTimeout); err != nil {
 			go p.killSandboxBestEffort(sb.ID())
@@ -345,55 +351,39 @@ func (p *DefaultSandboxPool) directCreate(ctx context.Context, opts AcquireOptio
 			return nil, fmt.Errorf("opensandbox: pool direct create: renew failed: %w", err)
 		}
 	}
-	// Run acquire health check on direct-created sandbox.
-	if !opts.SkipHealthCheck && p.config.AcquireHealthCheck != nil {
-		hcCtx, hcCancel := context.WithTimeout(ctx, p.config.AcquireReadyTimeout)
-		hcErr := p.config.AcquireHealthCheck(hcCtx, sb)
-		hcCancel()
-		if hcErr != nil {
-			go p.killSandboxBestEffort(sb.ID())
-			_ = sb.Close()
-			return nil, fmt.Errorf("opensandbox: pool direct create: health check failed: %w", hcErr)
-		}
-	}
 	return sb, nil
 }
 
 func (p *DefaultSandboxPool) createOneSandbox(ctx context.Context, reason PooledSandboxCreateReason) (string, error) {
+	var sb *Sandbox
+	var err error
+
 	if p.config.SandboxCreator != nil {
 		createCtx := PooledSandboxCreateContext{
-			PoolName:         p.config.PoolName,
-			OwnerID:          p.config.OwnerID,
-			IdleTimeout:      p.config.IdleTimeout,
-			Reason:           reason,
-			ReadyTimeout:     p.config.WarmupReadyTimeout,
-			SkipHealthCheck:  p.config.WarmupSkipHealthCheck,
-			ConnectionConfig: p.config.ConnectionConfig,
-			CreationSpec:     p.config.CreationSpec,
+			PoolName:                   p.config.PoolName,
+			OwnerID:                    p.config.OwnerID,
+			IdleTimeout:                p.config.IdleTimeout,
+			Reason:                     reason,
+			ReadyTimeout:               p.config.WarmupReadyTimeout,
+			HealthCheckPollingInterval: p.config.WarmupHealthCheckPollingInterval,
+			SkipHealthCheck:            p.config.WarmupSkipHealthCheck,
+			HealthCheck:                p.config.WarmupHealthCheck,
+			ConnectionConfig:           p.config.ConnectionConfig,
+			CreationSpec:               p.config.CreationSpec,
 		}
-		sb, err := p.config.SandboxCreator.Create(ctx, createCtx)
-		if err != nil {
-			return "", err
-		}
-		defer sb.Close()
-		sandboxID := sb.ID()
-		if err := p.applyWarmupCallbacks(ctx, sb); err != nil {
-			go p.killSandboxBestEffort(sandboxID)
-			return "", err
-		}
-		if _, err := sb.Renew(ctx, p.config.IdleTimeout); err != nil {
-			p.config.Logger.Warn("pool warmup: renew idle TTL failed",
-				"pool_name", p.config.PoolName,
-				"sandbox_id", sandboxID,
-				"error", err)
-		}
-		return sandboxID, nil
+		sb, err = p.config.SandboxCreator.Create(ctx, createCtx)
+	} else {
+		sb, err = p.createSandboxFromSpec(ctx, p.config.WarmupReadyTimeout, p.config.WarmupHealthCheckPollingInterval, p.config.WarmupSkipHealthCheck, p.adaptWarmupHealthCheck())
 	}
-
-	sb, err := p.createSandboxFromSpec(ctx, p.config.WarmupReadyTimeout, p.config.WarmupSkipHealthCheck)
 	if err != nil {
 		return "", err
 	}
+	return p.finalizeWarmup(ctx, sb)
+}
+
+// finalizeWarmup runs warmup callbacks and renews the sandbox TTL.
+// The sandbox connection is always closed; only the ID is returned.
+func (p *DefaultSandboxPool) finalizeWarmup(ctx context.Context, sb *Sandbox) (string, error) {
 	defer sb.Close()
 	sandboxID := sb.ID()
 	if err := p.applyWarmupCallbacks(ctx, sb); err != nil {
@@ -401,47 +391,45 @@ func (p *DefaultSandboxPool) createOneSandbox(ctx context.Context, reason Pooled
 		return "", err
 	}
 	if _, err := sb.Renew(ctx, p.config.IdleTimeout); err != nil {
-		p.config.Logger.Warn("pool warmup: renew idle TTL failed",
-			"pool_name", p.config.PoolName,
-			"sandbox_id", sandboxID,
-			"error", err)
+		go p.killSandboxBestEffort(sandboxID)
+		return "", fmt.Errorf("opensandbox: pool warmup: renew failed: %w", err)
 	}
 	return sandboxID, nil
 }
 
-func (p *DefaultSandboxPool) createSandboxFromSpec(ctx context.Context, readyTimeout time.Duration, skipHealthCheck bool) (*Sandbox, error) {
+func (p *DefaultSandboxPool) createSandboxFromSpec(ctx context.Context, readyTimeout time.Duration, healthCheckInterval time.Duration, skipHealthCheck bool, healthCheck func(ctx context.Context, sb *Sandbox) (bool, error)) (*Sandbox, error) {
 	spec := p.config.CreationSpec
 	timeoutSec := int(p.config.IdleTimeout.Seconds())
+	if timeoutSec < 1 {
+		timeoutSec = 1
+	}
 	createOpts := SandboxCreateOptions{
-		Image:           spec.Image,
-		SnapshotID:      spec.SnapshotID,
-		Entrypoint:      spec.Entrypoint,
-		ResourceLimits:  spec.ResourceLimits,
-		TimeoutSeconds:  &timeoutSec,
-		Env:             spec.Env,
-		Metadata:        spec.Metadata,
-		NetworkPolicy:   spec.NetworkPolicy,
-		Volumes:         spec.Volumes,
-		Extensions:      spec.Extensions,
-		Platform:        spec.Platform,
-		ManualCleanup:   spec.ManualCleanup,
-		SecureAccess:    spec.SecureAccess,
-		CredentialProxy: spec.CredentialProxy,
-		SkipHealthCheck: skipHealthCheck,
-		ReadyTimeout:    readyTimeout,
+		Image:               spec.Image,
+		SnapshotID:          spec.SnapshotID,
+		Entrypoint:          spec.Entrypoint,
+		ResourceLimits:      spec.ResourceLimits,
+		TimeoutSeconds:      &timeoutSec,
+		Env:                 spec.Env,
+		Metadata:            spec.Metadata,
+		NetworkPolicy:       spec.NetworkPolicy,
+		Volumes:             spec.Volumes,
+		Extensions:          spec.Extensions,
+		Platform:            spec.Platform,
+		ManualCleanup:       spec.ManualCleanup,
+		SecureAccess:        spec.SecureAccess,
+		CredentialProxy:     spec.CredentialProxy,
+		ImageAuth:           spec.ImageAuth,
+		SkipHealthCheck:     skipHealthCheck,
+		ReadyTimeout:        readyTimeout,
+		HealthCheckInterval: healthCheckInterval,
+		HealthCheck:         healthCheck,
 	}
 	return CreateSandbox(ctx, p.config.ConnectionConfig, createOpts)
 }
 
 func (p *DefaultSandboxPool) applyWarmupCallbacks(ctx context.Context, sb *Sandbox) error {
-	if p.config.WarmupHealthCheck != nil && !p.config.WarmupSkipHealthCheck {
-		hcCtx, hcCancel := context.WithTimeout(ctx, p.config.WarmupReadyTimeout)
-		err := p.config.WarmupHealthCheck(hcCtx, sb)
-		hcCancel()
-		if err != nil {
-			return err
-		}
-	}
+	// WarmupHealthCheck is now integrated into createSandboxFromSpec's ready-poll
+	// via the HealthCheck option, so only the preparer callback remains here.
 	if p.config.WarmupSandboxPreparer != nil {
 		if err := p.config.WarmupSandboxPreparer(ctx, sb); err != nil {
 			return err
@@ -450,29 +438,62 @@ func (p *DefaultSandboxPool) applyWarmupCallbacks(ctx context.Context, sb *Sandb
 	return nil
 }
 
+// adaptAcquireHealthCheck wraps the user's AcquireHealthCheck (func error)
+// into the ReadyOptions.HealthCheck signature (func (bool, error)) so it
+// can be retried during the ready-poll loop, matching Python/Kotlin semantics.
+func (p *DefaultSandboxPool) adaptAcquireHealthCheck() func(context.Context, *Sandbox) (bool, error) {
+	return adaptHealthCheck(p.config.AcquireHealthCheck)
+}
+
+// adaptWarmupHealthCheck wraps WarmupHealthCheck the same way.
+func (p *DefaultSandboxPool) adaptWarmupHealthCheck() func(context.Context, *Sandbox) (bool, error) {
+	return adaptHealthCheck(p.config.WarmupHealthCheck)
+}
+
+// adaptHealthCheck wraps a user-provided health check (func error) into the
+// ReadyOptions.HealthCheck signature (func (bool, error)) so it can be retried
+// during the ready-poll loop, matching Python/Kotlin semantics.
+// Errors are propagated so WaitUntilReady records them as lastErr.
+func adaptHealthCheck(userCheck func(context.Context, *Sandbox) error) func(context.Context, *Sandbox) (bool, error) {
+	if userCheck == nil {
+		return nil
+	}
+	return func(ctx context.Context, sb *Sandbox) (bool, error) {
+		if err := userCheck(ctx, sb); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+}
+
 // ReleaseAllIdle drains all idle sandboxes and kills them.
 func (p *DefaultSandboxPool) ReleaseAllIdle(ctx context.Context) (int, error) {
 	count := 0
 	for {
-		sandboxID, err := p.stateStore.TryTakeIdle(ctx, p.config.PoolName)
+		if err := ctx.Err(); err != nil {
+			return count, err
+		}
+		sandboxID, err := p.config.StateStore.TryTakeIdle(ctx, p.config.PoolName)
 		if err != nil {
 			return count, err
 		}
 		if sandboxID == "" {
 			break
 		}
-		p.killSandboxBestEffort(sandboxID)
+		go p.killSandboxBestEffort(sandboxID)
 		count++
 	}
 	return count, nil
 }
 
 // Resize dynamically changes the idle target.
+// The new value is persisted to the state store and updated locally so that
+// a subsequent Start() (after stop/restart) uses the latest value.
 func (p *DefaultSandboxPool) Resize(ctx context.Context, newMaxIdle int) error {
 	if newMaxIdle < 0 {
 		return fmt.Errorf("opensandbox: pool resize: maxIdle must be >= 0, got %d", newMaxIdle)
 	}
-	if err := p.stateStore.SetMaxIdle(ctx, p.config.PoolName, newMaxIdle); err != nil {
+	if err := p.config.StateStore.SetMaxIdle(ctx, p.config.PoolName, newMaxIdle); err != nil {
 		return err
 	}
 	p.mu.Lock()
@@ -486,14 +507,15 @@ func (p *DefaultSandboxPool) Snapshot(ctx context.Context) (*PoolSnapshot, error
 	p.mu.Lock()
 	ls := p.lifecycleState
 	hs := p.healthState
+	recon := p.reconciler
 	p.mu.Unlock()
 
-	counters, err := p.stateStore.SnapshotCounters(ctx, p.config.PoolName)
+	counters, err := p.config.StateStore.SnapshotCounters(ctx, p.config.PoolName)
 	if err != nil {
 		return nil, err
 	}
 
-	maxIdle, err := p.stateStore.GetMaxIdle(ctx, p.config.PoolName)
+	maxIdle, err := p.config.StateStore.GetMaxIdle(ctx, p.config.PoolName)
 	if err != nil {
 		return nil, err
 	}
@@ -501,8 +523,8 @@ func (p *DefaultSandboxPool) Snapshot(ctx context.Context) (*PoolSnapshot, error
 	var failureCount int
 	var backoffActive bool
 	var lastError string
-	if p.reconciler != nil {
-		_, failureCount, backoffActive, lastError = p.reconciler.snapshot()
+	if recon != nil {
+		_, failureCount, backoffActive, lastError = recon.snapshot()
 	}
 
 	return &PoolSnapshot{
@@ -519,19 +541,44 @@ func (p *DefaultSandboxPool) Snapshot(ctx context.Context) (*PoolSnapshot, error
 
 // SnapshotIdleEntries returns the current idle entries.
 func (p *DefaultSandboxPool) SnapshotIdleEntries(ctx context.Context) ([]IdleEntry, error) {
-	return p.stateStore.SnapshotIdleEntries(ctx, p.config.PoolName)
+	return p.config.StateStore.SnapshotIdleEntries(ctx, p.config.PoolName)
 }
 
 // Shutdown stops the pool and releases idle sandboxes.
 func (p *DefaultSandboxPool) Shutdown(ctx context.Context, graceful bool) error {
 	p.mu.Lock()
-	if p.lifecycleState == PoolLifecycleStopped {
+	if p.lifecycleState == PoolLifecycleStopped || p.lifecycleState == PoolLifecycleDraining {
+		ch := p.shutdownDone
 		p.mu.Unlock()
+		if ch != nil {
+			<-ch
+		}
 		return nil
 	}
-	if p.lifecycleState == PoolLifecycleNotStarted {
+	if p.lifecycleState == PoolLifecycleNotStarted || p.lifecycleState == PoolLifecycleStarting {
 		p.lifecycleState = PoolLifecycleStopped
+		if p.ticker != nil {
+			p.ticker.Stop()
+		}
+		if p.done != nil && !p.doneClosed {
+			close(p.done)
+			p.doneClosed = true
+		}
+		cancelFn := p.reconCancel
+		sdCh := p.shutdownDone
 		p.mu.Unlock()
+		if cancelFn != nil {
+			cancelFn()
+		}
+		p.wg.Wait()
+		// Close shutdownDone so a concurrent Start() waiting on it unblocks.
+		if sdCh != nil {
+			select {
+			case <-sdCh:
+			default:
+				close(sdCh)
+			}
+		}
 		return nil
 	}
 
@@ -544,13 +591,14 @@ func (p *DefaultSandboxPool) Shutdown(ctx context.Context, graceful bool) error 
 			close(p.done)
 			p.doneClosed = true
 		}
-		if p.reconCancel != nil {
-			p.reconCancel()
-		}
+		cancelFn := p.reconCancel
 		sdCh := p.shutdownDone
 		p.mu.Unlock()
+		if cancelFn != nil {
+			cancelFn()
+		}
 		p.wg.Wait()
-		_ = p.stateStore.ReleasePrimaryLock(ctx, p.config.PoolName, p.config.OwnerID)
+		_ = p.config.StateStore.ReleasePrimaryLock(ctx, p.config.PoolName, p.config.OwnerID)
 		p.config.Logger.Info("pool shutdown (non-graceful)",
 			"pool_name", p.config.PoolName)
 		if sdCh != nil {
@@ -572,19 +620,28 @@ func (p *DefaultSandboxPool) Shutdown(ctx context.Context, graceful bool) error 
 		close(p.done)
 		p.doneClosed = true
 	}
+	cancelFn := p.reconCancel
 	p.mu.Unlock()
 
+	if cancelFn != nil {
+		cancelFn()
+	}
 	p.wg.Wait()
-	_ = p.stateStore.ReleasePrimaryLock(ctx, p.config.PoolName, p.config.OwnerID)
+	_ = p.config.StateStore.ReleasePrimaryLock(ctx, p.config.PoolName, p.config.OwnerID)
 
 	// Wait for in-flight operations to drain.
 	if p.config.DrainTimeout > 0 {
 		deadline := time.After(p.config.DrainTimeout)
+		pollTicker := time.NewTicker(100 * time.Millisecond)
+		defer pollTicker.Stop()
 		for atomic.LoadInt32(&p.inFlight) > 0 {
 			select {
 			case <-deadline:
+				p.config.Logger.Warn("pool shutdown: drain timeout expired with in-flight operations",
+					"pool_name", p.config.PoolName,
+					"in_flight", atomic.LoadInt32(&p.inFlight))
 				goto done
-			case <-time.After(100 * time.Millisecond):
+			case <-pollTicker.C:
 			}
 		}
 	}
@@ -606,8 +663,12 @@ done:
 	return nil
 }
 
+const killSandboxTimeout = 30 * time.Second
+
 func (p *DefaultSandboxPool) killSandboxBestEffort(sandboxID string) {
-	_ = p.manager.KillSandbox(context.Background(), sandboxID)
+	ctx, cancel := context.WithTimeout(context.Background(), killSandboxTimeout)
+	defer cancel()
+	_ = p.manager.KillSandbox(ctx, sandboxID)
 }
 
 func (p *DefaultSandboxPool) killDiscardedAliveSandboxes(ids []string) {

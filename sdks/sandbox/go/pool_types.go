@@ -51,7 +51,7 @@ func (s PoolLifecycleState) String() string {
 type PoolHealthState int
 
 const (
-	PoolHealthy  PoolHealthState = iota
+	PoolHealthy PoolHealthState = iota
 	PoolDegraded
 )
 
@@ -135,6 +135,7 @@ type PoolCreationSpec struct {
 	ManualCleanup   bool
 	SecureAccess    bool
 	CredentialProxy *CredentialProxyConfig
+	ImageAuth       *ImageAuth
 }
 
 // PooledSandboxCreator allows custom sandbox creation logic.
@@ -146,7 +147,7 @@ type PooledSandboxCreator interface {
 type PooledSandboxCreateReason int
 
 const (
-	CreateReasonWarmup  PooledSandboxCreateReason = iota
+	CreateReasonWarmup PooledSandboxCreateReason = iota
 	CreateReasonAcquire
 )
 
@@ -155,7 +156,7 @@ func (r PooledSandboxCreateReason) String() string {
 	case CreateReasonWarmup:
 		return "WARMUP"
 	case CreateReasonAcquire:
-		return "DIRECT_CREATE"
+		return "ACQUIRE"
 	default:
 		return "UNKNOWN"
 	}
@@ -164,14 +165,16 @@ func (r PooledSandboxCreateReason) String() string {
 // PooledSandboxCreateContext carries pool metadata and creation parameters
 // to a PooledSandboxCreator.
 type PooledSandboxCreateContext struct {
-	PoolName         string
-	OwnerID          string
-	IdleTimeout      time.Duration
-	Reason           PooledSandboxCreateReason
-	ReadyTimeout     time.Duration
-	SkipHealthCheck  bool
-	ConnectionConfig ConnectionConfig
-	CreationSpec     PoolCreationSpec
+	PoolName                   string
+	OwnerID                    string
+	IdleTimeout                time.Duration
+	Reason                     PooledSandboxCreateReason
+	ReadyTimeout               time.Duration
+	HealthCheckPollingInterval time.Duration
+	SkipHealthCheck            bool
+	HealthCheck                func(ctx context.Context, sb *Sandbox) error
+	ConnectionConfig           ConnectionConfig
+	CreationSpec               PoolCreationSpec
 }
 
 // PoolLogger is the logging interface for pool operations.
@@ -204,8 +207,8 @@ type PoolConfig struct {
 	ConnectionConfig  ConnectionConfig
 	CreationSpec      PoolCreationSpec
 
-	AcquireReadyTimeout              time.Duration
-	WarmupReadyTimeout               time.Duration
+	AcquireReadyTimeout               time.Duration
+	WarmupReadyTimeout                time.Duration
 	AcquireHealthCheckPollingInterval time.Duration
 	WarmupHealthCheckPollingInterval  time.Duration
 
@@ -231,6 +234,3 @@ type AcquireOptions struct {
 
 // DefaultIdleTimeout is the default TTL for idle pool entries (24 hours, per OSEP-0005).
 const DefaultIdleTimeout = 24 * time.Hour
-
-// DefaultIdleTTL is an alias for DefaultIdleTimeout.
-const DefaultIdleTTL = DefaultIdleTimeout

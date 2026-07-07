@@ -31,7 +31,6 @@ class SandboxError:
     POOL_EMPTY = "POOL_EMPTY"
     POOL_ACQUIRE_FAILED = "POOL_ACQUIRE_FAILED"
     POOL_STATE_STORE_UNAVAILABLE = "POOL_STATE_STORE_UNAVAILABLE"
-    POOL_STATE_STORE_CONTENTION = "POOL_STATE_STORE_CONTENTION"
     POOL_NOT_RUNNING = "POOL_NOT_RUNNING"
 
     def __init__(self, code: str, message: str | None = None) -> None:
@@ -189,21 +188,6 @@ class PoolStateStoreUnavailableException(SandboxException):
             message,
             cause,
             SandboxError(SandboxError.POOL_STATE_STORE_UNAVAILABLE, message),
-        )
-
-
-class PoolStateStoreContentionException(SandboxException):
-    """Thrown when atomic store operations encounter contention."""
-
-    def __init__(
-        self,
-        message: str | None = None,
-        cause: Exception | None = None,
-    ) -> None:
-        super().__init__(
-            message,
-            cause,
-            SandboxError(SandboxError.POOL_STATE_STORE_CONTENTION, message),
         )
 
 

@@ -166,18 +166,6 @@ class PoolStateStoreUnavailableException(
     )
 
 /**
- * Thrown when atomic take or lock-update conflicts occur in the state store.
- */
-class PoolStateStoreContentionException(
-    message: String? = null,
-    cause: Throwable? = null,
-) : SandboxException(
-        message = message,
-        cause = cause,
-        error = SandboxError(SandboxError.POOL_STATE_STORE_CONTENTION, message),
-    )
-
-/**
  * Thrown when acquire is called while pool is not in RUNNING state.
  */
 class PoolNotRunningException(
@@ -217,9 +205,6 @@ data class SandboxError(
 
         /** Pool state store unavailable during operations. */
         const val POOL_STATE_STORE_UNAVAILABLE = "POOL_STATE_STORE_UNAVAILABLE"
-
-        /** Pool state store contention (atomic take or lock conflicts). */
-        const val POOL_STATE_STORE_CONTENTION = "POOL_STATE_STORE_CONTENTION"
 
         /** Pool is not in RUNNING state when acquire is requested. */
         const val POOL_NOT_RUNNING = "POOL_NOT_RUNNING"

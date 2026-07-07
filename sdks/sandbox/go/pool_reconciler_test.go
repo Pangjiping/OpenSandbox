@@ -208,10 +208,13 @@ func TestReconciler_ExponentialBackoff(t *testing.T) {
 		assert.Fail(t, fmt.Sprintf("expected ~30s backoff, got %v", backoffDuration))
 	}
 
-	// Second backoff attempt => 30s * 2^1 = 60s
+	// Escalation via recordFailures with batch count:
+	// threshold=1, recordFailures(1) => backoffAttempts=1 (30s)
+	// Then recordFailures(1) again => backoffAttempts=2 (60s)
+	// This simulates two consecutive failing ticks (each calling recordFailures once).
 	state3 := newReconcileState(1)
-	state3.recordFailure(errors.New("first"))
-	state3.recordFailure(errors.New("second"))
+	state3.recordFailures(1, errors.New("tick-1-fail")) // backoffAttempts=1, backoff=30s
+	state3.recordFailures(1, errors.New("tick-2-fail")) // backoffAttempts=2, backoff=60s
 	state3.mu.Lock()
 	backoffDuration2 := state3.backoffUntil.Sub(time.Now())
 	state3.mu.Unlock()

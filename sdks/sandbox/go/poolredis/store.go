@@ -63,9 +63,11 @@ local current_expires_at = redis.call('HGET', KEYS[2], ARGV[1])
 if current_expires_at and tonumber(current_expires_at) > now_ms then
   return 0
 end
-if not current_expires_at then
-  redis.call('RPUSH', KEYS[1], ARGV[1])
+if current_expires_at then
+  -- Re-activate expired entry: remove from old position and re-add at tail for FIFO
+  redis.call('LREM', KEYS[1], 0, ARGV[1])
 end
+redis.call('RPUSH', KEYS[1], ARGV[1])
 redis.call('HSET', KEYS[2], ARGV[1], expires_at)
 return 1
 `)
@@ -91,6 +93,18 @@ end
 return discarded_alive
 `)
 
+	acquireLockScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if not current then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+  return 1
+elseif current == ARGV[1] then
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+`)
+
 	renewLockScript = redis.NewScript(`
 if redis.call('GET', KEYS[1]) == ARGV[1] then
   redis.call('PEXPIRE', KEYS[1], ARGV[2])
@@ -110,6 +124,20 @@ return 0
 redis.call('HDEL', KEYS[2], ARGV[1])
 redis.call('LREM', KEYS[1], 0, ARGV[1])
 return 1
+`)
+
+	snapshotCountersScript = redis.NewScript(`
+local redis_time = redis.call('TIME')
+local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+local entries = redis.call('HGETALL', KEYS[1])
+local count = 0
+for i = 1, #entries, 2 do
+  local exp = tonumber(entries[i + 1])
+  if exp > now_ms then
+    count = count + 1
+  end
+end
+return count
 `)
 )
 
@@ -131,7 +159,11 @@ type RedisPoolStateStore struct {
 }
 
 // NewRedisPoolStateStore creates a new RedisPoolStateStore with the given configuration.
-func NewRedisPoolStateStore(config RedisPoolStateStoreConfig) *RedisPoolStateStore {
+// Returns an error if config.Client is nil.
+func NewRedisPoolStateStore(config RedisPoolStateStoreConfig) (*RedisPoolStateStore, error) {
+	if config.Client == nil {
+		return nil, fmt.Errorf("opensandbox: RedisPoolStateStoreConfig.Client must not be nil")
+	}
 	prefix := config.KeyPrefix
 	if prefix == "" {
 		prefix = DefaultRedisKeyPrefix
@@ -139,7 +171,7 @@ func NewRedisPoolStateStore(config RedisPoolStateStoreConfig) *RedisPoolStateSto
 	return &RedisPoolStateStore{
 		client:    config.Client,
 		keyPrefix: prefix,
-	}
+	}, nil
 }
 
 // TryTakeIdle atomically takes the oldest idle sandbox from the pool.
@@ -237,6 +269,9 @@ func (s *RedisPoolStateStore) PutIdle(ctx context.Context, poolName string, sand
 
 // RemoveIdle atomically removes a sandbox from the idle pool. Idempotent.
 func (s *RedisPoolStateStore) RemoveIdle(ctx context.Context, poolName string, sandboxID string) error {
+	if sandboxID == "" {
+		return fmt.Errorf("opensandbox: sandboxID must not be blank")
+	}
 	keys := []string{s.idleListKey(poolName), s.idleExpiresKey(poolName)}
 	argv := []interface{}{sandboxID}
 
@@ -247,24 +282,19 @@ func (s *RedisPoolStateStore) RemoveIdle(ctx context.Context, poolName string, s
 	return nil
 }
 
-// TryAcquirePrimaryLock attempts to acquire the primary (leader) lock.
-// Re-entrant: if the caller already owns the lock, it extends the TTL.
+// TryAcquirePrimaryLock atomically acquires or re-entrantly renews the primary lock.
 func (s *RedisPoolStateStore) TryAcquirePrimaryLock(ctx context.Context, poolName string, ownerID string, ttl time.Duration) (bool, error) {
 	ttlMs := ttl.Milliseconds()
 	if ttlMs < 1 {
 		ttlMs = 1
 	}
-
-	ok, err := s.client.SetNX(ctx, s.PrimaryLockKey(poolName), ownerID, time.Duration(ttlMs)*time.Millisecond).Result()
-	if err != nil {
+	result, err := acquireLockScript.Run(ctx, s.client,
+		[]string{s.PrimaryLockKey(poolName)},
+		ownerID, strconv.FormatInt(ttlMs, 10)).Int64()
+	if err != nil && err != redis.Nil {
 		return false, &opensandbox.PoolStateStoreUnavailableError{Operation: "TryAcquirePrimaryLock", Cause: err}
 	}
-	if ok {
-		return true, nil
-	}
-
-	// NX failed; try re-entrant renewal.
-	return s.RenewPrimaryLock(ctx, poolName, ownerID, ttl)
+	return result == 1, nil
 }
 
 // RenewPrimaryLock extends the primary lock TTL. Only succeeds if caller is the current owner.
@@ -344,13 +374,15 @@ func (s *RedisPoolStateStore) runReapExpired(ctx context.Context, poolName strin
 	return discarded, nil
 }
 
-// SnapshotCounters returns current pool counters (idle count from the expires hash).
+// SnapshotCounters returns current pool counters, filtering out expired entries.
+// The Lua script always returns an integer (0 when the key doesn't exist),
+// so redis.Nil is not expected here.
 func (s *RedisPoolStateStore) SnapshotCounters(ctx context.Context, poolName string) (*opensandbox.StoreCounters, error) {
-	count, err := s.client.HLen(ctx, s.idleExpiresKey(poolName)).Result()
+	result, err := snapshotCountersScript.Run(ctx, s.client, []string{s.idleExpiresKey(poolName)}).Int()
 	if err != nil {
 		return nil, &opensandbox.PoolStateStoreUnavailableError{Operation: "SnapshotCounters", Cause: err}
 	}
-	return &opensandbox.StoreCounters{IdleCount: int(count)}, nil
+	return &opensandbox.StoreCounters{IdleCount: result}, nil
 }
 
 // SnapshotIdleEntries returns all current idle entries in FIFO order.

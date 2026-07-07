@@ -21,7 +21,7 @@ import (
 
 // PoolStateStore is the abstraction for pool state persistence.
 // Implementations must be safe for concurrent use.
-// All mutating operations (PutIdle, RemoveIdle) must be idempotent.
+// PutIdle and RemoveIdle must be idempotent.
 type PoolStateStore interface {
 	// TryTakeIdle atomically takes the oldest idle sandbox from the pool.
 	// Returns empty string if no idle sandbox is available.
@@ -48,10 +48,13 @@ type PoolStateStore interface {
 	ReleasePrimaryLock(ctx context.Context, poolName string, ownerID string) error
 
 	// ReapExpiredIdle removes fully expired idle entries.
+	// The now parameter is a hint; distributed implementations may use
+	// server-side time for consistency (e.g., Redis TIME command).
 	ReapExpiredIdle(ctx context.Context, poolName string, now time.Time) error
 
 	// ReapExpiredIdleWithMinTTL removes expired and near-expiry idle entries.
 	// Returns IDs of entries that were still alive but below the TTL threshold.
+	// The now parameter is a hint; see ReapExpiredIdle.
 	ReapExpiredIdleWithMinTTL(ctx context.Context, poolName string, now time.Time, minRemaining time.Duration) (*ReapResult, error)
 
 	// SnapshotCounters returns current pool counters.

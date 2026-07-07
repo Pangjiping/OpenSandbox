@@ -38,10 +38,13 @@ func newRedisTestStore(t *testing.T) *RedisPoolStateStore {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("Redis not available at localhost:6379: %v", err)
 	}
-	store := NewRedisPoolStateStore(RedisPoolStateStoreConfig{
+	store, err := NewRedisPoolStateStore(RedisPoolStateStoreConfig{
 		Client:    client,
 		KeyPrefix: "opensandbox:test",
 	})
+	if err != nil {
+		t.Fatalf("NewRedisPoolStateStore: %v", err)
+	}
 	return store
 }
 
@@ -470,16 +473,19 @@ func TestRedisStore_ConcurrentAccess(t *testing.T) {
 
 func TestRedisStore_WrapsClientFailures(t *testing.T) {
 	// Connect to an unreachable address so every operation fails.
-	store := NewRedisPoolStateStore(RedisPoolStateStoreConfig{
+	store, err := NewRedisPoolStateStore(RedisPoolStateStoreConfig{
 		Client: redis.NewClient(&redis.Options{
 			Addr:        "localhost:1",
 			DialTimeout: 100 * time.Millisecond,
 		}),
 		KeyPrefix: "opensandbox:test",
 	})
+	if err != nil {
+		t.Fatalf("NewRedisPoolStateStore: %v", err)
+	}
 	ctx := context.Background()
 
-	_, err := store.GetMaxIdle(ctx, "pool-broken")
+	_, err = store.GetMaxIdle(ctx, "pool-broken")
 	if err == nil {
 		t.Fatal("expected error from broken Redis client, got nil")
 	}
@@ -490,11 +496,5 @@ func TestRedisStore_WrapsClientFailures(t *testing.T) {
 	}
 	if storeErr.Operation != "GetMaxIdle" {
 		t.Errorf("Operation = %q, want %q", storeErr.Operation, "GetMaxIdle")
-	}
-
-	// Ensure it does NOT match PoolStateStoreContentionError.
-	var contentionErr *opensandbox.PoolStateStoreContentionError
-	if errors.As(err, &contentionErr) {
-		t.Error("should NOT match *PoolStateStoreContentionError")
 	}
 }

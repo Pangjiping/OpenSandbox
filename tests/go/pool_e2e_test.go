@@ -316,9 +316,13 @@ func TestPool_ConcurrentStartShutdownStress(t *testing.T) {
 					err = pool.Shutdown(context.Background(), idx%3 == 0)
 				}
 				if err != nil {
-					mu.Lock()
-					errs = append(errs, err)
-					mu.Unlock()
+					// PoolNotRunningError is expected when Start races with Shutdown.
+					var notRunning *opensandbox.PoolNotRunningError
+					if !errors.As(err, &notRunning) {
+						mu.Lock()
+						errs = append(errs, err)
+						mu.Unlock()
+					}
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -473,11 +477,16 @@ func skipWithoutRedis(t *testing.T) *redis.Client {
 	return client
 }
 
-func newRedisE2EStore(client *redis.Client, prefix string) *poolredis.RedisPoolStateStore {
-	return poolredis.NewRedisPoolStateStore(poolredis.RedisPoolStateStoreConfig{
+func newRedisE2EStore(t *testing.T, client *redis.Client, prefix string) *poolredis.RedisPoolStateStore {
+	t.Helper()
+	store, err := poolredis.NewRedisPoolStateStore(poolredis.RedisPoolStateStoreConfig{
 		Client:    client,
 		KeyPrefix: prefix,
 	})
+	if err != nil {
+		t.Fatalf("NewRedisPoolStateStore: %v", err)
+	}
+	return store
 }
 
 func cleanupRedisKeys(t *testing.T, client *redis.Client, prefix string) {
@@ -505,8 +514,8 @@ func TestRedisPool_CrossNodeAcquireResizeDirectCreate(t *testing.T) {
 	prefix := "opensandbox:e2e:" + tag
 	poolName := "redis-pool-" + tag
 
-	storeA := newRedisE2EStore(rdb, prefix)
-	storeB := newRedisE2EStore(rdb, prefix)
+	storeA := newRedisE2EStore(t, rdb, prefix)
+	storeB := newRedisE2EStore(t, rdb, prefix)
 	poolA := createTestPool(t, poolName, "owner-a-"+tag, storeA, tag, poolMaxIdle, nil)
 	poolB := createTestPool(t, poolName, "owner-b-"+tag, storeB, tag, poolMaxIdle, nil)
 	t.Cleanup(func() {
@@ -563,8 +572,8 @@ func TestRedisPool_PrimaryFailoverRestart(t *testing.T) {
 	ownerA := "owner-a-" + tag
 	ownerB := "owner-b-" + tag
 
-	storeA := newRedisE2EStore(rdb, prefix)
-	storeB := newRedisE2EStore(rdb, prefix)
+	storeA := newRedisE2EStore(t, rdb, prefix)
+	storeB := newRedisE2EStore(t, rdb, prefix)
 	poolA := createTestPool(t, poolName, ownerA, storeA, tag, 1, nil)
 	poolB := createTestPool(t, poolName, ownerB, storeB, tag, 1, nil)
 	lockKey := storeA.PrimaryLockKey(poolName)
@@ -613,7 +622,7 @@ func TestRedisPool_RestartOverwritesStaleMaxIdle(t *testing.T) {
 	prefix := "opensandbox:e2e:" + tag
 	poolName := "redis-restart-config-" + tag
 
-	storeA := newRedisE2EStore(rdb, prefix)
+	storeA := newRedisE2EStore(t, rdb, prefix)
 	poolA := createTestPool(t, poolName, "owner-a-"+tag, storeA, tag, 1, nil)
 	t.Cleanup(func() {
 		cleanupPool(poolA); cleanupTaggedSandboxes(t, tag); cleanupRedisKeys(t, rdb, prefix)
@@ -627,7 +636,7 @@ func TestRedisPool_RestartOverwritesStaleMaxIdle(t *testing.T) {
 	eventually(t, "initial Redis pool drains to zero", func() bool { return snapshotIdle(poolA) == 0 }, 0, 0)
 	require.NoError(t, poolA.Shutdown(ctx, false))
 
-	storeB := newRedisE2EStore(rdb, prefix)
+	storeB := newRedisE2EStore(t, rdb, prefix)
 	poolB := createTestPool(t, poolName, "owner-b-"+tag, storeB, tag, 2, nil)
 	t.Cleanup(func() { cleanupPool(poolB) })
 
@@ -646,8 +655,8 @@ func TestRedisPool_SecondaryResizeAppliedByPrimary(t *testing.T) {
 	poolName := "redis-secondary-resize-" + tag
 	ownerA := "owner-a-" + tag
 
-	storeA := newRedisE2EStore(rdb, prefix)
-	storeB := newRedisE2EStore(rdb, prefix)
+	storeA := newRedisE2EStore(t, rdb, prefix)
+	storeB := newRedisE2EStore(t, rdb, prefix)
 	poolA := createTestPool(t, poolName, ownerA, storeA, tag, 2, nil)
 	poolB := createTestPool(t, poolName, "owner-b-"+tag, storeB, tag, 2, nil)
 	lockKey := storeA.PrimaryLockKey(poolName)
@@ -686,8 +695,8 @@ func TestRedisPool_ConcurrentCrossNodeAcquireAtomicTake(t *testing.T) {
 	prefix := "opensandbox:e2e:" + tag
 	poolName := "redis-concurrent-" + tag
 
-	storeA := newRedisE2EStore(rdb, prefix)
-	storeB := newRedisE2EStore(rdb, prefix)
+	storeA := newRedisE2EStore(t, rdb, prefix)
+	storeB := newRedisE2EStore(t, rdb, prefix)
 	poolA := createTestPool(t, poolName, "owner-a-"+tag, storeA, tag, poolMaxIdle, nil)
 	poolB := createTestPool(t, poolName, "owner-b-"+tag, storeB, tag, poolMaxIdle, nil)
 	t.Cleanup(func() {
@@ -731,7 +740,7 @@ func TestRedisPool_ConcurrentCrossNodeAcquireAtomicTake(t *testing.T) {
 	assert.Len(t, ids, 2)
 
 	// Pure-store contention test: 50 IDs, 16 goroutines.
-	contentionStore := newRedisE2EStore(rdb, prefix)
+	contentionStore := newRedisE2EStore(t, rdb, prefix)
 	contentionPool := "redis-store-contention-" + tag
 	for i := 0; i < 50; i++ {
 		require.NoError(t, contentionStore.PutIdle(ctx, contentionPool, fmt.Sprintf("id-%d", i)))
@@ -773,24 +782,22 @@ func TestRedisPool_ExpiredIdleReapedByTakeNotSnapshot(t *testing.T) {
 	poolName := "redis-expired-idle-" + tag
 	t.Cleanup(func() { cleanupRedisKeys(t, rdb, prefix) })
 
-	store := newRedisE2EStore(rdb, prefix)
+	store := newRedisE2EStore(t, rdb, prefix)
 	ctx := context.Background()
 
 	require.NoError(t, store.SetIdleEntryTTL(ctx, poolName, 50*time.Millisecond))
 	require.NoError(t, store.PutIdle(ctx, poolName, fmt.Sprintf("expired-%d", time.Now().UnixNano())))
 	time.Sleep(100 * time.Millisecond)
 
+	// SnapshotCounters filters expired entries, so it should already report 0.
 	counters, err := store.SnapshotCounters(ctx, poolName)
 	require.NoError(t, err)
-	assert.Equal(t, 1, counters.IdleCount)
+	assert.Equal(t, 0, counters.IdleCount)
 
+	// TryTakeIdle also returns empty for expired entries.
 	id, err := store.TryTakeIdle(ctx, poolName)
 	require.NoError(t, err)
 	assert.Empty(t, id)
-
-	counters, err = store.SnapshotCounters(ctx, poolName)
-	require.NoError(t, err)
-	assert.Equal(t, 0, counters.IdleCount)
 }
 
 func TestRedisPool_ConcurrentAcquireResizeJitter(t *testing.T) {
@@ -799,8 +806,8 @@ func TestRedisPool_ConcurrentAcquireResizeJitter(t *testing.T) {
 	prefix := "opensandbox:e2e:" + tag
 	poolName := "redis-acquire-resize-jitter-" + tag
 
-	storeA := newRedisE2EStore(rdb, prefix)
-	storeB := newRedisE2EStore(rdb, prefix)
+	storeA := newRedisE2EStore(t, rdb, prefix)
+	storeB := newRedisE2EStore(t, rdb, prefix)
 	poolA := createTestPool(t, poolName, "owner-a-"+tag, storeA, tag, poolMaxIdle, nil)
 	poolB := createTestPool(t, poolName, "owner-b-"+tag, storeB, tag, poolMaxIdle, nil)
 	t.Cleanup(func() {
@@ -874,8 +881,8 @@ func TestRedisPool_StaleIdleRemovedAndDirectCreateFallback(t *testing.T) {
 	prefix := "opensandbox:e2e:" + tag
 	poolName := "redis-stale-" + tag
 
-	storeA := newRedisE2EStore(rdb, prefix)
-	storeB := newRedisE2EStore(rdb, prefix)
+	storeA := newRedisE2EStore(t, rdb, prefix)
+	storeB := newRedisE2EStore(t, rdb, prefix)
 	poolA := createTestPool(t, poolName, "owner-a-"+tag, storeA, tag, 0, nil)
 	poolB := createTestPool(t, poolName, "owner-b-"+tag, storeB, tag, 0, nil)
 	t.Cleanup(func() {

@@ -16,8 +16,10 @@ package opensandbox
 
 import (
 	"context"
+	crypto_rand "crypto/rand"
 	"fmt"
 	"math"
+	"os"
 	"time"
 )
 
@@ -198,6 +200,7 @@ func (b *SandboxPoolBuilder) PoolLogger(l PoolLogger) *SandboxPoolBuilder {
 // Build validates configuration and creates a DefaultSandboxPool.
 // The pool is not started; call Start() to begin reconciliation.
 func (b *SandboxPoolBuilder) Build() (*DefaultSandboxPool, error) {
+	// Validate user-provided values before applying defaults.
 	if b.config.PoolName == "" {
 		return nil, fmt.Errorf("opensandbox: pool builder: PoolName is required")
 	}
@@ -216,89 +219,90 @@ func (b *SandboxPoolBuilder) Build() (*DefaultSandboxPool, error) {
 	if b.config.DegradedThreshold <= 0 {
 		return nil, fmt.Errorf("opensandbox: pool builder: DegradedThreshold must be positive")
 	}
-
-	// Require CreationSpec when no custom SandboxCreator is provided.
 	if b.config.SandboxCreator == nil && b.config.CreationSpec.Image == "" && b.config.CreationSpec.SnapshotID == "" {
 		return nil, fmt.Errorf("opensandbox: pool builder: CreationSpec (with Image or SnapshotID) is required when no SandboxCreator is set")
 	}
-
+	if b.config.SandboxCreator == nil && b.config.CreationSpec.Image != "" && b.config.CreationSpec.SnapshotID != "" {
+		return nil, fmt.Errorf("opensandbox: pool builder: CreationSpec cannot have both Image and SnapshotID set")
+	}
+	if b.config.CreationSpec.TimeoutSeconds != nil {
+		return nil, fmt.Errorf("opensandbox: pool builder: CreationSpec.TimeoutSeconds is not supported; use IdleTimeout to control sandbox TTL in pools")
+	}
 	if b.config.CreationSpec.ManualCleanup {
 		return nil, fmt.Errorf("opensandbox: pool builder: ManualCleanup is not supported for pooled sandboxes (would leak resources after idle TTL expiry)")
 	}
-
-	// Validate AcquireMinRemainingTTL: reject negative values.
+	if b.config.AcquireReadyTimeout <= 0 {
+		return nil, fmt.Errorf("opensandbox: pool builder: AcquireReadyTimeout must be positive")
+	}
+	if b.config.WarmupReadyTimeout <= 0 {
+		return nil, fmt.Errorf("opensandbox: pool builder: WarmupReadyTimeout must be positive")
+	}
+	if b.config.AcquireHealthCheckPollingInterval < 0 {
+		return nil, fmt.Errorf("opensandbox: pool builder: AcquireHealthCheckPollingInterval must be non-negative")
+	}
+	if b.config.WarmupHealthCheckPollingInterval < 0 {
+		return nil, fmt.Errorf("opensandbox: pool builder: WarmupHealthCheckPollingInterval must be non-negative")
+	}
 	if b.config.AcquireMinRemainingTTL < 0 {
 		return nil, fmt.Errorf("opensandbox: pool builder: AcquireMinRemainingTTL must be >= 0, got %v", b.config.AcquireMinRemainingTTL)
 	}
-
-	// Default state store.
-	if !b.stateStoreSet {
-		b.config.StateStore = NewInMemoryPoolStateStore()
+	if b.config.DrainTimeout < 0 {
+		return nil, fmt.Errorf("opensandbox: pool builder: DrainTimeout must be non-negative, got %v", b.config.DrainTimeout)
 	}
-
 	if b.config.WarmupConcurrency < 0 {
 		return nil, fmt.Errorf("opensandbox: pool builder: WarmupConcurrency must be non-negative, got %d", b.config.WarmupConcurrency)
 	}
 
-	// Default warmup concurrency: max(1, ceil(MaxIdle * 0.2)).
-	if b.config.WarmupConcurrency == 0 {
-		computed := int(math.Ceil(float64(b.config.MaxIdle) * 0.2))
+	// Work on a local copy so Build() doesn't mutate the builder.
+	cfg := b.config
+
+	// Apply defaults on the copy.
+	if !b.stateStoreSet {
+		cfg.StateStore = NewInMemoryPoolStateStore()
+	}
+	if cfg.StateStore == nil {
+		return nil, fmt.Errorf("opensandbox: pool builder: StateStore must not be nil")
+	}
+	if cfg.WarmupConcurrency == 0 {
+		computed := int(math.Ceil(float64(cfg.MaxIdle) * 0.2))
 		if computed < 1 {
 			computed = 1
 		}
-		b.config.WarmupConcurrency = computed
+		cfg.WarmupConcurrency = computed
 	}
-
-	// Default owner ID: use nanosecond timestamp as simple unique ID.
-	if b.config.OwnerID == "" {
-		b.config.OwnerID = fmt.Sprintf("pool-owner-%d", time.Now().UnixNano())
+	if cfg.OwnerID == "" {
+		hostname, err := os.Hostname()
+		if err != nil || hostname == "" {
+			hostname = "unknown"
+		}
+		var randBytes [4]byte
+		if _, randErr := crypto_rand.Read(randBytes[:]); randErr != nil {
+			return nil, fmt.Errorf("opensandbox: pool builder: failed to generate random owner ID: %w", randErr)
+		}
+		cfg.OwnerID = fmt.Sprintf("pool-owner-%s-%d-%d-%x", hostname, os.Getpid(), time.Now().UnixNano(), randBytes)
 	}
-
-	// Default idle timeout: 24h.
-	if b.config.IdleTimeout == 0 {
-		b.config.IdleTimeout = DefaultIdleTimeout
+	if cfg.IdleTimeout == 0 {
+		cfg.IdleTimeout = DefaultIdleTimeout
 	}
-
-	if b.config.IdleTimeout < 0 {
-		return nil, fmt.Errorf("opensandbox: pool builder: IdleTimeout must be positive, got %v", b.config.IdleTimeout)
+	if cfg.IdleTimeout < 0 {
+		return nil, fmt.Errorf("opensandbox: pool builder: IdleTimeout must be positive, got %v", cfg.IdleTimeout)
 	}
-
-	// Default logger.
-	if b.config.Logger == nil {
-		b.config.Logger = noopPoolLogger{}
+	if cfg.Logger == nil {
+		cfg.Logger = noopPoolLogger{}
 	}
-
-	// Validate AcquireMinRemainingTTL < IdleTimeout (after defaults are applied).
-	if b.config.AcquireMinRemainingTTL > 0 && b.config.AcquireMinRemainingTTL >= b.config.IdleTimeout {
-		return nil, fmt.Errorf("opensandbox: pool builder: AcquireMinRemainingTTL (%v) must be less than IdleTimeout (%v)", b.config.AcquireMinRemainingTTL, b.config.IdleTimeout)
+	if cfg.AcquireMinRemainingTTL > 0 && cfg.AcquireMinRemainingTTL >= cfg.IdleTimeout {
+		return nil, fmt.Errorf("opensandbox: pool builder: AcquireMinRemainingTTL (%v) must be less than IdleTimeout (%v)", cfg.AcquireMinRemainingTTL, cfg.IdleTimeout)
 	}
-
-	// Auto-derive AcquireMinRemainingTTL: min(60s, idleTimeout/2).
-	if b.config.AcquireMinRemainingTTL == 0 {
-		half := b.config.IdleTimeout / 2
-		cap := 60 * time.Second
-		if cap < half {
-			b.config.AcquireMinRemainingTTL = cap
-		} else {
-			b.config.AcquireMinRemainingTTL = half
+	if cfg.AcquireMinRemainingTTL == 0 {
+		cfg.AcquireMinRemainingTTL = cfg.IdleTimeout / 2
+		ttlCap := 60 * time.Second
+		if ttlCap < cfg.AcquireMinRemainingTTL {
+			cfg.AcquireMinRemainingTTL = ttlCap
 		}
 	}
 
-	stateStore := b.config.StateStore
-	ctx := context.Background()
-
-	// Initialize state store with pool configuration.
-	if err := stateStore.SetMaxIdle(ctx, b.config.PoolName, b.config.MaxIdle); err != nil {
-		return nil, fmt.Errorf("opensandbox: pool builder: failed to set maxIdle: %w", err)
-	}
-	if err := stateStore.SetIdleEntryTTL(ctx, b.config.PoolName, b.config.IdleTimeout); err != nil {
-		return nil, fmt.Errorf("opensandbox: pool builder: failed to set idle TTL: %w", err)
-	}
-
-	cfg := b.config
 	return &DefaultSandboxPool{
 		config:         &cfg,
-		stateStore:     stateStore,
 		manager:        NewSandboxManager(cfg.ConnectionConfig),
 		lifecycleState: PoolLifecycleNotStarted,
 		healthState:    PoolHealthy,

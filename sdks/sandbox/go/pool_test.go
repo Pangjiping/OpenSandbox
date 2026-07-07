@@ -396,7 +396,7 @@ func TestPool_Acquire_FromIdle(t *testing.T) {
 
 	// Pre-populate store with an idle entry.
 	sandboxID := "sbx-idle-1"
-	if err := pool.stateStore.PutIdle(ctx, "test-pool", sandboxID); err != nil {
+	if err := pool.config.StateStore.PutIdle(ctx, "test-pool", sandboxID); err != nil {
 		t.Fatalf("PutIdle failed: %v", err)
 	}
 
@@ -664,12 +664,19 @@ func TestPool_Resize(t *testing.T) {
 		t.Fatalf("Resize failed: %v", err)
 	}
 
+	// Verify both store and local config are updated.
+	storeMaxIdle, err := pool.config.StateStore.GetMaxIdle(ctx, pool.config.PoolName)
+	if err != nil {
+		t.Fatalf("GetMaxIdle failed: %v", err)
+	}
+	if storeMaxIdle != 5 {
+		t.Errorf("store MaxIdle = %d, want 5", storeMaxIdle)
+	}
 	pool.mu.Lock()
-	maxIdle := pool.config.MaxIdle
+	localMaxIdle := pool.config.MaxIdle
 	pool.mu.Unlock()
-
-	if maxIdle != 5 {
-		t.Errorf("MaxIdle = %d, want 5", maxIdle)
+	if localMaxIdle != 5 {
+		t.Errorf("config MaxIdle = %d, want 5", localMaxIdle)
 	}
 }
 
@@ -725,10 +732,10 @@ func TestPool_SnapshotIdleEntries(t *testing.T) {
 	ctx := context.Background()
 
 	// Pre-populate the store.
-	if err := pool.stateStore.PutIdle(ctx, "test-pool", "sbx-snap-1"); err != nil {
+	if err := pool.config.StateStore.PutIdle(ctx, "test-pool", "sbx-snap-1"); err != nil {
 		t.Fatalf("PutIdle failed: %v", err)
 	}
-	if err := pool.stateStore.PutIdle(ctx, "test-pool", "sbx-snap-2"); err != nil {
+	if err := pool.config.StateStore.PutIdle(ctx, "test-pool", "sbx-snap-2"); err != nil {
 		t.Fatalf("PutIdle failed: %v", err)
 	}
 
@@ -808,10 +815,10 @@ func TestPool_Shutdown_DoesNotReleaseIdle(t *testing.T) {
 	}
 
 	// Pre-populate store with idle entries.
-	if err := pool.stateStore.PutIdle(ctx, "test-pool", "sbx-idle-a"); err != nil {
+	if err := pool.config.StateStore.PutIdle(ctx, "test-pool", "sbx-idle-a"); err != nil {
 		t.Fatalf("PutIdle failed: %v", err)
 	}
-	if err := pool.stateStore.PutIdle(ctx, "test-pool", "sbx-idle-b"); err != nil {
+	if err := pool.config.StateStore.PutIdle(ctx, "test-pool", "sbx-idle-b"); err != nil {
 		t.Fatalf("PutIdle failed: %v", err)
 	}
 
@@ -822,7 +829,7 @@ func TestPool_Shutdown_DoesNotReleaseIdle(t *testing.T) {
 	}
 
 	// Verify idle entries are still in the store.
-	counters, err := pool.stateStore.SnapshotCounters(ctx, "test-pool")
+	counters, err := pool.config.StateStore.SnapshotCounters(ctx, "test-pool")
 	if err != nil {
 		t.Fatalf("SnapshotCounters failed: %v", err)
 	}
@@ -846,7 +853,7 @@ func TestPool_Shutdown_NonGraceful_DoesNotReleaseIdle(t *testing.T) {
 	}
 
 	// Pre-populate store with idle entries.
-	if err := pool.stateStore.PutIdle(ctx, "test-pool", "sbx-idle-c"); err != nil {
+	if err := pool.config.StateStore.PutIdle(ctx, "test-pool", "sbx-idle-c"); err != nil {
 		t.Fatalf("PutIdle failed: %v", err)
 	}
 
@@ -857,7 +864,7 @@ func TestPool_Shutdown_NonGraceful_DoesNotReleaseIdle(t *testing.T) {
 	}
 
 	// Verify idle entry is still in the store.
-	counters, err := pool.stateStore.SnapshotCounters(ctx, "test-pool")
+	counters, err := pool.config.StateStore.SnapshotCounters(ctx, "test-pool")
 	if err != nil {
 		t.Fatalf("SnapshotCounters failed: %v", err)
 	}
@@ -1006,42 +1013,6 @@ func TestPoolStateStoreUnavailableError(t *testing.T) {
 		t.Errorf("Operation = %q, want %q", target.Operation, "TryTakeIdle")
 	}
 
-	// errors.As does NOT match the contention type.
-	var contention *PoolStateStoreContentionError
-	if errors.As(err, &contention) {
-		t.Error("errors.As should NOT match *PoolStateStoreContentionError for an unavailable error")
-	}
-}
-
-func TestPoolStateStoreContentionError(t *testing.T) {
-	cause := fmt.Errorf("lock conflict")
-	err := &PoolStateStoreContentionError{Operation: "TryAcquirePrimaryLock", Cause: cause}
-
-	// Error message includes operation and cause.
-	msg := err.Error()
-	if !strings.Contains(msg, "contention") {
-		t.Errorf("error message should contain 'contention', got %q", msg)
-	}
-	if !strings.Contains(msg, "TryAcquirePrimaryLock") {
-		t.Errorf("error message should contain operation name, got %q", msg)
-	}
-
-	// Unwrap returns the cause.
-	if err.Unwrap() != cause {
-		t.Errorf("Unwrap() = %v, want %v", err.Unwrap(), cause)
-	}
-
-	// errors.As matches the correct type.
-	var target *PoolStateStoreContentionError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *PoolStateStoreContentionError")
-	}
-
-	// errors.As does NOT match the unavailable type.
-	var unavailable *PoolStateStoreUnavailableError
-	if errors.As(err, &unavailable) {
-		t.Error("errors.As should NOT match *PoolStateStoreUnavailableError for a contention error")
-	}
 }
 
 // ---------- Helpers ----------

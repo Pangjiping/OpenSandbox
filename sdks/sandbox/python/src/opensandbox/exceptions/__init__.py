@@ -22,7 +22,6 @@ from opensandbox.exceptions.sandbox import (
     PoolAcquireFailedException,
     PoolEmptyException,
     PoolNotRunningException,
-    PoolStateStoreContentionException,
     PoolStateStoreUnavailableException,
     SandboxApiException,
     SandboxError,
@@ -42,7 +41,6 @@ __all__ = [
     "PoolEmptyException",
     "PoolAcquireFailedException",
     "PoolStateStoreUnavailableException",
-    "PoolStateStoreContentionException",
     "PoolNotRunningException",
     "SandboxError",
 ]

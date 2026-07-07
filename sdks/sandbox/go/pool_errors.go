@@ -63,16 +63,3 @@ func (e *PoolStateStoreUnavailableError) Error() string {
 }
 
 func (e *PoolStateStoreUnavailableError) Unwrap() error { return e.Cause }
-
-// PoolStateStoreContentionError is returned when atomic take or lock-update
-// conflicts occur in the state store.
-type PoolStateStoreContentionError struct {
-	Operation string
-	Cause     error
-}
-
-func (e *PoolStateStoreContentionError) Error() string {
-	return fmt.Sprintf("opensandbox: pool state store contention in %s: %v", e.Operation, e.Cause)
-}
-
-func (e *PoolStateStoreContentionError) Unwrap() error { return e.Cause }

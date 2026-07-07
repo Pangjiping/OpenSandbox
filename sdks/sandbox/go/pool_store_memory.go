@@ -16,6 +16,7 @@ package opensandbox
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -39,8 +40,8 @@ type poolState struct {
 	lock poolLock
 
 	// configurable per-pool settings.
-	idleTTL  time.Duration
-	maxIdle  int
+	idleTTL time.Duration
+	maxIdle int
 }
 
 // InMemoryPoolStateStore is a pure in-memory implementation of PoolStateStore.
@@ -75,9 +76,9 @@ func (s *InMemoryPoolStateStore) getOrCreatePool(poolName string) *poolState {
 		return ps
 	}
 	ps = &poolState{
-		idleMap:  make(map[string]*IdleEntry),
-		idleTTL:  DefaultIdleTTL,
-		maxIdle:  0, // 0 means no limit
+		idleMap: make(map[string]*IdleEntry),
+		idleTTL: DefaultIdleTimeout,
+		maxIdle: 0, // default; overwritten by SetMaxIdle during pool Start
 	}
 	s.pools[poolName] = ps
 	return ps
@@ -93,6 +94,7 @@ func (s *InMemoryPoolStateStore) TryTakeIdle(_ context.Context, poolName string)
 	now := time.Now()
 	for len(ps.idleQueue) > 0 {
 		id := ps.idleQueue[0]
+		ps.idleQueue[0] = "" // allow GC of the string
 		ps.idleQueue = ps.idleQueue[1:]
 
 		entry, exists := ps.idleMap[id]
@@ -124,6 +126,7 @@ func (s *InMemoryPoolStateStore) TryTakeIdleWithMinTTL(_ context.Context, poolNa
 
 	for len(ps.idleQueue) > 0 {
 		id := ps.idleQueue[0]
+		ps.idleQueue[0] = "" // allow GC of the string
 		ps.idleQueue = ps.idleQueue[1:]
 
 		entry, exists := ps.idleMap[id]
@@ -136,7 +139,7 @@ func (s *InMemoryPoolStateStore) TryTakeIdleWithMinTTL(_ context.Context, poolNa
 			continue
 		}
 
-		remaining := time.Until(entry.ExpiresAt)
+		remaining := entry.ExpiresAt.Sub(now)
 		if !entry.ExpiresAt.IsZero() && remaining < minRemaining {
 			delete(ps.idleMap, id)
 			result.DiscardedAliveSandboxIDs = append(result.DiscardedAliveSandboxIDs, id)
@@ -154,15 +157,25 @@ func (s *InMemoryPoolStateStore) TryTakeIdleWithMinTTL(_ context.Context, poolNa
 
 // PutIdle adds a sandbox to the idle pool. Idempotent: if already present, no-op.
 func (s *InMemoryPoolStateStore) PutIdle(_ context.Context, poolName string, sandboxID string) error {
+	if sandboxID == "" {
+		return fmt.Errorf("opensandbox: sandboxID must not be blank")
+	}
 	ps := s.getOrCreatePool(poolName)
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	if _, exists := ps.idleMap[sandboxID]; exists {
-		return nil
+	now := time.Now()
+	if existing, exists := ps.idleMap[sandboxID]; exists {
+		if existing.ExpiresAt.IsZero() || now.Before(existing.ExpiresAt) {
+			return nil // still alive, idempotent no-op
+		}
+		// Expired entry — remove from map and rebuild queue to drop stale position,
+		// then fall through to re-add with fresh TTL at the tail (FIFO).
+		delete(ps.idleMap, sandboxID)
+		ps.rebuildQueue()
 	}
 
-	expiresAt := time.Now().Add(ps.idleTTL)
+	expiresAt := now.Add(ps.idleTTL)
 	entry := &IdleEntry{
 		SandboxID: sandboxID,
 		ExpiresAt: expiresAt,
@@ -288,24 +301,20 @@ func (s *InMemoryPoolStateStore) ReapExpiredIdleWithMinTTL(_ context.Context, po
 	return result, nil
 }
 
-// SnapshotCounters returns current pool counters after reaping expired entries.
+// SnapshotCounters returns current pool counters, excluding expired entries.
 func (s *InMemoryPoolStateStore) SnapshotCounters(_ context.Context, poolName string) (*StoreCounters, error) {
 	ps := s.getOrCreatePool(poolName)
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
 	now := time.Now()
-	// Reap expired before counting.
-	for id, entry := range ps.idleMap {
-		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-			delete(ps.idleMap, id)
+	count := 0
+	for _, entry := range ps.idleMap {
+		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+			count++
 		}
 	}
-	ps.rebuildQueue()
-
-	return &StoreCounters{
-		IdleCount: len(ps.idleMap),
-	}, nil
+	return &StoreCounters{IdleCount: count}, nil
 }
 
 // SnapshotIdleEntries returns all current idle entries in FIFO order,
@@ -349,6 +358,9 @@ func (s *InMemoryPoolStateStore) SetMaxIdle(_ context.Context, poolName string, 
 
 // SetIdleEntryTTL persists the idle entry TTL for the pool.
 func (s *InMemoryPoolStateStore) SetIdleEntryTTL(_ context.Context, poolName string, ttl time.Duration) error {
+	if ttl < time.Millisecond {
+		ttl = time.Millisecond
+	}
 	ps := s.getOrCreatePool(poolName)
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
