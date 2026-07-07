@@ -14,6 +14,10 @@ Multi-tenancy enables a single OpenSandbox Server deployment to serve multiple i
 - One Kubernetes namespace per tenant, **pre-created by a cluster admin**
 - Default Helm chart RBAC (already includes ClusterRole with cross-namespace access)
 
+::: tip Proxy routes in multi-tenant mode
+Unlike single-tenant mode, proxy routes require `OPEN-SANDBOX-API-KEY` when multi-tenancy is enabled. Ensure clients include the header for proxy requests.
+:::
+
 ::: warning Docker not supported
 Multi-tenancy requires Kubernetes namespace isolation. If `runtime.type = "docker"` is configured and tenants are enabled, the server refuses to start with a fatal error.
 :::
@@ -35,8 +39,8 @@ When multi-tenancy is active:
 1. Auth middleware resolves the API key to a `TenantEntry` via the configured provider.
 2. The tenant's namespace is injected into a request-scoped `ContextVar`.
 3. All downstream Kubernetes operations use the resolved namespace.
-4. Sandboxes are labeled with `opensandbox.io/tenant=<tenant_name>`.
-5. List operations only return sandboxes within the authenticated tenant's namespace.
+4. List operations only return sandboxes within the authenticated tenant's namespace.
+5. Proxy routes (`/sandboxes/{id}/proxy/...`) also require `OPEN-SANDBOX-API-KEY` in multi-tenant mode.
 
 ## Configuration
 
@@ -178,38 +182,6 @@ spec:
     type: Container
 ```
 
-### 4. NetworkPolicy (recommended)
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: deny-cross-namespace
-  namespace: sandbox-alpha
-spec:
-  podSelector: {}
-  policyTypes:
-  - Ingress
-  - Egress
-  ingress:
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: sandbox-alpha
-  egress:
-  - to:
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: sandbox-alpha
-  - to:
-    - namespaceSelector:
-        matchLabels:
-          kubernetes.io/metadata.name: kube-system
-    ports:
-    - protocol: UDP
-      port: 53
-```
-
 ### 5. Server RBAC
 
 The default Helm chart (`opensandbox-server`) already deploys a ClusterRole + ClusterRoleBinding with cross-namespace access. No additional RBAC changes are needed for multi-tenancy — the server ServiceAccount can already operate in any namespace.
@@ -271,7 +243,6 @@ The server itself does not enforce resource quotas or network policies. Isolatio
 |-----------|---------------------|-------|
 | Resource quota | `ResourceQuota` | Per-namespace CPU, memory, storage |
 | Default limits | `LimitRange` | Per-namespace default container resources |
-| Network isolation | `NetworkPolicy` | Per-namespace ingress/egress rules |
 | Sandbox count | `ResourceQuota` (pod count) | Per-namespace pod limit |
 | RBAC | `RoleBinding` | Per-namespace API access |
 
