@@ -130,7 +130,8 @@ class Credential private constructor(
  */
 class CredentialMatch private constructor(
     val schemes: List<Scheme>?,
-    val ports: List<Int>?,
+    @Deprecated("Ignored; port is derived from schemes (HTTPS→443, HTTP→80)")
+    val ports: List<Int>? = null,
     val hosts: List<String>,
     val methods: List<String>?,
     val paths: List<String>?,
@@ -147,7 +148,6 @@ class CredentialMatch private constructor(
 
     class Builder {
         private var schemes: List<Scheme>? = null
-        private var ports: List<Int>? = null
         private var hosts: List<String>? = null
         private var methods: List<String>? = null
         private var paths: List<String>? = null
@@ -160,13 +160,17 @@ class CredentialMatch private constructor(
 
         fun schemes(vararg schemes: Scheme): Builder = schemes(schemes.toList())
 
+        @Deprecated("Port is derived from schemes. Values other than 80 or 443 are rejected by the server.")
         fun ports(ports: List<Int>): Builder {
-            require(ports.isNotEmpty()) { "Credential match ports cannot be empty when provided" }
-            require(ports.all { it in 1..65535 }) { "Credential match ports must be between 1 and 65535" }
-            this.ports = ports.toList()
+            ports.forEach { port ->
+                require(port == 80 || port == 443) {
+                    "Unsupported port $port: only ports 80 and 443 are supported (derived from scheme)"
+                }
+            }
             return this
         }
 
+        @Deprecated("Port is derived from schemes. Values other than 80 or 443 are rejected by the server.")
         fun ports(vararg ports: Int): Builder = ports(ports.toList())
 
         fun hosts(hosts: List<String>): Builder {
@@ -200,7 +204,6 @@ class CredentialMatch private constructor(
             val hostsValue = hosts ?: throw IllegalArgumentException("Credential match hosts must be specified")
             return CredentialMatch(
                 schemes = schemes,
-                ports = ports,
                 hosts = hostsValue,
                 methods = methods,
                 paths = paths,

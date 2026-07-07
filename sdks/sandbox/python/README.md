@@ -527,7 +527,6 @@ await sandbox.credential_vault.create(
             name="api-token",
             match={
                 "schemes": ["https"],
-                "ports": [443],
                 "hosts": ["api.example.com"],
                 "paths": ["/v1/*"],
             },

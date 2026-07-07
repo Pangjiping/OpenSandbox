@@ -95,7 +95,6 @@ class EgressAdapterTest {
                           "revision": 1,
                           "match": {
                             "schemes": ["https"],
-                            "ports": [443],
                             "hosts": ["api.github.com"],
                             "methods": ["GET"],
                             "paths": ["/repos/*"]
@@ -111,7 +110,6 @@ class EgressAdapterTest {
         val match =
             CredentialMatch.builder()
                 .schemes(CredentialMatch.Scheme.HTTPS)
-                .ports(443)
                 .hosts("api.github.com")
                 .methods("GET")
                 .paths("/repos/*")

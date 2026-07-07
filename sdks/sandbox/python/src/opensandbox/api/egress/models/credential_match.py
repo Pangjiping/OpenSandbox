@@ -33,7 +33,7 @@ class CredentialMatch:
     Attributes:
         hosts (list[str]):
         schemes (list[CredentialMatchSchemesItem] | Unset):
-        ports (list[int] | Unset):
+        ports (list[int] | Unset): Ignored. Port is derived from scheme (https→443, http→80).
         methods (list[str] | Unset):
         paths (list[str] | Unset):
     """

@@ -288,7 +288,6 @@ func credentialVaultBinding(name, path string, auth opensandbox.CredentialAuth) 
 		Name: name,
 		Match: opensandbox.CredentialMatch{
 			Schemes: []opensandbox.CredentialScheme{opensandbox.CredentialSchemeHTTP},
-			Ports:   []int{80},
 			Hosts:   []string{credentialVaultTargetHost()},
 			Methods: []string{"GET"},
 			Paths:   []string{path},

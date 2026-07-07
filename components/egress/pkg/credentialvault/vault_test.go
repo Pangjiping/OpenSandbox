@@ -144,6 +144,31 @@ func TestCredentialVaultRejectsNonFQDNBindingHosts(t *testing.T) {
 	}
 }
 
+func TestCredentialVaultRejectsNonStandardPorts(t *testing.T) {
+	for _, tc := range []struct {
+		ports   []int
+		wantErr bool
+	}{
+		{[]int{8080}, true},
+		{[]int{443, 8080}, true},
+		{[]int{80, 443}, false},
+		{[]int{443}, false},
+		{[]int{80}, false},
+		{nil, false},
+	} {
+		_, err := normalizeBinding(Binding{
+			Name:  "test",
+			Match: Match{Hosts: []string{"api.example.com"}, Ports: tc.ports},
+			Auth:  Auth{Type: "bearer", Credential: "token"},
+		})
+		if tc.wantErr {
+			require.ErrorContains(t, err, "unsupported port", "ports=%v", tc.ports)
+		} else {
+			require.NoError(t, err, "ports=%v", tc.ports)
+		}
+	}
+}
+
 func TestCredentialVaultPatchRejectsDeletingReferencedCredential(t *testing.T) {
 	store := NewStore(nil, func() bool { return true })
 	pol := testCredentialPolicy(t, `{"defaultAction":"deny","egress":[{"action":"allow","target":"code.example.com"}]}`)

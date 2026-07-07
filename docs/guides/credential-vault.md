@@ -224,7 +224,6 @@ try:
                 name="anthropic-api",
                 match={
                     "schemes": ["https"],
-                    "ports": [443],
                     "hosts": [ANTHROPIC_HOST],
                     "methods": ["GET", "POST"],
                     "paths": ["/v1/*"],
@@ -271,7 +270,6 @@ CredentialBinding(
     name="git-basic",
     match={
         "schemes": ["https"],
-        "ports": [443],
         "hosts": ["git.example.com"],
         "paths": ["/org/private-repo.git*"],
     },
@@ -295,7 +293,6 @@ CredentialBinding(
     name="api-token",
     match={
         "schemes": ["https"],
-        "ports": [443],
         "hosts": ["api.example.com"],
         "methods": ["GET"],
         "paths": ["/v1/projects/123/variables"],
@@ -322,3 +319,15 @@ curl -fsS https://api.example.com/v1/projects/123/variables
   metadata.
 - Keep fake environment variables when a CLI refuses to start without a key; the
   vault-injected header is what authenticates the outbound request.
+
+## Migrating From `ports`
+
+The `match.ports` field is deprecated. Port is now derived from scheme (`https`→443, `http`→80). Only ports 80 and 443 are supported; non-standard values are rejected with a validation error.
+
+If you have existing bindings that use `ports` to narrow scope, migrate them to the equivalent `schemes` restriction:
+
+| Before | After |
+|--------|-------|
+| `schemes: ["http", "https"], ports: [443]` | `schemes: ["https"]` |
+| `schemes: ["http", "https"], ports: [80]` | `schemes: ["http"]` |
+| `schemes: ["https"], ports: [443]` | `schemes: ["https"]` (remove `ports`) |

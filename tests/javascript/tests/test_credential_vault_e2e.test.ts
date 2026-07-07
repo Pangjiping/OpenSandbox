@@ -234,7 +234,6 @@ function credentialVaultBinding(name: string, path: string, auth: CredentialAuth
     name,
     match: {
       schemes: ["http"],
-      ports: [80],
       hosts: [credentialVaultTargetHost()],
       methods: ["GET"],
       paths: [path],

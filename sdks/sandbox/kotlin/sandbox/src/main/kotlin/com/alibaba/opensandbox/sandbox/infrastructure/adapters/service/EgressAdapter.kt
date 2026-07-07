@@ -331,7 +331,6 @@ internal class EgressAdapter(
     private fun CredentialMatch.toJsonObject(): JsonObject =
         buildJsonObject {
             schemes?.let { put("schemes", it.map { scheme -> scheme.wireName() }.toStringJsonArray()) }
-            ports?.let { put("ports", JsonArray(it.map { port -> JsonPrimitive(port) })) }
             put("hosts", hosts.toStringJsonArray())
             methods?.let { put("methods", it.toStringJsonArray()) }
             paths?.let { put("paths", it.toStringJsonArray()) }
@@ -426,7 +425,6 @@ internal class EgressAdapter(
         optionalStringArray("schemes")?.let { schemes ->
             builder.schemes(schemes.map { it.toCredentialMatchScheme() })
         }
-        optionalIntArray("ports")?.let { builder.ports(it) }
         optionalStringArray("methods")?.let { builder.methods(it) }
         optionalStringArray("paths")?.let { builder.paths(it) }
         return builder.build()
