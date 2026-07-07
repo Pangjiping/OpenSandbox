@@ -237,6 +237,7 @@ connections.
 import (
     "github.com/redis/go-redis/v9"
     opensandbox "github.com/alibaba/OpenSandbox/sdks/sandbox/go"
+    "github.com/alibaba/OpenSandbox/sdks/sandbox/go/poolredis"
 )
 
 redisClient := redis.NewClient(&redis.Options{
@@ -247,7 +248,7 @@ pool, err := opensandbox.NewSandboxPoolBuilder().
     PoolName("prod-pool").
     OwnerID("worker-1").
     MaxIdle(10).
-    StateStore(opensandbox.NewRedisPoolStateStore(redisClient, "opensandbox:pool:prod")).
+    StateStore(poolredis.NewRedisPoolStateStore(poolredis.RedisPoolStateStoreConfig{Client: redisClient, KeyPrefix: "opensandbox:pool:prod"})).
     ConnectionConfig(opensandbox.ConnectionConfig{
         Domain: "api.opensandbox.io",
     }).

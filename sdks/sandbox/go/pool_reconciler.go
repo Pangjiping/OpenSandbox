@@ -16,7 +16,6 @@ package opensandbox
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -109,7 +108,7 @@ func reconcileTick(
 	cfg *PoolConfig,
 	store PoolStateStore,
 	state *reconcileState,
-	logger *slog.Logger,
+	logger PoolLogger,
 	createFn func(ctx context.Context, reason PooledSandboxCreateReason) (string, error),
 	deleteFn func(sandboxID string),
 ) {
@@ -120,11 +119,12 @@ func reconcileTick(
 	// Step 1: Try to acquire the primary lock.
 	acquired, err := store.TryAcquirePrimaryLock(ctx, poolName, ownerID, lockTTL)
 	if err != nil {
-		logger.Warn("reconcile: lock acquire error", slog.String("pool_name", poolName), slog.Any("error", err))
+		logger.Warn("reconcile: lock acquire error", "pool_name", poolName, "error", err)
+		state.recordFailure(err)
 		return
 	}
 	if !acquired {
-		logger.Debug("reconcile: not primary, skipping", slog.String("pool_name", poolName))
+		logger.Debug("reconcile: not primary, skipping", "pool_name", poolName)
 		return
 	}
 
@@ -133,30 +133,30 @@ func reconcileTick(
 	if minTTL > 0 {
 		reapResult, reapErr := store.ReapExpiredIdleWithMinTTL(ctx, poolName, time.Now(), minTTL)
 		if reapErr != nil {
-			logger.Warn("reconcile: reap error", slog.String("pool_name", poolName), slog.Any("error", reapErr))
+			logger.Warn("reconcile: reap error", "pool_name", poolName, "error", reapErr)
 		} else if reapResult != nil && len(reapResult.DiscardedAliveSandboxIDs) > 0 {
 			logger.Debug("reconcile: reaped near-expiry sandboxes",
-				slog.String("pool_name", poolName),
-				slog.Int("count", len(reapResult.DiscardedAliveSandboxIDs)))
+				"pool_name", poolName,
+				"count", len(reapResult.DiscardedAliveSandboxIDs))
 			for _, id := range reapResult.DiscardedAliveSandboxIDs {
 				deleteFn(id)
 			}
 		}
 	} else {
 		if reapErr := store.ReapExpiredIdle(ctx, poolName, time.Now()); reapErr != nil {
-			logger.Warn("reconcile: reap error", slog.String("pool_name", poolName), slog.Any("error", reapErr))
+			logger.Warn("reconcile: reap error", "pool_name", poolName, "error", reapErr)
 		}
 	}
 
 	// Step 3: Snapshot counters and determine current state.
 	counters, err := store.SnapshotCounters(ctx, poolName)
 	if err != nil {
-		logger.Warn("reconcile: snapshot error", slog.String("pool_name", poolName), slog.Any("error", err))
+		logger.Warn("reconcile: snapshot error", "pool_name", poolName, "error", err)
 		return
 	}
 	maxIdle, err := store.GetMaxIdle(ctx, poolName)
 	if err != nil {
-		logger.Warn("reconcile: get maxIdle error", slog.String("pool_name", poolName), slog.Any("error", err))
+		logger.Warn("reconcile: get maxIdle error", "pool_name", poolName, "error", err)
 		return
 	}
 	idleCount := counters.IdleCount
@@ -166,14 +166,14 @@ func reconcileTick(
 		excess := idleCount - maxIdle
 		toRemove := intMin(excess, cfg.WarmupConcurrency)
 		logger.Debug("reconcile: shrinking excess idle",
-			slog.String("pool_name", poolName),
-			slog.Int("idle", idleCount),
-			slog.Int("max_idle", maxIdle),
-			slog.Int("to_remove", toRemove))
+			"pool_name", poolName,
+			"idle", idleCount,
+			"max_idle", maxIdle,
+			"to_remove", toRemove)
 		for i := 0; i < toRemove; i++ {
 			renewed, renewErr := store.RenewPrimaryLock(ctx, poolName, ownerID, lockTTL)
 			if renewErr != nil || !renewed {
-				logger.Warn("reconcile: lost lock during shrink", slog.String("pool_name", poolName))
+				logger.Warn("reconcile: lost lock during shrink", "pool_name", poolName)
 				return
 			}
 			sandboxID, takeErr := store.TryTakeIdle(ctx, poolName)
@@ -194,24 +194,24 @@ func reconcileTick(
 	}
 	if state.shouldBackoff() {
 		logger.Debug("reconcile: backoff active, skipping replenish",
-			slog.String("pool_name", poolName),
-			slog.Int("deficit", deficit))
+			"pool_name", poolName,
+			"deficit", deficit)
 		store.RenewPrimaryLock(ctx, poolName, ownerID, lockTTL)
 		return
 	}
 
 	renewed, err := store.RenewPrimaryLock(ctx, poolName, ownerID, lockTTL)
 	if err != nil || !renewed {
-		logger.Warn("reconcile: lost lock before create", slog.String("pool_name", poolName))
+		logger.Warn("reconcile: lost lock before create", "pool_name", poolName)
 		return
 	}
 
 	toCreate := intMin(deficit, cfg.WarmupConcurrency)
 	logger.Debug("reconcile: filling deficit",
-		slog.String("pool_name", poolName),
-		slog.Int("idle", idleCount),
-		slog.Int("deficit", deficit),
-		slog.Int("to_create", toCreate))
+		"pool_name", poolName,
+		"idle", idleCount,
+		"deficit", deficit,
+		"to_create", toCreate)
 
 	type createResult struct {
 		sandboxID string
@@ -240,8 +240,8 @@ func reconcileTick(
 		if r.err != nil {
 			state.recordFailure(r.err)
 			logger.Warn("reconcile: sandbox create failed",
-				slog.String("pool_name", poolName),
-				slog.Any("error", r.err))
+				"pool_name", poolName,
+				"error", r.err)
 		} else if r.sandboxID != "" {
 			createdIDs = append(createdIDs, r.sandboxID)
 		}
@@ -255,8 +255,8 @@ func reconcileTick(
 				deleteFn(orphanID)
 			}
 			logger.Warn("reconcile: lost lock before putIdle, killing orphans",
-				slog.String("pool_name", poolName),
-				slog.Int("orphan_count", len(createdIDs)-i))
+				"pool_name", poolName,
+				"orphan_count", len(createdIDs)-i)
 			return
 		}
 		if putErr := store.PutIdle(ctx, poolName, id); putErr != nil {
@@ -265,9 +265,9 @@ func reconcileTick(
 				deleteFn(orphanID)
 			}
 			logger.Warn("reconcile: putIdle failed, killing orphans",
-				slog.String("pool_name", poolName),
-				slog.Any("error", putErr),
-				slog.Int("orphan_count", len(createdIDs)-i))
+				"pool_name", poolName,
+				"error", putErr,
+				"orphan_count", len(createdIDs)-i)
 			return
 		}
 		state.recordSuccess()
@@ -275,8 +275,8 @@ func reconcileTick(
 
 	if len(createdIDs) > 0 {
 		logger.Debug("reconcile: created sandboxes",
-			slog.String("pool_name", poolName),
-			slog.Int("count", len(createdIDs)))
+			"pool_name", poolName,
+			"count", len(createdIDs))
 	}
 }
 

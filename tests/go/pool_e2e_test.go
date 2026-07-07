@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/alibaba/OpenSandbox/sdks/sandbox/go"
+	"github.com/alibaba/OpenSandbox/sdks/sandbox/go/poolredis"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -472,8 +473,8 @@ func skipWithoutRedis(t *testing.T) *redis.Client {
 	return client
 }
 
-func newRedisE2EStore(client *redis.Client, prefix string) *opensandbox.RedisPoolStateStore {
-	return opensandbox.NewRedisPoolStateStore(opensandbox.RedisPoolStateStoreConfig{
+func newRedisE2EStore(client *redis.Client, prefix string) *poolredis.RedisPoolStateStore {
+	return poolredis.NewRedisPoolStateStore(poolredis.RedisPoolStateStoreConfig{
 		Client:    client,
 		KeyPrefix: prefix,
 	})

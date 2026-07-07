@@ -16,7 +16,6 @@ package opensandbox
 
 import (
 	"context"
-	"log/slog"
 	"time"
 )
 
@@ -175,6 +174,22 @@ type PooledSandboxCreateContext struct {
 	CreationSpec     PoolCreationSpec
 }
 
+// PoolLogger is the logging interface for pool operations.
+// The default implementation is a no-op. Users can inject their own
+// implementation (e.g., wrapping log/slog) via the builder.
+type PoolLogger interface {
+	Info(msg string, keysAndValues ...interface{})
+	Warn(msg string, keysAndValues ...interface{})
+	Debug(msg string, keysAndValues ...interface{})
+}
+
+// noopPoolLogger is the default logger that discards all output.
+type noopPoolLogger struct{}
+
+func (noopPoolLogger) Info(_ string, _ ...interface{})  {}
+func (noopPoolLogger) Warn(_ string, _ ...interface{})  {}
+func (noopPoolLogger) Debug(_ string, _ ...interface{}) {}
+
 // PoolConfig holds the configuration for a sandbox pool.
 type PoolConfig struct {
 	PoolName          string
@@ -203,7 +218,7 @@ type PoolConfig struct {
 	AcquireMinRemainingTTL time.Duration
 	IdleTimeout            time.Duration
 	DrainTimeout           time.Duration
-	Logger                 *slog.Logger
+	Logger                 PoolLogger
 }
 
 // AcquireOptions configures a single Acquire call.

@@ -14,7 +14,7 @@
 
 //go:build integration
 
-package opensandbox
+package poolredis
 
 import (
 	"context"
@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	opensandbox "github.com/alibaba/OpenSandbox/sdks/sandbox/go"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -483,7 +484,7 @@ func TestRedisStore_WrapsClientFailures(t *testing.T) {
 		t.Fatal("expected error from broken Redis client, got nil")
 	}
 
-	var storeErr *PoolStateStoreUnavailableError
+	var storeErr *opensandbox.PoolStateStoreUnavailableError
 	if !errors.As(err, &storeErr) {
 		t.Fatalf("expected *PoolStateStoreUnavailableError, got %T: %v", err, err)
 	}
@@ -492,9 +493,8 @@ func TestRedisStore_WrapsClientFailures(t *testing.T) {
 	}
 
 	// Ensure it does NOT match PoolStateStoreContentionError.
-	var contentionErr *PoolStateStoreContentionError
+	var contentionErr *opensandbox.PoolStateStoreContentionError
 	if errors.As(err, &contentionErr) {
 		t.Error("should NOT match *PoolStateStoreContentionError")
 	}
 }
-

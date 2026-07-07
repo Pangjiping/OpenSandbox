@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package opensandbox
+package poolredis
 
 import (
 	"context"
@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"time"
 
+	opensandbox "github.com/alibaba/OpenSandbox/sdks/sandbox/go"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -153,46 +154,46 @@ func (s *RedisPoolStateStore) TryTakeIdle(ctx context.Context, poolName string) 
 
 // TryTakeIdleWithMinTTL atomically takes the oldest idle sandbox that has
 // at least minRemaining TTL left.
-func (s *RedisPoolStateStore) TryTakeIdleWithMinTTL(ctx context.Context, poolName string, minRemaining time.Duration) (*TakeIdleResult, error) {
+func (s *RedisPoolStateStore) TryTakeIdleWithMinTTL(ctx context.Context, poolName string, minRemaining time.Duration) (*opensandbox.TakeIdleResult, error) {
 	if minRemaining <= 0 {
 		id, err := s.TryTakeIdle(ctx, poolName)
 		if err != nil {
 			return nil, err
 		}
-		return &TakeIdleResult{SandboxID: id}, nil
+		return &opensandbox.TakeIdleResult{SandboxID: id}, nil
 	}
 	return s.runTakeIdle(ctx, poolName, minRemaining.Milliseconds())
 }
 
-func (s *RedisPoolStateStore) runTakeIdle(ctx context.Context, poolName string, minTTLMs int64) (*TakeIdleResult, error) {
+func (s *RedisPoolStateStore) runTakeIdle(ctx context.Context, poolName string, minTTLMs int64) (*opensandbox.TakeIdleResult, error) {
 	keys := []string{s.idleListKey(poolName), s.idleExpiresKey(poolName)}
 	argv := []interface{}{strconv.FormatInt(minTTLMs, 10)}
 
 	raw, err := takeIdleScript.Run(ctx, s.client, keys, argv...).Result()
 	if err == redis.Nil {
-		return &TakeIdleResult{}, nil
+		return &opensandbox.TakeIdleResult{}, nil
 	}
 	if err != nil {
-		return nil, &PoolStateStoreUnavailableError{Operation: "TryTakeIdle", Cause: err}
+		return nil, &opensandbox.PoolStateStoreUnavailableError{Operation: "TryTakeIdle", Cause: err}
 	}
 
 	return s.decodeTakeIdleResult(raw), nil
 }
 
-func (s *RedisPoolStateStore) decodeTakeIdleResult(raw interface{}) *TakeIdleResult {
+func (s *RedisPoolStateStore) decodeTakeIdleResult(raw interface{}) *opensandbox.TakeIdleResult {
 	if raw == nil {
-		return &TakeIdleResult{}
+		return &opensandbox.TakeIdleResult{}
 	}
 
 	list, ok := raw.([]interface{})
 	if !ok {
-		return &TakeIdleResult{}
+		return &opensandbox.TakeIdleResult{}
 	}
 	if len(list) == 0 {
-		return &TakeIdleResult{}
+		return &opensandbox.TakeIdleResult{}
 	}
 
-	result := &TakeIdleResult{}
+	result := &opensandbox.TakeIdleResult{}
 
 	// First element: sandbox ID (empty string means none taken but discards exist)
 	if takenRaw, ok := list[0].(string); ok && takenRaw != "" {
@@ -229,7 +230,7 @@ func (s *RedisPoolStateStore) PutIdle(ctx context.Context, poolName string, sand
 
 	_, err = putIdleScript.Run(ctx, s.client, keys, argv...).Result()
 	if err != nil && err != redis.Nil {
-		return &PoolStateStoreUnavailableError{Operation: "PutIdle", Cause: err}
+		return &opensandbox.PoolStateStoreUnavailableError{Operation: "PutIdle", Cause: err}
 	}
 	return nil
 }
@@ -241,7 +242,7 @@ func (s *RedisPoolStateStore) RemoveIdle(ctx context.Context, poolName string, s
 
 	_, err := removeIdleScript.Run(ctx, s.client, keys, argv...).Result()
 	if err != nil && err != redis.Nil {
-		return &PoolStateStoreUnavailableError{Operation: "RemoveIdle", Cause: err}
+		return &opensandbox.PoolStateStoreUnavailableError{Operation: "RemoveIdle", Cause: err}
 	}
 	return nil
 }
@@ -256,7 +257,7 @@ func (s *RedisPoolStateStore) TryAcquirePrimaryLock(ctx context.Context, poolNam
 
 	ok, err := s.client.SetNX(ctx, s.PrimaryLockKey(poolName), ownerID, time.Duration(ttlMs)*time.Millisecond).Result()
 	if err != nil {
-		return false, &PoolStateStoreUnavailableError{Operation: "TryAcquirePrimaryLock", Cause: err}
+		return false, &opensandbox.PoolStateStoreUnavailableError{Operation: "TryAcquirePrimaryLock", Cause: err}
 	}
 	if ok {
 		return true, nil
@@ -278,7 +279,7 @@ func (s *RedisPoolStateStore) RenewPrimaryLock(ctx context.Context, poolName str
 
 	result, err := renewLockScript.Run(ctx, s.client, keys, argv...).Int64()
 	if err != nil && err != redis.Nil {
-		return false, &PoolStateStoreUnavailableError{Operation: "RenewPrimaryLock", Cause: err}
+		return false, &opensandbox.PoolStateStoreUnavailableError{Operation: "RenewPrimaryLock", Cause: err}
 	}
 	return result == 1, nil
 }
@@ -290,7 +291,7 @@ func (s *RedisPoolStateStore) ReleasePrimaryLock(ctx context.Context, poolName s
 
 	_, err := releaseLockScript.Run(ctx, s.client, keys, argv...).Result()
 	if err != nil && err != redis.Nil {
-		return &PoolStateStoreUnavailableError{Operation: "ReleasePrimaryLock", Cause: err}
+		return &opensandbox.PoolStateStoreUnavailableError{Operation: "ReleasePrimaryLock", Cause: err}
 	}
 	return nil
 }
@@ -303,7 +304,7 @@ func (s *RedisPoolStateStore) ReapExpiredIdle(ctx context.Context, poolName stri
 
 // ReapExpiredIdleWithMinTTL removes expired and near-expiry idle entries.
 // Returns IDs of entries that were still alive but below the TTL threshold.
-func (s *RedisPoolStateStore) ReapExpiredIdleWithMinTTL(ctx context.Context, poolName string, _ time.Time, minRemaining time.Duration) (*ReapResult, error) {
+func (s *RedisPoolStateStore) ReapExpiredIdleWithMinTTL(ctx context.Context, poolName string, _ time.Time, minRemaining time.Duration) (*opensandbox.ReapResult, error) {
 	minMs := minRemaining.Milliseconds()
 	if minMs < 0 {
 		minMs = 0
@@ -313,7 +314,7 @@ func (s *RedisPoolStateStore) ReapExpiredIdleWithMinTTL(ctx context.Context, poo
 	if err != nil {
 		return nil, err
 	}
-	return &ReapResult{DiscardedAliveSandboxIDs: discarded}, nil
+	return &opensandbox.ReapResult{DiscardedAliveSandboxIDs: discarded}, nil
 }
 
 func (s *RedisPoolStateStore) runReapExpired(ctx context.Context, poolName string, minTTLMs int64) ([]string, error) {
@@ -322,7 +323,7 @@ func (s *RedisPoolStateStore) runReapExpired(ctx context.Context, poolName strin
 
 	raw, err := reapExpiredScript.Run(ctx, s.client, keys, argv...).Result()
 	if err != nil && err != redis.Nil {
-		return nil, &PoolStateStoreUnavailableError{Operation: "ReapExpiredIdle", Cause: err}
+		return nil, &opensandbox.PoolStateStoreUnavailableError{Operation: "ReapExpiredIdle", Cause: err}
 	}
 
 	if raw == nil {
@@ -344,27 +345,27 @@ func (s *RedisPoolStateStore) runReapExpired(ctx context.Context, poolName strin
 }
 
 // SnapshotCounters returns current pool counters (idle count from the expires hash).
-func (s *RedisPoolStateStore) SnapshotCounters(ctx context.Context, poolName string) (*StoreCounters, error) {
+func (s *RedisPoolStateStore) SnapshotCounters(ctx context.Context, poolName string) (*opensandbox.StoreCounters, error) {
 	count, err := s.client.HLen(ctx, s.idleExpiresKey(poolName)).Result()
 	if err != nil {
-		return nil, &PoolStateStoreUnavailableError{Operation: "SnapshotCounters", Cause: err}
+		return nil, &opensandbox.PoolStateStoreUnavailableError{Operation: "SnapshotCounters", Cause: err}
 	}
-	return &StoreCounters{IdleCount: int(count)}, nil
+	return &opensandbox.StoreCounters{IdleCount: int(count)}, nil
 }
 
 // SnapshotIdleEntries returns all current idle entries in FIFO order.
-func (s *RedisPoolStateStore) SnapshotIdleEntries(ctx context.Context, poolName string) ([]IdleEntry, error) {
+func (s *RedisPoolStateStore) SnapshotIdleEntries(ctx context.Context, poolName string) ([]opensandbox.IdleEntry, error) {
 	ids, err := s.client.LRange(ctx, s.idleListKey(poolName), 0, -1).Result()
 	if err != nil {
-		return nil, &PoolStateStoreUnavailableError{Operation: "SnapshotIdleEntries", Cause: err}
+		return nil, &opensandbox.PoolStateStoreUnavailableError{Operation: "SnapshotIdleEntries", Cause: err}
 	}
 
 	expiresMap, err := s.client.HGetAll(ctx, s.idleExpiresKey(poolName)).Result()
 	if err != nil {
-		return nil, &PoolStateStoreUnavailableError{Operation: "SnapshotIdleEntries", Cause: err}
+		return nil, &opensandbox.PoolStateStoreUnavailableError{Operation: "SnapshotIdleEntries", Cause: err}
 	}
 
-	var entries []IdleEntry
+	var entries []opensandbox.IdleEntry
 	for _, id := range ids {
 		expiresStr, ok := expiresMap[id]
 		if !ok {
@@ -374,7 +375,7 @@ func (s *RedisPoolStateStore) SnapshotIdleEntries(ctx context.Context, poolName 
 		if err != nil {
 			continue
 		}
-		entries = append(entries, IdleEntry{
+		entries = append(entries, opensandbox.IdleEntry{
 			SandboxID: id,
 			ExpiresAt: time.UnixMilli(expiresMs),
 		})
@@ -389,11 +390,11 @@ func (s *RedisPoolStateStore) GetMaxIdle(ctx context.Context, poolName string) (
 		return 0, nil
 	}
 	if err != nil {
-		return 0, &PoolStateStoreUnavailableError{Operation: "GetMaxIdle", Cause: err}
+		return 0, &opensandbox.PoolStateStoreUnavailableError{Operation: "GetMaxIdle", Cause: err}
 	}
 	n, err := strconv.Atoi(val)
 	if err != nil {
-		return 0, &PoolStateStoreUnavailableError{Operation: "GetMaxIdle", Cause: err}
+		return 0, &opensandbox.PoolStateStoreUnavailableError{Operation: "GetMaxIdle", Cause: err}
 	}
 	return n, nil
 }
@@ -402,7 +403,7 @@ func (s *RedisPoolStateStore) GetMaxIdle(ctx context.Context, poolName string) (
 func (s *RedisPoolStateStore) SetMaxIdle(ctx context.Context, poolName string, maxIdle int) error {
 	err := s.client.Set(ctx, s.maxIdleKey(poolName), strconv.Itoa(maxIdle), 0).Err()
 	if err != nil {
-		return &PoolStateStoreUnavailableError{Operation: "SetMaxIdle", Cause: err}
+		return &opensandbox.PoolStateStoreUnavailableError{Operation: "SetMaxIdle", Cause: err}
 	}
 	return nil
 }
@@ -415,7 +416,7 @@ func (s *RedisPoolStateStore) SetIdleEntryTTL(ctx context.Context, poolName stri
 	}
 	err := s.client.Set(ctx, s.idleTTLKey(poolName), strconv.FormatInt(ms, 10), 0).Err()
 	if err != nil {
-		return &PoolStateStoreUnavailableError{Operation: "SetIdleEntryTTL", Cause: err}
+		return &opensandbox.PoolStateStoreUnavailableError{Operation: "SetIdleEntryTTL", Cause: err}
 	}
 	return nil
 }
@@ -425,14 +426,14 @@ func (s *RedisPoolStateStore) SetIdleEntryTTL(ctx context.Context, poolName stri
 func (s *RedisPoolStateStore) resolveIdleTTL(ctx context.Context, poolName string) (int64, error) {
 	val, err := s.client.Get(ctx, s.idleTTLKey(poolName)).Result()
 	if err == redis.Nil {
-		return DefaultIdleTimeout.Milliseconds(), nil
+		return opensandbox.DefaultIdleTimeout.Milliseconds(), nil
 	}
 	if err != nil {
-		return 0, &PoolStateStoreUnavailableError{Operation: "resolveIdleTTL", Cause: err}
+		return 0, &opensandbox.PoolStateStoreUnavailableError{Operation: "resolveIdleTTL", Cause: err}
 	}
 	ms, err := strconv.ParseInt(val, 10, 64)
 	if err != nil {
-		return DefaultIdleTimeout.Milliseconds(), nil
+		return opensandbox.DefaultIdleTimeout.Milliseconds(), nil
 	}
 	if ms < 1 {
 		ms = 1
@@ -455,6 +456,7 @@ func (s *RedisPoolStateStore) idleExpiresKey(poolName string) string {
 	return s.poolKey(poolName, "idle:expires")
 }
 
+// PrimaryLockKey returns the Redis key used for the primary (leader) lock.
 func (s *RedisPoolStateStore) PrimaryLockKey(poolName string) string {
 	return s.poolKey(poolName, "lock")
 }
@@ -468,4 +470,4 @@ func (s *RedisPoolStateStore) idleTTLKey(poolName string) string {
 }
 
 // Compile-time interface check.
-var _ PoolStateStore = (*RedisPoolStateStore)(nil)
+var _ opensandbox.PoolStateStore = (*RedisPoolStateStore)(nil)

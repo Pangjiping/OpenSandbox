@@ -17,7 +17,6 @@ package opensandbox
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"time"
 )
@@ -190,8 +189,8 @@ func (b *SandboxPoolBuilder) DrainTimeout(d time.Duration) *SandboxPoolBuilder {
 }
 
 // PoolLogger sets a custom structured logger for pool operations.
-// Defaults to slog.Default() if not set.
-func (b *SandboxPoolBuilder) PoolLogger(l *slog.Logger) *SandboxPoolBuilder {
+// Defaults to a no-op logger if not set.
+func (b *SandboxPoolBuilder) PoolLogger(l PoolLogger) *SandboxPoolBuilder {
 	b.config.Logger = l
 	return b
 }
@@ -223,6 +222,10 @@ func (b *SandboxPoolBuilder) Build() (*DefaultSandboxPool, error) {
 		return nil, fmt.Errorf("opensandbox: pool builder: CreationSpec (with Image or SnapshotID) is required when no SandboxCreator is set")
 	}
 
+	if b.config.CreationSpec.ManualCleanup {
+		return nil, fmt.Errorf("opensandbox: pool builder: ManualCleanup is not supported for pooled sandboxes (would leak resources after idle TTL expiry)")
+	}
+
 	// Validate AcquireMinRemainingTTL: reject negative values.
 	if b.config.AcquireMinRemainingTTL < 0 {
 		return nil, fmt.Errorf("opensandbox: pool builder: AcquireMinRemainingTTL must be >= 0, got %v", b.config.AcquireMinRemainingTTL)
@@ -231,6 +234,10 @@ func (b *SandboxPoolBuilder) Build() (*DefaultSandboxPool, error) {
 	// Default state store.
 	if !b.stateStoreSet {
 		b.config.StateStore = NewInMemoryPoolStateStore()
+	}
+
+	if b.config.WarmupConcurrency < 0 {
+		return nil, fmt.Errorf("opensandbox: pool builder: WarmupConcurrency must be non-negative, got %d", b.config.WarmupConcurrency)
 	}
 
 	// Default warmup concurrency: max(1, ceil(MaxIdle * 0.2)).
@@ -252,9 +259,13 @@ func (b *SandboxPoolBuilder) Build() (*DefaultSandboxPool, error) {
 		b.config.IdleTimeout = DefaultIdleTimeout
 	}
 
+	if b.config.IdleTimeout < 0 {
+		return nil, fmt.Errorf("opensandbox: pool builder: IdleTimeout must be positive, got %v", b.config.IdleTimeout)
+	}
+
 	// Default logger.
 	if b.config.Logger == nil {
-		b.config.Logger = slog.Default()
+		b.config.Logger = noopPoolLogger{}
 	}
 
 	// Validate AcquireMinRemainingTTL < IdleTimeout (after defaults are applied).

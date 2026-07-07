@@ -18,8 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -49,7 +47,7 @@ func (m *mockLockStore) RenewPrimaryLock(ctx context.Context, poolName string, o
 
 // --- Test helpers ---
 
-var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+var testLogger PoolLogger = noopPoolLogger{}
 
 func defaultTestPoolConfig(store PoolStateStore) *PoolConfig {
 	return &PoolConfig{

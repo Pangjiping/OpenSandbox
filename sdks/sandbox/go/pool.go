@@ -17,7 +17,6 @@ package opensandbox
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,13 +52,7 @@ type DefaultSandboxPool struct {
 	wg           sync.WaitGroup
 	shutdownDone chan struct{} // closed when Shutdown fully completes
 	inFlight     int32
-}
-
-func (p *DefaultSandboxPool) logger() *slog.Logger {
-	if p.config.Logger != nil {
-		return p.config.Logger
-	}
-	return slog.Default()
+	reconCancel  context.CancelFunc
 }
 
 // Start begins the background reconciliation loop.
@@ -92,11 +85,11 @@ func (p *DefaultSandboxPool) Start(ctx context.Context) error {
 
 	p.lifecycleState = PoolLifecycleStarting
 	if p.config.PrimaryLockTTL <= p.config.WarmupReadyTimeout {
-		p.logger().Warn("pool primary lock TTL may expire during warmup; "+
+		p.config.Logger.Warn("pool primary lock TTL may expire during warmup; "+
 			"configure PrimaryLockTTL greater than WarmupReadyTimeout plus expected preparer time",
-			slog.String("pool_name", p.config.PoolName),
-			slog.Duration("primary_lock_ttl", p.config.PrimaryLockTTL),
-			slog.Duration("warmup_ready_timeout", p.config.WarmupReadyTimeout))
+			"pool_name", p.config.PoolName,
+			"primary_lock_ttl", p.config.PrimaryLockTTL,
+			"warmup_ready_timeout", p.config.WarmupReadyTimeout)
 	}
 	p.reconciler = newReconcileState(p.config.DegradedThreshold)
 	p.ticker = time.NewTicker(p.config.ReconcileInterval)
@@ -104,15 +97,18 @@ func (p *DefaultSandboxPool) Start(ctx context.Context) error {
 	p.doneClosed = false
 	p.shutdownDone = make(chan struct{})
 
+	reconCtx, reconCancel := context.WithCancel(context.Background())
+	p.reconCancel = reconCancel
+
 	p.wg.Add(1)
-	go p.reconcileLoop()
+	go p.reconcileLoop(reconCtx)
 
 	// Trigger immediate first tick if maxIdle > 0.
 	if p.config.MaxIdle > 0 {
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			p.runReconcileTick(context.Background())
+			p.runReconcileTick(reconCtx)
 			p.syncHealthState()
 		}()
 	}
@@ -120,13 +116,13 @@ func (p *DefaultSandboxPool) Start(ctx context.Context) error {
 	p.lifecycleState = PoolLifecycleRunning
 	p.mu.Unlock()
 
-	p.logger().Info("pool started",
-		slog.String("pool_name", p.config.PoolName),
-		slog.Int("max_idle", p.config.MaxIdle))
+	p.config.Logger.Info("pool started",
+		"pool_name", p.config.PoolName,
+		"max_idle", p.config.MaxIdle)
 	return nil
 }
 
-func (p *DefaultSandboxPool) reconcileLoop() {
+func (p *DefaultSandboxPool) reconcileLoop(ctx context.Context) {
 	defer p.wg.Done()
 	for {
 		select {
@@ -139,7 +135,7 @@ func (p *DefaultSandboxPool) reconcileLoop() {
 			// Do not use ReconcileInterval as context timeout — the interval
 			// controls how often ticks fire, not how long each tick may run.
 			// Sandbox creation has its own timeouts (WarmupReadyTimeout).
-			p.runReconcileTick(context.Background())
+			p.runReconcileTick(ctx)
 			p.syncHealthState()
 		}
 	}
@@ -159,7 +155,7 @@ func (p *DefaultSandboxPool) runReconcileTick(ctx context.Context) {
 	deleteFn := func(sandboxID string) {
 		p.killSandboxBestEffort(sandboxID)
 	}
-	reconcileTick(ctx, p.config, p.stateStore, p.reconciler, p.logger(), createFn, deleteFn)
+	reconcileTick(ctx, p.config, p.stateStore, p.reconciler, p.config.Logger, createFn, deleteFn)
 }
 
 // Acquire takes or creates a sandbox from the pool.
@@ -217,9 +213,9 @@ func (p *DefaultSandboxPool) Acquire(ctx context.Context, opts AcquireOptions) (
 		// Under DirectCreate, treat store unavailability as a cache miss and
 		// fall through to direct create so the pool remains at least as available
 		// as raw SDK usage during store outages (OSEP-0005 error-code matrix).
-		p.logger().Warn("acquire: state store unavailable, falling through to direct create",
-			slog.String("pool_name", p.config.PoolName),
-			slog.Any("error", err))
+		p.config.Logger.Warn("acquire: state store unavailable, falling through to direct create",
+			"pool_name", p.config.PoolName,
+			"error", err)
 	}
 
 	var idleConnectErr error
@@ -241,27 +237,27 @@ func (p *DefaultSandboxPool) Acquire(ctx context.Context, opts AcquireOptions) (
 						return nil, &PoolAcquireFailedError{PoolName: p.config.PoolName, Cause: hcErr}
 					}
 					idleConnectErr = hcErr
-					p.logger().Warn("acquire: idle health check failed, falling through to direct create",
-						slog.String("pool_name", p.config.PoolName),
-						slog.String("sandbox_id", takeResult.SandboxID),
-						slog.Any("error", hcErr))
+					p.config.Logger.Warn("acquire: idle health check failed, falling through to direct create",
+						"pool_name", p.config.PoolName,
+						"sandbox_id", takeResult.SandboxID,
+						"error", hcErr)
 					goto directCreate
 				}
 			}
 			go p.killDiscardedAliveSandboxes(takeResult.DiscardedAliveSandboxIDs)
-			p.logger().Debug("acquire: from idle",
-				slog.String("pool_name", p.config.PoolName),
-				slog.String("sandbox_id", takeResult.SandboxID))
+			p.config.Logger.Debug("acquire: from idle",
+				"pool_name", p.config.PoolName,
+				"sandbox_id", takeResult.SandboxID)
 			return sb, nil
 		}
 
 		idleConnectErr = connectErr
 		_ = p.stateStore.RemoveIdle(ctx, p.config.PoolName, takeResult.SandboxID)
 		go p.killSandboxBestEffort(takeResult.SandboxID)
-		p.logger().Warn("acquire: idle sandbox connect failed",
-			slog.String("pool_name", p.config.PoolName),
-			slog.String("sandbox_id", takeResult.SandboxID),
-			slog.Any("error", connectErr))
+		p.config.Logger.Warn("acquire: idle sandbox connect failed",
+			"pool_name", p.config.PoolName,
+			"sandbox_id", takeResult.SandboxID,
+			"error", connectErr)
 	}
 
 	// Schedule kill of discarded-alive (whether we got a sandbox ID or not).
@@ -282,9 +278,12 @@ directCreate:
 }
 
 func (p *DefaultSandboxPool) connectAndRenew(ctx context.Context, sandboxID string, opts AcquireOptions) (*Sandbox, error) {
-	readyOpts := ReadyOptions{
-		Timeout:         p.config.AcquireReadyTimeout,
-		PollingInterval: p.config.AcquireHealthCheckPollingInterval,
+	var readyOpts ReadyOptions
+	if !opts.SkipHealthCheck {
+		readyOpts = ReadyOptions{
+			Timeout:         p.config.AcquireReadyTimeout,
+			PollingInterval: p.config.AcquireHealthCheckPollingInterval,
+		}
 	}
 	sb, err := ConnectSandbox(ctx, p.config.ConnectionConfig, sandboxID, readyOpts)
 	if err != nil {
@@ -321,6 +320,17 @@ func (p *DefaultSandboxPool) directCreate(ctx context.Context, opts AcquireOptio
 				return nil, fmt.Errorf("opensandbox: pool direct create: renew failed: %w", err)
 			}
 		}
+		// Run acquire health check on direct-created sandbox.
+		if !opts.SkipHealthCheck && p.config.AcquireHealthCheck != nil {
+			hcCtx, hcCancel := context.WithTimeout(ctx, p.config.AcquireReadyTimeout)
+			hcErr := p.config.AcquireHealthCheck(hcCtx, sb)
+			hcCancel()
+			if hcErr != nil {
+				go p.killSandboxBestEffort(sb.ID())
+				_ = sb.Close()
+				return nil, fmt.Errorf("opensandbox: pool direct create: health check failed: %w", hcErr)
+			}
+		}
 		return sb, nil
 	}
 
@@ -333,6 +343,17 @@ func (p *DefaultSandboxPool) directCreate(ctx context.Context, opts AcquireOptio
 			go p.killSandboxBestEffort(sb.ID())
 			_ = sb.Close()
 			return nil, fmt.Errorf("opensandbox: pool direct create: renew failed: %w", err)
+		}
+	}
+	// Run acquire health check on direct-created sandbox.
+	if !opts.SkipHealthCheck && p.config.AcquireHealthCheck != nil {
+		hcCtx, hcCancel := context.WithTimeout(ctx, p.config.AcquireReadyTimeout)
+		hcErr := p.config.AcquireHealthCheck(hcCtx, sb)
+		hcCancel()
+		if hcErr != nil {
+			go p.killSandboxBestEffort(sb.ID())
+			_ = sb.Close()
+			return nil, fmt.Errorf("opensandbox: pool direct create: health check failed: %w", hcErr)
 		}
 	}
 	return sb, nil
@@ -361,10 +382,10 @@ func (p *DefaultSandboxPool) createOneSandbox(ctx context.Context, reason Pooled
 			return "", err
 		}
 		if _, err := sb.Renew(ctx, p.config.IdleTimeout); err != nil {
-			p.logger().Warn("pool warmup: renew idle TTL failed",
-				slog.String("pool_name", p.config.PoolName),
-				slog.String("sandbox_id", sandboxID),
-				slog.Any("error", err))
+			p.config.Logger.Warn("pool warmup: renew idle TTL failed",
+				"pool_name", p.config.PoolName,
+				"sandbox_id", sandboxID,
+				"error", err)
 		}
 		return sandboxID, nil
 	}
@@ -380,10 +401,10 @@ func (p *DefaultSandboxPool) createOneSandbox(ctx context.Context, reason Pooled
 		return "", err
 	}
 	if _, err := sb.Renew(ctx, p.config.IdleTimeout); err != nil {
-		p.logger().Warn("pool warmup: renew idle TTL failed",
-			slog.String("pool_name", p.config.PoolName),
-			slog.String("sandbox_id", sandboxID),
-			slog.Any("error", err))
+		p.config.Logger.Warn("pool warmup: renew idle TTL failed",
+			"pool_name", p.config.PoolName,
+			"sandbox_id", sandboxID,
+			"error", err)
 	}
 	return sandboxID, nil
 }
@@ -523,12 +544,15 @@ func (p *DefaultSandboxPool) Shutdown(ctx context.Context, graceful bool) error 
 			close(p.done)
 			p.doneClosed = true
 		}
+		if p.reconCancel != nil {
+			p.reconCancel()
+		}
 		sdCh := p.shutdownDone
 		p.mu.Unlock()
 		p.wg.Wait()
 		_ = p.stateStore.ReleasePrimaryLock(ctx, p.config.PoolName, p.config.OwnerID)
-		p.logger().Info("pool shutdown (non-graceful)",
-			slog.String("pool_name", p.config.PoolName))
+		p.config.Logger.Info("pool shutdown (non-graceful)",
+			"pool_name", p.config.PoolName)
 		if sdCh != nil {
 			select {
 			case <-sdCh:
@@ -570,8 +594,8 @@ done:
 	p.lifecycleState = PoolLifecycleStopped
 	sdCh := p.shutdownDone
 	p.mu.Unlock()
-	p.logger().Info("pool shutdown (graceful)",
-		slog.String("pool_name", p.config.PoolName))
+	p.config.Logger.Info("pool shutdown (graceful)",
+		"pool_name", p.config.PoolName)
 	if sdCh != nil {
 		select {
 		case <-sdCh:
