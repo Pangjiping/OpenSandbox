@@ -38,7 +38,7 @@ When multi-tenancy is active:
 
 1. Auth middleware resolves the API key to a `TenantEntry` via the configured provider.
 2. The tenant's namespace is injected into a request-scoped `ContextVar`.
-3. All downstream Kubernetes operations use the resolved namespace.
+3. Sandbox lifecycle operations (create/list/get/delete) use the resolved namespace.
 4. List operations only return sandboxes within the authenticated tenant's namespace.
 5. Proxy routes (`/sandboxes/{id}/proxy/...`) also require `OPEN-SANDBOX-API-KEY` in multi-tenant mode.
 
@@ -243,8 +243,13 @@ The server itself does not enforce resource quotas or network policies. Isolatio
 |-----------|---------------------|-------|
 | Resource quota | `ResourceQuota` | Per-namespace CPU, memory, storage |
 | Default limits | `LimitRange` | Per-namespace default container resources |
+| Network isolation | Egress sidecar | Per-sandbox outbound policy via egress proxy |
 | Sandbox count | `ResourceQuota` (pod count) | Per-namespace pod limit |
 | RBAC | `RoleBinding` | Per-namespace API access |
+
+::: info Pool APIs are not tenant-scoped
+Pool management routes (`/pools`) currently operate in the server's configured default namespace, not the authenticated tenant's namespace. Pools are shared resources. If you need per-tenant pool isolation, create separate server deployments or wait for future per-tenant pool support.
+:::
 
 ## Troubleshooting
 
