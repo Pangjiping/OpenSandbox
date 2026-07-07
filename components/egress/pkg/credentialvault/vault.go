@@ -475,7 +475,14 @@ func normalizeMatch(m *Match) error {
 		}
 		m.Schemes[i] = scheme
 	}
-	m.Ports = nil
+	if len(m.Ports) > 0 {
+		for _, port := range m.Ports {
+			if port != 80 && port != 443 {
+				return fmt.Errorf("unsupported port %d: only ports 80 and 443 are supported (derived from scheme)", port)
+			}
+		}
+		m.Ports = nil
+	}
 	for i, host := range m.Hosts {
 		normalized, err := normalizeCredentialHost(host)
 		if err != nil {
