@@ -53,7 +53,7 @@ Different components have different requirements:
 
 #### For execd (Go)
 
-- **Go 1.24+**
+- **Go 1.25+**
 - **Make** - Build automation (optional)
 - **Docker** - For building container images
 

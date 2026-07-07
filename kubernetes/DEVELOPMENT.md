@@ -22,7 +22,7 @@ Repeat steps 2–6 until the feature is complete and all tests pass.
 
 ## Prerequisites
 
-- **Go 1.24+** — match the version in `go.mod`
+- **Go 1.25+** — match the version in `go.mod`
 - **Docker** — for building images and running e2e tests
 - **Kind** — for e2e test clusters (`go install sigs.k8s.io/kind@v0.20.0`)
 - **kubectl** — for manual cluster interaction

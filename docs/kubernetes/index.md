@@ -153,7 +153,7 @@ Snapshot image retention is registry-managed. Deleting a `SandboxSnapshot` remov
 ![Deploy Example](../public/images/deploy-example.gif)
 
 ### Prerequisites
-- go version v1.24.0+
+- go version v1.25.0+
 - docker version 17.03+
 - kubectl version v1.11.3+
 - Access to a Kubernetes v1.21.1+ cluster
