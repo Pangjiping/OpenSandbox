@@ -204,7 +204,7 @@ class CredentialMatch(BaseModel):
     """Request match for a Credential Vault binding."""
 
     schemes: list[Literal["https", "http"]] | None = Field(default=None)
-    ports: list[int] | None = Field(default=None, deprecated="Ignored. Port is derived from scheme (https→443, http→80).")
+    ports: list[int] | None = Field(default=None, deprecated="Port is derived from scheme (https→443, http→80). Values other than 80 or 443 are rejected by the server.")
     hosts: list[str] = Field(description="Exact FQDNs or leftmost-label wildcards.")
     methods: list[str] | None = Field(default=None)
     paths: list[str] | None = Field(default=None)

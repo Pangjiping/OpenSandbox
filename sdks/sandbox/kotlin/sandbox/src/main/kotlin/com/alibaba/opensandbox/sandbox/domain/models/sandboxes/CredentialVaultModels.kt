@@ -160,11 +160,18 @@ class CredentialMatch private constructor(
 
         fun schemes(vararg schemes: Scheme): Builder = schemes(schemes.toList())
 
-        @Deprecated("Ignored; port is derived from schemes")
-        fun ports(ports: List<Int>): Builder = this
+        @Deprecated("Port is derived from schemes. Values other than 80 or 443 are rejected by the server.")
+        fun ports(ports: List<Int>): Builder {
+            ports.forEach { port ->
+                require(port == 80 || port == 443) {
+                    "Unsupported port $port: only ports 80 and 443 are supported (derived from scheme)"
+                }
+            }
+            return this
+        }
 
-        @Deprecated("Ignored; port is derived from schemes")
-        fun ports(vararg ports: Int): Builder = this
+        @Deprecated("Port is derived from schemes. Values other than 80 or 443 are rejected by the server.")
+        fun ports(vararg ports: Int): Builder = ports(ports.toList())
 
         fun hosts(hosts: List<String>): Builder {
             require(hosts.isNotEmpty()) { "Credential match hosts cannot be empty" }

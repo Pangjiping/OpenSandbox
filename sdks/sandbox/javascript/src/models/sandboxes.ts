@@ -115,7 +115,7 @@ export interface CredentialMatch extends Record<string, unknown> {
    */
   schemes?: CredentialMatchScheme[];
   /**
-   * @deprecated Ignored. Port is derived from scheme (https→443, http→80).
+   * @deprecated Port is derived from scheme (https→443, http→80). Values other than 80 or 443 are rejected by the server.
    */
   ports?: number[];
   /**
