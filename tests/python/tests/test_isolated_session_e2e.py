@@ -568,13 +568,10 @@ class TestIsolatedSessionE2E:
             await session.delete()
             await self.sandbox.commands.run(f"rm -rf {prefix}")
 
-    # ── run_once / isolation_session standalone function tests ────────
+    # ── run_once / session convenience method tests ──────────────────
 
     async def test_run_once(self):
-        from opensandbox import run_once
-
-        result = await run_once(
-            self.sandbox.isolation,
+        result = await self.sandbox.isolation.run_once(
             "echo run-once-works",
             workspace="/tmp",
             workspace_mode="rw",
@@ -582,10 +579,7 @@ class TestIsolatedSessionE2E:
         assert "run-once-works" in result.text
 
     async def test_run_once_with_envs(self):
-        from opensandbox import run_once
-
-        result = await run_once(
-            self.sandbox.isolation,
+        result = await self.sandbox.isolation.run_once(
             "echo $RUN_ONCE_VAR",
             workspace="/tmp",
             workspace_mode="rw",
@@ -594,10 +588,7 @@ class TestIsolatedSessionE2E:
         assert "e2e-value" in result.text
 
     async def test_run_once_session_cleaned_up(self):
-        from opensandbox import run_once
-
-        result = await run_once(
-            self.sandbox.isolation,
+        result = await self.sandbox.isolation.run_once(
             "echo $$",
             workspace="/tmp",
             workspace_mode="rw",
@@ -605,23 +596,19 @@ class TestIsolatedSessionE2E:
         assert result.text.strip().isdigit()
 
     async def test_session_context_manager(self):
-        from opensandbox import isolation_session
-
         request = CreateIsolatedSessionRequest(
             workspace=IsolatedWorkspaceSpec(path="/tmp", mode="rw"),
         )
-        async with isolation_session(self.sandbox.isolation, request) as session:
+        async with self.sandbox.isolation.session(request) as session:
             r1 = await session.run("export CTX_VAR=hello123")
             r2 = await session.run("echo $CTX_VAR")
             assert "hello123" in r2.text
 
     async def test_session_context_manager_multi_run(self):
-        from opensandbox import isolation_session
-
         request = CreateIsolatedSessionRequest(
             workspace=IsolatedWorkspaceSpec(path="/tmp", mode="rw"),
         )
-        async with isolation_session(self.sandbox.isolation, request) as session:
+        async with self.sandbox.isolation.session(request) as session:
             await session.run("echo step1 > /tmp/ctx_test.txt")
             result = await session.run("cat /tmp/ctx_test.txt")
             assert "step1" in result.text
