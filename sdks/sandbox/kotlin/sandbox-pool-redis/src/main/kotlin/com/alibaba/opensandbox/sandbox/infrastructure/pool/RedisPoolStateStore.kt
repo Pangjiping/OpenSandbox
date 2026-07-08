@@ -366,6 +366,8 @@ class RedisPoolStateStore(
             block()
         } catch (e: IllegalArgumentException) {
             throw e
+        } catch (e: PoolDestroyedException) {
+            throw e
         } catch (e: Exception) {
             throw PoolStateStoreUnavailableException(
                 message = "Redis pool state store operation failed: operation=$operation poolName=$poolName",
