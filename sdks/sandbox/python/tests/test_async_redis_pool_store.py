@@ -179,6 +179,9 @@ async def test_async_redis_store_destroy_fences_writes_and_preserves_tombstone(
 
     await store.mark_destroyed("pool", "destroyer", timedelta(seconds=60))
     assert await store.get_destroy_state("pool") == PoolDestroyState.DESTROYED
+    with pytest.raises(PoolDestroyedException):
+        await store.begin_destroy("pool", "destroyer-2")
+    assert await store.get_destroy_state("pool") == PoolDestroyState.DESTROYED
 
 
 @pytest.mark.asyncio

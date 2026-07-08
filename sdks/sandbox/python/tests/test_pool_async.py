@@ -160,6 +160,55 @@ async def test_async_acquire_idle_destroy_race_raises_pool_destroyed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_async_acquire_stopped_destroyed_pool_raises_pool_destroyed() -> None:
+    store = InMemoryAsyncPoolStateStore()
+    pool = _create_pool(max_idle=0, store=store)
+    await pool.start()
+    await store.begin_destroy("pool", "destroyer")
+    await pool.shutdown(False)
+
+    with pytest.raises(PoolDestroyedException):
+        await pool.acquire()
+
+
+@pytest.mark.asyncio
+async def test_async_acquire_destroy_race_preserves_pool_destroyed_when_cleanup_fails() -> None:
+    store = InMemoryAsyncPoolStateStore()
+    await store.put_idle("pool", "id-1")
+
+    class CleanupFailingAsyncSandbox(FakeAsyncSandbox):
+        @classmethod
+        async def connect(
+            cls, sandbox_id: str, *args: Any, **kwargs: Any
+        ) -> FakeAsyncSandbox:
+            await store.begin_destroy("pool", "destroyer")
+            return cls(sandbox_id)
+
+        async def kill(self) -> None:
+            raise RuntimeError("kill failed")
+
+        async def close(self) -> None:
+            raise RuntimeError("close failed")
+
+    pool = SandboxPoolAsync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=0,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        sandbox_manager_factory=lambda config: _manager_factory(FakeAsyncManager()),
+        sandbox_factory=CleanupFailingAsyncSandbox,  # type: ignore[arg-type]
+    )
+    await pool.start()
+    try:
+        with pytest.raises(PoolDestroyedException):
+            await pool.acquire(policy=AcquirePolicy.DIRECT_CREATE)
+    finally:
+        await pool.shutdown(False)
+
+
+@pytest.mark.asyncio
 async def test_async_acquire_direct_create_forwards_pool_creation_platform() -> None:
     captured_kwargs: dict[str, Any] = {}
 

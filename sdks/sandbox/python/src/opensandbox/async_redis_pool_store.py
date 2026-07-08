@@ -340,16 +340,22 @@ class AsyncRedisPoolStateStore:
             raise ValueError("owner_id must not be blank")
 
         async def op() -> None:
-            state = await self._redis.get(self._destroy_state_key(pool_name))
-            if state is not None and _decode(state) == PoolDestroyState.DESTROYED.value:
+            result = await cast(
+                Awaitable[Any],
+                self._redis.eval(
+                    RedisPoolStateStore._BEGIN_DESTROY_SCRIPT,
+                    2,
+                    self._destroy_state_key(pool_name),
+                    self._destroy_owner_key(pool_name),
+                    PoolDestroyState.DESTROYING.value,
+                    PoolDestroyState.DESTROYED.value,
+                    owner_id,
+                ),
+            )
+            if result == -1 or result == b"-1":
                 raise PoolDestroyedException(
                     f"Pool namespace is already DESTROYED: pool_name={pool_name}"
                 )
-            await self._redis.set(
-                self._destroy_state_key(pool_name),
-                PoolDestroyState.DESTROYING.value,
-            )
-            await self._redis.set(self._destroy_owner_key(pool_name), owner_id)
 
         await self._execute("begin_destroy", pool_name, op)
 

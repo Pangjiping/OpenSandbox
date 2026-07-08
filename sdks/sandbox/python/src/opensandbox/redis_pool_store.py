@@ -168,6 +168,16 @@ redis.call('SET', KEYS[1], ARGV[1])
 return 1
 """
 
+    _BEGIN_DESTROY_SCRIPT = """
+local destroy_state = redis.call('GET', KEYS[1])
+if destroy_state == ARGV[2] then
+  return -1
+end
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[2], ARGV[3])
+return 1
+"""
+
     def __init__(self, redis: Redis, key_prefix: str = DEFAULT_KEY_PREFIX) -> None:
         _validate_sync_redis_client(redis)
         self._redis = redis
@@ -414,16 +424,19 @@ return 1
             raise ValueError("owner_id must not be blank")
 
         def op() -> None:
-            state = self._redis.get(self._destroy_state_key(pool_name))
-            if state is not None and _decode(state) == PoolDestroyState.DESTROYED.value:
+            result = self._redis.eval(
+                self._BEGIN_DESTROY_SCRIPT,
+                2,
+                self._destroy_state_key(pool_name),
+                self._destroy_owner_key(pool_name),
+                PoolDestroyState.DESTROYING.value,
+                PoolDestroyState.DESTROYED.value,
+                owner_id,
+            )
+            if result == -1 or result == b"-1":
                 raise PoolDestroyedException(
                     f"Pool namespace is already DESTROYED: pool_name={pool_name}"
                 )
-            self._redis.set(
-                self._destroy_state_key(pool_name),
-                PoolDestroyState.DESTROYING.value,
-            )
-            self._redis.set(self._destroy_owner_key(pool_name), owner_id)
 
         self._execute("begin_destroy", pool_name, op)
 

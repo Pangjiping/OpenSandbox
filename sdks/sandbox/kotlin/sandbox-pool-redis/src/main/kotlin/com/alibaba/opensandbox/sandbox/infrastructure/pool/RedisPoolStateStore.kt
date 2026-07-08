@@ -273,11 +273,15 @@ class RedisPoolStateStore(
     ) {
         require(ownerId.isNotBlank()) { "ownerId must not be blank" }
         execute("beginDestroy", poolName) {
-            if (redis.get(destroyStateKey(poolName)) == PoolDestroyState.DESTROYED.name) {
+            val result =
+                redis.eval(
+                    BEGIN_DESTROY_SCRIPT,
+                    listOf(destroyStateKey(poolName), destroyOwnerKey(poolName)),
+                    listOf(PoolDestroyState.DESTROYING.name, PoolDestroyState.DESTROYED.name, ownerId),
+                )
+            if (result == FENCED_WRITE_REJECTED) {
                 throw PoolDestroyedException("Pool namespace is already DESTROYED: poolName=$poolName")
             }
-            redis.set(destroyStateKey(poolName), PoolDestroyState.DESTROYING.name)
-            redis.set(destroyOwnerKey(poolName), ownerId)
         }
     }
 
@@ -483,6 +487,17 @@ class RedisPoolStateStore(
               return -1
             end
             redis.call('SET', KEYS[1], ARGV[1])
+            return 1
+            """
+
+        private const val BEGIN_DESTROY_SCRIPT =
+            """
+            local destroy_state = redis.call('GET', KEYS[1])
+            if destroy_state == ARGV[2] then
+              return -1
+            end
+            redis.call('SET', KEYS[1], ARGV[1])
+            redis.call('SET', KEYS[2], ARGV[3])
             return 1
             """
 

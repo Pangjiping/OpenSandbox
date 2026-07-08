@@ -177,6 +177,7 @@ class SandboxPoolSync:
     ) -> SandboxSync:
         if self._lifecycle_state != PoolLifecycleState.RUNNING:
             state = self._lifecycle_state
+            self._raise_if_pool_namespace_destroyed()
             raise PoolNotRunningException(
                 f"Cannot acquire when pool state is {state.value}"
             )
@@ -184,6 +185,7 @@ class SandboxPoolSync:
         try:
             if self._lifecycle_state != PoolLifecycleState.RUNNING:
                 state = self._lifecycle_state
+                self._raise_if_pool_namespace_destroyed()
                 raise PoolNotRunningException(
                     f"Cannot acquire when pool state is {state.value}"
                 )
@@ -224,6 +226,9 @@ class SandboxPoolSync:
                     )
                     return sandbox
                 except PoolDestroyedException:
+                    self._schedule_kill_discarded_alive(
+                        pool_name, pending_kill, source="acquire"
+                    )
                     raise
                 except Exception as exc:
                     idle_connect_failure = exc
@@ -510,14 +515,38 @@ class SandboxPoolSync:
                 f"Pool namespace is {state.value}: pool_name={self._config.pool_name}"
             )
 
+    def _raise_if_pool_namespace_destroyed(self) -> None:
+        try:
+            self._ensure_pool_namespace_active()
+        except PoolDestroyedException:
+            raise
+        except Exception:
+            return
+
     def _ensure_pool_namespace_active_after_create(self, sandbox: SandboxSync) -> None:
         try:
             self._ensure_pool_namespace_active()
         except BaseException:
             try:
                 sandbox.kill()
-            finally:
+            except Exception as exc:
+                logger.warning(
+                    "Pool sandbox cleanup after fence failed: pool_name=%s "
+                    "sandbox_id=%s operation=kill error=%s",
+                    self._config.pool_name,
+                    sandbox.id,
+                    exc,
+                )
+            try:
                 sandbox.close()
+            except Exception as exc:
+                logger.warning(
+                    "Pool sandbox cleanup after fence failed: pool_name=%s "
+                    "sandbox_id=%s operation=close error=%s",
+                    self._config.pool_name,
+                    sandbox.id,
+                    exc,
+                )
             raise
 
     def _stop_after_pool_namespace_destroyed(self) -> None:

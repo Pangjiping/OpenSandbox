@@ -204,6 +204,7 @@ class SandboxPool internal constructor(
     ): Sandbox {
         if (lifecycleState.get() != LifecycleState.RUNNING) {
             val state = lifecycleState.get()
+            throwIfPoolNamespaceDestroyed()
             logger.info("Pool not running, acquire rejected: pool_name={} state={}", config.poolName, state)
             throw PoolNotRunningException("Cannot acquire when pool state is $state")
         }
@@ -211,6 +212,7 @@ class SandboxPool internal constructor(
         try {
             if (lifecycleState.get() != LifecycleState.RUNNING) {
                 val state = lifecycleState.get()
+                throwIfPoolNamespaceDestroyed()
                 logger.info("Pool not running after acquire started, rejected: pool_name={} state={}", config.poolName, state)
                 throw PoolNotRunningException("Cannot acquire when pool state is $state")
             }
@@ -251,6 +253,7 @@ class SandboxPool internal constructor(
                     )
                     return sandbox
                 } catch (e: PoolDestroyedException) {
+                    scheduleKillDiscardedAlive(poolName, pendingKill, source = "acquire")
                     throw e
                 } catch (e: Exception) {
                     idleConnectFailure = e
@@ -667,6 +670,16 @@ class SandboxPool internal constructor(
         }
     }
 
+    private fun throwIfPoolNamespaceDestroyed() {
+        try {
+            ensurePoolNamespaceActive()
+        } catch (e: PoolDestroyedException) {
+            throw e
+        } catch (_: Exception) {
+            return
+        }
+    }
+
     private fun isPoolNamespaceActive(): Boolean = stateStore.getDestroyState(config.poolName) == PoolDestroyState.ACTIVE
 
     private fun ensurePoolNamespaceActiveOrDispose(sandbox: Sandbox) {
@@ -675,8 +688,23 @@ class SandboxPool internal constructor(
         } catch (e: Exception) {
             try {
                 sandbox.kill()
-            } finally {
+            } catch (cleanupError: Exception) {
+                logger.warn(
+                    "Pool sandbox cleanup after fence failed: pool_name={} sandbox_id={} operation=kill error={}",
+                    config.poolName,
+                    sandbox.id,
+                    cleanupError.message,
+                )
+            }
+            try {
                 sandbox.close()
+            } catch (cleanupError: Exception) {
+                logger.warn(
+                    "Pool sandbox cleanup after fence failed: pool_name={} sandbox_id={} operation=close error={}",
+                    config.poolName,
+                    sandbox.id,
+                    cleanupError.message,
+                )
             }
             throw e
         }

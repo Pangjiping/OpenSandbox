@@ -260,6 +260,9 @@ class RedisPoolStateStoreTest {
         stateStore.markDestroyed(poolName, "destroyer", Duration.ofMinutes(5))
 
         assertEquals(PoolDestroyState.DESTROYED, stateStore.getDestroyState(poolName))
+        assertThrows(PoolDestroyedException::class.java) {
+            stateStore.beginDestroy(poolName, "destroyer-2")
+        }
         assertEquals(0, stateStore.snapshotCounters(poolName).idleCount)
         assertNull(stateStore.getMaxIdle(poolName))
     }

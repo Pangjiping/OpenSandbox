@@ -178,6 +178,9 @@ def test_redis_store_destroy_fences_writes_and_preserves_tombstone(
 
     store.mark_destroyed("pool", "destroyer", timedelta(seconds=60))
     assert store.get_destroy_state("pool") == PoolDestroyState.DESTROYED
+    with pytest.raises(PoolDestroyedException):
+        store.begin_destroy("pool", "destroyer-2")
+    assert store.get_destroy_state("pool") == PoolDestroyState.DESTROYED
 
 
 def test_redis_store_wraps_client_failures() -> None:
@@ -294,6 +297,8 @@ class _FakeRedis(Redis):
             return self._reap_expired(args[0], args[1], min_remaining_ttl_ms)
         if "DEL" in script and "GET" in script:
             return self._release_lock(args[0], args[1])
+        if "destroy_state == ARGV[2]" in script:
+            return self._begin_destroy(args[0], args[1], args[2], args[3], args[4])
         if "SET" in script:
             return self._set_value(args[0], args[1], args[2])
         raise NotImplementedError("unsupported Redis script")
@@ -421,6 +426,20 @@ class _FakeRedis(Redis):
         if self.get(destroy_state_key) is not None:
             return -1
         self.set(key, value)
+        return 1
+
+    def _begin_destroy(
+        self,
+        state_key: str,
+        owner_key: str,
+        destroying: str,
+        destroyed: str,
+        owner_id: str,
+    ) -> int:
+        if self.get(state_key) == destroyed:
+            return -1
+        self.set(state_key, destroying)
+        self.set(owner_key, owner_id)
         return 1
 
     def _release_lock(self, key: str, owner_id: str) -> int:
