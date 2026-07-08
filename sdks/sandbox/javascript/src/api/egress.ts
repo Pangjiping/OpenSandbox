@@ -524,7 +524,7 @@ export interface components {
             schemes: ("https" | "http")[];
             /**
              * @deprecated
-             * @description Ignored. Port is derived from scheme (https→443, http→80).
+             * @description Deprecated. Port is derived from scheme (https→443, http→80). Values other than 80 or 443 are rejected with a validation error. Standard values (80/443) are accepted but ignored.
              */
             ports?: number[];
             hosts: string[];
