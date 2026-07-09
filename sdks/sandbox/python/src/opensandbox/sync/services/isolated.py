@@ -30,6 +30,7 @@ from opensandbox.models.isolated import (
     IsolatedRunOpts,
     IsolatedSessionInfo,
     IsolatedSessionState,
+    IsolatedSessionSummary,
     IsolatedWorkspaceSpec,
 )
 
@@ -69,6 +70,8 @@ class IsolationServiceSync(Protocol):
     ) -> IsolationSessionSync: ...
 
     def capabilities(self) -> IsolatedCapabilities: ...
+
+    def list(self) -> list[IsolatedSessionSummary]: ...
 
     def run_once(
         self,

@@ -1136,6 +1136,22 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /v1/isolated/sessions:
+    get:
+      summary: List isolated sessions
+      operationId: listIsolatedSessions
+      tags:
+        - IsolatedExecution
+      responses:
+        "200":
+          description: List of active isolated sessions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListIsolatedSessionsResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /v1/isolated/capabilities:
     get:
       summary: Get isolator capabilities
@@ -2156,6 +2172,40 @@ components:
         idle_remaining_seconds:
           type: integer
           nullable: true
+
+    IsolatedSessionSummary:
+      type: object
+      required:
+        - session_id
+        - status
+        - created_at
+        - last_run_at
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: ["active", "dead", "destroyed"]
+        created_at:
+          type: string
+          format: date-time
+        last_run_at:
+          type: string
+          format: date-time
+        idle_remaining_seconds:
+          type: integer
+          nullable: true
+
+    ListIsolatedSessionsResponse:
+      type: object
+      required:
+        - sessions
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/IsolatedSessionSummary"
 
     CapabilitiesResponse:
       type: object

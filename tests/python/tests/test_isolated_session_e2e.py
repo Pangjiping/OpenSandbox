@@ -112,6 +112,30 @@ class TestIsolatedSessionE2E:
 
         await session.delete()
 
+    async def test_list_sessions(self):
+        session_a = await self._create_session()
+        session_b = await self._create_session()
+        session_b_deleted = False
+        try:
+            sessions = await self.sandbox.isolation.list()
+            by_id = {s.session_id: s for s in sessions}
+
+            assert session_a.session_id in by_id, "session_a should appear in list"
+            assert session_b.session_id in by_id, "session_b should appear in list"
+            assert by_id[session_a.session_id].status == "active"
+            assert by_id[session_a.session_id].created_at is not None
+
+            # After deleting a session it should no longer be listed.
+            await session_b.delete()
+            session_b_deleted = True
+            remaining = await self.sandbox.isolation.list()
+            remaining_ids = {s.session_id for s in remaining}
+            assert session_b.session_id not in remaining_ids
+        finally:
+            await session_a.delete()
+            if not session_b_deleted:
+                await session_b.delete()
+
     async def test_run_echo(self):
         session = await self._create_session()
         try:

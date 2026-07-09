@@ -74,6 +74,68 @@ func TestIsolationRunOnce_CreatesRunsDeletes(t *testing.T) {
 	}
 }
 
+func TestIsolationListSessions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/isolated/sessions":
+			jsonResponse(w, http.StatusOK, map[string]any{
+				"sessions": []map[string]any{
+					{
+						"session_id":             "sess-1",
+						"status":                 "active",
+						"created_at":             "2026-01-01T00:00:00Z",
+						"last_run_at":            "2026-01-01T00:01:00Z",
+						"idle_remaining_seconds": 30,
+					},
+					{
+						"session_id":  "sess-2",
+						"status":      "dead",
+						"created_at":  "2026-01-01T00:00:00Z",
+						"last_run_at": "2026-01-01T00:00:00Z",
+					},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	execd := NewExecdClient(srv.URL, "test-key")
+	sb := &Sandbox{id: "sbx-test", execd: execd}
+
+	sessions, err := sb.IsolationListSessions(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sessions, 2)
+
+	require.Equal(t, "sess-1", sessions[0].SessionID)
+	require.Equal(t, "active", sessions[0].Status)
+	require.NotNil(t, sessions[0].IdleRemainingSeconds)
+	require.Equal(t, 30, *sessions[0].IdleRemainingSeconds)
+
+	require.Equal(t, "sess-2", sessions[1].SessionID)
+	require.Equal(t, "dead", sessions[1].Status)
+	require.True(t, sessions[1].IdleRemainingSeconds == nil)
+}
+
+func TestIsolationListSessions_Empty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/isolated/sessions" {
+			jsonResponse(w, http.StatusOK, map[string]any{"sessions": []any{}})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	execd := NewExecdClient(srv.URL, "test-key")
+	sb := &Sandbox{id: "sbx-test", execd: execd}
+
+	sessions, err := sb.IsolationListSessions(context.Background())
+	require.NoError(t, err)
+	require.Len(t, sessions, 0)
+}
+
 func TestIsolationRunOnce_DeletesOnRunError(t *testing.T) {
 	var deleteCalled int32
 

@@ -60,6 +60,37 @@ describe("IsolatedSession E2E", () => {
     await session.delete();
   });
 
+  it("test_list_sessions", async () => {
+    const sessionA = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    let sessionBDeleted = false;
+    const sessionB = await sandbox.isolation.create({
+      workspace: { path: "/tmp", mode: "rw" },
+    });
+    try {
+      const sessions = await sandbox.isolation.list();
+      const byId = new Map(sessions.map(s => [s.session_id, s]));
+
+      expect(byId.has(sessionA.sessionId)).toBe(true);
+      expect(byId.has(sessionB.sessionId)).toBe(true);
+      expect(byId.get(sessionA.sessionId)?.status).toBe("active");
+      expect(byId.get(sessionA.sessionId)?.created_at).toBeTruthy();
+
+      // After deleting a session it should no longer be listed.
+      await sessionB.delete();
+      sessionBDeleted = true;
+      const remaining = await sandbox.isolation.list();
+      const remainingIds = remaining.map(s => s.session_id);
+      expect(remainingIds).not.toContain(sessionB.sessionId);
+    } finally {
+      await sessionA.delete();
+      if (!sessionBDeleted) {
+        await sessionB.delete();
+      }
+    }
+  });
+
   it("test_run_echo", async () => {
     const session = await sandbox.isolation.create({
       workspace: { path: "/tmp", mode: "rw" },

@@ -119,6 +119,20 @@ type SessionState struct {
 	IdleRemainingSeconds *int      `json:"idle_remaining_seconds,omitempty"`
 }
 
+// IsolatedSessionSummary describes a single session in a list response.
+type IsolatedSessionSummary struct {
+	SessionID            string    `json:"session_id"`
+	Status               string    `json:"status"` // "active" | "dead"
+	CreatedAt            time.Time `json:"created_at"`
+	LastRunAt            time.Time `json:"last_run_at"`
+	IdleRemainingSeconds *int      `json:"idle_remaining_seconds,omitempty"`
+}
+
+// ListIsolatedSessionsResponse is returned by GET /v1/isolated/sessions.
+type ListIsolatedSessionsResponse struct {
+	Sessions []IsolatedSessionSummary `json:"sessions"`
+}
+
 // Capabilities
 
 // CapabilitiesResponse is returned by GET /v1/isolated/capabilities.

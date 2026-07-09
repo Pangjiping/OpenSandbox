@@ -23,6 +23,7 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..models.create_isolated_session_request_profile import CreateIsolatedSessionRequestProfile
+from ..models.create_isolated_session_request_uid_mode import CreateIsolatedSessionRequestUidMode
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -44,6 +45,9 @@ class CreateIsolatedSessionRequest:
         env_passthrough (EnvPassthroughSpec | Unset):
         uid (int | Unset):
         gid (int | Unset):
+        uid_mode (CreateIsolatedSessionRequestUidMode | Unset): Controls how user identity is established inside the
+            namespace. "setpriv" (default) uses real setuid via setpriv(1). "userns" creates a user namespace via --unshare-
+            user --disable-userns.
         idle_timeout_seconds (int | Unset):
     """
 
@@ -54,6 +58,7 @@ class CreateIsolatedSessionRequest:
     env_passthrough: EnvPassthroughSpec | Unset = UNSET
     uid: int | Unset = UNSET
     gid: int | Unset = UNSET
+    uid_mode: CreateIsolatedSessionRequestUidMode | Unset = UNSET
     idle_timeout_seconds: int | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -78,6 +83,10 @@ class CreateIsolatedSessionRequest:
 
         gid = self.gid
 
+        uid_mode: str | Unset = UNSET
+        if not isinstance(self.uid_mode, Unset):
+            uid_mode = self.uid_mode.value
+
         idle_timeout_seconds = self.idle_timeout_seconds
 
         field_dict: dict[str, Any] = {}
@@ -99,6 +108,8 @@ class CreateIsolatedSessionRequest:
             field_dict["uid"] = uid
         if gid is not UNSET:
             field_dict["gid"] = gid
+        if uid_mode is not UNSET:
+            field_dict["uid_mode"] = uid_mode
         if idle_timeout_seconds is not UNSET:
             field_dict["idle_timeout_seconds"] = idle_timeout_seconds
 
@@ -134,6 +145,13 @@ class CreateIsolatedSessionRequest:
 
         gid = d.pop("gid", UNSET)
 
+        _uid_mode = d.pop("uid_mode", UNSET)
+        uid_mode: CreateIsolatedSessionRequestUidMode | Unset
+        if isinstance(_uid_mode, Unset):
+            uid_mode = UNSET
+        else:
+            uid_mode = CreateIsolatedSessionRequestUidMode(_uid_mode)
+
         idle_timeout_seconds = d.pop("idle_timeout_seconds", UNSET)
 
         create_isolated_session_request = cls(
@@ -144,6 +162,7 @@ class CreateIsolatedSessionRequest:
             env_passthrough=env_passthrough,
             uid=uid,
             gid=gid,
+            uid_mode=uid_mode,
             idle_timeout_seconds=idle_timeout_seconds,
         )
 

@@ -227,6 +227,49 @@ type IsolatedSessionState struct {
 	IdleRemainingSeconds *int
 }
 
+// IsolatedSessionSummary describes a single session in a list response.
+type IsolatedSessionSummary struct {
+	SessionID string
+	IsolatedSessionState
+}
+
+// ListIsolatedSessions returns a summary of all active isolated sessions.
+func (r *IsolatedRunner) ListIsolatedSessions() []IsolatedSessionSummary {
+	summaries := make([]IsolatedSessionSummary, 0)
+	r.ctrl.isolatedSessionMap.Range(func(key, value any) bool {
+		s, ok := value.(*isolatedSession)
+		if !ok {
+			return true
+		}
+
+		s.mu.RLock()
+		status := SessionStatusActive
+		if s.dead() {
+			status = SessionStatusDead
+		}
+		summary := IsolatedSessionSummary{
+			SessionID: s.id,
+			IsolatedSessionState: IsolatedSessionState{
+				Status:    status,
+				CreatedAt: s.createdAt,
+				LastRunAt: s.lastRunAt,
+			},
+		}
+		if s.opts.IdleTimeoutSeconds > 0 {
+			remaining := s.opts.IdleTimeoutSeconds - int(time.Since(s.lastRunAt).Seconds())
+			if remaining < 0 {
+				remaining = 0
+			}
+			summary.IdleRemainingSeconds = &remaining
+		}
+		s.mu.RUnlock()
+
+		summaries = append(summaries, summary)
+		return true
+	})
+	return summaries
+}
+
 // StdoutCallback is called for each line of stdout output during Run.
 type StdoutCallback func(line string)
 

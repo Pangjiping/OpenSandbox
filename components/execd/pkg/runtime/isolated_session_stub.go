@@ -67,6 +67,11 @@ func (r *IsolatedRunner) GetIsolatedSession(_ string) (*IsolatedSessionState, er
 	return nil, ErrContextNotFound
 }
 
+// ListIsolatedSessions returns an empty list on Windows.
+func (r *IsolatedRunner) ListIsolatedSessions() []IsolatedSessionSummary {
+	return []IsolatedSessionSummary{}
+}
+
 // RunInIsolatedSession returns an error on Windows.
 func (r *IsolatedRunner) RunInIsolatedSession(_ context.Context, _ string, _ string, _ map[string]string, _ StdoutCallback) error {
 	return ErrContextNotFound
@@ -103,4 +108,10 @@ type IsolatedSessionState struct {
 	CreatedAt            time.Time
 	LastRunAt            time.Time
 	IdleRemainingSeconds *int
+}
+
+// IsolatedSessionSummary describes a session in a list response (Windows stub).
+type IsolatedSessionSummary struct {
+	SessionID string
+	IsolatedSessionState
 }

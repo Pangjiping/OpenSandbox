@@ -30,6 +30,8 @@ import type {
   IsolatedRunOpts,
   IsolatedSessionInfo,
   IsolatedSessionState,
+  IsolatedSessionSummary,
+  ListIsolatedSessionsResponse,
 } from "../models/isolated.js";
 
 function joinUrl(baseUrl: string, pathname: string): string {
@@ -211,6 +213,14 @@ export class IsolatedSessionsAdapter implements IsolationService {
       "GET",
       "/v1/isolated/capabilities",
     );
+  }
+
+  async list(): Promise<IsolatedSessionSummary[]> {
+    const resp = await this.jsonRequest<ListIsolatedSessionsResponse>(
+      "GET",
+      "/v1/isolated/sessions",
+    );
+    return resp.sessions ?? [];
   }
 
   async runOnce(

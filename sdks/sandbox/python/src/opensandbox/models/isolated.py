@@ -115,6 +115,22 @@ class IsolatedSessionState(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class IsolatedSessionSummary(BaseModel):
+    """Summary of an isolated session as returned by list."""
+
+    session_id: str = Field(description="Unique session identifier")
+    status: str = Field(
+        description="Session status: 'active', 'dead', or 'destroyed'"
+    )
+    created_at: datetime = Field(description="Session creation timestamp")
+    last_run_at: datetime = Field(description="Timestamp of last code execution")
+    idle_remaining_seconds: int | None = Field(
+        default=None, description="Seconds until idle auto-destroy (null if no timeout)"
+    )
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class IsolatedRunOpts(BaseModel):
     """Options for running code in an isolated session."""
 

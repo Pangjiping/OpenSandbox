@@ -31,6 +31,7 @@ from opensandbox.models.isolated import (
     IsolatedRunOpts,
     IsolatedSessionInfo,
     IsolatedSessionState,
+    IsolatedSessionSummary,
     IsolatedWorkspaceSpec,
 )
 from opensandbox.services.filesystem import Filesystem
@@ -71,6 +72,8 @@ class IsolationService(Protocol):
     ) -> IsolationSession: ...
 
     async def capabilities(self) -> IsolatedCapabilities: ...
+
+    async def list(self) -> list[IsolatedSessionSummary]: ...
 
     async def run_once(
         self,

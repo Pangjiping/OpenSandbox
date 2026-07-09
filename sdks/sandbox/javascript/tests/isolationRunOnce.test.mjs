@@ -82,6 +82,56 @@ describe("runOnce", () => {
   });
 });
 
+describe("list", () => {
+  it("returns the sessions array from the response", async () => {
+    const calls = [];
+    const mockFn = async (url, init) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const method = init?.method ?? "GET";
+      if (method === "GET" && urlStr.includes("/v1/isolated/sessions")) {
+        calls.push("list");
+        return new Response(
+          JSON.stringify({
+            sessions: [
+              {
+                session_id: "sess-a",
+                status: "active",
+                created_at: "2026-01-01T00:00:00Z",
+                last_run_at: "2026-01-01T00:01:00Z",
+                idle_remaining_seconds: 42,
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    };
+    const adapter = createAdapter(mockFn);
+
+    const sessions = await adapter.list();
+
+    assert.deepStrictEqual(calls, ["list"]);
+    assert.strictEqual(sessions.length, 1);
+    assert.strictEqual(sessions[0].session_id, "sess-a");
+    assert.strictEqual(sessions[0].status, "active");
+    assert.strictEqual(sessions[0].idle_remaining_seconds, 42);
+  });
+
+  it("returns an empty array when sessions is absent", async () => {
+    const mockFn = async () =>
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    const adapter = createAdapter(mockFn);
+
+    const sessions = await adapter.list();
+
+    assert.deepStrictEqual(sessions, []);
+  });
+});
+
 describe("withSession", () => {
   it("calls create, runs callback, then deletes", async () => {
     const { mockFn, calls } = mockFetchForSession("sess-ws");

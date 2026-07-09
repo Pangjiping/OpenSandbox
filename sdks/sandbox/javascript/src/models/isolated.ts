@@ -58,3 +58,15 @@ export interface IsolatedCapabilities {
   commit_supported: boolean;
   diff_supported: boolean;
 }
+
+export interface IsolatedSessionSummary {
+  session_id: string;
+  status: string;
+  created_at?: string;
+  last_run_at?: string;
+  idle_remaining_seconds?: number;
+}
+
+export interface ListIsolatedSessionsResponse {
+  sessions?: IsolatedSessionSummary[];
+}

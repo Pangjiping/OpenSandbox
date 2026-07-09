@@ -77,6 +77,48 @@ func TestIsolationSessionLifecycle(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestIsolationListSessions(t *testing.T) {
+	ctx, sb := createIsolatedTestSandbox(t)
+
+	// Create two sessions and confirm both appear in the list.
+	sessionA, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer sessionA.Delete(ctx)
+
+	sessionB, err := sb.IsolationCreate(ctx, opensandbox.CreateIsolatedSessionRequest{
+		Workspace: opensandbox.IsolatedWorkspaceSpec{Path: "/tmp", Mode: "rw"},
+	})
+	require.NoError(t, err)
+	defer sessionB.Delete(ctx)
+
+	sessions, err := sb.IsolationListSessions(ctx)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(sessions), 2)
+
+	ids := make(map[string]opensandbox.IsolatedSessionSummary, len(sessions))
+	for _, s := range sessions {
+		ids[s.SessionID] = s
+	}
+
+	sumA, okA := ids[sessionA.SessionID()]
+	require.True(t, okA, "sessionA should appear in list")
+	assert.Equal(t, "active", sumA.Status)
+	assert.False(t, sumA.CreatedAt.IsZero(), "created_at should be populated")
+
+	_, okB := ids[sessionB.SessionID()]
+	require.True(t, okB, "sessionB should appear in list")
+
+	// After deleting a session it should no longer be listed.
+	require.NoError(t, sessionB.Delete(ctx))
+	sessions, err = sb.IsolationListSessions(ctx)
+	require.NoError(t, err)
+	for _, s := range sessions {
+		assert.NotEqual(t, sessionB.SessionID(), s.SessionID, "deleted session should not be listed")
+	}
+}
+
 func TestIsolationRunEcho(t *testing.T) {
 	ctx, sb := createIsolatedTestSandbox(t)
 

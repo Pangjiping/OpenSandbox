@@ -21,6 +21,7 @@ import type {
   IsolatedRunOpts,
   IsolatedSessionInfo,
   IsolatedSessionState,
+  IsolatedSessionSummary,
 } from "../models/isolated.js";
 
 export interface IsolationSession {
@@ -49,6 +50,7 @@ export interface RunOnceOpts {
 export interface IsolationService {
   create(request: CreateIsolatedSessionRequest): Promise<IsolationSession>;
   capabilities(): Promise<IsolatedCapabilities>;
+  list(): Promise<IsolatedSessionSummary[]>;
   /**
    * Create a session, run `code`, and delete the session (auto-cleanup).
    * Cleanup is best-effort and never masks the original error.

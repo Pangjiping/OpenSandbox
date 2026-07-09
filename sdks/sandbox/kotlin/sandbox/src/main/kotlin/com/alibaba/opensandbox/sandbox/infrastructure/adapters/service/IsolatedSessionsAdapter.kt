@@ -27,6 +27,7 @@ import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedCapa
 import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedRunRequest
 import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedSessionInfo
 import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedSessionState
+import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedSessionSummary
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
 import com.alibaba.opensandbox.sandbox.domain.services.Filesystem
 import com.alibaba.opensandbox.sandbox.domain.services.IsolationService
@@ -83,6 +84,20 @@ private data class IsolatedSessionStateResponse(
     val created_at: String? = null,
     val last_run_at: String? = null,
     val idle_remaining_seconds: Int? = null,
+)
+
+@Serializable
+private data class IsolatedSessionSummaryResponse(
+    val session_id: String,
+    val status: String,
+    val created_at: String? = null,
+    val last_run_at: String? = null,
+    val idle_remaining_seconds: Int? = null,
+)
+
+@Serializable
+private data class ListIsolatedSessionsResponse(
+    val sessions: List<IsolatedSessionSummaryResponse> = emptyList(),
 )
 
 @Serializable
@@ -287,6 +302,37 @@ internal class IsolatedSessionsAdapter(
                     commitSupported = resp.commit_supported,
                     diffSupported = resp.diff_supported,
                 )
+            }
+        } catch (e: Exception) {
+            throw e.toSandboxException()
+        }
+    }
+
+    override fun list(): List<IsolatedSessionSummary> {
+        try {
+            val httpRequest =
+                Request.Builder()
+                    .url("$execdBaseUrl/v1/isolated/sessions")
+                    .get()
+                    .headers(execdEndpoint.headers.toHeaders())
+                    .build()
+
+            httpClientProvider.httpClient.newCall(httpRequest).execute().use { response ->
+                ensureSuccess(response, "list isolated sessions")
+                val resp =
+                    json.decodeFromString(
+                        ListIsolatedSessionsResponse.serializer(),
+                        response.body!!.string(),
+                    )
+                return resp.sessions.map { summary ->
+                    IsolatedSessionSummary(
+                        sessionId = summary.session_id,
+                        status = summary.status,
+                        createdAt = summary.created_at?.let { parseDateTime(it) },
+                        lastRunAt = summary.last_run_at?.let { parseDateTime(it) },
+                        idleRemainingSeconds = summary.idle_remaining_seconds,
+                    )
+                }
             }
         } catch (e: Exception) {
             throw e.toSandboxException()

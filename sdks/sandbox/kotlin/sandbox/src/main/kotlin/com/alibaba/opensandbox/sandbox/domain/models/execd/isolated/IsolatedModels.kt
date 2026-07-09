@@ -51,6 +51,14 @@ data class IsolatedSessionState(
     val idleRemainingSeconds: Int? = null,
 )
 
+data class IsolatedSessionSummary(
+    val sessionId: String,
+    val status: String,
+    val createdAt: OffsetDateTime? = null,
+    val lastRunAt: OffsetDateTime? = null,
+    val idleRemainingSeconds: Int? = null,
+)
+
 data class IsolatedRunRequest(
     val code: String,
     val envs: Map<String, String>? = null,

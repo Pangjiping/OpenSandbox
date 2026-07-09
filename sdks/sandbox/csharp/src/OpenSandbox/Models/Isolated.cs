@@ -49,6 +49,18 @@ public record IsolatedSessionState(
     [property: JsonPropertyName("idle_remaining_seconds")] int? IdleRemainingSeconds = null
 );
 
+public record IsolatedSessionSummary(
+    [property: JsonPropertyName("session_id")] string SessionId,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("created_at")] DateTimeOffset? CreatedAt = null,
+    [property: JsonPropertyName("last_run_at")] DateTimeOffset? LastRunAt = null,
+    [property: JsonPropertyName("idle_remaining_seconds")] int? IdleRemainingSeconds = null
+);
+
+public record ListIsolatedSessionsResponse(
+    [property: JsonPropertyName("sessions")] List<IsolatedSessionSummary>? Sessions = null
+);
+
 public record IsolatedRunOpts(
     [property: JsonPropertyName("envs")] Dictionary<string, string>? Envs = null,
     [property: JsonPropertyName("timeout_seconds")] int? TimeoutSeconds = null

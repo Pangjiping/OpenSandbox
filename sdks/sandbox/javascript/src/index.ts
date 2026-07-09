@@ -156,4 +156,6 @@ export type {
   IsolatedSessionState,
   IsolatedRunOpts,
   IsolatedCapabilities,
+  IsolatedSessionSummary,
+  ListIsolatedSessionsResponse,
 } from "./models/isolated.js";

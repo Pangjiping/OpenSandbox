@@ -22,6 +22,7 @@ import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedCapa
 import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedRunRequest
 import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedSessionInfo
 import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedSessionState
+import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedSessionSummary
 import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedWorkspaceSpec
 import org.slf4j.LoggerFactory
 
@@ -45,6 +46,8 @@ interface IsolationService {
     fun create(request: CreateIsolatedSessionRequest): IsolationSession
 
     fun capabilities(): IsolatedCapabilities
+
+    fun list(): List<IsolatedSessionSummary>
 
     fun runOnce(
         code: String,

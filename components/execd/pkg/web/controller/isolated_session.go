@@ -137,6 +137,28 @@ func (c *IsolatedSessionController) Get() {
 	})
 }
 
+// List handles GET /v1/isolated/sessions.
+func (c *IsolatedSessionController) List() {
+	if !c.probed() {
+		c.RespondError(http.StatusServiceUnavailable, model.ErrorCodeServiceUnavailable, "isolation unavailable")
+		return
+	}
+
+	sessions := isolatedRunner.ListIsolatedSessions()
+	items := make([]model.IsolatedSessionSummary, 0, len(sessions))
+	for _, s := range sessions {
+		items = append(items, model.IsolatedSessionSummary{
+			SessionID:            s.SessionID,
+			Status:               s.Status,
+			CreatedAt:            s.CreatedAt,
+			LastRunAt:            s.LastRunAt,
+			IdleRemainingSeconds: s.IdleRemainingSeconds,
+		})
+	}
+
+	c.RespondSuccess(model.ListIsolatedSessionsResponse{Sessions: items})
+}
+
 // Run handles POST /v1/isolated/session/:sessionId/run (SSE streaming).
 func (c *IsolatedSessionController) Run() {
 	if !c.probed() {

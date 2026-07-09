@@ -598,6 +598,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/isolated/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List isolated sessions */
+        get: operations["listIsolatedSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/isolated/capabilities": {
         parameters: {
             query?: never;
@@ -1256,6 +1273,11 @@ export interface components {
             uid?: number;
             /** Format: uint32 */
             gid?: number;
+            /**
+             * @description Controls how user identity is established inside the namespace. "setpriv" (default) uses real setuid via setpriv(1). "userns" creates a user namespace via --unshare-user --disable-userns.
+             * @enum {string}
+             */
+            uid_mode?: "setpriv" | "userns";
             idle_timeout_seconds?: number;
         };
         IsolatedWorkspaceSpec: {
@@ -1289,6 +1311,20 @@ export interface components {
             /** Format: date-time */
             last_run_at?: string;
             idle_remaining_seconds?: number | null;
+        };
+        IsolatedSessionSummary: {
+            /** Format: uuid */
+            session_id: string;
+            /** @enum {string} */
+            status: "active" | "dead" | "destroyed";
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_run_at: string;
+            idle_remaining_seconds?: number | null;
+        };
+        ListIsolatedSessionsResponse: {
+            sessions: components["schemas"]["IsolatedSessionSummary"][];
         };
         CapabilitiesResponse: {
             available?: boolean;
@@ -2296,6 +2332,27 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listIsolatedSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of active isolated sessions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListIsolatedSessionsResponse"];
+                };
+            };
             503: components["responses"]["ServiceUnavailable"];
         };
     };

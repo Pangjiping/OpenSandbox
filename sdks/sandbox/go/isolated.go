@@ -59,6 +59,20 @@ type IsolatedSessionState struct {
 	IdleRemainingSeconds *int      `json:"idle_remaining_seconds,omitempty"`
 }
 
+// IsolatedSessionSummary describes a single isolated session in a list response.
+type IsolatedSessionSummary struct {
+	SessionID            string    `json:"session_id"`
+	Status               string    `json:"status"`
+	CreatedAt            time.Time `json:"created_at"`
+	LastRunAt            time.Time `json:"last_run_at"`
+	IdleRemainingSeconds *int      `json:"idle_remaining_seconds,omitempty"`
+}
+
+// listIsolatedSessionsResponse is the wire response for listing isolated sessions.
+type listIsolatedSessionsResponse struct {
+	Sessions []IsolatedSessionSummary `json:"sessions"`
+}
+
 // IsolatedRunRequest is the request body for running code in an isolated session.
 type IsolatedRunRequest struct {
 	Code           string            `json:"code"`
@@ -95,6 +109,16 @@ func (e *ExecdClient) IsolatedGet(ctx context.Context, sessionID string) (*Isola
 		return nil, err
 	}
 	return &result, nil
+}
+
+// IsolatedList lists all active isolated sessions.
+func (e *ExecdClient) IsolatedList(ctx context.Context) ([]IsolatedSessionSummary, error) {
+	var result listIsolatedSessionsResponse
+	err := e.client.doRequest(ctx, http.MethodGet, "/v1/isolated/sessions", nil, &result)
+	if err != nil {
+		return nil, err
+	}
+	return result.Sessions, nil
 }
 
 // IsolatedRun runs code in an isolated session, streaming output via SSE.

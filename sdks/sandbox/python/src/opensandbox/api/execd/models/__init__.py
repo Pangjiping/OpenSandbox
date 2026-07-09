@@ -23,6 +23,7 @@ from .code_context_request import CodeContextRequest
 from .command_status_response import CommandStatusResponse
 from .create_isolated_session_request import CreateIsolatedSessionRequest
 from .create_isolated_session_request_profile import CreateIsolatedSessionRequestProfile
+from .create_isolated_session_request_uid_mode import CreateIsolatedSessionRequestUidMode
 from .create_session_request import CreateSessionRequest
 from .create_session_response import CreateSessionResponse
 from .env_passthrough_spec import EnvPassthroughSpec
@@ -40,9 +41,12 @@ from .isolated_replace_content_body import IsolatedReplaceContentBody
 from .isolated_replace_content_response_200 import IsolatedReplaceContentResponse200
 from .isolated_run_request import IsolatedRunRequest
 from .isolated_run_request_envs import IsolatedRunRequestEnvs
+from .isolated_session_summary import IsolatedSessionSummary
+from .isolated_session_summary_status import IsolatedSessionSummaryStatus
 from .isolated_upload_file_body import IsolatedUploadFileBody
 from .isolated_workspace_spec import IsolatedWorkspaceSpec
 from .isolated_workspace_spec_mode import IsolatedWorkspaceSpecMode
+from .list_isolated_sessions_response import ListIsolatedSessionsResponse
 from .make_dirs_body import MakeDirsBody
 from .metrics import Metrics
 from .permission import Permission
@@ -71,6 +75,7 @@ __all__ = (
     "CommandStatusResponse",
     "CreateIsolatedSessionRequest",
     "CreateIsolatedSessionRequestProfile",
+    "CreateIsolatedSessionRequestUidMode",
     "CreateSessionRequest",
     "CreateSessionResponse",
     "EnvPassthroughSpec",
@@ -88,9 +93,12 @@ __all__ = (
     "IsolatedReplaceContentResponse200",
     "IsolatedRunRequest",
     "IsolatedRunRequestEnvs",
+    "IsolatedSessionSummary",
+    "IsolatedSessionSummaryStatus",
     "IsolatedUploadFileBody",
     "IsolatedWorkspaceSpec",
     "IsolatedWorkspaceSpecMode",
+    "ListIsolatedSessionsResponse",
     "MakeDirsBody",
     "Metrics",
     "Permission",
