@@ -45,17 +45,6 @@ jobs:
               [file.filename, file.previous_filename].filter(Boolean),
             );
 
-            const detector = ".github/workflows/detect-changes.yml";
-            const workflow = {
-              server: ".github/workflows/server-test.yml",
-              kubernetes: ".github/workflows/kubernetes-test.yml",
-              "real-e2e": ".github/workflows/real-e2e.yml",
-              egress: ".github/workflows/egress-test.yaml.yml",
-              "kubernetes-mini-e2e": ".github/workflows/kubernetes-nightly-build.yml",
-              ingress: ".github/workflows/ingress-test.yaml",
-              execd: ".github/workflows/execd-test.yml",
-              sdk: ".github/workflows/sdk-tests.yml",
-            };
             const matchers = {
               server: (path) => path.startsWith("server/"),
               kubernetes: (path) =>
@@ -71,6 +60,7 @@ jobs:
                 path.startsWith("components/egress/") ||
                 path.startsWith("components/internal/"),
               "kubernetes-mini-e2e": (path) =>
+                path === ".github/workflows/kubernetes-nightly-build.yml" ||
                 path === "scripts/python-k8s-e2e.sh" ||
                 path === "scripts/python-k8s-e2e-ingress.sh" ||
                 path === "scripts/common/kubernetes-e2e.sh" ||
@@ -93,11 +83,6 @@ jobs:
               return;
             }
 
-            const relevant = paths.some(
-              (path) =>
-                path === detector ||
-                path === workflow[area] ||
-                matchers[area](path),
-            );
+            const relevant = paths.some(matchers[area]);
             core.info(`${area}: relevant=${relevant}; files=${files.length}`);
             core.setOutput("relevant", String(relevant));
