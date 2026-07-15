@@ -41,8 +41,8 @@ data class CreateIsolatedSessionRequest(
     val binds: List<BindMount>? = null,
     val shareNet: Boolean? = null,
     val envPassthrough: EnvPassthroughSpec? = null,
-    val uid: Int? = null,
-    val gid: Int? = null,
+    val uid: Long? = null,
+    val gid: Long? = null,
     val uidMode: String? = null,
     val idleTimeoutSeconds: Int? = null,
 )
