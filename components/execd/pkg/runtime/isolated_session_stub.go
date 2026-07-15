@@ -31,11 +31,13 @@ type IsolatedSessionOptions struct {
 	WorkspacePath      string
 	WorkspaceMode      string
 	ExtraWritable      []string
+	Binds              []isolation.BindMount
 	ShareNet           *bool
 	EnvPassthroughMode string
 	EnvPassthroughKeys []string
 	Uid                *uint32
 	Gid                *uint32
+	UidMode            string
 	IdleTimeoutSeconds int
 }
 
@@ -64,6 +66,11 @@ func (r *IsolatedRunner) CreateIsolatedSession(_ *IsolatedSessionOptions) (strin
 // GetIsolatedSession returns an error on Windows.
 func (r *IsolatedRunner) GetIsolatedSession(_ string) (*IsolatedSessionState, error) {
 	return nil, ErrContextNotFound
+}
+
+// ListIsolatedSessions returns an empty list on Windows.
+func (r *IsolatedRunner) ListIsolatedSessions() []IsolatedSessionSummary {
+	return []IsolatedSessionSummary{}
 }
 
 // RunInIsolatedSession returns an error on Windows.
@@ -102,4 +109,10 @@ type IsolatedSessionState struct {
 	CreatedAt            time.Time
 	LastRunAt            time.Time
 	IdleRemainingSeconds *int
+}
+
+// IsolatedSessionSummary describes a session in a list response (Windows stub).
+type IsolatedSessionSummary struct {
+	SessionID string
+	IsolatedSessionState
 }
