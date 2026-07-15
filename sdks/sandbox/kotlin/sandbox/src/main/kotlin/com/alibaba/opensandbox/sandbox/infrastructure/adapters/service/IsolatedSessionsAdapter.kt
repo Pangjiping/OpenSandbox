@@ -55,8 +55,8 @@ private data class IsolatedCreateBody(
     val binds: List<BindMountBody>? = null,
     val share_net: Boolean? = null,
     val env_passthrough: EnvPassthroughBody? = null,
-    val uid: Int? = null,
-    val gid: Int? = null,
+    val uid: Long? = null,
+    val gid: Long? = null,
     val uid_mode: String? = null,
     val idle_timeout_seconds: Int? = null,
 )

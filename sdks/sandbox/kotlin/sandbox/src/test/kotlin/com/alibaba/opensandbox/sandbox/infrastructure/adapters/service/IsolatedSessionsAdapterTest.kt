@@ -18,7 +18,13 @@ package com.alibaba.opensandbox.sandbox.infrastructure.adapters.service
 
 import com.alibaba.opensandbox.sandbox.HttpClientProvider
 import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
+import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.CreateIsolatedSessionRequest
+import com.alibaba.opensandbox.sandbox.domain.models.execd.isolated.IsolatedWorkspaceSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.jupiter.api.AfterEach
@@ -120,5 +126,38 @@ class IsolatedSessionsAdapterTest {
 
         assertEquals(0, sessions.size)
         assertEquals("/v1/isolated/sessions", mockWebServer.takeRequest().path)
+    }
+
+    @Test
+    fun `create serializes uid and gid above Int MaxValue`() {
+        // Spec declares uid/gid as uint32; values above Int.MAX_VALUE must not fail.
+        val uidAboveInt = 3_000_000_000L
+        val gidAboveInt = 4_000_000_000L
+        mockWebServer.enqueue(
+            MockResponse()
+                .setBody(
+                    """
+                    {
+                      "session_id": "00000000-0000-0000-0000-000000000001",
+                      "created_at": "2026-01-02T03:04:05Z"
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        adapter.create(
+            CreateIsolatedSessionRequest(
+                workspace = IsolatedWorkspaceSpec(path = "/workspace"),
+                uid = uidAboveInt,
+                gid = gidAboveInt,
+            ),
+        )
+
+        val request = mockWebServer.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/v1/isolated/session", request.path)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals(uidAboveInt, body["uid"]!!.jsonPrimitive.long)
+        assertEquals(gidAboveInt, body["gid"]!!.jsonPrimitive.long)
     }
 }

@@ -39,8 +39,8 @@ public record CreateIsolatedSessionRequest(
     [property: JsonPropertyName("binds")] List<BindMount>? Binds = null,
     [property: JsonPropertyName("share_net")] bool? ShareNet = null,
     [property: JsonPropertyName("env_passthrough")] EnvPassthroughSpec? EnvPassthrough = null,
-    [property: JsonPropertyName("uid")] int? Uid = null,
-    [property: JsonPropertyName("gid")] int? Gid = null,
+    [property: JsonPropertyName("uid")] long? Uid = null,
+    [property: JsonPropertyName("gid")] long? Gid = null,
     [property: JsonPropertyName("uid_mode")] string? UidMode = null,
     [property: JsonPropertyName("idle_timeout_seconds")] int? IdleTimeoutSeconds = null
 );
