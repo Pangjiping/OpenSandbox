@@ -31,6 +31,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -136,6 +137,12 @@ func blackHoleAfterReuseServer(t *testing.T) (addr string, cleanup func()) {
 	done := make(chan struct{})
 	var wg sync.WaitGroup
 
+	// Track live connections so cleanup can force-close them; otherwise a
+	// goroutine blocked in ReadRequest (waiting for a request that never comes)
+	// would delay cleanup's wg.Wait until its read deadline expired.
+	var connMu sync.Mutex
+	var conns []net.Conn
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -144,6 +151,9 @@ func blackHoleAfterReuseServer(t *testing.T) (addr string, cleanup func()) {
 			if err != nil {
 				return
 			}
+			connMu.Lock()
+			conns = append(conns, conn)
+			connMu.Unlock()
 			wg.Add(1)
 			go func(c net.Conn) {
 				defer wg.Done()
@@ -151,12 +161,17 @@ func blackHoleAfterReuseServer(t *testing.T) (addr string, cleanup func()) {
 				br := bufio.NewReader(c)
 				reqOnConn := 0
 				for {
-					_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-					if _, err := http.ReadRequest(br); err != nil {
+					_ = c.SetReadDeadline(time.Now().Add(30 * time.Second))
+					req, err := http.ReadRequest(br)
+					if err != nil {
 						return
 					}
 					reqOnConn++
 					if reqOnConn == 1 {
+						// Drain the request body so the connection can be cleanly
+						// reused for the next request (matters for POST/PUT bodies).
+						_, _ = io.Copy(io.Discard, req.Body)
+						_ = req.Body.Close()
 						// First request on this connection: serve OK, keep alive.
 						_, _ = c.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\n{}"))
 						continue
@@ -177,36 +192,48 @@ func blackHoleAfterReuseServer(t *testing.T) (addr string, cleanup func()) {
 	return ln.Addr().String(), func() {
 		close(done)
 		_ = ln.Close()
+		connMu.Lock()
+		for _, c := range conns {
+			_ = c.Close() // unblock any goroutine parked in ReadRequest
+		}
+		connMu.Unlock()
 		wg.Wait()
 	}
 }
 
-// TestDiag_ReusedConnBlackHoleReproducesClientTimeout reproduces the screenshot
-// error: with the SDK's default (keep-alive) transport, the second request
-// reuses the idle connection, which the "LB" has black-holed, so it hangs until
-// http.Client.Timeout and fails with the exact
+// TestDiag_ReusedConnBlackHoleReproducesClientTimeout demonstrates the raw
+// transport-level root cause behind the screenshot error: issuing requests
+// directly on the SDK's default (keep-alive) transport, the second request
+// reuses the idle connection that the "LB" has black-holed, hangs until
+// http.Client.Timeout, and fails with the exact
 // "Client.Timeout exceeded while awaiting headers" text.
+//
+// This uses the raw *http.Client (NOT Client.doRequest) so it keeps documenting
+// the underlying transport behavior even after the SDK's doRequest recovery is
+// in place; the SDK-level recovery is covered by staleconn_fix_test.go.
 func TestDiag_ReusedConnBlackHoleReproducesClientTimeout(t *testing.T) {
 	addr, cleanup := blackHoleAfterReuseServer(t)
 	defer cleanup()
 	baseURL := "http://" + addr
 
 	tt := &traceTransport{base: DefaultTransport(), t: t}
-	c := NewClient(baseURL, "k", "OPEN-SANDBOX-API-KEY",
-		WithHTTPClient(&http.Client{Transport: tt, Timeout: 800 * time.Millisecond}))
+	httpClient := &http.Client{Transport: tt, Timeout: 800 * time.Millisecond}
 
 	// Request 1: fresh dial, served OK. Connection goes back to the pool.
-	if err := c.doRequest(context.Background(), http.MethodGet, "/", nil, nil); err != nil {
+	resp1, err := httpClient.Get(baseURL + "/")
+	if err != nil {
 		t.Fatalf("request 1 should succeed, got: %v", err)
 	}
+	_, _ = io.Copy(io.Discard, resp1.Body)
+	_ = resp1.Body.Close()
 	time.Sleep(100 * time.Millisecond) // connection now idle in the pool
 
 	// Request 2: reuses the idle (now black-holed) connection -> hangs -> timeout.
-	err := c.doRequest(context.Background(), http.MethodGet, "/", nil, nil)
+	_, err = httpClient.Get(baseURL + "/")
 	require.Error(t, err)
 	t.Logf("req2 error: %v", err)
 	assert.Contains(t, err.Error(), "Client.Timeout exceeded while awaiting headers")
-	t.Log("=> Reproduced: reused idle connection + black-hole => Client.Timeout while awaiting headers.")
+	t.Log("=> Raw transport: reused idle connection + black-hole => Client.Timeout while awaiting headers.")
 }
 
 // TestDiag_FixDisableKeepAlives shows that using a fresh connection per request

@@ -18,8 +18,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 )
@@ -121,10 +123,56 @@ func NewClient(baseURL, apiKey, authHeader string, opts ...Option) *Client {
 // retrying on transient errors if a RetryConfig is set.
 // If body is nil, no request body is sent. If result is non-nil, the
 // response body is decoded into it.
+//
+// For idempotent requests (GET/HEAD) it also transparently recovers from a
+// stale pooled connection: some load balancers silently drop idle keep-alive
+// connections without sending a FIN, so a reused connection can hang until the
+// request timeout. On such a connection-level failure the client purges idle
+// connections and retries once on a fresh connection. This is always on and
+// independent of the opt-in RetryConfig.
 func (c *Client) doRequest(ctx context.Context, method, path string, body any, result any) error {
 	return c.withRetry(ctx, func() error {
-		return c.doRequestOnce(ctx, method, path, body, result)
+		err := c.doRequestOnce(ctx, method, path, body, result)
+		if err != nil && c.shouldRetryOnFreshConn(ctx, method, err) {
+			// The pooled connection may have been silently dropped by an
+			// intermediary. Drop idle connections so the retry dials a new one.
+			c.httpClient.CloseIdleConnections()
+			err = c.doRequestOnce(ctx, method, path, body, result)
+		}
+		return err
 	})
+}
+
+// shouldRetryOnFreshConn reports whether a failed request should be retried once
+// on a fresh connection. It targets connection-level failures (timeouts waiting
+// for response headers, connection resets/EOF) that typically mean a reused
+// pooled connection was already dead. It is restricted to idempotent methods
+// and never fires when the caller's context is done (respecting cancellation)
+// or when the server actually responded with an error status.
+func (c *Client) shouldRetryOnFreshConn(ctx context.Context, method string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
+	// Respect caller cancellation / deadline: the caller gave up, don't retry.
+	if ctx.Err() != nil {
+		return false
+	}
+	// The server responded (4xx/5xx): not a connection problem.
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return false
+	}
+	// Network-level timeout (incl. http.Client.Timeout awaiting headers) or a
+	// connection error (reset, closed) surfaced as a net.Error.
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	// Idle connection closed by the peer between pooling and reuse.
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 // doRequestOnce is the single-attempt implementation of doRequest.
