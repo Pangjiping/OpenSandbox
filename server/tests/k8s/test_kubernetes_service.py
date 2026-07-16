@@ -668,6 +668,28 @@ class TestKubernetesSandboxServiceCreate:
         k8s_service.workload_provider.create_workload.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_create_sandbox_pool_mode_rejects_network_policy_with_400(
+        self, k8s_service
+    ):
+        from opensandbox_server.api.schema import CreateSandboxRequest
+
+        pool_request = CreateSandboxRequest(
+            extensions={"poolRef": "my-pool"},
+            networkPolicy=NetworkPolicy(default_action="deny", egress=[]),
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await k8s_service.create_sandbox(pool_request)
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail["code"] == SandboxErrorCodes.INVALID_PARAMETER
+        assert "networkPolicy cannot be used together with extensions.poolRef" in (
+            exc_info.value.detail["message"]
+        )
+        k8s_service.k8s_client.get_custom_object.assert_not_called()
+        k8s_service.workload_provider.create_workload.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_create_sandbox_pool_mode_missing_pool_fails_fast(
         self, k8s_service
     ):
