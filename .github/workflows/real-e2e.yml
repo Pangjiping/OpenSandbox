@@ -361,6 +361,9 @@ jobs:
           uv --version
           uv run python --version
 
+      - name: Configure .NET install directory
+        run: echo "DOTNET_INSTALL_DIR=${RUNNER_TEMP}/dotnet" >> "$GITHUB_ENV"
+
       - name: Set up .NET SDK
         uses: actions/setup-dotnet@v5
         with:
