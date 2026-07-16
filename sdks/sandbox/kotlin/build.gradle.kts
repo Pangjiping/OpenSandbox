@@ -48,6 +48,7 @@ plugins {
     alias(libs.plugins.dokka) apply false
     alias(libs.plugins.spotless)
     alias(libs.plugins.mavenPublish) apply false
+    alias(libs.plugins.shadow) apply false
 }
 
 val manualProjectVersion = project.findProperty("project.version") as String

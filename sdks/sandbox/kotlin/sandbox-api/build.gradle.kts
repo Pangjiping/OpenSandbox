@@ -18,15 +18,82 @@ import org.openapitools.generator.gradle.plugin.tasks.GenerateTask
 
 plugins {
     alias(libs.plugins.openapi.generator)
+    alias(libs.plugins.shadow)
 }
 
 repositories {
     mavenCentral()
 }
 
+// See sandbox/build.gradle.kts for rationale: kotlinx-serialization is used only for wire
+// encoding, and the generated `$$serializer` classes reference kotlinx internals. Shade the
+// runtime into com.alibaba.opensandbox.shaded.kotlinx.serialization so downstream consumers
+// stay isolated from whatever kotlinx-serialization their classpath resolves to.
+val shadedDependencies: Configuration by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+
 dependencies {
     implementation(libs.okhttp)
-    implementation(libs.bundles.serialization)
+    compileOnly(libs.bundles.serialization)
+    shadedDependencies(libs.bundles.serialization)
+}
+
+// shadowJar produces the module's primary artifact: this module's own classes plus a
+// relocated copy of kotlinx-serialization. Both Maven and Gradle consumers pull the same
+// shaded jar via the standard `com.alibaba.opensandbox:sandbox-api:<version>` coordinate.
+tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
+    // Empty classifier so this jar takes over the default `<module>-<version>.jar` name.
+    archiveClassifier.set("")
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    configurations = listOf(shadedDependencies)
+    relocate("kotlinx.serialization", "com.alibaba.opensandbox.shaded.kotlinx.serialization")
+    mergeServiceFiles()
+    exclude("META-INF/versions/9/module-info.class")
+    exclude("META-INF/maven/**")
+}
+
+// The plain `jar` task still runs (it's referenced by intra-project compilation and by
+// the `apiElements`/`runtimeElements` variant metadata), but we redirect its output path
+// via a classifier so it never collides with shadowJar's output on disk. The classifier
+// output is *not* attached to the maven publication (see afterEvaluate below).
+tasks.named<Jar>("jar") {
+    archiveClassifier.set("plain")
+}
+
+tasks.named("assemble") { dependsOn(tasks.named("shadowJar")) }
+
+// Swap in shadowJar as the maven publication's main artifact so downstream Maven consumers
+// receive the shaded jar. The plain `jar` output (classifier=plain) is used for intra-project
+// compile/test only and is stripped from the publication here.
+afterEvaluate {
+    extensions.configure<PublishingExtension> {
+        publications.withType<MavenPublication>().configureEach {
+            val shadowTask = tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar")
+            // Drop both the auto-added main jar (classifier=null-turned-plain) and the plain
+            // classifier artifact; keep sources / javadoc classifiers.
+            setArtifacts(
+                artifacts.filter {
+                    val c = it.classifier
+                    !c.isNullOrEmpty() && c != "plain"
+                },
+            )
+            artifact(shadowTask.map { it.archiveFile }) {
+                classifier = ""
+                extension = "jar"
+                builtBy(shadowTask)
+            }
+        }
+    }
+}
+
+// Gradle-native (`.module`) consumers would resolve the plain jar via variant metadata,
+// bypassing the swap above. Disable GMM so Gradle consumers fall back to the maven pom
+// (which points at shadowJar). This is fine because our audience is Maven-based; the SDK
+// is not published to consumers who need Gradle-specific variant selection.
+tasks.withType<GenerateModuleMetadata>().configureEach {
+    enabled = false
 }
 
 fun GenerateTask.configureCommonOptions() {

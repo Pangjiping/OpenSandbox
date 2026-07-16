@@ -14,6 +14,19 @@
  * limitations under the License.
  */
 
+plugins {
+    alias(libs.plugins.shadow)
+}
+
+// See sandbox/build.gradle.kts for rationale. code-interpreter transitively depends on the
+// shaded `jsonParser` from :sandbox at runtime, but at compile time still needs the original
+// kotlinx-serialization types on the classpath. Keep it in compileOnly + shaded configuration
+// so the published jar bundles the relocated copy and the pom omits the runtime dependency.
+val shadedDependencies: Configuration by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+
 dependencies {
     api(project(":sandbox"))
     implementation(project(":sandbox-api"))
@@ -23,9 +36,11 @@ dependencies {
 
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
-    implementation(libs.bundles.serialization)
+    compileOnly(libs.bundles.serialization)
+    shadedDependencies(libs.bundles.serialization)
 
     testImplementation(libs.bundles.testing)
+    testImplementation(libs.bundles.serialization)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
@@ -64,4 +79,44 @@ tasks.withType<org.jetbrains.dokka.gradle.DokkaTask>().configureEach {
             moduleName.set("CodeInterpreter")
         }
     }
+}
+
+// See sandbox-api/build.gradle.kts for the rationale.
+tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
+    archiveClassifier.set("")
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    configurations = listOf(shadedDependencies)
+    relocate("kotlinx.serialization", "com.alibaba.opensandbox.shaded.kotlinx.serialization")
+    mergeServiceFiles()
+    exclude("META-INF/versions/9/module-info.class")
+    exclude("META-INF/maven/**")
+}
+
+tasks.named<Jar>("jar") {
+    archiveClassifier.set("plain")
+}
+
+tasks.named("assemble") { dependsOn(tasks.named("shadowJar")) }
+
+afterEvaluate {
+    extensions.configure<PublishingExtension> {
+        publications.withType<MavenPublication>().configureEach {
+            val shadowTask = tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar")
+            setArtifacts(
+                artifacts.filter {
+                    val c = it.classifier
+                    !c.isNullOrEmpty() && c != "plain"
+                },
+            )
+            artifact(shadowTask.map { it.archiveFile }) {
+                classifier = ""
+                extension = "jar"
+                builtBy(shadowTask)
+            }
+        }
+    }
+}
+
+tasks.withType<GenerateModuleMetadata>().configureEach {
+    enabled = false
 }

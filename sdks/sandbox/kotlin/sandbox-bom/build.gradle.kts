@@ -28,7 +28,10 @@ dependencies {
         api(libs.kotlin.stdlib)
         api(libs.okhttp)
         api(libs.okhttp.logging)
-        api(libs.kotlinx.serialization.json)
         api(libs.slf4j.api)
+        // kotlinx-serialization is not constrained here on purpose: it is shaded into the SDK
+        // jars (com.alibaba.opensandbox.shaded.kotlinx.serialization.*) and no longer appears
+        // in the SDK's runtime classpath. Downstream users who want to use kotlinx-serialization
+        // directly should pick a version themselves; the SDK does not care.
     }
 }
