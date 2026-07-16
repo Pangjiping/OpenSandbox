@@ -253,7 +253,6 @@ jobs:
     if: needs.changes.outputs.relevant == 'true'
     runs-on: self-hosted
     env:
-      NODE_VERSION: "20.19.0"
       RUN_CODE_INTERPRETER_E2E: ${{ github.event_name == 'workflow_dispatch' && inputs.run_code_interpreter_e2e == true && 'true' || 'false' }}
     steps:
       - name: Checkout code
@@ -271,20 +270,9 @@ jobs:
           uv run python --version
 
       - name: Set up Node.js
-        run: |
-          NODE_DIR="/home/admin/.local/node-v${NODE_VERSION}-linux-x64"
-          if [ -x "${NODE_DIR}/bin/node" ]; then
-            echo "Node.js ${NODE_VERSION} already cached"
-          else
-            echo "Downloading Node.js ${NODE_VERSION}..."
-            mkdir -p /home/admin/.local
-            curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
-              | tar -xJ -C /home/admin/.local/
-          fi
-          echo "${NODE_DIR}/bin" >> "$GITHUB_PATH"
-          export PATH="${NODE_DIR}/bin:${PATH}"
-          node --version
-          npm --version
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20.19.0"
 
       - name: Clean up previous E2E resources
         run: |
@@ -375,8 +363,6 @@ jobs:
 
       - name: Set up .NET SDK
         uses: actions/setup-dotnet@v5
-        env:
-          DOTNET_INSTALL_DIR: /home/admin/.local/dotnet
         with:
           dotnet-version: "10.0.x"
 
@@ -450,9 +436,8 @@ jobs:
     if: needs.changes.outputs.relevant == 'true'
     runs-on: self-hosted
     env:
-      HOME: /home/admin/actions-runner
-      GOCACHE: /home/admin/actions-runner/_temp/go-build
-      GOMODCACHE: /home/admin/actions-runner/_temp/go-mod-cache
+      GOCACHE: ${{ runner.temp }}/go-build
+      GOMODCACHE: ${{ runner.temp }}/go-mod-cache
       RUN_CODE_INTERPRETER_E2E: ${{ github.event_name == 'workflow_dispatch' && inputs.run_code_interpreter_e2e == true && 'true' || 'false' }}
     steps:
       - name: Checkout code
