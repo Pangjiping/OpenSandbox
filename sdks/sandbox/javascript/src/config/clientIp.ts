@@ -14,74 +14,144 @@
 
 import { CLIENT_IP_HEADER } from "../core/constants.js";
 
-// Detect the SDK host's own outbound IP using the same underlying logic as the
-// other OpenSandbox SDKs: "dial" a UDP socket to a fixed external address and
-// read the local address the OS bound. UDP is connectionless, so no packet is
-// sent; the OS merely selects the outbound interface for the default route.
+// Detect the SDK host's own intranet IP by reading the address configured on a
+// real network interface (NOT by dialing out): the outbound route can traverse
+// an egress cluster whose source IP would not identify the host. A custom
+// (non-standard) header name conveys it because standard forwarded headers
+// (X-Forwarded-For, ...) are rewritten or stripped by intermediaries.
 //
-// Node's dgram connect is asynchronous, so detection runs once at module load
-// and the result is cached. The header is added per request by the transport
-// wrapper (see applyClientIpToInit), which reads the cached value; by the time
-// any request is issued, detection has resolved. A custom (non-standard) header
-// name is used on purpose: standard forwarded headers such as X-Forwarded-For
-// are rewritten or stripped by intermediaries.
+// `node:os` is loaded via an async dynamic import (kept Node-only / browser-safe,
+// matching the codebase's approach for Node modules). Detection runs once at
+// module load and is cached; the transport wrapper awaits ensureClientIpReady()
+// so even the first request carries the header.
 
-// Probe target. A literal IP (not a hostname) avoids any DNS lookup.
-const PROBE_HOST = "8.8.8.8";
-const PROBE_PORT = 80;
+// Interface name fragments indicating virtual/container/VPN NICs whose address
+// does not identify the host machine; skipped when picking the host's own IP.
+const VIRTUAL_NIC_PREFIXES = [
+  "docker",
+  "veth",
+  "br-",
+  "virbr",
+  "vmnet",
+  "vbox",
+  "utun",
+  "tun",
+  "tap",
+  "zt",
+  "cni",
+  "flannel",
+  "cali",
+];
 
 let cachedIp = "";
 let detectionStarted = false;
+let detectionPromise: Promise<void> | null = null;
 
 function isNodeRuntime(): boolean {
   const p = (globalThis as any)?.process;
   return !!p?.versions?.node;
 }
 
-function isUsableIp(ip: unknown): ip is string {
-  if (typeof ip !== "string" || ip.length === 0) return false;
-  if (ip === "0.0.0.0" || ip === "::") return false;
-  if (ip.startsWith("127.") || ip === "::1") return false;
+function isVirtualNic(name: string): boolean {
+  const lower = name.toLowerCase();
+  return VIRTUAL_NIC_PREFIXES.some((p) => lower.startsWith(p));
+}
+
+/** Rank an interface name by likelihood of being the primary intranet NIC (lower = better). */
+function nicNameRank(rawName: string): number {
+  const name = rawName.toLowerCase();
+  if (name === "en0") return 0;
+  if (name === "eth0") return 1;
+  if (name.startsWith("eth")) return 2;
+  if (name.startsWith("en")) return 3; // covers en*, ens*, enp*, eno*
+  if (name.startsWith("bond")) return 4;
+  return 100;
+}
+
+function parseIpv4(ip: string): number[] | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  const nums: number[] = [];
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const n = Number(part);
+    if (n < 0 || n > 255) return null;
+    nums.push(n);
+  }
+  return nums;
+}
+
+function isUsableIpv4(ip: string): boolean {
+  const o = parseIpv4(ip);
+  if (!o) return false;
+  if (o[0] === 127) return false; // loopback
+  if (o[0] === 169 && o[1] === 254) return false; // link-local
+  if (o[0] === 0 && o[1] === 0 && o[2] === 0 && o[3] === 0) return false; // unspecified
   return true;
 }
 
+function isPrivateIpv4(ip: string): boolean {
+  const o = parseIpv4(ip);
+  if (!o) return false;
+  if (o[0] === 10) return true;
+  if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true;
+  if (o[0] === 192 && o[1] === 168) return true;
+  return false;
+}
+
 /**
- * Probe the local outbound IP via a UDP dial. Resolves to the IP or "" when it
- * cannot be determined. Best-effort: never rejects.
+ * Pick the host's intranet IPv4 from `{ name, ips }` interface entries.
+ * Prefers, in order: known NIC names (nicNameRank), then RFC1918 private
+ * addresses — network-name priority with private-segment fallback in one pass.
+ * Virtual/container/VPN NICs are skipped. Returns "" if none is usable.
  */
-export async function probeOutboundIp(): Promise<string> {
+export function selectClientIp(nics: { name: string; ips: string[] }[]): string {
+  let best = "";
+  let bestRank = 0;
+  let bestPrivate = false;
+  let found = false;
+
+  for (const nic of nics) {
+    if (isVirtualNic(nic.name)) continue;
+    const rank = nicNameRank(nic.name);
+    for (const ip of nic.ips) {
+      if (!isUsableIpv4(ip)) continue;
+      const priv = isPrivateIpv4(ip);
+      if (!found || rank < bestRank || (rank === bestRank && priv && !bestPrivate)) {
+        best = ip;
+        bestRank = rank;
+        bestPrivate = priv;
+        found = true;
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Read the host's intranet IPv4 from the OS network interfaces. Resolves to the
+ * IP or "" when it cannot be determined. Best-effort: never rejects.
+ */
+export async function detectOutboundIp(): Promise<string> {
   if (!isNodeRuntime()) return "";
   try {
     // Dynamic, non-literal specifier keeps this Node-only and avoids requiring
-    // `@types/node` or bundling `node:dgram` into browser builds.
-    const specifier = "node:dgram";
-    const dgram: any = await import(specifier);
-    return await new Promise<string>((resolve) => {
-      let settled = false;
-      const socket = dgram.createSocket("udp4");
-      const finish = (ip: string) => {
-        if (settled) return;
-        settled = true;
-        try {
-          socket.close();
-        } catch {
-          // ignore
-        }
-        resolve(isUsableIp(ip) ? ip : "");
-      };
-      socket.once("error", () => finish(""));
-      try {
-        socket.connect(PROBE_PORT, PROBE_HOST, () => {
-          try {
-            finish(socket.address()?.address ?? "");
-          } catch {
-            finish("");
-          }
-        });
-      } catch {
-        finish("");
-      }
-    });
+    // `@types/node` or bundling `node:os` into browser builds.
+    const specifier = "node:os";
+    const os: any = await import(specifier);
+    const raw = os.networkInterfaces() as Record<
+      string,
+      { address: string; family: string | number; internal: boolean }[] | undefined
+    >;
+    const nics: { name: string; ips: string[] }[] = [];
+    for (const [name, addrs] of Object.entries(raw)) {
+      if (!addrs) continue;
+      const ips = addrs
+        .filter((a) => !a.internal && (a.family === "IPv4" || a.family === 4) && a.address)
+        .map((a) => a.address);
+      if (ips.length) nics.push({ name, ips });
+    }
+    return selectClientIp(nics);
   } catch {
     return "";
   }
@@ -90,7 +160,7 @@ export async function probeOutboundIp(): Promise<string> {
 function ensureDetectionStarted(): void {
   if (detectionStarted || !isNodeRuntime()) return;
   detectionStarted = true;
-  void probeOutboundIp()
+  detectionPromise = detectOutboundIp()
     .then((ip) => {
       cachedIp = ip;
     })
@@ -103,7 +173,21 @@ function ensureDetectionStarted(): void {
 // the first request is issued.
 ensureDetectionStarted();
 
-/** Return the detected outbound IP, or "" if not (yet) available. */
+/**
+ * Await the one-time detection so the very first request carries the header
+ * (aligning with the synchronous-detection SDKs). Cheap no-op once settled.
+ */
+export async function ensureClientIpReady(): Promise<void> {
+  if (detectionPromise) {
+    try {
+      await detectionPromise;
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+/** Return the detected intranet IP, or "" if not (yet) available. */
 export function getClientIp(): string {
   return cachedIp;
 }
@@ -132,12 +216,23 @@ export function withClientIp(
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
   }
 
-  if (headers.has(CLIENT_IP_HEADER)) return { input, init };
-  headers.set(CLIENT_IP_HEADER, ip);
+  // Add the detected IP only if not already present (respect a user value).
+  // Either way we fall through to return the unified merged headers on both the
+  // input and init, so nothing is dropped under fetch(request, init) semantics.
+  if (!headers.has(CLIENT_IP_HEADER)) {
+    headers.set(CLIENT_IP_HEADER, ip);
+  }
 
   if (inputIsRequest) {
-    // Clone the Request preserving method/body/etc., with the merged headers.
-    return { input: new Request(input as Request, { headers }), init };
+    // Clone the Request preserving method/body/etc., with the merged headers,
+    // and also put the merged headers on init. Callers such as openapi-fetch
+    // invoke fetch(request, init); if init carried its own headers they would
+    // replace the Request's per fetch semantics, so returning the same merged
+    // set on both ensures no header (incl. the client IP) is dropped.
+    return {
+      input: new Request(input as Request, { headers }),
+      init: { ...(init ?? {}), headers },
+    };
   }
   return { input, init: { ...(init ?? {}), headers } };
 }
@@ -146,10 +241,25 @@ export function withClientIp(
 export function _setClientIpForTest(ip: string): void {
   cachedIp = ip;
   detectionStarted = true;
+  // The stub is authoritative; drop any in-flight probe so ensureClientIpReady
+  // is a no-op and cannot overwrite the stubbed value.
+  detectionPromise = null;
+}
+
+/**
+ * Re-trigger the one-time detection (as if freshly imported), starting a new
+ * probe and setting the awaitable promise. Intended for tests only.
+ */
+export function _restartDetectionForTest(): void {
+  cachedIp = "";
+  detectionStarted = false;
+  detectionPromise = null;
+  ensureDetectionStarted();
 }
 
 /** Reset detection state so it re-probes on next import cycle. Tests only. */
 export function _resetClientIpCacheForTest(): void {
   cachedIp = "";
   detectionStarted = false;
+  detectionPromise = null;
 }

@@ -46,9 +46,12 @@ export { IsolatedSessionsAdapter } from "./adapters/isolatedSessionsAdapter.js";
 
 // Client-IP detection helpers (advanced/testing).
 export {
-  probeOutboundIp,
+  detectOutboundIp,
+  selectClientIp,
   getClientIp,
+  ensureClientIpReady,
   withClientIp,
   _setClientIpForTest,
+  _restartDetectionForTest,
   _resetClientIpCacheForTest,
 } from "./config/clientIp.js";
