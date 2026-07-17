@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import {DEFAULT_USER_AGENT} from "../core/constants.js";
+import {withClientIp} from "./clientIp.js";
 
 export type ConnectionProtocol = "http" | "https";
 
@@ -235,8 +236,14 @@ function createTimedFetch(opts: {
         init.signal.addEventListener("abort", onAbort, { once: true } as any);
     }
 
+    // Best-effort: attach the SDK host's own IP so the server can see the
+    // client's self-reported address. Applied per request (never overriding a
+    // caller-supplied value or dropping existing headers) and skipped silently
+    // when the IP is unavailable.
+    const withIp = withClientIp(input, init);
+    const reqInput = withIp.input;
     const mergedInit: RequestInit = {
-      ...init,
+      ...(withIp.init ?? {}),
       signal: ac.signal,
     };
 
@@ -255,7 +262,7 @@ function createTimedFetch(opts: {
     }
 
     try {
-      const res = await baseFetch(input, mergedInit);
+      const res = await baseFetch(reqInput, mergedInit);
       if (debug) {
         // eslint-disable-next-line no-console
         console.log(`[opensandbox:${label}] <-`, method, url, res.status);
