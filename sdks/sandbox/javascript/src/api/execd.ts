@@ -1366,7 +1366,7 @@ export interface components {
             version?: string;
             /** @description Diagnostic message when isolation is unavailable */
             message?: string;
-            /** @description Whether sessions using uid_mode setpriv can be created */
+            /** @description Whether sessions using uid_mode setpriv can be created with execd's default UID/GID. Requests that select different UID/GID values may still return 503 NOT_SUPPORTED when identity switching is unavailable. */
             setpriv_available?: boolean;
             /** @description Whether sessions using uid_mode userns can be created */
             userns_available?: boolean;

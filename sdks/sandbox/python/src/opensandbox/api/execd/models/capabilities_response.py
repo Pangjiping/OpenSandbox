@@ -35,7 +35,9 @@ class CapabilitiesResponse:
         isolator (str | Unset):
         version (str | Unset):
         message (str | Unset): Diagnostic message when isolation is unavailable
-        setpriv_available (bool | Unset): Whether sessions using uid_mode setpriv can be created
+        setpriv_available (bool | Unset): Whether sessions using uid_mode setpriv can be created with execd's default
+            UID/GID. Requests that select different UID/GID values may still return 503 NOT_SUPPORTED when identity
+            switching is unavailable.
         userns_available (bool | Unset): Whether sessions using uid_mode userns can be created
         commit_supported (bool | Unset):
         diff_supported (bool | Unset):
