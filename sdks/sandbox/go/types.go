@@ -234,6 +234,7 @@ type ListSnapshotsResponse struct {
 
 type ListSnapshotsOptions struct {
 	SandboxID string
+	Name      string
 	States    []SnapshotState
 	Page      int
 	PageSize  int

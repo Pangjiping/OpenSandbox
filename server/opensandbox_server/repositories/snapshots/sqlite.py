@@ -109,6 +109,10 @@ class SQLiteSnapshotRepository:
             clauses.append("source_sandbox_id = ?")
             params.append(query.source_sandbox_id)
 
+        if query.name is not None:
+            clauses.append("name = ?")
+            params.append(query.name)
+
         if query.states:
             clauses.append(
                 f"state IN ({', '.join('?' for _ in query.states)})"
@@ -265,6 +269,12 @@ class SQLiteSnapshotRepository:
             )
             self._migrate_add_namespace(conn)
             self._migrate_namespace_nullable(conn)
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_snapshots_name_namespace
+                    ON snapshots(name, namespace)
+                """
+            )
 
     @staticmethod
     def _migrate_add_namespace(conn: sqlite3.Connection) -> None:

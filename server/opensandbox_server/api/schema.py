@@ -685,6 +685,10 @@ class SnapshotFilter(BaseModel):
         alias="sandboxId",
         description="Filter snapshots by source sandbox identifier",
     )
+    name: Optional[str] = Field(
+        None,
+        description="Filter snapshots by exact snapshot name",
+    )
     state: Optional[List[str]] = Field(
         None,
         min_length=1,
