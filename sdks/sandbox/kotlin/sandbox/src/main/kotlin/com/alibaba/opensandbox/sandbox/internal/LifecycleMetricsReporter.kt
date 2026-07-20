@@ -67,79 +67,91 @@ internal object LifecycleMetricsReporter {
             return
         }
 
-        val payload = buildPayload(sandboxId, image, createDurationMs, success)
-        val url = connectionConfig.getBaseUrl().trimEnd('/') + "/metrics/events"
-
-        val requestBuilder =
-            Request.Builder()
-                .url(url)
-                .post(payload.toRequestBody(jsonMediaType))
-                .header("Content-Type", "application/json")
-                .header("User-Agent", connectionConfig.userAgent)
-
-        val apiKey = connectionConfig.getApiKey()
-        if (apiKey.isNotBlank()) {
-            requestBuilder.header("OPEN-SANDBOX-API-KEY", apiKey)
-        }
-        for ((name, value) in connectionConfig.headers) {
-            // Do not override the auth header if the user provided one via headers.
-            if (name.equals("OPEN-SANDBOX-API-KEY", ignoreCase = true) ||
-                name.equals("Content-Type", ignoreCase = true) ||
-                name.equals("User-Agent", ignoreCase = true)
-            ) {
-                requestBuilder.header(name, value)
-            } else {
-                requestBuilder.addHeader(name, value)
-            }
-        }
-
-        // When the caller supplies an OkHttpClient, they own its lifecycle. Otherwise
-        // we create a client for this single fire-and-forget request and tear it down
-        // in the callback so that high-churn create paths (e.g. SandboxPool prewarm)
-        // do not accumulate OkHttp dispatcher threads or idle connections.
-        val effectiveClient: OkHttpClient
-        val sdkOwnsClient: Boolean
-        if (client != null) {
-            effectiveClient = client
-            sdkOwnsClient = false
-        } else {
-            effectiveClient = defaultClient(connectionConfig)
-            sdkOwnsClient = true
-        }
-
+        // Telemetry is best-effort and MUST NOT surface any exception to the caller.
+        // In particular, this method is invoked from the Sandbox.create failure path;
+        // any exception thrown from payload/URL/request construction (e.g. an invalid
+        // configured baseUrl making Request.Builder.url(...) throw
+        // IllegalArgumentException) would otherwise replace the original create
+        // failure. Guard the whole body — not just the enqueue call — so every
+        // telemetry failure is swallowed.
         try {
-            effectiveClient.newCall(requestBuilder.build()).enqueue(
-                object : Callback {
-                    override fun onFailure(
-                        call: Call,
-                        e: IOException,
-                    ) {
-                        try {
-                            logger.debug("Failed to report sandbox.create metrics: {}", e.message)
-                        } finally {
-                            if (sdkOwnsClient) shutdownQuietly(effectiveClient)
-                        }
-                    }
+            val payload = buildPayload(sandboxId, image, createDurationMs, success)
+            val url = connectionConfig.getBaseUrl().trimEnd('/') + "/metrics/events"
 
-                    override fun onResponse(
-                        call: Call,
-                        response: Response,
-                    ) {
-                        try {
-                            // Drain and close to release the connection back to the pool.
-                            response.use { it.body?.string() }
-                        } catch (_: Exception) {
-                            // ignore — best effort
-                        } finally {
-                            if (sdkOwnsClient) shutdownQuietly(effectiveClient)
+            val requestBuilder =
+                Request.Builder()
+                    .url(url)
+                    .post(payload.toRequestBody(jsonMediaType))
+                    .header("Content-Type", "application/json")
+                    .header("User-Agent", connectionConfig.userAgent)
+
+            val apiKey = connectionConfig.getApiKey()
+            if (apiKey.isNotBlank()) {
+                requestBuilder.header("OPEN-SANDBOX-API-KEY", apiKey)
+            }
+            for ((name, value) in connectionConfig.headers) {
+                // Do not override the auth header if the user provided one via headers.
+                if (name.equals("OPEN-SANDBOX-API-KEY", ignoreCase = true) ||
+                    name.equals("Content-Type", ignoreCase = true) ||
+                    name.equals("User-Agent", ignoreCase = true)
+                ) {
+                    requestBuilder.header(name, value)
+                } else {
+                    requestBuilder.addHeader(name, value)
+                }
+            }
+
+            // When the caller supplies an OkHttpClient, they own its lifecycle. Otherwise
+            // we create a client for this single fire-and-forget request and tear it down
+            // in the callback so that high-churn create paths (e.g. SandboxPool prewarm)
+            // do not accumulate OkHttp dispatcher threads or idle connections.
+            val effectiveClient: OkHttpClient
+            val sdkOwnsClient: Boolean
+            if (client != null) {
+                effectiveClient = client
+                sdkOwnsClient = false
+            } else {
+                effectiveClient = defaultClient(connectionConfig)
+                sdkOwnsClient = true
+            }
+
+            try {
+                effectiveClient.newCall(requestBuilder.build()).enqueue(
+                    object : Callback {
+                        override fun onFailure(
+                            call: Call,
+                            e: IOException,
+                        ) {
+                            try {
+                                logger.debug("Failed to report sandbox.create metrics: {}", e.message)
+                            } finally {
+                                if (sdkOwnsClient) shutdownQuietly(effectiveClient)
+                            }
                         }
-                    }
-                },
-            )
+
+                        override fun onResponse(
+                            call: Call,
+                            response: Response,
+                        ) {
+                            try {
+                                // Drain and close to release the connection back to the pool.
+                                response.use { it.body?.string() }
+                            } catch (_: Exception) {
+                                // ignore — best effort
+                            } finally {
+                                if (sdkOwnsClient) shutdownQuietly(effectiveClient)
+                            }
+                        }
+                    },
+                )
+            } catch (e: Exception) {
+                // Never let telemetry disrupt the caller.
+                logger.debug("Failed to enqueue sandbox.create metrics request: {}", e.message)
+                if (sdkOwnsClient) shutdownQuietly(effectiveClient)
+            }
         } catch (e: Exception) {
-            // Never let telemetry disrupt the caller.
-            logger.debug("Failed to enqueue sandbox.create metrics request: {}", e.message)
-            if (sdkOwnsClient) shutdownQuietly(effectiveClient)
+            // Payload/URL/request construction failed (e.g. invalid baseUrl). Swallow.
+            logger.debug("Failed to build sandbox.create metrics request: {}", e.message)
         }
     }
 

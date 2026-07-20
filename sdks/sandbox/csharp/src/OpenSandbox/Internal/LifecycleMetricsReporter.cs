@@ -61,11 +61,27 @@ internal static class LifecycleMetricsReporter
             return;
         }
 
-        var payload = BuildPayload(sandboxId, image, createDurationMs, success);
-        var body = JsonSerializer.SerializeToUtf8Bytes(payload, SerializerOptions);
-        var url = $"{connectionConfig.GetBaseUrl().TrimEnd('/')}/metrics/events";
         var logger = (loggerFactory ?? NullLoggerFactory.Instance)
             .CreateLogger("OpenSandbox.LifecycleMetricsReporter");
+
+        // Telemetry is best-effort and MUST NOT surface any exception to the
+        // caller. In particular, this method is invoked from Sandbox.CreateAsync's
+        // failure path; any exception thrown while building the payload/URL would
+        // otherwise replace the original create failure. Guard the whole method
+        // body — including construction — with a top-level try/catch.
+        byte[] body;
+        string url;
+        try
+        {
+            var payload = BuildPayload(sandboxId, image, createDurationMs, success);
+            body = JsonSerializer.SerializeToUtf8Bytes(payload, SerializerOptions);
+            url = $"{connectionConfig.GetBaseUrl().TrimEnd('/')}/metrics/events";
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to build sandbox.create metrics request");
+            return;
+        }
 
         // Fire-and-forget: swallow any exception. Never block the caller.
         _ = Task.Run(async () =>

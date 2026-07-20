@@ -194,6 +194,33 @@ class LifecycleMetricsReporterTest {
     }
 
     @Test
+    fun `report never throws when baseUrl is invalid`() {
+        // Regression test: previously, payload/URL/Request construction ran
+        // outside the try/catch guarding enqueue. An invalid baseUrl would
+        // cause Request.Builder.url(...) to throw IllegalArgumentException,
+        // which could replace the original Sandbox.create failure when the
+        // reporter is called from the create catch path.
+        //
+        // Passing a scheme-prefixed domain containing an illegal character
+        // (a space in the host) makes the SDK build a baseUrl like
+        // `http:// bad host/v1`, which OkHttp's HttpUrl parser rejects.
+        val config =
+            ConnectionConfig.builder()
+                .domain("http:// bad host")
+                .requestTimeout(Duration.ofMillis(200))
+                .build()
+
+        // Must not throw — telemetry is best-effort even when construction fails.
+        LifecycleMetricsReporter.reportSandboxCreate(
+            connectionConfig = config,
+            sandboxId = "sbx",
+            image = "python:3.12",
+            createDurationMs = 5L,
+            success = false,
+        )
+    }
+
+    @Test
     fun `report never throws when server is unreachable`() {
         // Use a shut-down server so the connection immediately fails.
         server.shutdown()
