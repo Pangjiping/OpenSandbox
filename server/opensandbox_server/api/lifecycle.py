@@ -565,11 +565,19 @@ def get_sandbox_endpoint(
     endpoint = sandbox_service.get_endpoint(sandbox_id, port, expires=expires)
 
     if use_server_proxy:
-        # Prefer configured external address when available.
-        base_url = str(request.base_url).rstrip("/")
+        # Prefer configured external address when available (it is the full
+        # external base and may already carry a path prefix).
         eip = (get_config().server.eip or "").strip().rstrip("/")
         if eip:
             base_url = eip
+        else:
+            # Reflect how the client reached this API: same host AND same mount
+            # prefix (the API is served both bare and under /v1). Dropping the
+            # prefix pointed proxied traffic at whatever backend owns the root
+            # path on shared hosts (breaking HTTP with redirects and WebSocket
+            # handshakes outright).
+            mount_prefix = request.url.path.split("/sandboxes/", 1)[0]
+            base_url = str(request.base_url).rstrip("/") + mount_prefix
         base_url = base_url.replace("https://", "").replace("http://", "")
         endpoint.endpoint = f"{base_url}/sandboxes/{sandbox_id}/proxy/{port}"
 
