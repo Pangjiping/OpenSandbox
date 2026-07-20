@@ -206,6 +206,166 @@ class SandboxPoolTest {
     }
 
     @Test
+    fun `acquire with RETRY_NEXT_IDLE and empty idle throws PoolEmptyException`() {
+        val pool = buildPool()
+        pool.start()
+        try {
+            val ex =
+                assertThrows(PoolEmptyException::class.java) {
+                    pool.acquire(policy = AcquirePolicy.RETRY_NEXT_IDLE)
+                }
+            assertTrue(ex.message?.contains("RETRY_NEXT_IDLE") == true)
+        } finally {
+            pool.shutdown(graceful = false)
+        }
+    }
+
+    @Test
+    fun `acquire with RETRY_NEXT_IDLE and all stale idle drains up to maxAcquireRetries and throws`() {
+        val store = InMemoryPoolStateStore()
+        // maxIdle=0 keeps the reconcile loop from creating fresh sandboxes against the (missing)
+        // server; we drive idle membership manually via putIdle so the test only exercises the
+        // acquire retry loop.
+        val pool =
+            SandboxPool.builder()
+                .poolName("test-pool")
+                .ownerId("test-owner")
+                .maxIdle(0)
+                .stateStore(store)
+                .connectionConfig(ConnectionConfig.builder().build())
+                .creationSpec(PoolCreationSpec.builder().image("ubuntu:22.04").build())
+                .drainTimeout(Duration.ofMillis(50))
+                .reconcileInterval(Duration.ofSeconds(30))
+                .maxAcquireRetries(3)
+                .build()
+        // 5 stale IDs in idle; retry policy should try 3, leave 2 behind.
+        repeat(5) { store.putIdle("test-pool", "stale-id-$it") }
+
+        pool.start()
+        try {
+            assertThrows(PoolAcquireFailedException::class.java) {
+                pool.acquire(policy = AcquirePolicy.RETRY_NEXT_IDLE)
+            }
+            assertEquals(2, store.snapshotCounters("test-pool").idleCount)
+        } finally {
+            pool.shutdown(graceful = false)
+        }
+    }
+
+    @Test
+    fun `acquire with RETRY_NEXT_IDLE drained mid-loop still throws PoolAcquireFailedException`() {
+        val store = InMemoryPoolStateStore()
+        val pool =
+            SandboxPool.builder()
+                .poolName("test-pool")
+                .ownerId("test-owner")
+                .maxIdle(0)
+                .stateStore(store)
+                .connectionConfig(ConnectionConfig.builder().build())
+                .creationSpec(PoolCreationSpec.builder().image("ubuntu:22.04").build())
+                .drainTimeout(Duration.ofMillis(50))
+                .reconcileInterval(Duration.ofSeconds(30))
+                .maxAcquireRetries(5)
+                .build()
+        // Only 2 stale IDs but budget is 5; loop should exit early after the store empties out
+        // and still surface PoolAcquireFailedException (not PoolEmptyException) because at
+        // least one candidate was attempted.
+        store.putIdle("test-pool", "stale-1")
+        store.putIdle("test-pool", "stale-2")
+
+        pool.start()
+        try {
+            val ex =
+                assertThrows(PoolAcquireFailedException::class.java) {
+                    pool.acquire(policy = AcquirePolicy.RETRY_NEXT_IDLE)
+                }
+            assertTrue(ex.message?.contains("drained") == true)
+            assertEquals(0, store.snapshotCounters("test-pool").idleCount)
+        } finally {
+            pool.shutdown(graceful = false)
+        }
+    }
+
+    @Test
+    fun `acquire with RETRY_NEXT_IDLE_THEN_CREATE falls through to direct create after all idle fail`() {
+        val store = InMemoryPoolStateStore()
+        val createdSandbox = mockk<Sandbox>(relaxed = true)
+        every { createdSandbox.id } returns "created-1"
+        val creator = PooledSandboxCreator { createdSandbox }
+
+        val pool =
+            SandboxPool.builder()
+                .poolName("test-pool")
+                .ownerId("test-owner")
+                .maxIdle(0)
+                .stateStore(store)
+                .connectionConfig(ConnectionConfig.builder().build())
+                .creationSpec(PoolCreationSpec.builder().image("ubuntu:22.04").build())
+                .sandboxCreator(creator)
+                .drainTimeout(Duration.ofMillis(50))
+                .reconcileInterval(Duration.ofSeconds(30))
+                .maxAcquireRetries(3)
+                .build()
+        repeat(3) { store.putIdle("test-pool", "stale-id-$it") }
+
+        pool.start()
+        try {
+            val sandbox = pool.acquire(policy = AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE)
+            assertSame(createdSandbox, sandbox)
+            // All three stale entries removed on the way through.
+            assertEquals(0, store.snapshotCounters("test-pool").idleCount)
+        } finally {
+            pool.shutdown(graceful = false)
+        }
+    }
+
+    @Test
+    fun `acquire with RETRY_NEXT_IDLE_THEN_CREATE and empty idle falls through immediately`() {
+        val store = InMemoryPoolStateStore()
+        val createdSandbox = mockk<Sandbox>(relaxed = true)
+        every { createdSandbox.id } returns "created-1"
+        val creator = PooledSandboxCreator { createdSandbox }
+
+        val pool =
+            SandboxPool.builder()
+                .poolName("test-pool")
+                .ownerId("test-owner")
+                .maxIdle(0)
+                .stateStore(store)
+                .connectionConfig(ConnectionConfig.builder().build())
+                .creationSpec(PoolCreationSpec.builder().image("ubuntu:22.04").build())
+                .sandboxCreator(creator)
+                .drainTimeout(Duration.ofMillis(50))
+                .reconcileInterval(Duration.ofSeconds(30))
+                .build()
+
+        pool.start()
+        try {
+            val sandbox = pool.acquire(policy = AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE)
+            assertSame(createdSandbox, sandbox)
+        } finally {
+            pool.shutdown(graceful = false)
+        }
+    }
+
+    @Test
+    fun `PoolConfig rejects maxAcquireRetries below 1`() {
+        val ex =
+            assertThrows(IllegalArgumentException::class.java) {
+                com.alibaba.opensandbox.sandbox.domain.pool.PoolConfig.builder()
+                    .poolName("test-pool")
+                    .ownerId("test-owner")
+                    .maxIdle(1)
+                    .stateStore(InMemoryPoolStateStore())
+                    .connectionConfig(ConnectionConfig.builder().build())
+                    .creationSpec(PoolCreationSpec.builder().image("ubuntu:22.04").build())
+                    .maxAcquireRetries(0)
+                    .build()
+            }
+        assertTrue(ex.message?.contains("maxAcquireRetries") == true)
+    }
+
+    @Test
     fun `acquire when pool is stopped throws PoolNotRunningException`() {
         val pool = buildPool()
         assertThrows(PoolNotRunningException::class.java) {

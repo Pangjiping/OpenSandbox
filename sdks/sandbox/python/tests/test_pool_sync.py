@@ -499,6 +499,7 @@ def _create_pool(
     max_idle: int,
     store: InMemoryPoolStateStore | None = None,
     manager: FakeManager | None = None,
+    max_acquire_retries: int = 3,
 ) -> SandboxPoolSync:
     return SandboxPoolSync(
         pool_name="pool",
@@ -511,9 +512,112 @@ def _create_pool(
         reconcile_interval=timedelta(milliseconds=20),
         primary_lock_ttl=timedelta(seconds=5),
         drain_timeout=timedelta(milliseconds=50),
+        max_acquire_retries=max_acquire_retries,
         sandbox_manager_factory=lambda config: manager or FakeManager(),  # type: ignore[arg-type,return-value]
         sandbox_factory=FakeSandbox,  # type: ignore[arg-type]
     )
+
+
+def test_acquire_retry_next_idle_empty_raises_pool_empty() -> None:
+    pool = _create_pool(max_idle=0)
+    pool.start()
+    try:
+        with pytest.raises(PoolEmptyException) as exc:
+            pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE)
+        # Message should mention the policy, not the legacy "FAIL_FAST" string.
+        assert "RETRY_NEXT_IDLE" in str(exc.value)
+    finally:
+        pool.shutdown(False)
+
+
+def test_acquire_retry_next_idle_all_stale_bounds_retries_and_raises() -> None:
+    store = InMemoryPoolStateStore()
+    manager = FakeManager()
+    # 5 stale ids seeded; retry budget of 3 must attempt exactly 3 and leave 2 behind.
+    for i in range(5):
+        store.put_idle("pool", f"stale-{i}")
+    pool = _create_pool(max_idle=0, store=store, manager=manager, max_acquire_retries=3)
+    pool.start()
+    try:
+        with pytest.raises(PoolAcquireFailedException):
+            pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE)
+        assert store.snapshot_counters("pool").idle_count == 2
+        # Best-effort kill fires once per attempted stale id.
+        assert sorted(manager.killed) == ["stale-0", "stale-1", "stale-2"]
+    finally:
+        pool.shutdown(False)
+
+
+def test_acquire_retry_next_idle_drained_mid_loop_raises_pool_acquire_failed() -> None:
+    store = InMemoryPoolStateStore()
+    # Only 2 stale ids but budget is 5; loop must break early and still raise
+    # PoolAcquireFailedException (attempted_any=True) rather than PoolEmptyException.
+    store.put_idle("pool", "stale-a")
+    store.put_idle("pool", "stale-b")
+    pool = _create_pool(max_idle=0, store=store, max_acquire_retries=5)
+    pool.start()
+    try:
+        with pytest.raises(PoolAcquireFailedException) as exc:
+            pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE)
+        assert "drained" in str(exc.value)
+        assert store.snapshot_counters("pool").idle_count == 0
+    finally:
+        pool.shutdown(False)
+
+
+def test_acquire_retry_next_idle_then_create_falls_through_after_exhaustion() -> None:
+    FakeSandbox.reset()
+    store = InMemoryPoolStateStore()
+    for i in range(3):
+        store.put_idle("pool", f"stale-{i}")
+    pool = _create_pool(max_idle=0, store=store, max_acquire_retries=3)
+    pool.start()
+    try:
+        sandbox = pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE)
+        assert sandbox.id.startswith("created-")
+        assert store.snapshot_counters("pool").idle_count == 0
+    finally:
+        pool.shutdown(False)
+
+
+def test_acquire_retry_next_idle_returns_first_healthy_candidate() -> None:
+    store = InMemoryPoolStateStore()
+    store.put_idle("pool", "stale-a")
+    store.put_idle("pool", "stale-b")
+    store.put_idle("pool", "healthy-x")
+    pool = _create_pool(max_idle=0, store=store, max_acquire_retries=5)
+    pool.start()
+    try:
+        sandbox = pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE)
+        assert sandbox.id == "healthy-x"
+        # Two stale entries removed; healthy one taken by acquire.
+        assert store.snapshot_counters("pool").idle_count == 0
+    finally:
+        pool.shutdown(False)
+
+
+def test_acquire_retry_next_idle_then_create_empty_falls_through_immediately() -> None:
+    FakeSandbox.reset()
+    pool = _create_pool(max_idle=0)
+    pool.start()
+    try:
+        sandbox = pool.acquire(policy=AcquirePolicy.RETRY_NEXT_IDLE_THEN_CREATE)
+        assert sandbox.id.startswith("created-")
+    finally:
+        pool.shutdown(False)
+
+
+def test_pool_config_rejects_max_acquire_retries_below_one() -> None:
+    with pytest.raises(ValueError, match="max_acquire_retries must be >= 1"):
+        PoolConfig(
+            pool_name="pool",
+            owner_id="owner-1",
+            max_idle=1,
+            state_store=InMemoryPoolStateStore(),
+            connection_config=ConnectionConfigSync(),
+            creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+            max_acquire_retries=0,
+        )
 
 
 def _eventually(condition: Any, timeout: float = 2.0) -> None:
