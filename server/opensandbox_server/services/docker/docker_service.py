@@ -512,85 +512,6 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
         if restored:
             logger.info("Restored expiration timers for %d sandbox(es).", restored)
 
-    def _summary_to_sandbox(self, summary: Dict[str, Any]) -> Optional[Sandbox]:
-        """Build a Sandbox from a Docker low-level ``containers()`` summary
-        without a follow-up ``/containers/{id}/json`` inspect.
-
-        Returns None when the summary lacks a sandbox ID label. List-view
-        Sandboxes always carry ``entrypoint=[]`` and map ``exited``/``dead``
-        to ``Terminated`` (summary has no ExitCode/FinishedAt). Callers needing
-        full state fidelity must use :meth:`_container_to_sandbox`.
-        """
-        labels = summary.get("Labels") or {}
-        sandbox_id = labels.get(SANDBOX_ID_LABEL)
-        if not sandbox_id:
-            return None
-
-        state_value = (summary.get("State") or "").lower()
-
-        if state_value == "running":
-            state = "Running"
-            reason = "CONTAINER_RUNNING"
-            message = "Sandbox container is running."
-        elif state_value == "paused":
-            state = "Paused"
-            reason = "CONTAINER_PAUSED"
-            message = "Sandbox container is paused."
-        elif state_value == "restarting":
-            state = "Running"
-            reason = "CONTAINER_RESTARTING"
-            message = "Sandbox container is restarting."
-        elif state_value in {"created", "starting"}:
-            state = "Pending"
-            reason = "CONTAINER_STARTING"
-            message = "Sandbox container is starting."
-        elif state_value in {"exited", "dead"}:
-            # Summary does not expose ExitCode; treat as Terminated. Callers
-            # that need exit-code fidelity must issue getSandbox.
-            state = "Terminated"
-            reason = "CONTAINER_EXITED"
-            message = "Sandbox container exited."
-        else:
-            state = "Unknown"
-            reason = "CONTAINER_STATE_UNKNOWN"
-            message = f"Sandbox container is in state '{state_value or 'unknown'}'."
-
-        metadata = self._metadata_store.get(sandbox_id, labels)
-        snapshot_id = labels.get(SANDBOX_SNAPSHOT_ID_LABEL)
-        image_ref = summary.get("Image")
-        image_spec = (
-            None if snapshot_id else (ImageSpec(uri=image_ref) if image_ref else None)
-        )
-
-        created_raw = summary.get("Created")
-        if isinstance(created_raw, (int, float)) and created_raw > 0:
-            created_at = datetime.fromtimestamp(float(created_raw), tz=timezone.utc)
-        else:
-            created_at = datetime.now(timezone.utc)
-
-        expires_at = self._get_tracked_expiration(sandbox_id, labels)
-        platform_spec = self._platform_from_labels(labels)
-
-        status_info = SandboxStatus(
-            state=state,
-            reason=reason,
-            message=message,
-            last_transition_at=created_at,
-        )
-
-        return Sandbox(
-            id=sandbox_id,
-            image=image_spec,
-            snapshotId=snapshot_id,
-            platform=platform_spec,
-            status=status_info,
-            metadata=metadata,
-            extensions=extract_extensions_from_mapping(labels),
-            entrypoint=[],
-            expiresAt=expires_at,
-            createdAt=created_at,
-        )
-
     def _container_to_sandbox(self, container, sandbox_id: Optional[str] = None) -> Sandbox:
         labels = container.attrs.get("Config", {}).get("Labels") or {}
         resolved_id = sandbox_id or labels.get(SANDBOX_ID_LABEL)
@@ -1015,20 +936,15 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
         )
 
     def list_sandboxes(self, request: ListSandboxesRequest) -> ListSandboxesResponse:
-        """
-        List sandboxes with optional filtering and pagination.
+        """List sandboxes with optional filtering and pagination.
 
-        Uses the low-level Docker Engine ``GET /containers/json`` endpoint via
-        ``docker_client.api.containers`` so that each entry is built from the
-        list-view summary alone. This avoids the per-container ``inspect``
-        call that ``docker_client.containers.list`` performs internally and
-        which is racy: a sandbox may be removed between the list call and the
-        follow-up inspect, causing the whole listing to fail with 404.
-
-        The trade-off is that list-view sandboxes do not carry exit-code
-        fidelity or entrypoint; callers who need that must fetch the
-        individual sandbox via ``getSandbox``. See ``_summary_to_sandbox`` for
-        details.
+        Discovers container IDs via ``docker_client.api.containers`` and then
+        inspects each one via ``containers.get(id)``. This gives an explicit
+        per-container failure boundary: if a container is removed between the
+        list summary and its inspect, that entry is skipped instead of
+        failing the whole listing with 500. The high-level
+        ``docker_client.containers.list(filters=...)`` inlines the same
+        second-stage inspect but does not expose that boundary.
         """
         try:
             summaries = self.docker_client.api.containers(
@@ -1047,11 +963,28 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
 
         sandboxes_by_id: dict[str, Sandbox] = {}
         for summary in summaries:
-            sandbox_obj = self._summary_to_sandbox(summary)
-            if sandbox_obj is None:
+            container_id = summary.get("Id")
+            summary_labels = summary.get("Labels") or {}
+            sandbox_id = summary_labels.get(SANDBOX_ID_LABEL)
+            if not container_id or not sandbox_id:
                 continue
+            try:
+                container = self.docker_client.containers.get(container_id)
+            except DockerNotFound:
+                # Removed between list and inspect; skip so concurrent
+                # deletions do not fail the whole listing.
+                continue
+            except DockerException as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={
+                        "code": SandboxErrorCodes.CONTAINER_QUERY_FAILED,
+                        "message": f"Failed to query sandbox containers: {str(exc)}",
+                    },
+                ) from exc
+            sandbox_obj = self._container_to_sandbox(container, sandbox_id)
             if matches_filter(sandbox_obj, request.filter):
-                sandboxes_by_id[sandbox_obj.id] = sandbox_obj
+                sandboxes_by_id[sandbox_id] = sandbox_obj
 
         sandboxes: list[Sandbox] = list(sandboxes_by_id.values())
 

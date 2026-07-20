@@ -3657,37 +3657,80 @@ def test_docker_get_endpoint_rejects_expires():
 
 
 # ============================================================================
-# list_sandboxes: race-safety and summary-view semantics
+# list_sandboxes: race-safety and full-fidelity semantics
 # ============================================================================
 
 
-def _list_summary(
+def _list_summary(sandbox_id: str, *, labels: dict | None = None) -> dict:
+    """Build the subset of a Docker low-level ``containers()`` summary that
+    ``list_sandboxes`` reads (Id + Labels only)."""
+    merged_labels = {SANDBOX_ID_LABEL: sandbox_id, **(labels or {})}
+    return {"Id": f"cid-{sandbox_id}", "Labels": merged_labels}
+
+
+def _mock_container(
     sandbox_id: str,
     *,
-    state: str = "running",
-    labels: dict | None = None,
+    running: bool = True,
+    paused: bool = False,
+    restarting: bool = False,
+    docker_status: str = "running",
+    exit_code: int | None = None,
+    entrypoint: list[str] | None = None,
     image: str = "python:3.11",
-) -> dict:
-    """Build the subset of a Docker low-level ``containers()`` summary that
-    ``_summary_to_sandbox`` reads."""
-    merged_labels = {SANDBOX_ID_LABEL: sandbox_id, **(labels or {})}
-    return {
-        "Id": f"cid-{sandbox_id}",
-        "Image": image,
-        "Created": int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp()),
-        "Labels": merged_labels,
-        "State": state,
+    finished_at: str = "0001-01-01T00:00:00Z",
+    extra_labels: dict | None = None,
+) -> MagicMock:
+    """Build a MagicMock container matching what ``_container_to_sandbox``
+    expects to read from ``container.attrs`` and ``container.image``."""
+    labels = {SANDBOX_ID_LABEL: sandbox_id, **(extra_labels or {})}
+    container = MagicMock()
+    container.attrs = {
+        "Created": "2024-01-01T00:00:00Z",
+        "Config": {
+            "Labels": labels,
+            "Cmd": entrypoint if entrypoint is not None else ["python", "-V"],
+        },
+        "State": {
+            "Status": docker_status,
+            "Running": running,
+            "Paused": paused,
+            "Restarting": restarting,
+            "ExitCode": exit_code,
+            "FinishedAt": finished_at,
+        },
     }
+    container.status = docker_status
+    container.image.tags = [image]
+    container.image.short_id = f"sha256:{sandbox_id}"
+    container.image.attrs = {}
+    return container
+
+
+def _wire_list_mocks(mock_client: MagicMock, containers: list[MagicMock]) -> None:
+    """Wire ``api.containers`` (summary) + ``containers.get`` (inspect) so
+    that list_sandboxes' two-step discovery returns the given containers."""
+    summaries = [_list_summary(c.attrs["Config"]["Labels"][SANDBOX_ID_LABEL]) for c in containers]
+    mock_client.api.containers.return_value = summaries
+
+    by_id = {s["Id"]: c for s, c in zip(summaries, containers)}
+
+    def _get(container_id):
+        if container_id in by_id:
+            return by_id[container_id]
+        raise DockerNotFound(f"no such container: {container_id}")
+
+    mock_client.containers.get.side_effect = _get
 
 
 @patch("opensandbox_server.services.docker.docker_service.docker")
-def test_list_sandboxes_uses_low_level_containers_and_skips_inspect(mock_docker):
-    """list_sandboxes must not depend on per-container ``attrs`` inspect."""
+def test_list_sandboxes_uses_low_level_summary_endpoint(mock_docker):
+    """list_sandboxes discovers IDs via the low-level engine endpoint so a
+    concurrent deletion mid-listing can be handled explicitly (see
+    test_list_sandboxes_skips_concurrently_deleted_sandbox)."""
     mock_client = MagicMock()
-    # Preserve _restore_existing_sandboxes' high-level list contract.
     mock_client.containers.list.return_value = []
-    summary = _list_summary("sbx-1", state="running")
-    mock_client.api.containers.return_value = [summary]
+    _wire_list_mocks(mock_client, [_mock_container("sbx-1", entrypoint=["python", "app.py"])])
     mock_docker.from_env.return_value = mock_client
 
     service = DockerSandboxService(config=_app_config())
@@ -3705,25 +3748,34 @@ def test_list_sandboxes_uses_low_level_containers_and_skips_inspect(mock_docker)
     item = response.items[0]
     assert item.id == "sbx-1"
     assert item.status.state == "Running"
-    # List view intentionally returns empty entrypoint (spec-compatible fallback).
-    assert item.entrypoint == []
+    # Full fidelity: entrypoint from Config.Cmd, image from image.tags.
+    assert item.entrypoint == ["python", "app.py"]
     assert item.image is not None
     assert item.image.uri == "python:3.11"
 
 
 @patch("opensandbox_server.services.docker.docker_service.docker")
-def test_list_sandboxes_survives_concurrent_container_deletion(mock_docker):
-    """Regression: exited containers reported by summary must not require a
-    follow-up inspect. The previous implementation used ``containers.list``,
-    which internally inspects every matched container; a container removed
-    mid-listing turned the whole request into a 500.
+def test_list_sandboxes_skips_concurrently_deleted_sandbox(mock_docker):
+    """Regression: a container removed between list summary and follow-up
+    inspect must be silently skipped, not fail the whole request with 500.
+    The pre-fix path used ``docker_client.containers.list(filters=...)``
+    which raises inside docker-py when the second-stage inspect 404s.
     """
     mock_client = MagicMock()
     mock_client.containers.list.return_value = []
+
+    alive = _mock_container("sbx-alive", running=True)
     mock_client.api.containers.return_value = [
-        _list_summary("sbx-alive", state="running"),
-        _list_summary("sbx-gone", state="exited"),
+        _list_summary("sbx-alive"),
+        _list_summary("sbx-gone"),
     ]
+
+    def _get(container_id):
+        if container_id == "cid-sbx-alive":
+            return alive
+        raise DockerNotFound(f"no such container: {container_id}")
+
+    mock_client.containers.get.side_effect = _get
     mock_docker.from_env.return_value = mock_client
 
     service = DockerSandboxService(config=_app_config())
@@ -3732,36 +3784,46 @@ def test_list_sandboxes_survives_concurrent_container_deletion(mock_docker):
         ListSandboxesRequest(pagination=PaginationRequest(page=1, page_size=50))
     )
 
-    states = {item.id: item.status.state for item in response.items}
-    # Summary lacks ExitCode; exited/dead always map to Terminated.
-    assert states == {"sbx-alive": "Running", "sbx-gone": "Terminated"}
+    ids = {item.id for item in response.items}
+    assert ids == {"sbx-alive"}
 
 
 @patch("opensandbox_server.services.docker.docker_service.docker")
-def test_list_sandboxes_summary_state_mappings(mock_docker):
+def test_list_sandboxes_preserves_failed_and_terminated_states(mock_docker):
+    """list_sandboxes must distinguish successful exits (Terminated) from
+    non-zero exits (Failed) so that ``filter.state == ['Failed']`` does not
+    silently drop failed sandboxes.
+    """
     mock_client = MagicMock()
     mock_client.containers.list.return_value = []
-    mock_client.api.containers.return_value = [
-        _list_summary("sbx-running", state="running"),
-        _list_summary("sbx-paused", state="paused"),
-        _list_summary("sbx-restarting", state="restarting"),
-        _list_summary("sbx-created", state="created"),
-        _list_summary("sbx-exited", state="exited"),
-        _list_summary("sbx-dead", state="dead"),
-    ]
+    _wire_list_mocks(
+        mock_client,
+        [
+            _mock_container(
+                "sbx-terminated",
+                running=False,
+                docker_status="exited",
+                exit_code=0,
+            ),
+            _mock_container(
+                "sbx-failed",
+                running=False,
+                docker_status="exited",
+                exit_code=137,
+            ),
+        ],
+    )
     mock_docker.from_env.return_value = mock_client
 
     service = DockerSandboxService(config=_app_config())
-    response = service.list_sandboxes(ListSandboxesRequest(pagination=PaginationRequest(page=1, page_size=50)))
+    response = service.list_sandboxes(
+        ListSandboxesRequest(pagination=PaginationRequest(page=1, page_size=50))
+    )
 
     got = {item.id: (item.status.state, item.status.reason) for item in response.items}
     assert got == {
-        "sbx-running": ("Running", "CONTAINER_RUNNING"),
-        "sbx-paused": ("Paused", "CONTAINER_PAUSED"),
-        "sbx-restarting": ("Running", "CONTAINER_RESTARTING"),
-        "sbx-created": ("Pending", "CONTAINER_STARTING"),
-        "sbx-exited": ("Terminated", "CONTAINER_EXITED"),
-        "sbx-dead": ("Terminated", "CONTAINER_EXITED"),
+        "sbx-terminated": ("Terminated", "CONTAINER_EXITED"),
+        "sbx-failed": ("Failed", "CONTAINER_EXITED_ERROR"),
     }
 
 
@@ -3775,7 +3837,9 @@ def test_list_sandboxes_wraps_docker_exception(mock_docker):
     service = DockerSandboxService(config=_app_config())
 
     with pytest.raises(HTTPException) as exc:
-        service.list_sandboxes(ListSandboxesRequest(pagination=PaginationRequest(page=1, page_size=50)))
+        service.list_sandboxes(
+            ListSandboxesRequest(pagination=PaginationRequest(page=1, page_size=50))
+        )
 
     assert exc.value.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
     assert exc.value.detail["code"] == SandboxErrorCodes.CONTAINER_QUERY_FAILED
