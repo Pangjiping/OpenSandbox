@@ -1083,6 +1083,7 @@ public class ListSnapshotsResponse
 public class ListSnapshotsParams
 {
     public string? SandboxId { get; set; }
+    public string? Name { get; set; }
     public IReadOnlyList<string>? States { get; set; }
     public int? Page { get; set; }
     public int? PageSize { get; set; }
