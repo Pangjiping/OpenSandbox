@@ -94,7 +94,9 @@ Signed URLs need signing keys; the static header token does not.
 mode = "gateway"
 
 [ingress.gateway]
-address = "sandbox.example.com"
+# Wildcard mode requires a wildcard address (e.g. *.sandbox.example.com);
+# header and uri modes take a plain host (e.g. sandbox.example.com).
+address = "*.sandbox.example.com"
 
 [ingress.gateway.route]
 mode = "wildcard"   # or "header" or "uri"
@@ -104,7 +106,7 @@ active_key = "a"    # 1 char [0-9a-z], must exist in keys
 
 [[ingress.secure_access.keys]]
 key_id = "a"
-key = "base64:<secret>"
+key = "<base64-encoded-secret>"   # raw base64, no "base64:" prefix
 ```
 
 The `opensandbox-server` Helm chart exposes the same shape under
