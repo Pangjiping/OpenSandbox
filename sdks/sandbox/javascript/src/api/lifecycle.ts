@@ -181,6 +181,8 @@ export interface paths {
                 query?: {
                     /** @description Filter snapshots by source sandbox identifier */
                     sandboxId?: string;
+                    /** @description Filter snapshots by exact snapshot name */
+                    name?: string;
                     /**
                      * @description Filter by snapshot lifecycle state. Pass multiple times for OR logic.
                      *     Example: `?state=Ready&state=Failed`

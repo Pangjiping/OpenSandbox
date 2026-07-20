@@ -293,10 +293,15 @@ class TestSnapshots:
 
     def test_list_snapshots_request_supports_alias_filter(self):
         request = ListSnapshotsRequest(
-            filter=SnapshotFilter(sandboxId="sbx-001", state=["Ready"]),
+            filter=SnapshotFilter(
+                sandboxId="sbx-001",
+                name="toolchain:python@rev-1",
+                state=["Ready"],
+            ),
             pagination=PaginationRequest(page=2, pageSize=50),
         )
         assert request.filter.sandbox_id == "sbx-001"
+        assert request.filter.name == "toolchain:python@rev-1"
         assert request.pagination is not None
         assert request.pagination.page_size == 50
 

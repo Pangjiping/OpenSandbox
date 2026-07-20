@@ -572,6 +572,7 @@ export interface ListSandboxesParams {
 
 export interface ListSnapshotsParams {
   sandboxId?: SandboxId;
+  name?: string;
   states?: string[];
   page?: number;
   pageSize?: number;

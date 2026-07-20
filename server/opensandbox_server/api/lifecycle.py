@@ -431,6 +431,7 @@ def create_snapshot(
 )
 def list_snapshots(
     sandbox_id: Optional[str] = Query(None, alias="sandboxId", description="Filter snapshots by source sandbox identifier"),
+    name: Optional[str] = Query(None, description="Filter snapshots by exact snapshot name"),
     state: Optional[List[str]] = Query(None, description="Filter by snapshot lifecycle state. Pass multiple times for OR logic."),
     page: int = Query(1, ge=1, description="Page number for pagination"),
     page_size: int = Query(20, ge=1, le=200, alias="pageSize", description="Number of items per page"),
@@ -440,7 +441,7 @@ def list_snapshots(
     List snapshots with optional filtering and pagination.
     """
     request = ListSnapshotsRequest(
-        filter=SnapshotFilter(sandboxId=sandbox_id, state=state),
+        filter=SnapshotFilter(sandboxId=sandbox_id, name=name, state=state),
         pagination=PaginationRequest(page=page, pageSize=page_size),
     )
     return snapshot_service.list_snapshots(request)

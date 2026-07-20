@@ -285,6 +285,11 @@ paths:
           description: Filter snapshots by source sandbox identifier
           schema:
             type: string
+        - name: name
+          in: query
+          description: Filter snapshots by exact snapshot name
+          schema:
+            type: string
         - name: state
           in: query
           description: |
