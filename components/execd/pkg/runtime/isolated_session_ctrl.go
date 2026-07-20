@@ -155,6 +155,12 @@ func (r *IsolatedRunner) CreateIsolatedSession(opts *IsolatedSessionOptions) (st
 		return "", err
 	}
 
+	// Validate uid mode before normalization to keep the validator's handling
+	// of the empty/default mode self-contained.
+	if err := r.validateUidModeAvailable(opts); err != nil {
+		return "", err
+	}
+
 	// Normalize empty/omitted fields to the effective config execd will
 	// actually apply. GetIsolatedSession echoes s.opts on attach so a
 	// stateless client can rebuild a handle from just the sessionId;
@@ -536,6 +542,45 @@ func (r *IsolatedRunner) GetMergedView(id string) (vfs.FS, error) {
 // Capabilities returns the current isolator capabilities.
 func (r *IsolatedRunner) Capabilities() isolation.Capabilities {
 	return r.isolator.Capabilities()
+}
+
+func (r *IsolatedRunner) validateUidModeAvailable(opts *IsolatedSessionOptions) error {
+	mode := isolation.UidModeSetpriv
+	if opts != nil && opts.UidMode != "" {
+		mode = isolation.UidMode(opts.UidMode)
+	}
+
+	caps := r.isolator.Capabilities()
+	switch mode {
+	case isolation.UidModeSetpriv:
+		if !caps.SetprivAvailable {
+			return fmt.Errorf("%w: %s", ErrUidModeUnavailable, mode)
+		}
+		if setprivIdentitySwitchRequired(opts, uint32(os.Getuid()), uint32(os.Getgid())) &&
+			!caps.SetprivSwitchAvailable {
+			return fmt.Errorf("%w: %s cannot switch to the requested uid/gid", ErrUidModeUnavailable, mode)
+		}
+	case isolation.UidModeUserns:
+		if !caps.UsernsAvailable {
+			return fmt.Errorf("%w: %s", ErrUidModeUnavailable, mode)
+		}
+	default:
+		return fmt.Errorf("%w: unknown uid mode %q", ErrUidModeUnavailable, mode)
+	}
+	return nil
+}
+
+func setprivIdentitySwitchRequired(opts *IsolatedSessionOptions, currentUID, currentGID uint32) bool {
+	targetUID, targetGID := currentUID, currentGID
+	if opts != nil {
+		if opts.Uid != nil {
+			targetUID = *opts.Uid
+		}
+		if opts.Gid != nil {
+			targetGID = *opts.Gid
+		}
+	}
+	return targetUID != currentUID || targetGID != currentGID
 }
 
 func (r *IsolatedRunner) lookup(id string) *isolatedSession {

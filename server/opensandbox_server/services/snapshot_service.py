@@ -160,6 +160,7 @@ class PersistedSnapshotService(SnapshotService):
                 page=pagination.page,
                 page_size=pagination.page_size,
                 source_sandbox_id=request.filter.sandbox_id,
+                name=request.filter.name,
                 states=request.filter.state or [],
                 namespace=tenant.namespace if tenant else None,
             )

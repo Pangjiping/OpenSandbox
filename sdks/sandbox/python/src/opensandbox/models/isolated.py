@@ -283,6 +283,17 @@ class IsolatedCapabilities(BaseModel):
     message: str | None = Field(
         default=None, description="Diagnostic message when unavailable"
     )
+    setpriv_available: bool = Field(
+        default=False,
+        description=(
+            "Whether sessions using setpriv can be created with execd's default UID/GID. "
+            "Requests selecting different UID/GID values may still return NOT_SUPPORTED "
+            "when identity switching is unavailable."
+        ),
+    )
+    userns_available: bool = Field(
+        default=False, description="Whether userns uid mode is available"
+    )
     commit_supported: bool = Field(
         default=False, description="Whether commit is supported"
     )

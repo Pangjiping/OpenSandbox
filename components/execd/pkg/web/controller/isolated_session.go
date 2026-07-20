@@ -105,16 +105,8 @@ func (c *IsolatedSessionController) Create() {
 
 	sessionID, err := isolatedRunner.CreateIsolatedSession(opts)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "not in allowlist") ||
-			strings.Contains(err.Error(), "not allowed") ||
-			strings.Contains(err.Error(), "unknown isolation profile") ||
-			strings.Contains(err.Error(), "must be an existing path") ||
-			strings.Contains(err.Error(), "must be an absolute path") ||
-			strings.Contains(err.Error(), "source is required") {
-			status = http.StatusBadRequest
-		}
-		c.RespondError(status, model.ErrorCodeRuntimeError, err.Error())
+		status, code := classifyIsolatedCreateError(err)
+		c.RespondError(status, code, err.Error())
 		return
 	}
 
@@ -122,6 +114,21 @@ func (c *IsolatedSessionController) Create() {
 		SessionID: sessionID,
 		CreatedAt: time.Now(),
 	})
+}
+
+func classifyIsolatedCreateError(err error) (int, model.ErrorCode) {
+	if errors.Is(err, runtime.ErrUidModeUnavailable) {
+		return http.StatusServiceUnavailable, model.ErrorCodeNotSupported
+	}
+	if strings.Contains(err.Error(), "not in allowlist") ||
+		strings.Contains(err.Error(), "not allowed") ||
+		strings.Contains(err.Error(), "unknown isolation profile") ||
+		strings.Contains(err.Error(), "must be an existing path") ||
+		strings.Contains(err.Error(), "must be an absolute path") ||
+		strings.Contains(err.Error(), "source is required") {
+		return http.StatusBadRequest, model.ErrorCodeRuntimeError
+	}
+	return http.StatusInternalServerError, model.ErrorCodeRuntimeError
 }
 
 // Get handles GET /v1/isolated/session/:sessionId.
@@ -325,18 +332,24 @@ func (c *IsolatedSessionController) Capabilities() {
 			DiffSupported:   false,
 		}
 		if isolatedProbeResult != nil {
+			resp.Isolator = isolatedProbeResult.Isolator
+			resp.Version = isolatedProbeResult.Version
 			resp.Message = isolatedProbeResult.Message
+			resp.SetprivAvailable = isolatedProbeResult.SetprivAvailable
+			resp.UsernsAvailable = isolatedProbeResult.UsernsAvailable
 		}
 		c.RespondSuccess(resp)
 		return
 	}
 	caps := isolatedRunner.Capabilities()
 	resp := model.CapabilitiesResponse{
-		Available:       caps.Available,
-		Isolator:        caps.Isolator,
-		Version:         caps.Version,
-		CommitSupported: caps.CommitSupported,
-		DiffSupported:   caps.DiffSupported,
+		Available:        caps.Available,
+		Isolator:         caps.Isolator,
+		Version:          caps.Version,
+		SetprivAvailable: caps.SetprivAvailable,
+		UsernsAvailable:  caps.UsernsAvailable,
+		CommitSupported:  caps.CommitSupported,
+		DiffSupported:    caps.DiffSupported,
 	}
 	// Probe results indicate overlay capability, not diff/commit implementation.
 	// Diff and commit are Phase 2; do not advertise them as supported.

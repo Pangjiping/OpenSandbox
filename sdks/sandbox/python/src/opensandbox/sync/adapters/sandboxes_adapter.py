@@ -446,6 +446,7 @@ class SandboxesAdapterSync(SandboxesSync):
                 sandbox_id=filter.sandbox_id
                 if filter.sandbox_id is not None
                 else API_UNSET,
+                name=filter.name if filter.name is not None else API_UNSET,
                 state=filter.states if filter.states else API_UNSET,
                 page=filter.page if filter.page is not None else API_UNSET,
                 page_size=filter.page_size

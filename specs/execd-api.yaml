@@ -2294,6 +2294,16 @@ components:
         message:
           type: string
           description: Diagnostic message when isolation is unavailable
+        setpriv_available:
+          type: boolean
+          description: >-
+            Whether sessions using uid_mode setpriv can be created with execd's
+            default UID/GID. Requests that select different UID/GID values may
+            still return 503 NOT_SUPPORTED when identity switching is
+            unavailable.
+        userns_available:
+          type: boolean
+          description: Whether sessions using uid_mode userns can be created
         commit_supported:
           type: boolean
         diff_supported:

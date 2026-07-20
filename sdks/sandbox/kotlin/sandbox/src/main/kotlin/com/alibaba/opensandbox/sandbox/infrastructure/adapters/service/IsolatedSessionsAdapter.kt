@@ -129,6 +129,8 @@ private data class IsolatedCapabilitiesResponse(
     val isolator: String? = null,
     val version: String? = null,
     val message: String? = null,
+    val setpriv_available: Boolean = false,
+    val userns_available: Boolean = false,
     val commit_supported: Boolean = false,
     val diff_supported: Boolean = false,
 )
@@ -394,6 +396,8 @@ internal class IsolatedSessionsAdapter(
                     isolator = resp.isolator,
                     version = resp.version,
                     message = resp.message,
+                    setprivAvailable = resp.setpriv_available,
+                    usernsAvailable = resp.userns_available,
                     commitSupported = resp.commit_supported,
                     diffSupported = resp.diff_supported,
                 )

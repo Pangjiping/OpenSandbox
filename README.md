@@ -238,7 +238,6 @@ OpenSandbox provides examples covering SDK usage, agent integrations, browser au
 
 #### 🧠 Training and Evaluation
 
-- **[rl-training](docs/examples/rl-training.md)** - DQN CartPole training in a sandbox with checkpoints and summary output.
 - **[harbor-evaluation](docs/examples/harbor-evaluation.md)** - Run a [Harbor](https://github.com/harbor-framework/harbor) agent evaluation on OpenSandbox, one sandbox per trial.
 
 For more details, please refer to the [examples documentation](docs/examples/index.md).

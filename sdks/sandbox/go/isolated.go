@@ -135,12 +135,14 @@ type IsolatedRunRequest struct {
 
 // IsolatedCapabilities reports isolation capabilities.
 type IsolatedCapabilities struct {
-	Available       bool   `json:"available"`
-	Isolator        string `json:"isolator,omitempty"`
-	Version         string `json:"version,omitempty"`
-	Message         string `json:"message,omitempty"`
-	CommitSupported bool   `json:"commit_supported"`
-	DiffSupported   bool   `json:"diff_supported"`
+	Available        bool   `json:"available"`
+	Isolator         string `json:"isolator,omitempty"`
+	Version          string `json:"version,omitempty"`
+	Message          string `json:"message,omitempty"`
+	SetprivAvailable bool   `json:"setpriv_available"`
+	UsernsAvailable  bool   `json:"userns_available"`
+	CommitSupported  bool   `json:"commit_supported"`
+	DiffSupported    bool   `json:"diff_supported"`
 }
 
 // IsolatedCreate creates an isolated bash session.

@@ -88,6 +88,8 @@ export interface IsolatedCapabilities {
   isolator?: string;
   version?: string;
   message?: string;
+  setpriv_available?: boolean;
+  userns_available?: boolean;
   commit_supported: boolean;
   diff_supported: boolean;
 }

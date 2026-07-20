@@ -479,3 +479,21 @@ def test_isolated_binds_omitted_when_unset() -> None:
     body = req.model_dump(exclude_none=True)
     assert "binds" not in body
     assert "uid_mode" not in body
+
+
+def test_isolated_capabilities_parse_mode_availability() -> None:
+    """Per-mode isolation capability flags are exposed to SDK callers."""
+    from opensandbox.models import IsolatedCapabilities
+
+    capabilities = IsolatedCapabilities.model_validate(
+        {
+            "available": True,
+            "setpriv_available": False,
+            "userns_available": True,
+            "commit_supported": False,
+            "diff_supported": False,
+        }
+    )
+
+    assert capabilities.setpriv_available is False
+    assert capabilities.userns_available is True

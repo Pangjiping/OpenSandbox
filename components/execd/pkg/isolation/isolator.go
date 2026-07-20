@@ -106,9 +106,14 @@ type BindMount struct {
 
 // Capabilities describes what the isolator can and cannot do.
 type Capabilities struct {
-	Available              bool
-	Isolator               string
-	Version                string
+	Available        bool
+	Isolator         string
+	Version          string
+	SetprivAvailable bool
+	// SetprivSwitchAvailable is used internally to reject a setpriv
+	// request that selects IDs different from execd's own before side effects.
+	SetprivSwitchAvailable bool
+	UsernsAvailable        bool
 	Profiles               []Profile
 	AllowedWorkspaces      []string
 	AllowedExtraWritable   []string

@@ -9,6 +9,10 @@ The **Egress** is a core component of OpenSandbox that provides **FQDN-based egr
 
 It runs alongside the sandbox application container (sharing the same network namespace) and enforces declared network policies.
 
+::: warning Pooled sandboxes
+The lifecycle API cannot add this sidecar to a pod that was already created by a Pool. It therefore rejects per-request `networkPolicy` together with `extensions.poolRef` instead of silently ignoring the policy. Put required egress controls in the Pool pod template before pods are created, or use a non-pooled sandbox for per-request policies.
+:::
+
 ## Features
 
 - **FQDN-based Allowlist**: Control outbound traffic by domain name (e.g., `api.github.com`).

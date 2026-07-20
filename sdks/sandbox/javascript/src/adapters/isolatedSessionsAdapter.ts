@@ -241,10 +241,15 @@ export class IsolatedSessionsAdapter implements IsolationService {
   }
 
   async capabilities(): Promise<IsolatedCapabilities> {
-    return this.jsonRequest<IsolatedCapabilities>(
+    const response = await this.jsonRequest<IsolatedCapabilities>(
       "GET",
       "/v1/isolated/capabilities",
     );
+    return {
+      ...response,
+      setpriv_available: response.setpriv_available ?? false,
+      userns_available: response.userns_available ?? false,
+    };
   }
 
   async list(): Promise<IsolatedSessionSummary[]> {

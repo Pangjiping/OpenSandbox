@@ -791,6 +791,9 @@ class SnapshotFilter(BaseModel):
         description="Filter by source sandbox id",
         alias="sandbox_id",
     )
+    name: str | None = Field(
+        default=None, description="Filter by exact snapshot name"
+    )
     states: list[str] | None = Field(
         default=None, description="Filter by snapshot states"
     )

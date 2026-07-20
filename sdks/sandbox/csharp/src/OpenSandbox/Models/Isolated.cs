@@ -102,5 +102,24 @@ public record IsolatedCapabilities(
     [property: JsonPropertyName("version")] string? Version = null,
     [property: JsonPropertyName("message")] string? Message = null,
     [property: JsonPropertyName("commit_supported")] bool CommitSupported = false,
-    [property: JsonPropertyName("diff_supported")] bool DiffSupported = false
-);
+    [property: JsonPropertyName("diff_supported")] bool DiffSupported = false,
+    [property: JsonPropertyName("setpriv_available")] bool SetprivAvailable = false,
+    [property: JsonPropertyName("userns_available")] bool UsernsAvailable = false
+)
+{
+    public void Deconstruct(
+        out bool available,
+        out string? isolator,
+        out string? version,
+        out string? message,
+        out bool commitSupported,
+        out bool diffSupported)
+    {
+        available = Available;
+        isolator = Isolator;
+        version = Version;
+        message = Message;
+        commitSupported = CommitSupported;
+        diffSupported = DiffSupported;
+    }
+}

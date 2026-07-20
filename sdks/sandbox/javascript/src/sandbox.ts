@@ -60,7 +60,13 @@ const unavailableIsolation: IsolationService = {
     throw new Error("Isolation is not available: the adapter factory did not provide an IsolationService");
   },
   capabilities(): Promise<IsolatedCapabilities> {
-    return Promise.resolve({ available: false, commit_supported: false, diff_supported: false });
+    return Promise.resolve({
+      available: false,
+      setpriv_available: false,
+      userns_available: false,
+      commit_supported: false,
+      diff_supported: false,
+    });
   },
   list(): Promise<IsolatedSessionSummary[]> {
     throw new Error("Isolation is not available: the adapter factory did not provide an IsolationService");
