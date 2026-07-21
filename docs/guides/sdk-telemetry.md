@@ -16,8 +16,8 @@ The `POST /v1/metrics/events` endpoint and the SDK reporters described below req
 | Server (`opensandbox-server`) | `0.2.2` |
 | Python SDK (`opensandbox`) | `0.1.15` |
 | JavaScript / TypeScript SDK (`@alibaba-group/opensandbox`) | `0.1.11` |
-| Go SDK (`github.com/opensandbox-group/OpenSandbox/sdks/sandbox/go`) | `1.0.5` |
-| C# SDK (`OpenSandbox`) | `0.1.5` |
+| Go SDK (`github.com/alibaba/OpenSandbox/sdks/sandbox/go`) | `1.0.5` |
+| C# SDK (`Alibaba.OpenSandbox`) | `0.1.5` |
 | Kotlin / Java SDK (`com.alibaba.opensandbox:sandbox`) | `1.0.17` |
 
 ### Version skew
