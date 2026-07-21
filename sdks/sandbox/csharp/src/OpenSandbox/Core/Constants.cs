@@ -93,4 +93,12 @@ public static class Constants
     /// Header name for request ID.
     /// </summary>
     public const string RequestIdHeader = "x-request-id";
+
+    /// <summary>
+    /// Header name carrying the SDK host's own IP. A non-standard name is used
+    /// on purpose: standard forwarded headers (X-Forwarded-For, etc.) are
+    /// rewritten or stripped by intermediaries, so a dedicated name conveys it
+    /// reliably.
+    /// </summary>
+    public const string ClientIpHeader = "OPEN-SANDBOX-CLIENT-IP";
 }

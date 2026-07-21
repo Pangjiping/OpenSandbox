@@ -99,6 +99,10 @@ class ConnectionConfigSync(BaseModel):
 
     def model_post_init(self, __context: object) -> None:
         self._owns_transport = "transport" not in self.model_fields_set
+        # Best-effort: attach the SDK host's own IP (see async ConnectionConfig).
+        from opensandbox.config import client_ip
+
+        client_ip.apply_client_ip(self.headers)
 
     def with_transport_if_missing(self) -> "ConnectionConfigSync":
         """
