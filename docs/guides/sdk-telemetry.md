@@ -33,6 +33,8 @@ The server accepts the event with `204` and, when `[otel]` is enabled, records a
 | Python (async + sync) | After `Sandbox.create` / sync create completes or raises |
 | JavaScript / TypeScript | After `Sandbox.create` completes or fails |
 | Go | After `CreateSandbox` completes or fails |
+| C# | After `Sandbox.CreateAsync` completes or fails |
+| Kotlin | After `Sandbox.builder()...build()` completes or fails |
 
 ## How to disable
 
@@ -70,6 +72,34 @@ cfg := opensandbox.ConnectionConfig{DisableMetrics: true}
 sandbox, err := opensandbox.CreateSandbox(ctx, cfg, opensandbox.SandboxCreateOptions{
     Image: "python:3.12",
 })
+```
+
+```csharp [C#]
+using OpenSandbox;
+using OpenSandbox.Config;
+
+var connectionConfig = new ConnectionConfig(new ConnectionConfigOptions
+{
+    DisableMetrics = true,
+});
+var sandbox = await Sandbox.CreateAsync(new SandboxCreateOptions
+{
+    Image = "python:3.12",
+    ConnectionConfig = connectionConfig,
+});
+```
+
+```kotlin [Kotlin]
+import com.alibaba.opensandbox.sandbox.Sandbox
+import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
+
+val connectionConfig = ConnectionConfig.builder()
+    .disableMetrics(true)
+    .build()
+val sandbox = Sandbox.builder()
+    .image("python:3.12")
+    .connectionConfig(connectionConfig)
+    .build()
 ```
 
 :::

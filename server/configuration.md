@@ -31,7 +31,7 @@ Example files in this repository:
 10. [`[storage]`](#storage)
 11. [`[store]`](#store)
 12. [`[secure_runtime]`](#secure_runtime)
-13. [`[renew_intent]`](#renew_intent--experimental)
+13. [`[renew_intent]`](#renew_intent)
 14. [`[otel]`](#otel)
 15. [Environment variables (outside TOML)](#environment-variables-outside-toml)
 16. [Cross-field validation rules](#cross-field-validation-rules)
@@ -53,7 +53,7 @@ Example files in this repository:
 | `[storage]` | No | Host bind mounts / OSSFS mount root |
 | `[store]` | No | Server-managed persistent metadata backend |
 | `[secure_runtime]` | No | gVisor / Kata / Firecracker |
-| `[renew_intent]` | No | Experimental auto-renew on access |
+| `[renew_intent]` | No | Auto-renew on access |
 | `[otel]` | No | OTLP export for ingested SDK metrics |
 
 ---
@@ -279,9 +279,9 @@ See [`docs/guides/secure-container.md`](../docs/guides/secure-container.md) for 
 
 ---
 
-## `[renew_intent]` — **experimental**
+## `[renew_intent]`
 
-**🧪 Experimental:** auto-renew sandbox expiration when access is observed (lifecycle proxy and/or Redis queue). Off by default. Full design: [OSEP-0009](../oseps/0009-auto-renew-sandbox-on-ingress-access.md).
+Auto-renew sandbox expiration when access is observed (lifecycle proxy and/or Redis queue). Off by default. Full design: [OSEP-0009](../oseps/0009-auto-renew-sandbox-on-ingress-access.md).
 
 Use **dotted keys** under the same table for Redis (valid in TOML):
 

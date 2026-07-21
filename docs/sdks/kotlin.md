@@ -312,6 +312,7 @@ The `ConnectionConfig` class manages API server connection settings.
 | `headers`        | Custom HTTP headers                        | Empty                        | -                      |
 | `connectionPool` | Shared OKHttp ConnectionPool               | SDK-created per instance     | -                      |
 | `useServerProxy` | Use sandbox server as proxy for execd/endpoint requests (e.g. when client cannot reach the sandbox directly) | `false` | -                      |
+| `disableMetrics` | Disable SDK create-latency telemetry (see [SDK Telemetry](/guides/sdk-telemetry)) | `false` | `OPENSANDBOX_DISABLE_METRICS` |
 
 ```java
 // 1. Basic configuration
@@ -336,6 +337,10 @@ ConnectionConfig sharedConfig = ConnectionConfig.builder()
     .connectionPool(sharedPool) // Inject shared pool
     .build();
 ```
+
+::: tip SDK Telemetry
+`Sandbox.builder()...build()` reports create latency to `POST /v1/metrics/events` by default. Call `ConnectionConfig.builder().disableMetrics(true)` or export `OPENSANDBOX_DISABLE_METRICS=1` to opt out. See [SDK Telemetry](/guides/sdk-telemetry).
+:::
 
 ### 2. Sandbox Creation Configuration
 

@@ -71,7 +71,7 @@ mode = "direct"
 image = "opensandbox/egress:v1.1.4"
 mode = "dns"
 
-# 🧪 [EXPERIMENTAL] Renew-on-access. Off by default — see server/README.md.
+# Renew-on-access. Off by default — see server/README.md.
 [renew_intent]
 enabled = false
 min_interval_seconds = 60

@@ -81,7 +81,7 @@ mode = "dns"
 # Default is true (recommended for dual-stack CNI). Set false only if you need IPv6 in the netns (see server/configuration.md).
 # disable_ipv6 = false
 
-# 🧪 [EXPERIMENTAL] 按访问续期。默认关闭 — 见 server/README_zh.md。
+# 按访问续期。默认关闭 — 见 server/README_zh.md。
 [renew_intent]
 enabled = false
 min_interval_seconds = 60

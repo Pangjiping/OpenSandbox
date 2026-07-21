@@ -52,6 +52,12 @@ class ConnectionConfig private constructor(
     val endpointCacheSize: Int = 1024,
     /** Disable endpoint caching entirely. */
     val endpointCacheDisabled: Boolean = false,
+    /**
+     * Disable best-effort SDK telemetry (sandbox.create latency reports).
+     *
+     * Also honored via the `OPENSANDBOX_DISABLE_METRICS=1` environment variable.
+     */
+    val disableMetrics: Boolean = false,
 ) {
     /**
      * Creates a copy of this ConnectionConfig without copying the connectionPool.
@@ -72,6 +78,7 @@ class ConnectionConfig private constructor(
             endpointCacheTtl = this.endpointCacheTtl,
             endpointCacheSize = this.endpointCacheSize,
             endpointCacheDisabled = this.endpointCacheDisabled,
+            disableMetrics = this.disableMetrics,
         )
 
     companion object {
@@ -79,12 +86,24 @@ class ConnectionConfig private constructor(
         private const val DEFAULT_PROTOCOL = "http"
         private const val ENV_API_KEY = "OPEN_SANDBOX_API_KEY"
         private const val ENV_DOMAIN = "OPEN_SANDBOX_DOMAIN"
+        internal const val ENV_DISABLE_METRICS = "OPENSANDBOX_DISABLE_METRICS"
 
         private const val DEFAULT_USER_AGENT = "OpenSandbox-Kotlin-SDK/1.0.16"
         private const val API_VERSION = "v1"
 
         @JvmStatic
         fun builder(): Builder = Builder()
+    }
+
+    /**
+     * Returns whether SDK telemetry (sandbox.create latency reports) should
+     * be skipped. Honors both the [disableMetrics] flag and the
+     * `OPENSANDBOX_DISABLE_METRICS=1` environment variable.
+     */
+    fun isMetricsDisabled(): Boolean {
+        if (disableMetrics) return true
+        val envValue = System.getenv(ENV_DISABLE_METRICS)?.trim()
+        return envValue == "1"
     }
 
     fun getApiKey(): String {
@@ -158,6 +177,7 @@ class ConnectionConfig private constructor(
         private var endpointCacheTtl: Duration = Duration.ofSeconds(600)
         private var endpointCacheSize: Int = 1024
         private var endpointCacheDisabled: Boolean = false
+        private var disableMetrics: Boolean = false
 
         /**
          * Use sandbox server as proxy for process execd requests.
@@ -183,6 +203,17 @@ class ConnectionConfig private constructor(
         /** Disable endpoint caching. */
         fun endpointCacheDisabled(disabled: Boolean): Builder {
             this.endpointCacheDisabled = disabled
+            return this
+        }
+
+        /**
+         * Disable best-effort SDK telemetry (sandbox.create latency reports).
+         *
+         * Also honored via `OPENSANDBOX_DISABLE_METRICS=1`.
+         */
+        @JvmOverloads
+        fun disableMetrics(disabled: Boolean = true): Builder {
+            this.disableMetrics = disabled
             return this
         }
 
@@ -326,6 +357,7 @@ class ConnectionConfig private constructor(
                 endpointCacheTtl = endpointCacheTtl,
                 endpointCacheSize = endpointCacheSize,
                 endpointCacheDisabled = endpointCacheDisabled,
+                disableMetrics = disableMetrics,
             )
         }
     }
