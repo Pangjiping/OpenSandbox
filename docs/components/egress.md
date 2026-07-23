@@ -76,7 +76,7 @@ Most deployments only need these settings:
 Optional advanced features:
 
 - Nameserver bypass: `OPENSANDBOX_EGRESS_NAMESERVER_EXEMPT`
-- Denied hostname webhook: `OPENSANDBOX_EGRESS_DENY_WEBHOOK`, `OPENSANDBOX_EGRESS_SANDBOX_ID`
+- Denied hostname webhook: `OPENSANDBOX_EGRESS_DENY_WEBHOOK` (server injects `OPENSANDBOX_EGRESS_SANDBOX_ID` automatically; not user-settable)
 - DoH/DoT controls: `OPENSANDBOX_EGRESS_BLOCK_DOH_443`, `OPENSANDBOX_EGRESS_DOH_BLOCKLIST`
 - Custom DNS upstream: `OPENSANDBOX_EGRESS_DNS_UPSTREAM` (comma-separated IPs, optional `:port`), `OPENSANDBOX_EGRESS_DNS_UPSTREAM_TIMEOUT` (default `5` seconds)
 - DNS upstream health probe: `OPENSANDBOX_EGRESS_DNS_UPSTREAM_PROBE` (enable), `OPENSANDBOX_EGRESS_DNS_UPSTREAM_PROBE_INTERVAL_SEC`

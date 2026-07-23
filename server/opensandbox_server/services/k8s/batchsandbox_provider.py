@@ -250,6 +250,7 @@ class BatchSandboxProvider(WorkloadProvider):
             egress_mode=egress_mode,
             credential_proxy_enabled=credential_proxy_enabled,
             extra_env=egress_env,
+            sandbox_id=sandbox_id,
         )
 
         if volumes:
