@@ -42,4 +42,8 @@ var (
 	// IsolationConfigPath points to the TOML isolation config file.
 	// Empty means use built-in defaults.
 	IsolationConfigPath string
+
+	// InitMode makes execd the sandbox init (PID 1) when true.
+	// Set via --init or EXECD_INIT=true env var.
+	InitMode bool
 )

@@ -34,13 +34,39 @@ type Config struct {
 	// Seccomp overrides the built-in syscall denylist. When nil (i.e. the
 	// [seccomp] section is absent), the built-in denylist is used. When
 	// present, Deny completely replaces the built-in list — no merging.
-	Seccomp *SeccompOverride `toml:"seccomp"`
+	Seccomp   *SeccompOverride `toml:"seccomp"`
+	Hardening *HardeningConfig `toml:"hardening"`
+	Landlock  *LandlockConfig  `toml:"landlock"`
+	Ebpf      *EbpfConfig      `toml:"ebpf"`
 }
 
 // SeccompOverride specifies a custom syscall denylist that replaces the
 // built-in default when present.
 type SeccompOverride struct {
 	Deny []string `toml:"deny"`
+}
+
+// HardeningConfig controls the pre-exec privilege floor applied to all
+// user-code processes. Gated behind [hardening] enabled.
+type HardeningConfig struct {
+	Enabled          bool     `toml:"enabled"`
+	KeepCapabilities []string `toml:"keep_capabilities"`
+}
+
+// LandlockConfig controls filesystem confinement (Linux >= 5.13).
+// Gated behind [landlock] enabled.
+type LandlockConfig struct {
+	Enabled       bool     `toml:"enabled"`
+	ExtraWritable []string `toml:"extra_writable"`
+	ExtraReadable []string `toml:"extra_readable"`
+}
+
+// EbpfConfig controls exec/connect/privilege audit observation.
+// Gated behind [ebpf] enabled; requires the execd-ebpf build variant.
+type EbpfConfig struct {
+	Enabled   bool     `toml:"enabled"`
+	Observe   []string `toml:"observe"`
+	AuditFile string   `toml:"audit_file"`
 }
 
 // DefaultConfig returns the built-in defaults used when no config file is
@@ -52,6 +78,9 @@ func DefaultConfig() Config {
 		DiffMaxBytes:    4 * 1024 * 1024 * 1024, // 4 GiB
 		AllowedWritable: []string{"/workspace", "/mnt", "/media", "/data"},
 		Seccomp:         nil, // use built-in denylist
+		Hardening:       &HardeningConfig{},
+		Landlock:        &LandlockConfig{},
+		Ebpf:            &EbpfConfig{Observe: []string{"exec", "connect", "privilege"}, AuditFile: "/var/log/opensandbox/ebpf-audit.jsonl"},
 	}
 }
 

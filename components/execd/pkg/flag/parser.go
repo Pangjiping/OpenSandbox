@@ -95,6 +95,14 @@ func InitFlags() {
 	}
 	flag.StringVar(&IsolationConfigPath, "isolation-config", IsolationConfigPath, "Path to isolation TOML config file (default: built-in defaults)")
 
+	// Init mode: execd as sandbox init (PID 1).
+	// Gated by EXECD_INIT env (set by bootstrap.sh before exec); the flag
+	// exists so execd can also be launched directly with --init.
+	if v := os.Getenv("EXECD_INIT"); v != "" {
+		InitMode = isTruthyEnv(v)
+	}
+	flag.BoolVar(&InitMode, "init", InitMode, "Run as sandbox init (PID 1)")
+
 	// Parse flags - these will override environment variables if provided
 	flag.Parse()
 	if JupyterIdlePollInterval <= 0 {
@@ -105,4 +113,16 @@ func InitFlags() {
 	// Log final values
 	log.Info("Jupyter server host is: %s", JupyterServerHost)
 	log.Info("Jupyter server token is: %s", log.MaskToken(JupyterServerToken))
+}
+
+// isTruthyEnv reports whether v is a truthy value for an env-var boolean
+// (1, true, yes, on — case-insensitive). Used for env vars that gate feature
+// flags before the flag package would normally parse them.
+func isTruthyEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

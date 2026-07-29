@@ -292,10 +292,7 @@ if [ -n "${EXECD_BOOTSTRAP_PRE_SCRIPT:-}" ]; then
 	fi
 fi
 
-echo "starting OpenSandbox Execd daemon at $EXECD."
-$EXECD &
-
-# Allow chained shell commands (e.g., /test1.sh && /test2.sh)
+# Normalize the user command (shared by both init and non-init paths).
 # Usage:
 #   bootstrap.sh -c "/test1.sh && /test2.sh"
 # Or set BOOTSTRAP_CMD="/test1.sh && /test2.sh"
@@ -319,18 +316,22 @@ if [ -z "$SHELL_BIN" ]; then
 	fi
 fi
 
+# Normalize into positional args so both branches see the same argv shape.
 if [ "$CMD" != "" ]; then
-	"$SHELL_BIN" -c "$CMD" &
-	CMD_PID=$!
+	set -- "$SHELL_BIN" -c "$CMD"
 elif [ $# -eq 0 ]; then
-	"$SHELL_BIN" &
-	CMD_PID=$!
-else
-	"$@" &
-	CMD_PID=$!
+	set -- "$SHELL_BIN"
 fi
 
-trap '_forward_signal TERM "$CMD_PID"' TERM
-
-wait "$CMD_PID" 2>/dev/null
-exit $?
+if is_truthy "${EXECD_INIT:-}"; then
+	echo "starting OpenSandbox Execd as sandbox init (PID 1)."
+	exec "$EXECD" --init -- "$@"
+else
+	echo "starting OpenSandbox Execd daemon at $EXECD."
+	"$EXECD" &
+	"$@" &
+	CMD_PID=$!
+	trap '_forward_signal TERM "$CMD_PID"' TERM
+	wait "$CMD_PID" 2>/dev/null
+	exit $?
+fi

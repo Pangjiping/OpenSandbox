@@ -147,7 +147,7 @@ override it.
 ### CLI Flags
 
 | Flag | Default | Description |
-|---|---|---|
+|---|---|---|---|
 | `--jupyter-host` | `""` | Jupyter server URL reachable by execd. |
 | `--jupyter-token` | `""` | Jupyter token for HTTP/WebSocket auth. |
 | `--port` | `44772` | HTTP listen port. |
@@ -156,6 +156,7 @@ override it.
 | `--graceful-shutdown-timeout` | `1s` | SSE tail-drain wait window before closing. |
 | `--jupyter-idle-poll-interval` | `100ms` | Poll interval after Jupyter reports idle. |
 | `--isolation-config` | `""` | Path to the isolation TOML config (see below). |
+| `--init` | `false` | Run as sandbox init (PID 1). Reaps zombies, forwards signals, manages entrypoint lifecycle. |
 
 ### Environment Variables
 
@@ -167,6 +168,7 @@ override it.
 | `EXECD_API_GRACE_SHUTDOWN` | Same as `--graceful-shutdown-timeout`. |
 | `EXECD_JUPYTER_IDLE_POLL_INTERVAL` | Same as `--jupyter-idle-poll-interval`. |
 | `EXECD_ISOLATION_CONFIG` | Same as `--isolation-config`. |
+| `EXECD_INIT` | Same as `--init` (1/true/yes/on). |
 | `EXECD_CLONE3_COMPAT` | Linux clone3 compatibility switch (see below). |
 | `EXECD_LOG_FILE` | Optional log output file path; default is stdout. |
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Preferred OTLP metrics endpoint. |

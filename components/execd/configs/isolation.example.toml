@@ -82,3 +82,37 @@ allowed_writable = ["/workspace", "/mnt", "/media", "/data"]
 #   # Other potentially dangerous
 #   "userfaultfd", "kexec_load", "kexec_file_load", "acct",
 # ]
+
+# === Hardening: run all user code through a reduced privilege floor ===
+#
+# When enabled, execd becomes the sandbox init (PID 1) and every user-code
+# process (entrypoint, /command, /code, PTY) is launched through a pre-exec
+# prelude that drops capabilities, sets no_new_privs, and installs the seccomp
+# filter. Landlock FS confinement and eBPF audit are additive and enabled
+# separately below.
+#
+# [hardening]
+# enabled = false
+# keep_capabilities = []   # capabilities retained by the workload (default: drop all)
+
+# === Landlock: filesystem confinement ===
+#
+# Adds filesystem access control on top of [hardening]. Requires Linux >= 5.13.
+# Missing kernel support is non-fatal (fail-open): the layer degrades and the
+# sandbox starts without FS confinement.
+#
+# [landlock]
+# enabled = false
+# extra_readable = []      # additional readable paths beyond the built-in set
+# extra_writable = []      # additional writable paths beyond the built-in set
+
+# === eBPF: syscall audit observation ===
+#
+# Records exec/connect/privilege events to a rotating JSONL audit file.
+# Requires CAP_BPF, a BTF kernel (>=5.8), and the execd-ebpf build variant.
+# Observation only — enforcement stays with seccomp and the egress sidecar.
+#
+# [ebpf]
+# enabled = false
+# observe = ["exec", "connect", "privilege"]
+# audit_file = "/var/log/opensandbox/ebpf-audit.jsonl"

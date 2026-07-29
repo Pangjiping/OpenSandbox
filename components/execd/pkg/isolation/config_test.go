@@ -30,6 +30,18 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, int64(4*1024*1024*1024), cfg.DiffMaxBytes)
 	assert.Equal(t, []string{"/workspace", "/mnt", "/media", "/data"}, cfg.AllowedWritable)
 	assert.Nil(t, cfg.Seccomp)
+
+	require.NotNil(t, cfg.Hardening)
+	assert.False(t, cfg.Hardening.Enabled)
+	assert.Empty(t, cfg.Hardening.KeepCapabilities)
+
+	require.NotNil(t, cfg.Landlock)
+	assert.False(t, cfg.Landlock.Enabled)
+
+	require.NotNil(t, cfg.Ebpf)
+	assert.False(t, cfg.Ebpf.Enabled)
+	assert.Equal(t, []string{"exec", "connect", "privilege"}, cfg.Ebpf.Observe)
+	assert.Equal(t, "/var/log/opensandbox/ebpf-audit.jsonl", cfg.Ebpf.AuditFile)
 }
 
 func TestLoadConfig_EmptyPath(t *testing.T) {
@@ -131,4 +143,67 @@ func writeTempTOML(t *testing.T, content string) string {
 	path := filepath.Join(t.TempDir(), "isolation.toml")
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 	return path
+}
+
+func TestLoadConfig_Hardening(t *testing.T) {
+	content := `
+[hardening]
+enabled = true
+keep_capabilities = ["CAP_NET_BIND_SERVICE"]
+`
+	path := writeTempTOML(t, content)
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Hardening)
+	assert.True(t, cfg.Hardening.Enabled)
+	assert.Equal(t, []string{"CAP_NET_BIND_SERVICE"}, cfg.Hardening.KeepCapabilities)
+}
+
+func TestLoadConfig_Landlock(t *testing.T) {
+	content := `
+[landlock]
+enabled = true
+extra_readable = ["/opt/app"]
+extra_writable = ["/var/cache"]
+`
+	path := writeTempTOML(t, content)
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Landlock)
+	assert.True(t, cfg.Landlock.Enabled)
+	assert.Equal(t, []string{"/opt/app"}, cfg.Landlock.ExtraReadable)
+	assert.Equal(t, []string{"/var/cache"}, cfg.Landlock.ExtraWritable)
+}
+
+func TestLoadConfig_Ebpf(t *testing.T) {
+	content := `
+[ebpf]
+enabled = true
+observe = ["exec", "connect"]
+audit_file = "/var/log/audit.jsonl"
+`
+	path := writeTempTOML(t, content)
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Ebpf)
+	assert.True(t, cfg.Ebpf.Enabled)
+	assert.Equal(t, []string{"exec", "connect"}, cfg.Ebpf.Observe)
+	assert.Equal(t, "/var/log/audit.jsonl", cfg.Ebpf.AuditFile)
+}
+
+func TestLoadConfig_HardeningDefaultOff(t *testing.T) {
+	content := `upper_root = "/data/iso"`
+	path := writeTempTOML(t, content)
+
+	cfg, err := LoadConfig(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Hardening)
+	assert.False(t, cfg.Hardening.Enabled, "[hardening] absent → enabled=false")
+	require.NotNil(t, cfg.Landlock)
+	assert.False(t, cfg.Landlock.Enabled)
+	require.NotNil(t, cfg.Ebpf)
+	assert.False(t, cfg.Ebpf.Enabled)
 }
