@@ -46,4 +46,9 @@ var (
 	// InitMode makes execd the sandbox init (PID 1) when true.
 	// Set via --init or EXECD_INIT=true env var.
 	InitMode bool
+
+	// Args holds the non-flag command-line arguments captured after flag.Parse().
+	// In init mode these are the user entrypoint command and its arguments (the
+	// portion after -- on the execd command line).
+	Args []string
 )

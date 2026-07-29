@@ -60,6 +60,11 @@ func main() {
 
 	log.Init(flag.ServerLogLevel)
 
+	// Init hardening launcher (fail-open: degrades gracefully on any error).
+	if err := isolation.InitLauncher(isoCfg); err != nil {
+		log.Warn("hardening: init failed (continuing without hardening): %v", err)
+	}
+
 	ctrl := controller.InitCodeRunner()
 
 	// Always store probe result for capabilities endpoint.
@@ -94,6 +99,12 @@ func main() {
 
 	engine := web.NewRouter(flag.ServerAccessToken)
 	addr := fmt.Sprintf(":%d", flag.ServerPort)
+
+	if flag.InitMode {
+		runtime.RunInit(engine, addr, flag.Args)
+		return
+	}
+
 	listener, err := net.Listen("tcp4", addr)
 	if err != nil {
 		log.Error("failed to listen on %s: %v", addr, err)

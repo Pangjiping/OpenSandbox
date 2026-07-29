@@ -32,6 +32,7 @@ import (
 
 	"github.com/alibaba/opensandbox/internal/safego"
 
+	"github.com/alibaba/opensandbox/execd/pkg/isolation"
 	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
 	"github.com/alibaba/opensandbox/execd/pkg/log"
 	"github.com/alibaba/opensandbox/execd/pkg/util/pathutil"
@@ -122,6 +123,8 @@ func buildCredential(uid, gid *uint32) (*syscall.Credential, error) {
 }
 
 // runCommand executes shell commands and streams their output.
+//
+//nolint:gocognit
 func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest) error {
 	session := c.newContextID()
 
@@ -143,26 +146,36 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 	log.Info("received command: %v", log.SanitizeCommand(request.Code))
 	// --noprofile/--norc are no-ops for `bash -c`, so shellCommand is not used here.
 	shell := getShell()
-	cmd := exec.CommandContext(ctx, shell, "-c", request.Code)
+
+	cmd, err := maybeHardenedCommand(shell, "-c", request.Code)
+	if err != nil {
+		return err
+	}
 	extraEnv := mergeExtraEnvs(loadExtraEnvFromFile(), request.Envs)
 	cwd, err := pathutil.ExpandPathWithEnv(request.Cwd, extraEnv)
 	if err != nil {
 		return fmt.Errorf("resolve request cwd %s: %w", request.Cwd, err)
 	}
 
-	// Configure credentials and process group
-	cred, err := buildCredential(request.Uid, request.Gid)
-	if err != nil {
-		return fmt.Errorf("failed to build credential: %w", err)
-	}
+	// Configure credentials and process group.
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid:    true,
-		Credential: cred,
+		Setpgid: true,
+	}
+	if !isolation.HardeningEnabled() {
+		cred, err := buildCredential(request.Uid, request.Gid)
+		if err != nil {
+			return fmt.Errorf("failed to build credential: %w", err)
+		}
+		cmd.SysProcAttr.Credential = cred
 	}
 
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	cmd.Env = mergeEnvs(os.Environ(), extraEnv)
+	if isolation.HardeningEnabled() {
+		cmd.Env = mergeEnvs(cmd.Env, extraEnv)
+	} else {
+		cmd.Env = mergeEnvs(os.Environ(), extraEnv)
+	}
 	cmd.Dir = cwd
 
 	done := make(chan struct{}, 1)
@@ -177,7 +190,7 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 		c.tailStdPipe(stderrPath, request.Hooks.OnExecuteStderr, done)
 	})
 
-	err = cmd.Start()
+	mp, err := startManagedProcessCmd(cmd)
 	if err != nil {
 		close(done)
 		wg.Wait()
@@ -192,7 +205,7 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 	}
 
 	kernel := &commandKernel{
-		pid:          cmd.Process.Pid,
+		pid:          mp.Pid(),
 		stdoutPath:   stdoutPath,
 		stderrPath:   stderrPath,
 		startedAt:    startAt,
@@ -207,62 +220,40 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 		for {
 			select {
 			case <-done:
-				// cmd.Wait() has returned (or start failed). The pid is
-				// about to be — or already has been — reaped, so we
-				// must not signal it. Execute()'s defer cancel() fires
-				// after every foreground command, including successful
-				// ones, so without this gate the SIGKILL below would
-				// run on a recycled pid/pgid and could kill an
-				// unrelated process group.
 				return
 			case <-ctx.Done():
-				// Re-check `done` to avoid a race with cmd.Wait()
-				// returning concurrently. If cmd.Wait() has just
-				// finished, the leader pid may be reaped and recycled
-				// at any moment; signaling -pid would then target a
-				// foreign process group.
 				select {
 				case <-done:
 					return
 				default:
 				}
-				// Genuine cancellation (timeout, client disconnect,
-				// Interrupt). Kill the whole process group so children
-				// don't outlive the cancelled context.
-				if cmd.Process != nil {
-					_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-				}
+				_ = mp.Signal(syscall.SIGKILL)
 				return
 			case sig := <-signals:
 				if sig == nil {
 					continue
 				}
-				// DO NOT forward syscall.SIGURG to children processes.
 				if sig != syscall.SIGCHLD && sig != syscall.SIGURG {
-					_ = syscall.Kill(-cmd.Process.Pid, sig.(syscall.Signal))
+					_ = mp.Signal(sig.(syscall.Signal))
 				}
 			}
 		}
 	})
 
-	err = cmd.Wait()
+	err = mp.Wait()
 	close(done)
 	wg.Wait()
 	if err != nil {
 		var eName, eValue string
-		var eCode int
 		var traceback []string
 
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
-			exitCode := exitError.ExitCode()
 			eName = "CommandExecError"
-			eValue = strconv.Itoa(exitCode)
-			eCode = exitCode
+			eValue = strconv.Itoa(mp.ExitCode())
 		} else {
 			eName = "CommandExecError"
 			eValue = err.Error()
-			eCode = 1
 		}
 		traceback = []string{err.Error()}
 
@@ -273,7 +264,7 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 		})
 
 		log.Error("CommandExecError: error running commands: %v", err)
-		c.markCommandFinished(session, eCode, err.Error())
+		c.markCommandFinished(session, mp.ExitCode(), err.Error())
 		return nil
 	}
 
@@ -304,7 +295,12 @@ func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.Ca
 	log.Info("received command: %v", log.SanitizeCommand(request.Code))
 	// --noprofile/--norc are no-ops for `bash -c`, so shellCommand is not used here.
 	shell := getShell()
-	cmd := exec.CommandContext(ctx, shell, "-c", request.Code)
+
+	cmd, err := maybeHardenedCommand(shell, "-c", request.Code)
+	if err != nil {
+		cancel()
+		return err
+	}
 	extraEnv := mergeExtraEnvs(loadExtraEnvFromFile(), request.Envs)
 	cwd, err := pathutil.ExpandPathWithEnv(request.Cwd, extraEnv)
 	if err != nil {
@@ -312,20 +308,25 @@ func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.Ca
 		return fmt.Errorf("resolve cwd: %w", err)
 	}
 	cmd.Dir = cwd
-	// Configure credentials and process group
-	cred, err := buildCredential(request.Uid, request.Gid)
-	if err != nil {
-		cancel()
-		return fmt.Errorf("build credential: %w", err)
-	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid:    true,
-		Credential: cred,
+		Setpgid: true,
+	}
+	if !isolation.HardeningEnabled() {
+		cred, err := buildCredential(request.Uid, request.Gid)
+		if err != nil {
+			cancel()
+			return fmt.Errorf("build credential: %w", err)
+		}
+		cmd.SysProcAttr.Credential = cred
 	}
 
 	cmd.Stdout = pipe
 	cmd.Stderr = pipe
-	cmd.Env = mergeEnvs(os.Environ(), extraEnv)
+	if isolation.HardeningEnabled() {
+		cmd.Env = mergeEnvs(cmd.Env, extraEnv)
+	} else {
+		cmd.Env = mergeEnvs(os.Environ(), extraEnv)
+	}
 
 	// use DevNull as stdin so interactive programs exit immediately.
 	devNull, err := os.Open(os.DevNull)
@@ -334,7 +335,7 @@ func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.Ca
 		defer devNull.Close()
 	}
 
-	err = cmd.Start()
+	mp, err := startManagedProcessCmd(cmd)
 	kernel := &commandKernel{
 		pid:          -1,
 		stdoutPath:   stdoutPath,
@@ -357,22 +358,17 @@ func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.Ca
 	// can find the session immediately after Execute returns. Previously
 	// this happened inside the goroutine, creating a race where the HTTP
 	// handler could return before the kernel was stored.
-	kernel.pid = cmd.Process.Pid
+	kernel.pid = mp.Pid()
 	c.storeCommandKernel(session, kernel)
 
 	safego.Go(func() {
 		defer pipe.Close()
 
-		err = cmd.Wait()
+		err = mp.Wait()
 		cancel()
 		if err != nil {
 			log.Error("CommandExecError: error running commands: %v", err)
-			exitCode := 1
-			var exitError *exec.ExitError
-			if errors.As(err, &exitError) {
-				exitCode = exitError.ExitCode()
-			}
-			c.markCommandFinished(session, exitCode, err.Error())
+			c.markCommandFinished(session, mp.ExitCode(), err.Error())
 			return
 		}
 		c.markCommandFinished(session, 0, "")
@@ -381,11 +377,24 @@ func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.Ca
 	// ensure we kill the whole process group if the context is cancelled (e.g., timeout).
 	safego.Go(func() {
 		<-ctx.Done()
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // best-effort
-		}
+		_ = mp.Signal(syscall.SIGKILL) // best-effort
 	})
 
 	request.Hooks.OnExecuteComplete(time.Since(startAt))
 	return nil
+}
+
+// maybeHardenedCommand returns a command wrapped through the hardening launcher
+// when [hardening] is enabled, or a plain command otherwise. Context
+// cancellation is handled by the caller's signal goroutines; this function
+// does NOT use exec.CommandContext to avoid double-kill on context done.
+func maybeHardenedCommand(name string, args ...string) (*exec.Cmd, error) {
+	hcmd, err := isolation.LaunchWithHardening(append([]string{name}, args...))
+	if err != nil && !errors.Is(err, isolation.ErrHardeningDisabled) {
+		return nil, fmt.Errorf("hardening launch: %w", err)
+	}
+	if hcmd != nil {
+		return hcmd, nil
+	}
+	return exec.Command(name, args...), nil
 }

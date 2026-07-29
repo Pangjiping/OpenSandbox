@@ -110,3 +110,19 @@ func LoadConfig(path string) (Config, error) {
 
 	return cfg, nil
 }
+
+// ValidateSeccompDeny checks that the seccomp deny override does not include
+// the launcher's exec syscall (execve), which would block the launcher's
+// own final transition into the workload. Only execve is reserved; execveat
+// stays valid (the launcher does not use it).
+func ValidateSeccompDeny(override *SeccompOverride) error {
+	if override == nil {
+		return nil
+	}
+	for _, name := range override.Deny {
+		if name == "execve" {
+			return fmt.Errorf("seccomp deny list must not include %q: the launcher uses execve to transition into the workload; use execveat if you need to deny exec variants", name)
+		}
+	}
+	return nil
+}

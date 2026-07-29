@@ -207,3 +207,27 @@ func TestLoadConfig_HardeningDefaultOff(t *testing.T) {
 	require.NotNil(t, cfg.Ebpf)
 	assert.False(t, cfg.Ebpf.Enabled)
 }
+
+func TestValidateSeccompDeny_ExecveRejected(t *testing.T) {
+	override := &SeccompOverride{Deny: []string{"mount", "execve", "ptrace"}}
+	err := ValidateSeccompDeny(override)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "execve")
+}
+
+func TestValidateSeccompDeny_ExecveatAllowed(t *testing.T) {
+	override := &SeccompOverride{Deny: []string{"mount", "execveat", "ptrace"}}
+	err := ValidateSeccompDeny(override)
+	assert.NoError(t, err)
+}
+
+func TestValidateSeccompDeny_NilOverride(t *testing.T) {
+	err := ValidateSeccompDeny(nil)
+	assert.NoError(t, err)
+}
+
+func TestValidateSeccompDeny_EmptyDeny(t *testing.T) {
+	override := &SeccompOverride{Deny: []string{}}
+	err := ValidateSeccompDeny(override)
+	assert.NoError(t, err)
+}

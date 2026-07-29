@@ -105,6 +105,7 @@ func InitFlags() {
 
 	// Parse flags - these will override environment variables if provided
 	flag.Parse()
+	Args = flag.Args()
 	if JupyterIdlePollInterval <= 0 {
 		stdlog.Printf("Invalid --jupyter-idle-poll-interval=%s; fallback to default %s", JupyterIdlePollInterval, 100*time.Millisecond)
 		JupyterIdlePollInterval = 100 * time.Millisecond
