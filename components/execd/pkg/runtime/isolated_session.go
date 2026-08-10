@@ -74,6 +74,10 @@ type isolatedSession struct {
 	isolator             isolation.Isolator
 	lifecycle            isolation.WorkloadLifecycle
 	identity             isolation.WorkloadIdentity
+	// activeBackgroundRuns: in-flight detached runs. While non-zero, idle GC
+	// must not collect the session (background processes die with the bwrap
+	// process group).
+	activeBackgroundRuns atomic.Int64
 }
 
 const isolatedSessionStartupTimeout = 10 * time.Second
