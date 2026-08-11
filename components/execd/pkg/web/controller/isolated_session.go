@@ -125,6 +125,10 @@ func classifyIsolatedCreateError(err error) (int, model.ErrorCode) {
 	if errors.Is(err, runtime.ErrUidModeUnavailable) {
 		return http.StatusServiceUnavailable, model.ErrorCodeNotSupported
 	}
+	if errors.Is(err, runtime.ErrSessionNamespaceUnavailable) ||
+		errors.Is(err, runtime.ErrIsolatedRunnerClosed) {
+		return http.StatusServiceUnavailable, model.ErrorCodeServiceUnavailable
+	}
 	if strings.Contains(err.Error(), "not in allowlist") ||
 		strings.Contains(err.Error(), "not allowed") ||
 		strings.Contains(err.Error(), "unknown isolation profile") ||
@@ -405,15 +409,26 @@ func (c *IsolatedSessionController) Delete() {
 
 	sessionID := c.ctx.Param("sessionId")
 	if err := isolatedRunner.DeleteIsolatedSession(sessionID); err != nil {
-		if errors.Is(err, runtime.ErrContextNotFound) {
+		status, code := classifyIsolatedDeleteError(err)
+		if status == http.StatusNotFound {
 			c.RespondError(http.StatusNotFound, model.ErrorCodeSessionNotFound, "session not found")
 			return
 		}
-		c.RespondError(http.StatusInternalServerError, model.ErrorCodeRuntimeError, err.Error())
+		c.RespondError(status, code, err.Error())
 		return
 	}
 
 	c.RespondSuccess(nil)
+}
+
+func classifyIsolatedDeleteError(err error) (int, model.ErrorCode) {
+	if errors.Is(err, runtime.ErrContextNotFound) {
+		return http.StatusNotFound, model.ErrorCodeSessionNotFound
+	}
+	if errors.Is(err, runtime.ErrSessionNamespaceCleanup) {
+		return http.StatusServiceUnavailable, model.ErrorCodeServiceUnavailable
+	}
+	return http.StatusInternalServerError, model.ErrorCodeRuntimeError
 }
 
 // Diff handles GET /v1/isolated/session/:sessionId/diff.

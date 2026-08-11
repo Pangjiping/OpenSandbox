@@ -45,6 +45,52 @@ func TestClassifyIsolatedCreateError_UidModeUnavailable(t *testing.T) {
 	}
 }
 
+func TestClassifyIsolatedCreateError_ServiceUnavailable(t *testing.T) {
+	for _, target := range []error{
+		runtime.ErrSessionNamespaceUnavailable,
+		runtime.ErrIsolatedRunnerClosed,
+	} {
+		status, code := classifyIsolatedCreateError(
+			fmt.Errorf("create session: %w", target),
+		)
+		if status != http.StatusServiceUnavailable {
+			t.Errorf(
+				"status for %v = %d, want %d",
+				target,
+				status,
+				http.StatusServiceUnavailable,
+			)
+		}
+		if code != model.ErrorCodeServiceUnavailable {
+			t.Errorf(
+				"code for %v = %q, want %q",
+				target,
+				code,
+				model.ErrorCodeServiceUnavailable,
+			)
+		}
+	}
+}
+
+func TestClassifyIsolatedDeleteError_NamespaceCleanup(t *testing.T) {
+	status, code := classifyIsolatedDeleteError(
+		fmt.Errorf(
+			"delete session: %w",
+			runtime.ErrSessionNamespaceCleanup,
+		),
+	)
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want %d", status, http.StatusServiceUnavailable)
+	}
+	if code != model.ErrorCodeServiceUnavailable {
+		t.Errorf(
+			"code = %q, want %q",
+			code,
+			model.ErrorCodeServiceUnavailable,
+		)
+	}
+}
+
 func TestCapabilities_ReportsModeSpecificProbeResults(t *testing.T) {
 	previousRunner := isolatedRunner
 	previousProbe := isolatedProbeResult

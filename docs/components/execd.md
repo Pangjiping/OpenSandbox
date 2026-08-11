@@ -103,6 +103,13 @@ execd's own is checked against a separate startup identity-switch probe and
 returns `503 NOT_SUPPORTED` before session side effects when that switch is not
 available.
 
+For a private-network Session (`share_net: false`), execd fixes the
+authenticated network namespace and its owning user namespace before the
+native workload gate is released. The two namespace bind mounts use an
+execd-owned, unpredictable directory below `/run/execd/namespaces` and stay
+owned by the Session until synchronous teardown. This applies to both UID
+modes; shared-network Sessions do not create namespace pins.
+
 ### Bind mounts
 
 Two request fields control extra host paths:

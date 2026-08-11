@@ -355,6 +355,28 @@ host env passthrough (`"allow"`).
   [`/capabilities`](#capabilities-and-probing) before requesting a mode.
 - **`share_net: true`** shares the sandbox's network namespace. Sandbox-level
   egress and Credential Vault policies still apply.
+- **`share_net: false`** creates a private network namespace. Before releasing
+  the workload startup gate, execd opens the authenticated NetNS, obtains its
+  real owning UserNS with `NS_GET_USERNS`, and bind-pins both below
+  `/run/execd/namespaces/<opaque-id>/`. Any validation or pin failure aborts
+  Session creation. Execd attempts pin cleanup on failed startup, process exit,
+  explicit delete, idle collection, and runner shutdown; retryable failures
+  retain Session ownership and are retried while execd remains alive. This
+  applies to both UID modes; hardened network backends will require
+  `uid_mode: "userns"`.
+
+The legacy default remains unchanged in this phase: omitting `share_net`
+continues to share the sandbox network namespace. Namespace pinning alone does
+not enable Session egress or ingress.
+
+Private Sessions are not recoverable across an execd restart. Deployments that
+enable them must treat execd as sandbox-critical and recreate the entire
+sandbox/container if execd exits; they must not launch a replacement execd
+inside the surviving mount namespace. Destroying the sandbox/container tears
+down that mount namespace and releases all pins. Execd intentionally does not
+scan and adopt opaque namespace-pin directories on startup because they do not
+carry a durable sandbox generation, so doing so could unmount another live
+process's resources.
 
 ---
 

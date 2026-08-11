@@ -21,6 +21,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -32,6 +33,24 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
+
+// meterProvider holds the provider Init installed, so ForceFlush can reach it. Set only
+// when metrics are enabled; nil otherwise.
+var meterProvider atomic.Pointer[sdkmetric.MeterProvider]
+
+// ForceFlush exports whatever the reader is holding, right now.
+//
+// Metrics leave through a PeriodicReader, so a measurement recorded shortly before the
+// process exits is normally lost: the deferred shutdown from Init never runs on a path that
+// calls os.Exit. Any code that records a metric and then terminates the process must flush
+// first. No-op when metrics are disabled.
+func ForceFlush(ctx context.Context) error {
+	mp := meterProvider.Load()
+	if mp == nil {
+		return nil
+	}
+	return mp.ForceFlush(ctx)
+}
 
 // Config controls OTLP metrics export. Endpoints follow standard OTEL env vars; see metricsEnabled.
 type Config struct {
@@ -81,6 +100,7 @@ func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error
 			sdkmetric.WithReader(reader),
 		)
 		otel.SetMeterProvider(mp)
+		meterProvider.Store(mp)
 		shutdownFuncs = append(shutdownFuncs, mp.Shutdown)
 		if cfg.RegisterMetrics != nil {
 			if err := cfg.RegisterMetrics(); err != nil {
