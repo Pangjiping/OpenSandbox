@@ -109,7 +109,8 @@ func (r *IsolatedRunner) SeekIsolatedBackgroundOutput(_ string, _ string, _ int6
 }
 
 // removeSessionBackgroundRuns is a no-op on Windows.
-func (r *IsolatedRunner) removeSessionBackgroundRuns(_ *isolatedSession) {}
+// (Takes the session ID rather than the !windows-only isolatedSession type.)
+func (r *IsolatedRunner) removeSessionBackgroundRuns(_ string) {}
 
 // DeleteIsolatedSession returns an error on Windows.
 func (r *IsolatedRunner) DeleteIsolatedSession(_ string) error {
