@@ -18,6 +18,8 @@
 
 from .bind_mount import BindMount
 from .capabilities_response import CapabilitiesResponse
+from .capabilities_response_hardening import CapabilitiesResponseHardening
+from .capabilities_response_hardening_init_mode import CapabilitiesResponseHardeningInitMode
 from .chmod_files_body import ChmodFilesBody
 from .code_context import CodeContext
 from .code_context_request import CodeContextRequest
@@ -75,6 +77,8 @@ from .upload_file_body import UploadFileBody
 __all__ = (
     "BindMount",
     "CapabilitiesResponse",
+    "CapabilitiesResponseHardening",
+    "CapabilitiesResponseHardeningInitMode",
     "ChmodFilesBody",
     "CodeContext",
     "CodeContextRequest",

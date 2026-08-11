@@ -79,6 +79,13 @@ func run() int {
 
 	log.Init(flag.ServerLogLevel)
 
+	if flag.InitMode {
+		// OSEP-0018: execd is the sandbox init. Must start after the startup
+		// probes (which run short-lived children via cmd.Run) so the reaper is
+		// the only wait4 caller from here on.
+		runtime.StartInitMode(flag.Args())
+	}
+
 	ctrl := controller.InitCodeRunner()
 
 	// Always store probe result for capabilities endpoint.
@@ -134,10 +141,16 @@ func run() int {
 		return 1
 	}
 	log.Info("execd listening on %s (IPv4)", addr)
+	// In init mode SIGTERM belongs to the init lifecycle (forward + graceful
+	// shutdown with the entrypoint's exit status); only SIGINT cancels the
+	// HTTP server there.
+	ctxSignals := []os.Signal{os.Interrupt}
+	if !flag.InitMode {
+		ctxSignals = append(ctxSignals, syscall.SIGTERM)
+	}
 	serverCtx, stopSignals := signal.NotifyContext(
 		context.Background(),
-		os.Interrupt,
-		syscall.SIGTERM,
+		ctxSignals...,
 	)
 	defer stopSignals()
 	if err := serveHTTPUntilShutdown(serverCtx, listener, engine); err != nil {

@@ -177,7 +177,7 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 		c.tailStdPipe(stderrPath, request.Hooks.OnExecuteStderr, done)
 	})
 
-	err = cmd.Start()
+	mp, err := launchManaged(cmd)
 	if err != nil {
 		close(done)
 		wg.Wait()
@@ -245,7 +245,7 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 		}
 	})
 
-	err = cmd.Wait()
+	err = mp.Wait()
 	close(done)
 	wg.Wait()
 	if err != nil {
@@ -253,9 +253,9 @@ func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest
 		var eCode int
 		var traceback []string
 
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			exitCode := exitError.ExitCode()
+		var exitCodeErr exitCoder
+		if errors.As(err, &exitCodeErr) {
+			exitCode := exitCodeErr.ExitCode()
 			eName = "CommandExecError"
 			eValue = strconv.Itoa(exitCode)
 			eCode = exitCode
@@ -334,7 +334,7 @@ func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.Ca
 		defer devNull.Close()
 	}
 
-	err = cmd.Start()
+	mp, err := launchManaged(cmd)
 	kernel := &commandKernel{
 		pid:          -1,
 		stdoutPath:   stdoutPath,
@@ -363,14 +363,14 @@ func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.Ca
 	safego.Go(func() {
 		defer pipe.Close()
 
-		err = cmd.Wait()
+		err = mp.Wait()
 		cancel()
 		if err != nil {
 			log.Error("CommandExecError: error running commands: %v", err)
 			exitCode := 1
-			var exitError *exec.ExitError
-			if errors.As(err, &exitError) {
-				exitCode = exitError.ExitCode()
+			var exitCodeErr exitCoder
+			if errors.As(err, &exitCodeErr) {
+				exitCode = exitCodeErr.ExitCode()
 			}
 			c.markCommandFinished(session, exitCode, err.Error())
 			return

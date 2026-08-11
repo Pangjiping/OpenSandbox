@@ -196,6 +196,7 @@ override it.
 | `--graceful-shutdown-timeout` | `1s` | SSE tail-drain wait window before closing. |
 | `--jupyter-idle-poll-interval` | `100ms` | Poll interval after Jupyter reports idle. |
 | `--isolation-config` | `""` | Path to the isolation TOML config (see below). |
+| `--init` | `false` | Run as the sandbox init (OSEP-0018): reap children, forward signals, own the container lifecycle. Set together with `EXECD_INIT`; see [Init mode](#init-mode). |
 
 ### Environment Variables
 
@@ -207,6 +208,7 @@ override it.
 | `EXECD_API_GRACE_SHUTDOWN` | Same as `--graceful-shutdown-timeout`. |
 | `EXECD_JUPYTER_IDLE_POLL_INTERVAL` | Same as `--jupyter-idle-poll-interval`. |
 | `EXECD_ISOLATION_CONFIG` | Same as `--isolation-config`. |
+| `EXECD_INIT` | Init-mode switch read by `bootstrap.sh`: when truthy (`1`/`true`/`yes`/`on`), the script `exec`s `execd --init -- <user command>` so execd becomes PID 1; see [Init mode](#init-mode). Unset preserves the classic background-and-wait topology. |
 | `EXECD_CLONE3_COMPAT` | Linux clone3 compatibility switch (see below). |
 | `EXECD_LOG_FILE` | Optional log output file path; default is stdout. |
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Preferred OTLP metrics endpoint. |
@@ -244,8 +246,39 @@ OTLP metrics export is enabled when either endpoint is set:
 - `GET /metrics`: point-in-time host metrics snapshot
 - `GET /metrics/watch`: SSE stream (1s cadence)
 
-## Linux clone3 Compatibility
+## Init mode
 
+[OSEP-0018](../../oseps/0018-execd-as-sandbox-init.md) makes execd the sandbox
+init: it becomes the parent of the user entrypoint, reaps every child through
+a single reaper, forwards application signals, and propagates the entrypoint
+exit code to the container runtime.
+
+Init mode is **off by default** and gated by two settings set in lockstep:
+
+- `EXECD_INIT` (read by `bootstrap.sh`): decides the process topology — the
+  script `exec`s into `execd --init -- <user command>` so execd inherits PID 1
+  (Docker / K8s Batch paths), instead of backgrounding execd and the user
+  command as siblings.
+- `--init` (read by execd): activates the init duties (reaper, signal
+  forwarding, lifecycle). If execd is not PID 1 (e.g. the K8s Pool task path,
+  or a stray `&`), it degrades to subreaper mode: orphan reaping works, but
+  the kernel PID 1 signal shield does not.
+
+Behavioral contract in init mode:
+
+- The user entrypoint owns the container lifecycle: when it exits, execd
+  stops the remaining children (`SIGTERM` → grace → `SIGKILL`) and exits with
+  the entrypoint's status.
+- `HUP`/`USR1`/`USR2`/`WINCH` are forwarded to the entrypoint process group.
+- `SIGTERM` (runtime-initiated container stop) is forwarded to the workload
+  and starts the graceful shutdown sequence.
+- In-namespace `kill -9 1` is inert (kernel signal shield). A workload
+  `kill 1` (SIGTERM) is treated like a runtime stop; the trusted out-of-band
+  stop channel is a follow-up (see the OSEP, §3).
+- The actual mode is reported on `GET /v1/isolated/capabilities` under
+  `hardening.init_mode` (`pid1` | `subreaper` | `none`).
+
+## Linux clone3 Compatibility
 Some sandbox environments fail on `clone3(2)`.
 Set `EXECD_CLONE3_COMPAT` in sandbox env to force fallback behavior:
 

@@ -182,16 +182,23 @@ type isolatedBackgroundRunRequest struct {
 	Background bool              `json:"background"`
 }
 
+// HardeningStatus reports execd init-mode state (OSEP-0018).
+type HardeningStatus struct {
+	InitMode     string `json:"init_mode"`     // "pid1" | "subreaper" | "none"
+	SignalShield bool   `json:"signal_shield"` // kernel PID 1 signal shield active
+}
+
 // IsolatedCapabilities reports isolation capabilities.
 type IsolatedCapabilities struct {
-	Available        bool   `json:"available"`
-	Isolator         string `json:"isolator,omitempty"`
-	Version          string `json:"version,omitempty"`
-	Message          string `json:"message,omitempty"`
-	SetprivAvailable bool   `json:"setpriv_available"`
-	UsernsAvailable  bool   `json:"userns_available"`
-	CommitSupported  bool   `json:"commit_supported"`
-	DiffSupported    bool   `json:"diff_supported"`
+	Available        bool             `json:"available"`
+	Isolator         string           `json:"isolator,omitempty"`
+	Version          string           `json:"version,omitempty"`
+	Message          string           `json:"message,omitempty"`
+	SetprivAvailable bool             `json:"setpriv_available"`
+	UsernsAvailable  bool             `json:"userns_available"`
+	CommitSupported  bool             `json:"commit_supported"`
+	DiffSupported    bool             `json:"diff_supported"`
+	Hardening        *HardeningStatus `json:"hardening,omitempty"`
 }
 
 // IsolatedCreate creates an isolated bash session.

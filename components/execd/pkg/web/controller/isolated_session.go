@@ -443,11 +443,16 @@ func (c *IsolatedSessionController) Commit() {
 
 // Capabilities handles GET /v1/isolated/capabilities.
 func (c *IsolatedSessionController) Capabilities() {
+	initMode, signalShield := runtime.InitModeReport()
 	if isolatedRunner == nil {
 		resp := model.CapabilitiesResponse{
 			Available:       false,
 			CommitSupported: false,
 			DiffSupported:   false,
+			Hardening: &model.HardeningStatus{
+				InitMode:     initMode,
+				SignalShield: signalShield,
+			},
 		}
 		if isolatedProbeResult != nil {
 			resp.Isolator = isolatedProbeResult.Isolator
@@ -468,6 +473,10 @@ func (c *IsolatedSessionController) Capabilities() {
 		UsernsAvailable:  caps.UsernsAvailable,
 		CommitSupported:  caps.CommitSupported,
 		DiffSupported:    caps.DiffSupported,
+		Hardening: &model.HardeningStatus{
+			InitMode:     initMode,
+			SignalShield: signalShield,
+		},
 	}
 	// Probe results indicate overlay capability, not diff/commit implementation.
 	// Diff and commit are Phase 2; do not advertise them as supported.

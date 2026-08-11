@@ -2526,6 +2526,27 @@ components:
           type: boolean
         diff_supported:
           type: boolean
+        hardening:
+          type: object
+          description: >-
+            execd init-mode state (OSEP-0018): whether execd is the sandbox
+            init and which of its controls are in effect. Not an isolation
+            capability; reported here so operators see enforcement state in
+            one place.
+          properties:
+            init_mode:
+              type: string
+              enum: [pid1, subreaper, none]
+              description: >-
+                How execd supervises the sandbox process tree. pid1: execd is
+                the kernel init of the container. subreaper: execd reaps
+                orphans but lacks the PID 1 kernel signal shield. none: init
+                mode is off (default).
+            signal_shield:
+              type: boolean
+              description: >-
+                Whether the kernel PID 1 signal shield protects execd from
+                in-namespace signals (true only in init_mode pid1).
 
   responses:
     ServiceUnavailable:
