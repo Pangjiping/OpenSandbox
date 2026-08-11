@@ -51,12 +51,12 @@ type IsolatedRunner struct {
 	stopGC          chan struct{}
 	// bgRuns tracks detached background runs (map[runID]*IsolatedBackgroundRun),
 	// swept when the owning session is deleted or GC'd.
-	bgRuns          sync.Map
-	gcDone          chan struct{}
-	stopGCOnce      sync.Once
-	admissionMu     sync.RWMutex
-	closeMu         sync.Mutex
-	closed          bool
+	bgRuns      sync.Map
+	gcDone      chan struct{}
+	stopGCOnce  sync.Once
+	admissionMu sync.RWMutex
+	closeMu     sync.Mutex
+	closed      bool
 	// pendingStartupCleanup owns failed creates whose workload did not reap
 	// within the bounded startup rollback. These sessions are deliberately
 	// kept out of the public controller map and retried by the collector.
