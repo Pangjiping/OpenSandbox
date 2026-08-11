@@ -103,6 +103,9 @@ def sync_detailed(
     When no cursor is provided, the log is returned from the start. At
     most 16 MiB are returned per request; use the returned cursor to
     fetch the remainder.
+    Per-run log retention is capped at 16 MiB: output beyond the cap is
+    discarded when the run completes, so clients that need more than the
+    first page should drain incrementally while the run is active.
     Response body is plain text so it can be rendered directly in browsers.
 
     Args:
@@ -148,6 +151,9 @@ def sync(
     When no cursor is provided, the log is returned from the start. At
     most 16 MiB are returned per request; use the returned cursor to
     fetch the remainder.
+    Per-run log retention is capped at 16 MiB: output beyond the cap is
+    discarded when the run completes, so clients that need more than the
+    first page should drain incrementally while the run is active.
     Response body is plain text so it can be rendered directly in browsers.
 
     Args:
@@ -188,6 +194,9 @@ async def asyncio_detailed(
     When no cursor is provided, the log is returned from the start. At
     most 16 MiB are returned per request; use the returned cursor to
     fetch the remainder.
+    Per-run log retention is capped at 16 MiB: output beyond the cap is
+    discarded when the run completes, so clients that need more than the
+    first page should drain incrementally while the run is active.
     Response body is plain text so it can be rendered directly in browsers.
 
     Args:
@@ -231,6 +240,9 @@ async def asyncio(
     When no cursor is provided, the log is returned from the start. At
     most 16 MiB are returned per request; use the returned cursor to
     fetch the remainder.
+    Per-run log retention is capped at 16 MiB: output beyond the cap is
+    discarded when the run completes, so clients that need more than the
+    first page should drain incrementally while the run is active.
     Response body is plain text so it can be rendered directly in browsers.
 
     Args:

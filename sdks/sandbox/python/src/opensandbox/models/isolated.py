@@ -274,7 +274,11 @@ class IsolatedRunOpts(BaseModel):
 
 
 class IsolatedBackgroundRun(BaseModel):
-    """Handle returned when a run is started with background: true."""
+    """Handle returned when a run is started with background: true.
+
+    Background runs require a writable log location, so sessions with a
+    read-only (``ro``) workspace reject them with an error.
+    """
 
     session_id: str = Field(description="Session the run was started in")
     run_id: str = Field(description="Run ID for status and logs polling")

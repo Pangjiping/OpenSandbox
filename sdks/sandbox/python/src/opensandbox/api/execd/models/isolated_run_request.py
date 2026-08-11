@@ -49,6 +49,14 @@ class IsolatedRunRequest:
             The run's combined stdout/stderr is captured to a log file that
             can be polled via the run logs endpoint; its lifecycle is tracked
             via the run status endpoint.
+            Background runs share the session's process group, so session-
+            level signals (for example the SIGINT sent when a foreground run
+            times out or is cancelled) also reach them; execd cannot signal
+            individual in-namespace processes.
+            Background runs require a writable log location, so sessions with
+            a read-only (`ro`) workspace reject them with 400: there is no
+            host-visible writable location for the run's log and exit-code
+            files. rw and overlay workspaces are supported.
     """
 
     code: str

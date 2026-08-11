@@ -744,7 +744,7 @@ func (r *IsolatedRunner) DeleteIsolatedSession(id string) error {
 	// Run logs are gone with the upper layer; drop the session's run records.
 	// Swept even when a non-fatal cleanup error remains: the session is out
 	// of the public map, so nothing else would ever sweep them.
-	r.removeSessionBackgroundRuns(id)
+	r.removeSessionBackgroundRuns(s)
 	if cleanupErr != nil {
 		return cleanupErr
 	}

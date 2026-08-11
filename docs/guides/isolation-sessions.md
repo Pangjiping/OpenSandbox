@@ -272,6 +272,9 @@ Background run semantics:
 - `timeout_seconds` is foreground-only; background runs are not time-limited.
 - Idle GC is suspended while a background run is active; after it finishes,
   the normal idle window applies. Deleting the session kills the run.
+- Background runs require a writable log location, so sessions with a
+  read-only (`ro`) workspace reject them with `400`; `rw` and `overlay`
+  workspaces are supported.
 - Runs share the session's process group, so session-level signals (e.g. the
   `SIGINT` sent when a foreground run times out or is cancelled) also reach
   them.

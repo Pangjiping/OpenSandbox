@@ -236,6 +236,8 @@ func (e *ExecdClient) IsolatedRun(ctx context.Context, sessionID string, req Iso
 // log pollable via IsolatedRunLogs; its lifecycle is tracked via
 // IsolatedRunStatus. timeout_seconds is foreground-only and deliberately not
 // sent (background runs are not time-limited).
+// Background runs require a writable log location, so sessions with a
+// read-only (ro) workspace reject them with an error.
 func (e *ExecdClient) IsolatedRunBackground(ctx context.Context, sessionID, code string, opts IsolatedRunOpts) (*IsolatedBackgroundRun, error) {
 	if code == "" {
 		return nil, &InvalidArgumentError{Field: "code", Message: "must not be empty"}
@@ -275,6 +277,10 @@ func (e *ExecdClient) IsolatedRunStatus(ctx context.Context, sessionID, runID st
 // started with IsolatedRunBackground, beginning at the given byte cursor.
 // Pass cursor=0 to read from the start; at most 16 MiB are returned per
 // request, so poll repeatedly with the returned cursor for long outputs.
+// Per-run log retention is capped at 16 MiB: output beyond the cap is
+// discarded when the run completes, so callers that need more than the first
+// page should drain incrementally while the run is active instead of waiting
+// for running=false before reading logs.
 //
 // The returned nextCursor is the next byte cursor for incremental reads: the
 // EXECD-ISOLATED-TAIL-CURSOR response header when present and parseable,

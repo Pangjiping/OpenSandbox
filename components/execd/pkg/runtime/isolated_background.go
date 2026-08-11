@@ -17,7 +17,7 @@
 package runtime
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -64,6 +65,13 @@ type IsolatedBackgroundRun struct {
 	// still sees completion.
 	fallbackLogPath  string
 	fallbackExitPath string
+	// logRoot is the host-side directory (upper layer for overlay workspaces,
+	// the workspace for rw) all control-file operations are pinned to. Files
+	// are opened relative to it without following symlinks: the workspace is
+	// writable by sandbox code, which could otherwise replace a control file
+	// with a symlink and have host-side execd read or truncate an arbitrary
+	// host file through it.
+	logRoot string
 
 	mu         sync.Mutex
 	startedAt  time.Time
@@ -71,6 +79,25 @@ type IsolatedBackgroundRun struct {
 	exitCode   *int
 	errMsg     string
 	running    bool
+}
+
+// relLogPath/relExitPath/relFallbackLogPath/relFallbackExitPath return the
+// run's control files relative to logRoot (the run directory for the primary
+// files, the workspace root for the fallbacks).
+func (r *IsolatedBackgroundRun) relLogPath() string {
+	return filepath.Join(isolatedBackgroundRunDir, r.ID+".log")
+}
+
+func (r *IsolatedBackgroundRun) relExitPath() string {
+	return filepath.Join(isolatedBackgroundRunDir, r.ID+".code")
+}
+
+func (r *IsolatedBackgroundRun) relFallbackLogPath() string {
+	return r.ID + ".log"
+}
+
+func (r *IsolatedBackgroundRun) relFallbackExitPath() string {
+	return r.ID + ".code"
 }
 
 // IsolatedBackgroundRunSnapshot is a consistent read of a background run.
@@ -129,14 +156,14 @@ func (r *IsolatedRunner) RunInIsolatedSessionBackground(
 		return "", time.Time{}, ErrSessionNotActive
 	}
 
-	// Capture the session pipes once under the lock: Delete closes and nils
-	// them under s.mu, so a bare s.stdin read after the preflight could
+	// Capture the session stdin once under the lock: Delete closes and nils
+	// the pipes under s.mu, so a bare s.stdin write after the preflight could
 	// dereference a nil writer. A captured pipe may still be closed by a
 	// concurrent Delete — writes then fail cleanly with an error.
 	s.mu.RLock()
-	stdin, stdout := s.stdin, s.stdout
+	stdin := s.stdin
 	s.mu.RUnlock()
-	if stdin == nil || stdout == nil {
+	if stdin == nil {
 		return "", time.Time{}, fmt.Errorf("session not started")
 	}
 
@@ -152,36 +179,37 @@ func (r *IsolatedRunner) RunInIsolatedSessionBackground(
 	// session whose workspace is not writable by its own uid (e.g. an
 	// execd-created workspace owned by root with a setpriv session running as
 	// another uid) would otherwise accept the run and ghost it: no log or
-	// exit-code file could ever be written. The probe runs through the
-	// session shell and its marker is consumed synchronously, so nothing
-	// leaks into the shared stdout.
-	if err := r.preflightBackgroundLogDir(s, stdin, stdout, paths); err != nil {
+	// exit-code file could ever be written.
+	if err := r.preflightBackgroundLogDir(s, stdin, paths); err != nil {
 		return "", time.Time{}, err
 	}
 
-	// The background job redirects its output to the log file and writes the
-	// exit code to the code file. The script's mkdir creates the run dir as
-	// the session's own uid (so it is writable even when the session runs as
-	// a different uid than execd); if the dir cannot be created or is not
-	// writable (e.g. a lower-layer .execd blocks overlay copy-up), $D falls
-	// back to the workspace root so completion is always reported. The outer
-	// >/dev/null discards residual diagnostics so nothing leaks into the
-	// session stdout that the next foreground run's end-marker scan consumes.
-	script := "{ " + backgroundRunDirScript(paths) + "; ("
+	// The background job runs under `bash -c` (or `sh -c` when bash is
+	// unavailable) so user code is parsed as its own program: shell syntax
+	// errors in the code cannot break the control wrapper, which would
+	// otherwise leave the run stuck `running` (the wrapper's completion lines
+	// are only parsed after the code). The code's output is redirected to the
+	// log file; its exit code is captured and written to the code file. The
+	// script's mkdir creates the run dir as the session's own uid (so it is
+	// writable even when the session runs as a different uid than execd); if
+	// the dir cannot be created or is not writable (e.g. a lower-layer .execd
+	// blocks overlay copy-up), $D falls back to the workspace root so
+	// completion is always reported. $D is re-resolved after the code runs in
+	// case the code deleted or replaced the run directory, so the completion
+	// marker cannot be lost that way. The outer >/dev/null discards residual
+	// diagnostics so nothing leaks into the session stdout that the next
+	// foreground run's end-marker scan consumes.
+	shell := getShell()
+	script := "{ " + backgroundRunDirScript(paths) + "; "
 	if len(envs) > 0 {
 		for k, v := range envs {
-			script += "\nexport " + shellescape(k) + "=" + shellescape(v)
+			script += "export " + shellescape(k) + "=" + shellescape(v) + "; "
 		}
 	}
-	script += "\n"
-	script += code
-	if !strings.HasSuffix(script, "\n") {
-		script += "\n"
-	}
-	// Detach from the session shell's stdin so a stdin-reading background
-	// command cannot steal script lines meant for the next foreground run.
-	script += ") </dev/null >\"$D/" + runID + ".log\" 2>&1; echo $? >\"$D/" +
-		runID + ".code\"; } >/dev/null 2>&1 &\n"
+	script += shell + " -c " + shellescape(code) + " </dev/null >\"$D/" + runID + ".log\" 2>&1"
+	script += "\ncode=$?; mkdir -p \"$D\" 2>/dev/null && [ -w \"$D\" ] || D=" +
+		shellescape(paths.nsWorkspace)
+	script += "\necho \"$code\" >\"$D/" + runID + ".code\"; } >/dev/null 2>&1 &\n"
 
 	// Publish the run record before writing the script so a concurrent
 	// DeleteIsolatedSession (which sweeps run records after removing the
@@ -196,6 +224,7 @@ func (r *IsolatedRunner) RunInIsolatedSessionBackground(
 		exitPath:         filepath.Join(paths.hostRunDir, runID+".code"),
 		fallbackLogPath:  filepath.Join(paths.hostWorkspace, runID+".log"),
 		fallbackExitPath: filepath.Join(paths.hostWorkspace, runID+".code"),
+		logRoot:          paths.hostRoot,
 		startedAt:        startedAt,
 		running:          true,
 	}
@@ -242,36 +271,69 @@ func backgroundRunDirScript(paths backgroundRunPaths) string {
 // preflightBackgroundLogDir verifies through the session shell that the run
 // log directory is writable by the session uid. The caller holds the run
 // mutex, so the probe's marker scan on the shared stdout cannot race another
-// run. Returns an error when no writable log location exists.
+// run. The probe writes its result (0 = writable, 1 = not) to a unique
+// control file whose host-side copy execd polls, instead of printing a
+// marker to the shared stdout: a shell wedged mid-probe can then delay the
+// request only until the bounded poll window elapses — it cannot hang the
+// handler forever (a stdout-marker scan would block on the still-open pipe
+// after its context expires). Returns an error when no writable log location
+// exists or the probe does not complete in time.
 func (r *IsolatedRunner) preflightBackgroundLogDir(
 	s *isolatedSession,
 	stdin io.Writer,
-	stdout io.ReadCloser,
 	paths backgroundRunPaths,
 ) error {
-	marker := fmt.Sprintf("__ISOLATED_BG_PROBE__%s", uuid.New().String())
+	probeName := ".probe-" + uuid.New().String()
 	probeScript := backgroundRunDirScript(paths) +
-		"\nif [ -w \"$D\" ]; then echo " + marker + " 0; else echo " + marker + " 1; fi\n"
+		"\nif [ -w \"$D\" ]; then echo 0; else echo 1; fi >\"$D/" + probeName + "\"\n"
 
 	if _, err := io.WriteString(stdin, probeScript); err != nil {
 		return fmt.Errorf("write preflight probe: %w", err)
 	}
 
-	probeCtx, cancel := context.WithTimeout(context.Background(), isolatedBackgroundProbeTimeout)
-	defer cancel()
-	exitCode, err := scanUntilMarker(probeCtx, stdout, marker, nil)
+	root, err := os.OpenRoot(paths.hostRoot)
 	if err != nil {
-		return fmt.Errorf("background run preflight: %w", err)
+		return fmt.Errorf("open background run log root: %w", err)
 	}
-	if exitCode != 0 {
-		return fmt.Errorf("background runs unavailable: workspace is not writable by the session uid")
+	defer root.Close()
+
+	probeRels := []string{filepath.Join(isolatedBackgroundRunDir, probeName), probeName}
+	deadline := time.Now().Add(isolatedBackgroundProbeTimeout)
+	for {
+		for _, rel := range probeRels {
+			content, ok := readIsolatedControlFile(root, rel, 64)
+			if !ok {
+				continue
+			}
+			_ = root.Remove(rel)
+			if strings.TrimSpace(content) == "0" {
+				return nil
+			}
+			return fmt.Errorf("background runs unavailable: workspace is not writable by the session uid")
+		}
+		if time.Now().After(deadline) {
+			// The probe never completed: either no writable log location
+			// exists (the probe could not write its result) or the session
+			// shell is unresponsive. Both reject the run.
+			return fmt.Errorf("background runs unavailable: workspace is not writable by the session uid (preflight probe did not complete)")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	return nil
 }
 
 // watchBackgroundRun marks the run finished when the session shell writes the
 // exit-code file, or when the session dies (the run dies with it).
 func (r *IsolatedRunner) watchBackgroundRun(s *isolatedSession, run *IsolatedBackgroundRun) {
+	root, err := os.OpenRoot(run.logRoot)
+	if err != nil {
+		// The control-file root is gone (e.g. the upper layer vanished); the
+		// run can no longer be tracked, so it never completes normally.
+		run.markFinished(nil, "session terminated")
+		s.activeBackgroundRuns.Add(-1)
+		return
+	}
+	defer root.Close()
+
 	ticker := time.NewTicker(isolatedBackgroundPollInterval)
 	defer ticker.Stop()
 	for {
@@ -286,9 +348,9 @@ func (r *IsolatedRunner) watchBackgroundRun(s *isolatedSession, run *IsolatedBac
 			s.activeBackgroundRuns.Add(-1)
 			return
 		case <-ticker.C:
-			code, ok := readIsolatedRunExitCode(run.exitPath)
+			code, ok := readIsolatedRunExitCode(root, run.relExitPath())
 			if !ok {
-				code, ok = readIsolatedRunExitCode(run.fallbackExitPath)
+				code, ok = readIsolatedRunExitCode(root, run.relFallbackExitPath())
 			}
 			if !ok {
 				continue
@@ -298,8 +360,8 @@ func (r *IsolatedRunner) watchBackgroundRun(s *isolatedSession, run *IsolatedBac
 			// cap once the run is done. Clients can never hold a cursor past
 			// the cap (each read returns at most maxBackgroundLogReadBytes),
 			// so the incremental protocol stays coherent.
-			capIsolatedRunLog(run.logPath)
-			capIsolatedRunLog(run.fallbackLogPath)
+			capIsolatedRunLog(root, run.relLogPath())
+			capIsolatedRunLog(root, run.relFallbackLogPath())
 			// Refresh lastRunAt before clearing the active-run counter so a
 			// concurrent idle collector can never observe counter==0 with the
 			// stale submission timestamp and reap the session before the
@@ -352,12 +414,21 @@ func (r *IsolatedRunner) SeekIsolatedBackgroundOutput(
 		return nil, -1, fmt.Errorf("cursor cannot be negative")
 	}
 
-	file, err := os.Open(run.logPath)
+	root, err := os.OpenRoot(run.logRoot)
 	if err != nil {
-		file, err = os.Open(run.fallbackLogPath)
+		return nil, -1, fmt.Errorf("open background run log root: %w", err)
+	}
+	defer root.Close()
+
+	file, err := openIsolatedControlFile(root, run.relLogPath(), os.O_RDONLY)
+	if err != nil && (errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)) {
+		// The run dir may not exist yet (the shell creates it at redirect
+		// time), or a lower-layer .execd entry blocks it; the log may instead
+		// be at the workspace-root fallback.
+		file, err = openIsolatedControlFile(root, run.relFallbackLogPath(), os.O_RDONLY)
 	}
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			// The shell creates the log file at redirect time, asynchronously
 			// after the run handle is returned; treat a missing log as empty.
 			return nil, 0, nil
@@ -383,38 +454,80 @@ func (r *IsolatedRunner) SeekIsolatedBackgroundOutput(
 // removeIsolatedRunFiles best-effort deletes the log/exit-code files of a run
 // (primary and fallback locations). Overlay workspaces lose them with the
 // upper directory anyway; rw workspaces would otherwise keep them in the
-// user's persistent workspace.
-func removeIsolatedRunFiles(run *IsolatedBackgroundRun) {
-	for _, p := range []string{run.logPath, run.exitPath, run.fallbackLogPath, run.fallbackExitPath} {
-		_ = os.Remove(p)
+// user's persistent workspace. Removes go through the pinned root so
+// sandbox-created symlinks can never redirect host-side deletion outside the
+// workspace.
+func removeIsolatedRunFiles(root *os.Root, run *IsolatedBackgroundRun) {
+	for _, rel := range []string{
+		run.relLogPath(),
+		run.relExitPath(),
+		run.relFallbackLogPath(),
+		run.relFallbackExitPath(),
+	} {
+		_ = root.Remove(rel)
+	}
+}
+
+// sweepIsolatedProbeFiles removes stale preflight probe markers from the run
+// log directory and the workspace root. Probes can be abandoned when a
+// preflight times out with a wedged session shell.
+func sweepIsolatedProbeFiles(root *os.Root) {
+	for _, dir := range []string{".", isolatedBackgroundRunDir} {
+		d, err := root.Open(dir)
+		if err != nil {
+			continue
+		}
+		entries, err := d.ReadDir(-1)
+		_ = d.Close()
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".probe-") {
+				_ = root.Remove(filepath.Join(dir, e.Name()))
+			}
+		}
 	}
 }
 
 // removeSessionBackgroundRuns drops every run record of a session and removes
-// the run's log/exit-code files. Called from DeleteIsolatedSession once the
-// session (and its upper layer, for overlay workspaces) is torn down.
-func (r *IsolatedRunner) removeSessionBackgroundRuns(sessionID string) {
-	var runDir string
+// the run's log/exit-code files plus stale preflight probe markers. Called
+// from DeleteIsolatedSession once the session (and its upper layer, for
+// overlay workspaces) is torn down.
+func (r *IsolatedRunner) removeSessionBackgroundRuns(s *isolatedSession) {
+	paths, err := s.backgroundRunPaths()
+	if err != nil {
+		// Read-only sessions reject background runs at submission, so there
+		// is never anything to sweep here.
+		return
+	}
+	root, err := os.OpenRoot(paths.hostRoot)
+	if err != nil {
+		return
+	}
+	defer root.Close()
+
+	sweepIsolatedProbeFiles(root)
+	runDirRemoved := false
 	r.bgRuns.Range(func(key, value any) bool {
 		run, ok := value.(*IsolatedBackgroundRun)
-		if !ok || run.SessionID != sessionID {
+		if !ok || run.SessionID != s.id {
 			return true
 		}
-		removeIsolatedRunFiles(run)
-		if runDir == "" {
-			runDir = filepath.Dir(run.logPath)
+		removeIsolatedRunFiles(root, run)
+		// Best-effort: drop the execd-managed run dir when empty (rw
+		// workspaces only; overlay uppers are already gone).
+		if err := root.Remove(isolatedBackgroundRunDir); err == nil {
+			runDirRemoved = true
 		}
 		r.bgRuns.Delete(key)
 		return true
 	})
-	if runDir != "" {
-		// Best-effort: drop the execd-managed run dir when empty (rw
-		// workspaces only; overlay uppers are already gone). The .execd
-		// parent is removed only when the run dir removal succeeded, so a
-		// user-owned .execd file or non-empty dir is never touched.
-		if err := os.Remove(runDir); err == nil {
-			_ = os.Remove(filepath.Dir(runDir))
-		}
+	if runDirRemoved {
+		// The .execd parent is removed only when the run dir removal
+		// succeeded, so a user-owned .execd file or non-empty dir is never
+		// touched.
+		_ = root.Remove(".execd")
 	}
 }
 
@@ -424,6 +537,7 @@ type backgroundRunPaths struct {
 	nsWorkspace   string // workspace path as seen inside the namespace
 	hostRunDir    string // host-side run dir (upper layer for overlay, workspace for rw)
 	hostWorkspace string // host-side workspace root (upper dir for overlay)
+	hostRoot      string // host-side root all control-file ops are pinned to
 }
 
 // backgroundRunPaths returns the namespace and host paths of the background
@@ -439,40 +553,91 @@ func (s *isolatedSession) backgroundRunPaths() (backgroundRunPaths, error) {
 	switch isolation.WorkspaceMode(s.opts.WorkspaceMode) {
 	case isolation.WorkspaceRW:
 		paths.hostRunDir = paths.nsRunDir
+		paths.hostRoot = s.opts.WorkspacePath
 	case isolation.WorkspaceOverlay, "":
 		if s.upperDir == "" {
 			return backgroundRunPaths{}, fmt.Errorf("background runs unavailable: session has no upper directory")
 		}
 		paths.hostRunDir = filepath.Join(s.upperDir, isolatedBackgroundRunDir)
 		paths.hostWorkspace = s.upperDir
+		paths.hostRoot = s.upperDir
 	default: // WorkspaceRO
 		return backgroundRunPaths{}, fmt.Errorf("background runs not supported in read-only workspace mode")
 	}
 	return paths, nil
 }
 
-// capIsolatedRunLog truncates a run's log file to maxBackgroundLogReadBytes
-// when it grew past the cap, bounding per-run disk usage. Best-effort.
-func capIsolatedRunLog(path string) {
-	info, err := os.Stat(path)
-	if err != nil || info.Size() <= maxBackgroundLogReadBytes {
-		return
+// openIsolatedControlFile opens a sandbox-visible control file (run log,
+// exit-code file, probe marker) relative to a pinned host root without
+// following symlinks at any path component, and verifies the opened object is
+// a regular file. The workspace is writable by sandbox code, which could
+// otherwise replace a control file with a symlink and have host-side execd
+// read, truncate, or remove an arbitrary host file through it.
+func openIsolatedControlFile(root *os.Root, rel string, flag int) (*os.File, error) {
+	fi, err := root.Lstat(rel)
+	if err != nil {
+		return nil, err
 	}
-	_ = os.Truncate(path, maxBackgroundLogReadBytes)
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("control file %s is a symlink", rel)
+	}
+	f, err := root.OpenFile(rel, flag, 0)
+	if err != nil {
+		return nil, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, fmt.Errorf("control file %s is not a regular file", rel)
+	}
+	return f, nil
 }
 
-// readIsolatedRunExitCode reads a background run's exit-code file; missing or
-// not-yet-written files report not-ready.
-func readIsolatedRunExitCode(path string) (int, bool) {
-	data, err := os.ReadFile(path)
+// readIsolatedControlFile reads up to maxBytes from a control file relative
+// to the pinned root. Missing, unreadable, or symlink-replaced files report
+// not-ready.
+func readIsolatedControlFile(root *os.Root, rel string, maxBytes int64) (string, bool) {
+	f, err := openIsolatedControlFile(root, rel, os.O_RDONLY)
 	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes))
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(data)), true
+}
+
+// capIsolatedRunLog truncates a run's log file to maxBackgroundLogReadBytes
+// when it grew past the cap, bounding per-run disk usage. Best-effort; the
+// truncate runs on the fd opened through the pinned root, so a symlink
+// replacement can never redirect it to another host file.
+func capIsolatedRunLog(root *os.Root, rel string) {
+	f, err := openIsolatedControlFile(root, rel, os.O_WRONLY)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.Size() <= maxBackgroundLogReadBytes {
+		return
+	}
+	_ = f.Truncate(maxBackgroundLogReadBytes)
+}
+
+// readIsolatedRunExitCode reads a background run's exit-code file relative to
+// the pinned root; missing or not-yet-written files report not-ready.
+func readIsolatedRunExitCode(root *os.Root, rel string) (int, bool) {
+	content, ok := readIsolatedControlFile(root, rel, 64)
+	if !ok || content == "" {
 		return 0, false
 	}
-	raw := strings.TrimSpace(string(data))
-	if raw == "" {
-		return 0, false
-	}
-	code, err := strconv.Atoi(raw)
+	code, err := strconv.Atoi(content)
 	if err != nil {
 		return 0, false
 	}

@@ -357,7 +357,11 @@ func TestRunInIsolatedSessionBackground_FallbackWhenRunDirBlocked(t *testing.T) 
 func TestSeekIsolatedBackgroundOutput_CapsReadSize(t *testing.T) {
 	runner := newTestRunner(t)
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "big.log")
+	runDir := filepath.Join(dir, isolatedBackgroundRunDir)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(runDir, "run-capped.log")
 	payload := bytes.Repeat([]byte("x"), maxBackgroundLogReadBytes+1234)
 	if err := os.WriteFile(logPath, payload, 0o644); err != nil {
 		t.Fatal(err)
@@ -367,6 +371,7 @@ func TestSeekIsolatedBackgroundOutput_CapsReadSize(t *testing.T) {
 		ID:        "run-capped",
 		SessionID: "session-capped",
 		logPath:   logPath,
+		logRoot:   dir,
 	}
 	runner.bgRuns.Store(run.ID, run)
 
@@ -642,32 +647,190 @@ func TestRunInIsolatedSessionBackground_ReturnsStartedAt(t *testing.T) {
 
 func TestReadIsolatedRunExitCode(t *testing.T) {
 	dir := t.TempDir()
-
-	path := filepath.Join(dir, "ok.code")
-	if err := os.WriteFile(path, []byte("0\n"), 0o644); err != nil {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if code, ok := readIsolatedRunExitCode(path); !ok || code != 0 {
+	defer root.Close()
+
+	if err := os.WriteFile(filepath.Join(dir, "ok.code"), []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, ok := readIsolatedRunExitCode(root, "ok.code"); !ok || code != 0 {
 		t.Errorf("ok.code = (%d, %v), want (0, true)", code, ok)
 	}
 
-	path = filepath.Join(dir, "empty.code")
-	if err := os.WriteFile(path, []byte("  \n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "empty.code"), []byte("  \n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := readIsolatedRunExitCode(path); ok {
+	if _, ok := readIsolatedRunExitCode(root, "empty.code"); ok {
 		t.Error("empty.code should not be ready")
 	}
 
-	path = filepath.Join(dir, "bogus.code")
-	if err := os.WriteFile(path, []byte("abc"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "bogus.code"), []byte("abc"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := readIsolatedRunExitCode(path); ok {
+	if _, ok := readIsolatedRunExitCode(root, "bogus.code"); ok {
 		t.Error("bogus.code should not be ready")
 	}
 
-	if _, ok := readIsolatedRunExitCode(filepath.Join(dir, "missing.code")); ok {
+	if _, ok := readIsolatedRunExitCode(root, "missing.code"); ok {
 		t.Error("missing.code should not be ready")
+	}
+
+	// A symlink-replaced exit-code file must be refused, not read through.
+	if err := os.Symlink("/etc/hostname", filepath.Join(dir, "linked.code")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readIsolatedRunExitCode(root, "linked.code"); ok {
+		t.Error("linked.code should not be readable through the symlink")
+	}
+}
+
+// TestBackgroundRunCompletesDespiteShellSyntaxError verifies that user code
+// with a shell syntax error cannot break the control wrapper: the run must
+// finish (non-zero exit) and the session must stay alive.
+func TestBackgroundRunCompletesDespiteShellSyntaxError(t *testing.T) {
+	runner := newTestRunner(t)
+	id := newBackgroundTestSession(t, runner, "rw")
+	defer runner.DeleteIsolatedSession(id)
+
+	runID, _, err := runner.RunInIsolatedSessionBackground(id, `if [ 1 = 1 ]; then echo "unterminated`, nil)
+	if err != nil {
+		t.Fatalf("RunInIsolatedSessionBackground: %v", err)
+	}
+
+	snapshot := waitForBackgroundRun(t, runner, id, runID)
+	if snapshot.Running {
+		t.Fatal("run should have finished")
+	}
+	if snapshot.ExitCode == nil || *snapshot.ExitCode == 0 {
+		t.Errorf("ExitCode = %v, want non-zero (syntax error)", snapshot.ExitCode)
+	}
+
+	// The session shell must still be usable after the broken code.
+	if err := runner.RunInIsolatedSession(context.Background(), id, "echo still-alive", nil, nil); err != nil {
+		t.Errorf("foreground run after broken background code: %v", err)
+	}
+
+	output, _, err := runner.SeekIsolatedBackgroundOutput(id, runID, 0)
+	if err != nil {
+		t.Fatalf("SeekIsolatedBackgroundOutput: %v", err)
+	}
+	if !strings.Contains(string(output), "unexpected EOF") &&
+		!strings.Contains(string(output), "syntax error") {
+		t.Errorf("log output = %q, want a shell syntax diagnostic", output)
+	}
+}
+
+// TestBackgroundRunCompletesAfterRunDirDeleted verifies that a background
+// command deleting its own .execd/background-runs directory cannot strand the
+// run: the exit-code marker falls back to the workspace root and the watcher
+// still reports completion.
+func TestBackgroundRunCompletesAfterRunDirDeleted(t *testing.T) {
+	runner := newTestRunner(t)
+	ws := filepath.Join(t.TempDir(), "ws")
+	id, err := runner.CreateIsolatedSession(&IsolatedSessionOptions{
+		WorkspacePath: ws,
+		WorkspaceMode: "rw",
+	})
+	if err != nil {
+		t.Fatalf("CreateIsolatedSession: %v", err)
+	}
+	defer runner.DeleteIsolatedSession(id)
+
+	// Replace the execd-managed run directory with a regular file while the
+	// run is in flight, so the wrapper's completion-marker re-resolve falls
+	// back to the workspace root (mkdir -p "$D" fails on the file).
+	execdPath := shellescape(filepath.Join(ws, ".execd"))
+	runID, _, err := runner.RunInIsolatedSessionBackground(
+		id, "rm -rf "+execdPath+" && touch "+execdPath+" && echo gone", nil)
+	if err != nil {
+		t.Fatalf("RunInIsolatedSessionBackground: %v", err)
+	}
+
+	snapshot := waitForBackgroundRun(t, runner, id, runID)
+	if snapshot.Running {
+		t.Fatal("run should have finished")
+	}
+	if snapshot.ExitCode == nil || *snapshot.ExitCode != 0 {
+		t.Errorf("ExitCode = %v, want 0", snapshot.ExitCode)
+	}
+
+	// The completion marker was written to the workspace-root fallback.
+	if _, err := os.Stat(filepath.Join(ws, runID+".code")); err != nil {
+		t.Errorf("fallback exit-code file should exist, stat err = %v", err)
+	}
+}
+
+// TestSeekIsolatedBackgroundOutput_RefusesSymlinkedLog verifies that a
+// background command replacing its log file with a symlink cannot make
+// host-side execd read an arbitrary host file through the /logs endpoint.
+func TestSeekIsolatedBackgroundOutput_RefusesSymlinkedLog(t *testing.T) {
+	runner := newTestRunner(t)
+	ws := filepath.Join(t.TempDir(), "ws")
+	id, err := runner.CreateIsolatedSession(&IsolatedSessionOptions{
+		WorkspacePath: ws,
+		WorkspaceMode: "rw",
+	})
+	if err != nil {
+		t.Fatalf("CreateIsolatedSession: %v", err)
+	}
+	defer runner.DeleteIsolatedSession(id)
+
+	runID, _, err := runner.RunInIsolatedSessionBackground(id, "echo legit-output", nil)
+	if err != nil {
+		t.Fatalf("RunInIsolatedSessionBackground: %v", err)
+	}
+	waitForBackgroundRun(t, runner, id, runID)
+
+	// Replace the run's log with a symlink to a host file that is NOT the log.
+	secretPath := filepath.Join(t.TempDir(), "host-secret.txt")
+	if err := os.WriteFile(secretPath, []byte("HOST-SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(ws, isolatedBackgroundRunDir, runID+".log")
+	if err := os.Remove(logPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secretPath, logPath); err != nil {
+		t.Fatal(err)
+	}
+
+	output, _, err := runner.SeekIsolatedBackgroundOutput(id, runID, 0)
+	if err == nil {
+		t.Fatalf("SeekIsolatedBackgroundOutput should refuse the symlink, got output %q", output)
+	}
+	if strings.Contains(string(output), "HOST-SECRET") {
+		t.Fatal("host file content leaked through the symlinked log")
+	}
+}
+
+// TestCapIsolatedRunLog_RefusesSymlinkTarget verifies that the completion-time
+// log cap cannot truncate an arbitrary host file through a symlink.
+func TestCapIsolatedRunLog_RefusesSymlinkTarget(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	target := filepath.Join(dir, "big-target.bin")
+	if err := os.WriteFile(target, make([]byte, 32<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "linked.log")); err != nil {
+		t.Fatal(err)
+	}
+
+	capIsolatedRunLog(root, "linked.log")
+
+	st, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Size() != 32<<20 {
+		t.Errorf("symlink target truncated to %d bytes, want untouched %d", st.Size(), 32<<20)
 	}
 }

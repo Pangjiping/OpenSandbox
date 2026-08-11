@@ -43,7 +43,9 @@ export interface IsolationSession {
    *
    * The run's combined output and exit code are captured by execd; poll
    * them with {@link getRunStatus} and {@link getRunLogs}. The run is not
-   * time-limited and idle GC is suspended while it is active.
+   * time-limited and idle GC is suspended while it is active. Background
+   * runs require a writable log location, so sessions with a read-only
+   * (`ro`) workspace reject them.
    */
   runBackground(code: string, opts?: IsolatedRunOpts): Promise<IsolatedBackgroundRun>;
   /** Return the lifecycle state of a background run. */

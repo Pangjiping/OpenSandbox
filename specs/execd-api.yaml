@@ -2343,11 +2343,19 @@ components:
             level signals (for example the SIGINT sent when a foreground run
             times out or is cancelled) also reach them; execd cannot signal
             individual in-namespace processes.
+            Background runs require a writable log location, so sessions with
+            a read-only (`ro`) workspace reject them with 400: there is no
+            host-visible writable location for the run's log and exit-code
+            files. rw and overlay workspaces are supported.
           example: false
 
     IsolatedBackgroundRunResponse:
       type: object
       description: "Handle returned when a run is started with background: true"
+      required:
+        - session_id
+        - run_id
+        - started_at
       properties:
         session_id:
           type: string
@@ -2365,6 +2373,11 @@ components:
     IsolatedRunStatus:
       type: object
       description: Lifecycle state of an isolated background run
+      required:
+        - session_id
+        - run_id
+        - running
+        - started_at
       properties:
         session_id:
           type: string

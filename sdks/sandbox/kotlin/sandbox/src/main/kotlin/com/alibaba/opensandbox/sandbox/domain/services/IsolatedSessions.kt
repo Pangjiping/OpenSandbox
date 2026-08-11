@@ -47,7 +47,9 @@ interface IsolationSession {
      *
      * The run's combined output and exit code are captured by execd; poll
      * them with [getRunStatus] and [getRunLogs]. The run is not time-limited
-     * and idle GC is suspended while it is active.
+     * and idle GC is suspended while it is active. Background runs require a
+     * writable log location, so sessions with a read-only (`ro`) workspace
+     * reject them.
      */
     fun runBackground(
         code: String,

@@ -35,35 +35,33 @@ class IsolatedRunStatus:
     """Lifecycle state of an isolated background run
 
     Attributes:
-        session_id (UUID | Unset):
-        run_id (UUID | Unset):
-        running (bool | Unset): Whether the run is still executing
+        session_id (UUID):
+        run_id (UUID):
+        running (bool): Whether the run is still executing
+        started_at (datetime.datetime): Run start time in RFC3339 format Example: 2025-12-22T09:08:05Z.
         exit_code (int | None | Unset): Exit code of the code if the run has finished
         error (str | Unset): Error message if the run failed (e.g. session terminated) Example: session terminated.
-        started_at (datetime.datetime | Unset): Run start time in RFC3339 format Example: 2025-12-22T09:08:05Z.
         finished_at (datetime.datetime | None | Unset): Run finish time in RFC3339 format (null if still running)
             Example: 2025-12-22T09:08:09Z.
     """
 
-    session_id: UUID | Unset = UNSET
-    run_id: UUID | Unset = UNSET
-    running: bool | Unset = UNSET
+    session_id: UUID
+    run_id: UUID
+    running: bool
+    started_at: datetime.datetime
     exit_code: int | None | Unset = UNSET
     error: str | Unset = UNSET
-    started_at: datetime.datetime | Unset = UNSET
     finished_at: datetime.datetime | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        session_id: str | Unset = UNSET
-        if not isinstance(self.session_id, Unset):
-            session_id = str(self.session_id)
+        session_id = str(self.session_id)
 
-        run_id: str | Unset = UNSET
-        if not isinstance(self.run_id, Unset):
-            run_id = str(self.run_id)
+        run_id = str(self.run_id)
 
         running = self.running
+
+        started_at = self.started_at.isoformat()
 
         exit_code: int | None | Unset
         if isinstance(self.exit_code, Unset):
@@ -72,10 +70,6 @@ class IsolatedRunStatus:
             exit_code = self.exit_code
 
         error = self.error
-
-        started_at: str | Unset = UNSET
-        if not isinstance(self.started_at, Unset):
-            started_at = self.started_at.isoformat()
 
         finished_at: None | str | Unset
         if isinstance(self.finished_at, Unset):
@@ -87,19 +81,18 @@ class IsolatedRunStatus:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if session_id is not UNSET:
-            field_dict["session_id"] = session_id
-        if run_id is not UNSET:
-            field_dict["run_id"] = run_id
-        if running is not UNSET:
-            field_dict["running"] = running
+        field_dict.update(
+            {
+                "session_id": session_id,
+                "run_id": run_id,
+                "running": running,
+                "started_at": started_at,
+            }
+        )
         if exit_code is not UNSET:
             field_dict["exit_code"] = exit_code
         if error is not UNSET:
             field_dict["error"] = error
-        if started_at is not UNSET:
-            field_dict["started_at"] = started_at
         if finished_at is not UNSET:
             field_dict["finished_at"] = finished_at
 
@@ -108,21 +101,13 @@ class IsolatedRunStatus:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        _session_id = d.pop("session_id", UNSET)
-        session_id: UUID | Unset
-        if isinstance(_session_id, Unset):
-            session_id = UNSET
-        else:
-            session_id = UUID(_session_id)
+        session_id = UUID(d.pop("session_id"))
 
-        _run_id = d.pop("run_id", UNSET)
-        run_id: UUID | Unset
-        if isinstance(_run_id, Unset):
-            run_id = UNSET
-        else:
-            run_id = UUID(_run_id)
+        run_id = UUID(d.pop("run_id"))
 
-        running = d.pop("running", UNSET)
+        running = d.pop("running")
+
+        started_at = isoparse(d.pop("started_at"))
 
         def _parse_exit_code(data: object) -> int | None | Unset:
             if data is None:
@@ -134,13 +119,6 @@ class IsolatedRunStatus:
         exit_code = _parse_exit_code(d.pop("exit_code", UNSET))
 
         error = d.pop("error", UNSET)
-
-        _started_at = d.pop("started_at", UNSET)
-        started_at: datetime.datetime | Unset
-        if isinstance(_started_at, Unset):
-            started_at = UNSET
-        else:
-            started_at = isoparse(_started_at)
 
         def _parse_finished_at(data: object) -> datetime.datetime | None | Unset:
             if data is None:
@@ -163,9 +141,9 @@ class IsolatedRunStatus:
             session_id=session_id,
             run_id=run_id,
             running=running,
+            started_at=started_at,
             exit_code=exit_code,
             error=error,
-            started_at=started_at,
             finished_at=finished_at,
         )
 

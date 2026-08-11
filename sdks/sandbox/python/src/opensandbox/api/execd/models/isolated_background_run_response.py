@@ -25,8 +25,6 @@ from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 from dateutil.parser import isoparse
 
-from ..types import UNSET, Unset
-
 T = TypeVar("T", bound="IsolatedBackgroundRunResponse")
 
 
@@ -35,64 +33,43 @@ class IsolatedBackgroundRunResponse:
     """Handle returned when a run is started with background: true
 
     Attributes:
-        session_id (UUID | Unset): Session the run was started in
-        run_id (UUID | Unset): Run ID for status and logs polling
-        started_at (datetime.datetime | Unset): Run start time in RFC3339 format
+        session_id (UUID): Session the run was started in
+        run_id (UUID): Run ID for status and logs polling
+        started_at (datetime.datetime): Run start time in RFC3339 format
     """
 
-    session_id: UUID | Unset = UNSET
-    run_id: UUID | Unset = UNSET
-    started_at: datetime.datetime | Unset = UNSET
+    session_id: UUID
+    run_id: UUID
+    started_at: datetime.datetime
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        session_id: str | Unset = UNSET
-        if not isinstance(self.session_id, Unset):
-            session_id = str(self.session_id)
+        session_id = str(self.session_id)
 
-        run_id: str | Unset = UNSET
-        if not isinstance(self.run_id, Unset):
-            run_id = str(self.run_id)
+        run_id = str(self.run_id)
 
-        started_at: str | Unset = UNSET
-        if not isinstance(self.started_at, Unset):
-            started_at = self.started_at.isoformat()
+        started_at = self.started_at.isoformat()
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update({})
-        if session_id is not UNSET:
-            field_dict["session_id"] = session_id
-        if run_id is not UNSET:
-            field_dict["run_id"] = run_id
-        if started_at is not UNSET:
-            field_dict["started_at"] = started_at
+        field_dict.update(
+            {
+                "session_id": session_id,
+                "run_id": run_id,
+                "started_at": started_at,
+            }
+        )
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        _session_id = d.pop("session_id", UNSET)
-        session_id: UUID | Unset
-        if isinstance(_session_id, Unset):
-            session_id = UNSET
-        else:
-            session_id = UUID(_session_id)
+        session_id = UUID(d.pop("session_id"))
 
-        _run_id = d.pop("run_id", UNSET)
-        run_id: UUID | Unset
-        if isinstance(_run_id, Unset):
-            run_id = UNSET
-        else:
-            run_id = UUID(_run_id)
+        run_id = UUID(d.pop("run_id"))
 
-        _started_at = d.pop("started_at", UNSET)
-        started_at: datetime.datetime | Unset
-        if isinstance(_started_at, Unset):
-            started_at = UNSET
-        else:
-            started_at = isoparse(_started_at)
+        started_at = isoparse(d.pop("started_at"))
 
         isolated_background_run_response = cls(
             session_id=session_id,

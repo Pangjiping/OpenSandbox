@@ -714,6 +714,9 @@ export interface paths {
          *     When no cursor is provided, the log is returned from the start. At
          *     most 16 MiB are returned per request; use the returned cursor to
          *     fetch the remainder.
+         *     Per-run log retention is capped at 16 MiB: output beyond the cap is
+         *     discarded when the run completes, so clients that need more than the
+         *     first page should drain incrementally while the run is active.
          *     Response body is plain text so it can be rendered directly in browsers.
          */
         get: operations["getIsolatedRunLogs"];
@@ -1393,6 +1396,14 @@ export interface components {
              *     The run's combined stdout/stderr is captured to a log file that
              *     can be polled via the run logs endpoint; its lifecycle is tracked
              *     via the run status endpoint.
+             *     Background runs share the session's process group, so session-
+             *     level signals (for example the SIGINT sent when a foreground run
+             *     times out or is cancelled) also reach them; execd cannot signal
+             *     individual in-namespace processes.
+             *     Background runs require a writable log location, so sessions with
+             *     a read-only (`ro`) workspace reject them with 400: there is no
+             *     host-visible writable location for the run's log and exit-code
+             *     files. rw and overlay workspaces are supported.
              * @example false
              */
             background?: boolean;
@@ -1403,29 +1414,29 @@ export interface components {
              * Format: uuid
              * @description Session the run was started in
              */
-            session_id?: string;
+            session_id: string;
             /**
              * Format: uuid
              * @description Run ID for status and logs polling
              */
-            run_id?: string;
+            run_id: string;
             /**
              * Format: date-time
              * @description Run start time in RFC3339 format
              */
-            started_at?: string;
+            started_at: string;
         };
         /** @description Lifecycle state of an isolated background run */
         IsolatedRunStatus: {
             /** Format: uuid */
-            session_id?: string;
+            session_id: string;
             /** Format: uuid */
-            run_id?: string;
+            run_id: string;
             /**
              * @description Whether the run is still executing
              * @example false
              */
-            running?: boolean;
+            running: boolean;
             /**
              * Format: int32
              * @description Exit code of the code if the run has finished
@@ -1442,7 +1453,7 @@ export interface components {
              * @description Run start time in RFC3339 format
              * @example 2025-12-22T09:08:05Z
              */
-            started_at?: string;
+            started_at: string;
             /**
              * Format: date-time
              * @description Run finish time in RFC3339 format (null if still running)
