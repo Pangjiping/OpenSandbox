@@ -48,6 +48,11 @@ func withPreReap(fn func()) launchOption {
 	return func(*managedProcess) {}
 }
 
+// withoutHardening is a no-op off Linux (the floor never applies there).
+func withoutHardening() launchOption {
+	return func(*managedProcess) {}
+}
+
 func launchManagedWith(cmd *exec.Cmd, startFn func() error, opts ...launchOption) (*managedProcess, error) {
 	if err := startFn(); err != nil {
 		return nil, err

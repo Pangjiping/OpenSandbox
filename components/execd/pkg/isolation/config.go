@@ -34,13 +34,30 @@ type Config struct {
 	// Seccomp overrides the built-in syscall denylist. When nil (i.e. the
 	// [seccomp] section is absent), the built-in denylist is used. When
 	// present, Deny completely replaces the built-in list — no merging.
+	// With [hardening] enabled, the same list becomes the workload's seccomp
+	// floor (the launcher's exec syscall, execve, is reserved and rejected).
 	Seccomp *SeccompOverride `toml:"seccomp"`
+
+	// Hardening enables the pre-exec privilege floor (OSEP-0018 §4): every
+	// user-code process is launched through the native launcher with reduced
+	// capabilities, no_new_privs, and the seccomp floor. Defaults to off.
+	Hardening *HardeningConfig `toml:"hardening"`
 }
 
 // SeccompOverride specifies a custom syscall denylist that replaces the
 // built-in default when present.
 type SeccompOverride struct {
 	Deny []string `toml:"deny"`
+}
+
+// HardeningConfig controls the pre-exec hardening floor.
+type HardeningConfig struct {
+	// Enabled turns the floor on: init + cap-drop + no_new_privs + seccomp
+	// for every user-code launch, via the opensandbox-launcher helper.
+	Enabled bool `toml:"enabled"`
+	// KeepCapabilities lists capabilities the workload retains (raised in
+	// the ambient set). Default: drop all.
+	KeepCapabilities []string `toml:"keep_capabilities"`
 }
 
 // DefaultConfig returns the built-in defaults used when no config file is
@@ -52,6 +69,7 @@ func DefaultConfig() Config {
 		DiffMaxBytes:    4 * 1024 * 1024 * 1024, // 4 GiB
 		AllowedWritable: []string{"/workspace", "/mnt", "/media", "/data"},
 		Seccomp:         nil, // use built-in denylist
+		Hardening:       nil, // floor off
 	}
 }
 

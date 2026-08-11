@@ -69,6 +69,14 @@ func run() int {
 		return 1
 	}
 
+	// Activate the pre-exec hardening floor ([hardening] enabled, OSEP-0018).
+	// Config errors (unknown capability, reserved execve) are fatal; missing
+	// runtime support degrades and is reported on the capabilities endpoint.
+	if err := runtime.InitHardening(isoCfg); err != nil {
+		log.Error("hardening: %v", err)
+		return 1
+	}
+
 	// Probe isolation runtime capabilities.
 	isolationProbe := isolation.Probe(isolation.ProbeConfig{
 		UpperRoot:     isoCfg.UpperRoot,

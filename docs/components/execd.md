@@ -232,6 +232,45 @@ upper_root = "/var/lib/execd/isolation"
 allowed_writable = ["/workspace", "/mnt", "/media", "/data"]
 ```
 
+### Hardening Floor
+
+The pre-exec privilege floor (OSEP-0018 §4) is off by default. Enable it in
+the same isolation TOML:
+
+```toml
+[hardening]
+enabled = true
+
+# Capabilities the workload keeps (raised in the ambient set).
+# Default: drop all. Names use the CAP_ prefix.
+keep_capabilities = []
+
+# Optional: replace the built-in syscall denylist. With hardening enabled,
+# "execve" is reserved for the launcher's final exec and is rejected at
+# startup ("execveat" stays allowed).
+[seccomp]
+deny = ["mount", "ptrace", "bpf", "seccomp"]
+```
+
+When enabled, every user-code process (entrypoint, `/command`, `/code`,
+PTY) is launched through the `opensandbox-launcher` native helper, which
+applies the floor between fork and exec: execd credential env vars are
+stripped, the bounding set is trimmed to `keep_capabilities` (none by
+default), `no_new_privs` is set, the identity is dropped to the image's
+user, kept caps are raised in the ambient set, and the seccomp filter is
+installed last. Isolated-session workloads are already reduced inside the
+bwrap namespace and are not additionally wrapped.
+
+Everything is fail-open and reported on `GET /v1/isolated/capabilities`
+under `hardening.cap_drop` / `hardening.seccomp` (`active` | `degraded` |
+`disabled` with a reason message). Missing `CAP_SETPCAP` degrades the cap
+drop but keeps seccomp; a missing launcher binary disables the floor.
+
+Recommended container ceiling (operator side): keep `CAP_SETPCAP`,
+`CAP_SETUID`, `CAP_SETGID` so execd can reduce children; drop the rest
+(`NET_RAW`, `SYS_MODULE`, `SYS_TIME`, `SYS_TTY_CONFIG`, `AUDIT_WRITE`,
+`MKNOD`).
+
 ## Observability
 
 ### OpenTelemetry Metrics

@@ -82,3 +82,22 @@ allowed_writable = ["/workspace", "/mnt", "/media", "/data"]
 #   # Other potentially dangerous
 #   "userfaultfd", "kexec_load", "kexec_file_load", "acct",
 # ]
+
+# Hardening floor (OSEP-0018 §4). Default OFF — omit the section for today's
+# behavior. When enabled, every user-code process (entrypoint, /command,
+# /code, PTY) is launched through the opensandbox-launcher native helper with
+# reduced capabilities, no_new_privs, and the seccomp floor; combined with
+# init mode via bootstrap.sh EXECD_INIT + --init.
+#
+# [hardening]
+# enabled = true
+#
+#   # Capabilities the workload retains (raised in the ambient set).
+#   # Default: drop all. Names use the CAP_ prefix.
+#   keep_capabilities = []
+#
+# NOTE: with [hardening] enabled, [seccomp] deny must NOT list "execve" —
+# it is reserved for the launcher's final exec (execveat stays allowed).
+# Missing runtime support (no CAP_SETPCAP, launcher binary absent) is
+# reported on GET /v1/isolated/capabilities under "hardening" and skipped,
+# never fatal.

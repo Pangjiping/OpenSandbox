@@ -282,6 +282,13 @@ func bwrapWorkspaceSegment(opts WrapOptions) ([]string, error) {
 	}
 }
 
+// ExecdConfigEnvBlacklist enumerates execd's own configuration env vars.
+// They are always stripped so execd's credentials never leak into the
+// workload; the hardening launcher unsets the same set before execve.
+func ExecdConfigEnvBlacklist() []string {
+	return append([]string(nil), execdConfigEnvBlacklist...)
+}
+
 // execdConfigEnvBlacklist enumerates execd's own configuration env vars.
 // They are always stripped so execd's credentials never leak into the sandbox.
 var execdConfigEnvBlacklist = []string{

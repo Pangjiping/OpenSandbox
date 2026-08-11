@@ -14,11 +14,24 @@
 
 package model
 
+// HardeningLayerState reports whether one hardening layer is actually
+// enforced (OSEP-0018 §6).
+type HardeningLayerState struct {
+	// State is "active" | "disabled" (not configured) | "degraded"
+	// (configured but a prerequisite is missing) | "unsupported".
+	State   string `json:"state"`
+	Message string `json:"message,omitempty"`
+}
+
 // HardeningStatus reports which execd init-mode controls are in effect
 // (OSEP-0018). This is execd-global state (execd as the sandbox init / PID 1),
 // not an isolation/bwrap capability; it is reported on the capabilities
 // endpoint so operators see what is actually enforced in one place.
 type HardeningStatus struct {
-	InitMode     string `json:"init_mode"`     // "pid1" | "subreaper" | "none"
-	SignalShield bool   `json:"signal_shield"` // kernel PID 1 signal shield active
+	InitMode     string               `json:"init_mode"`     // "pid1" | "subreaper" | "none"
+	SignalShield bool                 `json:"signal_shield"` // kernel PID 1 signal shield active
+	CapDrop      *HardeningLayerState `json:"cap_drop"`      // bounding-set/capability reduction
+	Seccomp      *HardeningLayerState `json:"seccomp"`       // seccomp floor on user code
+	Landlock     *HardeningLayerState `json:"landlock"`      // filesystem confinement (phase 3)
+	Ebpf         *HardeningLayerState `json:"ebpf"`          // eBPF observation (phase 4)
 }

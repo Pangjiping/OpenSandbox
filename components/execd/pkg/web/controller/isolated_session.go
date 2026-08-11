@@ -443,16 +443,33 @@ func (c *IsolatedSessionController) Commit() {
 
 // Capabilities handles GET /v1/isolated/capabilities.
 func (c *IsolatedSessionController) Capabilities() {
-	initMode, signalShield := runtime.InitModeReport()
+	hardeningReport := runtime.ReportHardening()
+	hardening := &model.HardeningStatus{
+		InitMode:     hardeningReport.InitMode,
+		SignalShield: hardeningReport.SignalShield,
+		CapDrop: &model.HardeningLayerState{
+			State:   hardeningReport.CapDrop.State,
+			Message: hardeningReport.CapDrop.Message,
+		},
+		Seccomp: &model.HardeningLayerState{
+			State:   hardeningReport.Seccomp.State,
+			Message: hardeningReport.Seccomp.Message,
+		},
+		Landlock: &model.HardeningLayerState{
+			State:   hardeningReport.Landlock.State,
+			Message: hardeningReport.Landlock.Message,
+		},
+		Ebpf: &model.HardeningLayerState{
+			State:   hardeningReport.Ebpf.State,
+			Message: hardeningReport.Ebpf.Message,
+		},
+	}
 	if isolatedRunner == nil {
 		resp := model.CapabilitiesResponse{
 			Available:       false,
 			CommitSupported: false,
 			DiffSupported:   false,
-			Hardening: &model.HardeningStatus{
-				InitMode:     initMode,
-				SignalShield: signalShield,
-			},
+			Hardening:       hardening,
 		}
 		if isolatedProbeResult != nil {
 			resp.Isolator = isolatedProbeResult.Isolator
@@ -473,10 +490,7 @@ func (c *IsolatedSessionController) Capabilities() {
 		UsernsAvailable:  caps.UsernsAvailable,
 		CommitSupported:  caps.CommitSupported,
 		DiffSupported:    caps.DiffSupported,
-		Hardening: &model.HardeningStatus{
-			InitMode:     initMode,
-			SignalShield: signalShield,
-		},
+		Hardening:        hardening,
 	}
 	// Probe results indicate overlay capability, not diff/commit implementation.
 	// Diff and commit are Phase 2; do not advertise them as supported.

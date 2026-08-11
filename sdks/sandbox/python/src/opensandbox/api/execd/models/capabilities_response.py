@@ -45,9 +45,9 @@ class CapabilitiesResponse:
         userns_available (bool | Unset): Whether sessions using uid_mode userns can be created
         commit_supported (bool | Unset):
         diff_supported (bool | Unset):
-        hardening (CapabilitiesResponseHardening | Unset): execd init-mode state (OSEP-0018): whether execd is the
-            sandbox init and which of its controls are in effect. Not an isolation capability; reported here so operators
-            see enforcement state in one place.
+        hardening (CapabilitiesResponseHardening | Unset): execd init-mode and workload-hardening state (OSEP-0018):
+            whether execd is the sandbox init and which of its controls are in effect. Not an isolation capability; reported
+            here so operators see enforcement state in one place.
     """
 
     available: bool | Unset = UNSET

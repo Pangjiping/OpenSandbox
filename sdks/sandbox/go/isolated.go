@@ -182,10 +182,21 @@ type isolatedBackgroundRunRequest struct {
 	Background bool              `json:"background"`
 }
 
+// HardeningLayerState reports whether one hardening layer is actually
+// enforced: "active" | "disabled" | "degraded" | "unsupported".
+type HardeningLayerState struct {
+	State   string `json:"state"`
+	Message string `json:"message,omitempty"`
+}
+
 // HardeningStatus reports execd init-mode state (OSEP-0018).
 type HardeningStatus struct {
-	InitMode     string `json:"init_mode"`     // "pid1" | "subreaper" | "none"
-	SignalShield bool   `json:"signal_shield"` // kernel PID 1 signal shield active
+	InitMode     string               `json:"init_mode"`     // "pid1" | "subreaper" | "none"
+	SignalShield bool                 `json:"signal_shield"` // kernel PID 1 signal shield active
+	CapDrop      *HardeningLayerState `json:"cap_drop"`
+	Seccomp      *HardeningLayerState `json:"seccomp"`
+	Landlock     *HardeningLayerState `json:"landlock"`
+	Ebpf         *HardeningLayerState `json:"ebpf"`
 }
 
 // IsolatedCapabilities reports isolation capabilities.

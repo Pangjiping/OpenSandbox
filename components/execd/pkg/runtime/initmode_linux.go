@@ -231,12 +231,13 @@ func (r *reaper) drain() {
 // In non-init mode it falls back to plain Cmd.Start/Cmd.Wait, so callers
 // share one launch path regardless of mode.
 type managedProcess struct {
-	cmd     *exec.Cmd
-	preReap func()
-	done    chan struct{}
-	once    sync.Once
-	ws      syscall.WaitStatus
-	exitErr error
+	cmd         *exec.Cmd
+	preReap     func()
+	noHardening bool
+	done        chan struct{}
+	once        sync.Once
+	ws          syscall.WaitStatus
+	exitErr     error
 }
 
 func newManagedProcess(cmd *exec.Cmd) *managedProcess {
@@ -289,24 +290,37 @@ func withPreReap(fn func()) launchOption {
 	}
 }
 
+// withoutHardening exempts a launch from the hardening floor. Used for the
+// bwrap process of isolated sessions, whose workload is already reduced
+// inside the namespace and whose own syscalls (unshare) the floor would deny.
+func withoutHardening() launchOption {
+	return func(mp *managedProcess) {
+		mp.noHardening = true
+	}
+}
+
 // launchManagedWith starts the command and registers it with the reaper.
 // startFn is called under the reaper lock so the child cannot be observed
-// (and misclassified as an orphan) before registration.
+// (and misclassified as an orphan) before registration. When the hardening
+// floor is active, cmd is first rewritten to exec through the launcher.
 func launchManagedWith(cmd *exec.Cmd, startFn func() error, opts ...launchOption) (*managedProcess, error) {
+	mp := newManagedProcess(cmd)
+	for _, o := range opts {
+		o(mp)
+	}
+	if err := hardenCmd(cmd, mp.noHardening); err != nil {
+		return nil, err
+	}
 	if initReaper == nil {
 		if err := startFn(); err != nil {
 			return nil, err
 		}
-		return newManagedProcess(cmd), nil
+		return mp, nil
 	}
 	initReaper.mu.Lock()
 	defer initReaper.mu.Unlock()
 	if err := startFn(); err != nil {
 		return nil, err
-	}
-	mp := newManagedProcess(cmd)
-	for _, o := range opts {
-		o(mp)
 	}
 	initReaper.owned[cmd.Process.Pid] = mp
 	return mp, nil

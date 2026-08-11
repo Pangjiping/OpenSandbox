@@ -210,7 +210,14 @@ func (s *isolatedSession) start() error {
 	cmd.Stdout = stdoutW
 	cmd.Stderr = stdoutW
 
-	mp, err := launchManaged(cmd, withPreReap(func() { s.markProcessExitedBeforeReap(nil) }))
+	mp, err := launchManaged(
+		cmd,
+		withPreReap(func() { s.markProcessExitedBeforeReap(nil) }),
+		// bwrap needs unshare/mount + capabilities to build the namespace;
+		// its workload is already reduced inside by bwrap's own seccomp and
+		// the session gate.
+		withoutHardening(),
+	)
 	if err != nil {
 		_ = stdinR.Close()
 		_ = stdinW.Close()
