@@ -2555,10 +2555,10 @@ components:
               description: Seccomp floor installed on user code.
             landlock:
               $ref: "#/components/schemas/HardeningLayerState"
-              description: Landlock filesystem confinement (phase 3).
+              description: Landlock filesystem confinement on user code.
             ebpf:
               $ref: "#/components/schemas/HardeningLayerState"
-              description: eBPF observation (phase 4).
+              description: eBPF exec/connect/privilege observation.
 
     HardeningLayerState:
       type: object

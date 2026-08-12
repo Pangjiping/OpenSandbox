@@ -454,7 +454,7 @@ func ReportHardening() HardeningReport {
 		Seccomp:      LayerState{State: "disabled", Message: "hardening not enabled"},
 		Landlock: LayerState{
 			State:   "disabled",
-			Message: "landlock confinement is not enabled (phase 3)",
+			Message: "landlock confinement is not enabled",
 		},
 		Ebpf: LayerState{
 			State:   "disabled",
