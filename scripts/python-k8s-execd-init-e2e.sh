@@ -38,7 +38,7 @@ EGRESS_IMG="${EGRESS_IMG:-opensandbox/egress:e2e-local}"
 SERVER_RELEASE="${SERVER_RELEASE:-opensandbox-server}"
 SERVER_VALUES_FILE="${SERVER_VALUES_FILE:-/tmp/opensandbox-server-values.yaml}"
 PORT_FORWARD_LOG="${PORT_FORWARD_LOG:-/tmp/opensandbox-server-port-forward.log}"
-SANDBOX_TEST_IMAGE="${SANDBOX_TEST_IMAGE:-ubuntu:latest}"
+SANDBOX_TEST_IMAGE="${SANDBOX_TEST_IMAGE:-opensandbox/code-interpreter:latest}"
 LIFECYCLE_LOCAL_PORT="${LIFECYCLE_LOCAL_PORT:-8080}"
 
 SERVER_IMG_REPOSITORY="${SERVER_IMG%:*}"
