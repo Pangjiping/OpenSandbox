@@ -26,9 +26,6 @@
 
 char LICENSE[] SEC("license") = "GPL";
 
-#define MAX_ARGV 4
-#define ARG_LEN 32
-
 #define AF_INET 2
 #define TCP_SYN_SENT 2
 
@@ -47,7 +44,6 @@ struct event_exec {
     uint32_t ppid;
     char comm[16];
     char filename[64];
-    char argv[MAX_ARGV][ARG_LEN];
 } __attribute__((packed));
 
 struct event_connect {
@@ -81,9 +77,6 @@ int on_exec(struct trace_event_raw_sched_process_exec *ctx)
     struct event_exec ev = {};
     struct task_struct *task;
     struct task_struct *parent;
-    uint32_t argv_loc;
-    char **argv;
-    int i;
 
     ev.pid = bpf_get_current_pid_tgid() >> 32;
     task = (struct task_struct *)bpf_get_current_task();
@@ -92,37 +85,17 @@ int on_exec(struct trace_event_raw_sched_process_exec *ctx)
     bpf_get_current_comm(&ev.comm, sizeof(ev.comm));
 
     // The raw trace event layout changed in 5.16: filename moved from an
-    // inline 1024-byte array to a __data_loc string. The argv data (a
-    // pointer array behind a __data_loc) is laid out identically in both.
+    // inline 1024-byte array to a __data_loc string. The tracepoint payload
+    // does not carry an argv array, so exec events report the filename only.
     if (bpf_core_field_exists(ctx->__data_loc_filename)) {
         uint32_t filename_loc = BPF_CORE_READ(ctx, __data_loc_filename);
-        long filename_len;
 
-        filename_len = bpf_probe_read_str(&ev.filename, sizeof(ev.filename),
-                                          (void *)ctx + (filename_loc & 0xffff));
-        if (filename_len < 0)
-            filename_len = 0;
-        // The argv pointer array is the next 8-byte-aligned slot after the
-        // filename string in the data area.
-        argv_loc = (filename_loc & 0xffff) + (uint32_t)filename_len;
-        argv_loc = (argv_loc + 7) & ~7u;
+        bpf_probe_read_str(&ev.filename, sizeof(ev.filename),
+                           (void *)ctx + (filename_loc & 0xffff));
     } else {
         // 5.10-5.15: filename is inline at a fixed offset after
-        // trace_entry(8) + pid(4) + old_pid(4); the argv data_loc u32
-        // follows the 1024-byte filename array.
+        // trace_entry(8) + pid(4) + old_pid(4).
         bpf_probe_read_str(&ev.filename, sizeof(ev.filename), (void *)ctx + 16);
-        bpf_probe_read(&argv_loc, sizeof(argv_loc), (void *)ctx + 16 + 1024);
-    }
-
-    argv = (void *)ctx + (argv_loc & 0xffff);
-    for (i = 0; i < MAX_ARGV; i++) {
-        char *argp;
-
-        if (bpf_probe_read(&argp, sizeof(argp), &argv[i]) != 0)
-            break;
-        if (argp == NULL || argp == (char *)0xffffffff)
-            break;
-        bpf_probe_read_str(&ev.argv[i], sizeof(ev.argv[i]), argp);
     }
 
     emit(&ev, sizeof(ev));
@@ -149,6 +122,14 @@ int on_connect(struct trace_event_raw_inet_sock_set_state *ctx)
         __be32 daddr;
 
         bpf_core_read(&daddr, sizeof(daddr), &skc->skc_daddr);
+        // Store the IPv4-mapped ::ffff:a.b.c.d form so the userspace
+        // decoder can format plain dotted IPv4.
+        ev.dst_ip[0] = 0;
+        ev.dst_ip[1] = 0;
+        // On little-endian targets the u32 0xffff0000 occupies bytes
+        // 00 00 ff ff, i.e. the ::ffff: prefix at bytes 10-11 the Go
+        // decoder looks for.
+        ev.dst_ip[2] = 0xffff0000;
         ev.dst_ip[3] = daddr;
     } else {
         bpf_core_read(ev.dst_ip, sizeof(ev.dst_ip),
@@ -176,13 +157,11 @@ int BPF_KPROBE(on_commit_creds, struct cred *new)
     bpf_core_read(&ev.old_gid, sizeof(ev.old_gid), &old->gid.val);
     bpf_core_read(&ev.new_uid, sizeof(ev.new_uid), &new->uid.val);
     bpf_core_read(&ev.new_gid, sizeof(ev.new_gid), &new->gid.val);
-    if (ev.old_uid == ev.new_uid && ev.old_gid == ev.new_gid)
-        return 0;
 
+    // kernel_cap_t is 8 bytes in every kernel but its shape changed in
+    // 6.3 ({u32 cap[2]} -> {u64 val}); reading the field as raw 8 bytes
+    // is layout-agnostic and works on both.
     {
-        // kernel_cap_t is 8 bytes in every kernel but its shape changed in
-        // 6.3 ({u32 cap[2]} -> {u64 val}); reading the field as raw 8 bytes
-        // is layout-agnostic and works on both.
         uint64_t old_caps;
         uint64_t new_caps;
 
@@ -190,6 +169,12 @@ int BPF_KPROBE(on_commit_creds, struct cred *new)
         bpf_core_read(&new_caps, sizeof(new_caps), &new->cap_effective);
         ev.cap_added = new_caps & ~old_caps;
     }
+
+    // Emit when identity or effective capabilities change (cap-only
+    // transitions such as file caps or ambient raises are audit-relevant).
+    if (ev.old_uid == ev.new_uid && ev.old_gid == ev.new_gid &&
+        ev.cap_added == 0)
+        return 0;
 
     emit(&ev, sizeof(ev));
     return 0;

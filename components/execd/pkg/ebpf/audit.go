@@ -27,12 +27,14 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -60,9 +62,8 @@ type Event struct {
 	Comm      string `json:"comm"`
 
 	// exec
-	Filename string   `json:"filename,omitempty"`
-	Argv     []string `json:"argv,omitempty"`
-	PPID     uint32   `json:"ppid,omitempty"`
+	Filename string `json:"filename,omitempty"`
+	PPID     uint32 `json:"ppid,omitempty"`
 
 	// connect
 	DstIP   string `json:"dst_ip,omitempty"`
@@ -79,7 +80,7 @@ type Event struct {
 
 // Packed BPF event sizes (must match audit.bpf.c).
 const (
-	sizeEventExec      = 4 + 4 + 16 + 64 + 4*32
+	sizeEventExec      = 4 + 4 + 16 + 64
 	sizeEventConnect   = 4 + 16 + 16 + 2
 	sizeEventPrivilege = 4 + 16 + 4*4 + 8
 )
@@ -162,27 +163,28 @@ func newObserver(cfg *isolation.EbpfConfig, sandboxID string, cgroupID uint64) (
 	}
 
 	var links []link.Link
-	if objs.OnExec != nil {
-		if l, err := link.Tracepoint("sched", "sched_process_exec", objs.OnExec, nil); err != nil {
-			log.Warn("ebpf: attach sched_process_exec: %v", err)
-		} else {
-			links = append(links, l)
+	attached := map[string]bool{}
+	attach := func(kind string, prog *ebpf.Program, attachFn func() (link.Link, error)) {
+		if prog == nil {
+			return
 		}
-	}
-	if objs.OnConnect != nil {
-		if l, err := link.Tracepoint("sock", "inet_sock_set_state", objs.OnConnect, nil); err != nil {
-			log.Warn("ebpf: attach inet_sock_set_state: %v", err)
-		} else {
-			links = append(links, l)
+		l, err := attachFn()
+		if err != nil {
+			log.Warn("ebpf: attach %s: %v", kind, err)
+			return
 		}
+		links = append(links, l)
+		attached[kind] = true
 	}
-	if objs.OnCommitCreds != nil {
-		if l, err := link.Kprobe("commit_creds", objs.OnCommitCreds, nil); err != nil {
-			log.Warn("ebpf: attach commit_creds: %v", err)
-		} else {
-			links = append(links, l)
-		}
-	}
+	attach("exec", objs.OnExec, func() (link.Link, error) {
+		return link.Tracepoint("sched", "sched_process_exec", objs.OnExec, nil)
+	})
+	attach("connect", objs.OnConnect, func() (link.Link, error) {
+		return link.Tracepoint("sock", "inet_sock_set_state", objs.OnConnect, nil)
+	})
+	attach("privilege", objs.OnCommitCreds, func() (link.Link, error) {
+		return link.Kprobe("commit_creds", objs.OnCommitCreds, nil)
+	})
 
 	reader, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
@@ -197,6 +199,19 @@ func newObserver(cfg *isolation.EbpfConfig, sandboxID string, cgroupID uint64) (
 	if len(kinds) == 0 {
 		for _, kind := range []string{"exec", "connect", "privilege"} {
 			kinds[kind] = true
+		}
+	}
+	for kind := range kinds {
+		if !attached[kind] {
+			// Release every already-attached hook and the ringbuf reader so
+			// partially attached programs do not stay live after the
+			// degraded report.
+			for _, l := range links {
+				_ = l.Close()
+			}
+			reader.Close()
+			objs.Close()
+			return nil, fmt.Errorf("requested observer hook %q could not be attached", kind)
 		}
 	}
 
@@ -248,6 +263,7 @@ func (o *Observer) handleRecord(raw []byte) {
 	if !o.kinds[event.Event] {
 		return
 	}
+	event.SandboxID = o.sandboxID
 	line, err := json.Marshal(event)
 	if err != nil {
 		log.Warn("ebpf: marshal event: %v", err)
@@ -266,14 +282,6 @@ func decodeEvent(raw []byte) (Event, bool) {
 		ev.PPID = binary.LittleEndian.Uint32(raw[4:8])
 		ev.Comm = cstring(raw[8:24])
 		ev.Filename = cstring(raw[24:88])
-		argv := raw[88:]
-		for i := 0; i < 4; i++ {
-			arg := cstring(argv[i*32 : (i+1)*32])
-			if arg == "" {
-				break
-			}
-			ev.Argv = append(ev.Argv, arg)
-		}
 		return ev, true
 	case sizeEventConnect:
 		ev := Event{TS: now, Event: "connect", PID: binary.LittleEndian.Uint32(raw[0:4])}
@@ -357,7 +365,10 @@ func effectiveCapsHave(cap uint32) bool {
 }
 
 // currentCgroupID returns the sandbox's cgroup v2 id (the inode number of
-// the cgroup directory), used to scope the observation.
+// the cgroup directory), used to scope the observation. The /proc/self/
+// cgroup path is relative to the cgroup hierarchy root, so it must be
+// resolved under the cgroup v2 mount (e.g. /sys/fs/cgroup) — the cgroup id
+// equals the inode number of that directory in cgroupfs.
 func currentCgroupID() (uint64, error) {
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
@@ -373,17 +384,38 @@ func currentCgroupID() (uint64, error) {
 	if path == "" {
 		return 0, fmt.Errorf("no cgroup v2 hierarchy in /proc/self/cgroup")
 	}
-	info, err := os.Stat(path)
+	mount, err := cgroupV2Mount()
 	if err != nil {
-		// In some container runtimes the cgroup path is not mounted at the
-		// same location; fall back to the inode of the cgroup mount itself.
-		return 0, fmt.Errorf("stat cgroup %s: %w", path, err)
+		return 0, err
+	}
+	full := filepath.Join(mount, strings.TrimPrefix(path, "/"))
+	info, err := os.Stat(full)
+	if err != nil {
+		return 0, fmt.Errorf("stat cgroup %s: %w", full, err)
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return 0, fmt.Errorf("stat cgroup %s: unexpected type", path)
+		return 0, fmt.Errorf("stat cgroup %s: unexpected type", full)
 	}
 	return stat.Ino, nil
+}
+
+// cgroupV2Mount locates the cgroup v2 filesystem mount.
+func cgroupV2Mount() (string, error) {
+	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil {
+		return "/sys/fs/cgroup", nil
+	}
+	data, err := os.ReadFile("/proc/self/mounts")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[2] == "cgroup2" {
+			return fields[1], nil
+		}
+	}
+	return "", fmt.Errorf("no cgroup v2 mount found")
 }
 
 func dirOf(path string) string {

@@ -154,7 +154,8 @@ data class IsolatedCapabilities(
 
 /** execd init-mode and workload-hardening state (OSEP-0018). */
 data class HardeningStatus(
-    val initMode: String? = null, // "pid1" | "subreaper" | "none"
+    // "pid1" | "subreaper" | "none"
+    val initMode: String? = null,
     val signalShield: Boolean = false,
     val capDrop: HardeningLayerState? = null,
     val seccomp: HardeningLayerState? = null,
@@ -164,6 +165,7 @@ data class HardeningStatus(
 
 /** Whether one hardening layer is actually enforced. */
 data class HardeningLayerState(
-    val state: String? = null, // active | disabled | degraded | unsupported
+    // active | disabled | degraded | unsupported
+    val state: String? = null,
     val message: String? = null,
 )

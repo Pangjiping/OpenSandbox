@@ -21,8 +21,14 @@ package ebpf
 
 import "github.com/alibaba/opensandbox/execd/pkg/isolation"
 
-// Init reports that observation is unavailable in this build.
+// Init reports the observation state for this build. A non-ebpf build can
+// never provide the hooks, so a requested [ebpf] enabled is "unsupported",
+// not merely "disabled" (not configured).
 func Init(cfg *isolation.EbpfConfig, sandboxID string) (state, message string) {
+	if cfg != nil && cfg.Enabled {
+		return "unsupported",
+			"eBPF observation requested but this build lacks the execd-ebpf variant (CGO + cilium/ebpf); default image unchanged"
+	}
 	return "disabled",
-		"eBPF observation requires the execd-ebpf build variant (CGO + cilium/ebpf); default image unchanged"
+		"eBPF observation is not enabled ([ebpf] enabled = false)"
 }

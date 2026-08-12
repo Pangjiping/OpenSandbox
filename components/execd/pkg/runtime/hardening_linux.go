@@ -40,9 +40,10 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/alibaba/opensandbox/execd/pkg/isolation"
 	"github.com/alibaba/opensandbox/execd/pkg/log"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -81,32 +82,46 @@ const (
 )
 
 // landlockRule grants access beneath path (OSEP-0018 §5). Rules only grant
-// access; everything else under the handled set is denied.
+// access; everything else under the handled set is denied. Required rules
+// must all install or the launch skips confinement entirely (fail closed);
+// best-effort rules (mount-expansion duplicates) are logged and skipped.
 type landlockRule struct {
-	Access uint64
-	Path   string
+	Access   uint64
+	Path     string
+	Required bool
 }
 
 // buildLandlockRules assembles the default allowlist. The root rule grants
 // EXECUTE only: it covers path traversal and execve of any binary without
 // exposing any read access. /proc is deliberately limited to /proc/self and
-// read-only well-known files — never all of /proc, which would re-expose
-// /proc/1 (and execd's credentials) to a same-uid workload.
+// /proc/sys — never all of /proc, which would re-expose /proc/1 (and
+// execd's credentials) to a same-uid workload. Note that Landlock
+// path_beneath rules are scoped to the mount the path sits on, so
+// expandMountRules adds a rule per mount point beneath each grant (a bind
+// mount like a workspace would otherwise be invisible to the rule).
 func buildLandlockRules(cfg isolation.Config) []landlockRule {
+	bestEffort := func(access uint64, path string) landlockRule {
+		return landlockRule{Access: access, Path: path, Required: false}
+	}
+	// Operator-explicit grants are required: if one cannot be installed the
+	// layer degrades instead of silently narrowing. The default set stays
+	// best-effort — images legitimately differ (e.g. alpine has no /lib64,
+	// minimal images lack /workspace).
+	required := func(access uint64, path string) landlockRule {
+		return landlockRule{Access: access, Path: path, Required: true}
+	}
 	var rules []landlockRule
 
-	rules = append(rules, landlockRule{Access: llExecute, Path: "/"})
+	rules = append(rules, bestEffort(llExecute, "/"))
 
 	readExec := llReadFile | llReadDir | llExecute
 	for _, p := range []string{"/usr", "/bin", "/lib", "/lib64", "/etc"} {
-		rules = append(rules, landlockRule{Access: readExec, Path: p})
+		rules = append(rules, bestEffort(readExec, p))
 	}
-	for _, p := range []string{
-		"/proc/self", "/proc/sys", "/proc/cpuinfo", "/proc/meminfo",
-		"/proc/stat", "/proc/version", "/proc/uptime", "/proc/loadavg",
-		"/proc/filesystems",
-	} {
-		rules = append(rules, landlockRule{Access: readExec, Path: p})
+	// Only directory paths are usable here: the kernel rejects path_beneath
+	// rules whose parent is a regular file (e.g. /proc/cpuinfo).
+	for _, p := range []string{"/proc/self", "/proc/sys"} {
+		rules = append(rules, bestEffort(readExec, p))
 	}
 
 	deviceRW := llReadFile | llWriteFile
@@ -114,23 +129,144 @@ func buildLandlockRules(cfg isolation.Config) []landlockRule {
 		"/dev/null", "/dev/zero", "/dev/full", "/dev/random",
 		"/dev/urandom", "/dev/tty",
 	} {
-		rules = append(rules, landlockRule{Access: deviceRW, Path: p})
+		rules = append(rules, bestEffort(deviceRW, p))
 	}
 	// The controlling terminal lives beneath /dev/pts.
-	rules = append(rules, landlockRule{Access: deviceRW, Path: "/dev/pts"})
+	rules = append(rules, bestEffort(deviceRW, "/dev/pts"))
 
 	for _, p := range append([]string{"/tmp", "/run"}, cfg.AllowedWritable...) {
-		rules = append(rules, landlockRule{Access: llRwAccess, Path: p})
+		rules = append(rules, bestEffort(llRwAccess, p))
 	}
 	if cfg.Landlock != nil {
 		for _, p := range cfg.Landlock.ExtraWritable {
-			rules = append(rules, landlockRule{Access: llRwAccess, Path: p})
+			rules = append(rules, required(llRwAccess, p))
 		}
 		for _, p := range cfg.Landlock.ExtraReadable {
-			rules = append(rules, landlockRule{Access: readExec, Path: p})
+			rules = append(rules, required(readExec, p))
 		}
 	}
-	return rules
+	return expandMountRules(rules)
+}
+
+// expandMountRules duplicates every rule onto each mount point beneath the
+// rule path. Landlock path_beneath rules only cover the mount the path
+// belongs to, so a bind-mounted workspace (a separate mount) is invisible
+// to a rule on its parent path — without expansion, execve and file access
+// on bind mounts would be denied.
+func expandMountRules(rules []landlockRule) []landlockRule {
+	mounts := readMountPoints()
+	if len(mounts) == 0 {
+		return rules
+	}
+	expanded := append([]landlockRule(nil), rules...)
+	for _, mount := range mounts {
+		access, ok := ruleForPath(rules, mount)
+		if !ok {
+			continue
+		}
+		expanded = append(expanded, landlockRule{Access: access, Path: mount, Required: false})
+	}
+	return expanded
+}
+
+// ruleForPath returns the merged access of every rule that covers path
+// (path == rule.Path or path is beneath it). A mount point may be beneath
+// several grants (e.g. /mnt beneath both / for EXECUTE and the /mnt
+// writable grant); merging keeps both, so a bind-mounted workspace keeps
+// execute access.
+func ruleForPath(rules []landlockRule, path string) (uint64, bool) {
+	var access uint64
+	found := false
+	for _, rule := range rules {
+		if !pathBeneath(rule.Path, path) {
+			continue
+		}
+		access |= rule.Access
+		found = true
+	}
+	return access, found
+}
+
+// pathBeneath reports whether path == parent or path is beneath parent
+// (boundary-aware prefix match).
+func pathBeneath(parent, path string) bool {
+	if parent == "/" {
+		return strings.HasPrefix(path, "/")
+	}
+	if path == parent {
+		return true
+	}
+	return strings.HasPrefix(path, parent+"/")
+}
+
+// missingRequiredRulePaths reports required rule paths that cannot be
+// opened with O_PATH (the same check the launcher performs before
+// restrict_self).
+func missingRequiredRulePaths(rules []landlockRule) []string {
+	var missing []string
+	for _, rule := range rules {
+		if !rule.Required {
+			continue
+		}
+		fd, err := unix.Open(rule.Path, unix.O_PATH|unix.O_CLOEXEC, 0)
+		if err != nil {
+			missing = append(missing, rule.Path)
+			continue
+		}
+		_ = unix.Close(fd)
+	}
+	return missing
+}
+
+// readMountPoints parses /proc/self/mounts and returns the mount points
+// (escape-decoded).
+func readMountPoints() []string {
+	data, err := os.ReadFile("/proc/self/mounts")
+	if err != nil {
+		return nil
+	}
+	var mounts []string
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		mounts = append(mounts, decodeMountPath(fields[1]))
+	}
+	return mounts
+}
+
+// decodeMountPath decodes the /proc/self/mounts escaping (\040, \011,
+// \012, \134).
+func decodeMountPath(s string) string {
+	if !strings.ContainsRune(s, '\\') {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			switch s[i+1 : i+4] {
+			case "040":
+				b.WriteByte(' ')
+				i += 3
+				continue
+			case "011":
+				b.WriteByte('\t')
+				i += 3
+				continue
+			case "012":
+				b.WriteByte('\n')
+				i += 3
+				continue
+			case "134":
+				b.WriteByte('\\')
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // landlockABI probes the kernel Landlock ABI version (0 = unavailable).
@@ -249,9 +385,22 @@ func InitHardening(cfg isolation.Config) error {
 			setLayer(&hardening.landlock, LayerState{State: "unsupported", Message: msg})
 		} else {
 			landlockRules = buildLandlockRules(cfg)
-			msg := fmt.Sprintf("landlock active (kernel ABI %d, %d rules)", abi, len(landlockRules))
-			log.Info("hardening: %s", msg)
-			setLayer(&hardening.landlock, LayerState{State: "active", Message: msg})
+			// Preflight the required (operator-explicit) grants: a missing
+			// one would make every launch skip confinement (launcher
+			// fail-closed), so report degraded and do not enable the layer.
+			if missing := missingRequiredRulePaths(landlockRules); len(missing) > 0 {
+				msg := fmt.Sprintf(
+					"landlock degraded: required paths missing: %s; FS confinement disabled",
+					strings.Join(missing, ", "),
+				)
+				log.Warn("hardening: %s", msg)
+				setLayer(&hardening.landlock, LayerState{State: "degraded", Message: msg})
+				landlockRules = nil
+			} else {
+				msg := fmt.Sprintf("landlock active (kernel ABI %d, %d rules)", abi, len(landlockRules))
+				log.Info("hardening: %s", msg)
+				setLayer(&hardening.landlock, LayerState{State: "active", Message: msg})
+			}
 		}
 	}
 
@@ -297,18 +446,21 @@ func InitHardening(cfg isolation.Config) error {
 var launcherSearchPaths = []string{launcherRuntimePath}
 
 func findLauncher() string {
-	if path, err := exec.LookPath("opensandbox-launcher"); err == nil {
-		return path
-	}
+	// Trusted runtime path first: a user-controlled image must not be able
+	// to substitute its own launcher on PATH and bypass the floor. PATH is
+	// only a fallback for developer/source builds.
 	for _, p := range launcherSearchPaths {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
+	if path, err := exec.LookPath("opensandbox-launcher"); err == nil {
+		return path
+	}
 	return ""
 }
 
-func effectiveCapsHave(cap uint32) bool {
+func effectiveCapsHave(capNum uint32) bool {
 	data, err := os.ReadFile("/proc/self/status")
 	if err != nil {
 		return false
@@ -321,7 +473,7 @@ func effectiveCapsHave(cap uint32) bool {
 		if err != nil {
 			return false
 		}
-		return value&(1<<cap) != 0
+		return value&(1<<capNum) != 0
 	}
 	return false
 }
@@ -357,17 +509,37 @@ func parseKeepCapabilities(names []string) ([]uint32, error) {
 
 // hardenCmd rewrites cmd to exec the launcher with the floor policy, unless
 // the launch opted out (isolated sessions).
-func hardenCmd(cmd *exec.Cmd, noHardening bool) error {
+// hardenCmd rewrites cmd to exec the launcher with the floor policy. The
+// returned file is the parent-side policy memfd; the caller must close it
+// after the child has started (MFD_CLOEXEC keeps it out of any later exec).
+//
+// A per-request identity (cmd.SysProcAttr.Credential) is folded into the
+// policy and cleared: os/exec would otherwise drop the launcher to that
+// uid/gid before exec, breaking the privileged prelude (capset/setgroups).
+func hardenCmd(cmd *exec.Cmd, noHardening bool, stripEnv []string) (*os.File, error) {
 	if noHardening || !hardening.enabled.Load() {
-		return nil
+		return nil, nil //nolint:nilnil // no policy file when not hardening
 	}
-	policy, err := encodePolicy(hardening.policy)
+	pol := hardening.policy
+	if stripEnv != nil {
+		cp := *pol
+		cp.stripEnv = stripEnv
+		pol = &cp
+	}
+	if cmd.SysProcAttr != nil && cmd.SysProcAttr.Credential != nil {
+		cp := *pol
+		cp.uid = cmd.SysProcAttr.Credential.Uid
+		cp.gid = cmd.SysProcAttr.Credential.Gid
+		pol = &cp
+		cmd.SysProcAttr.Credential = nil
+	}
+	policy, err := encodePolicy(pol)
 	if err != nil {
-		return fmt.Errorf("hardening: encode policy: %w", err)
+		return nil, fmt.Errorf("hardening: encode policy: %w", err)
 	}
 	fd, err := createPolicyMemfd(policy)
 	if err != nil {
-		return fmt.Errorf("hardening: policy memfd: %w", err)
+		return nil, fmt.Errorf("hardening: policy memfd: %w", err)
 	}
 	file := os.NewFile(uintptr(fd), "launcher-policy")
 	childFd := strconv.Itoa(3 + len(cmd.ExtraFiles))
@@ -376,7 +548,7 @@ func hardenCmd(cmd *exec.Cmd, noHardening bool) error {
 	originalArgs := cmd.Args
 	cmd.Path = hardening.launcherPath
 	cmd.Args = append([]string{hardening.launcherPath, childFd, "--"}, originalArgs...)
-	return nil
+	return file, nil
 }
 
 func encodePolicy(p *hardeningPolicy) ([]byte, error) {
@@ -389,6 +561,13 @@ func encodePolicy(p *hardeningPolicy) ([]byte, error) {
 	for _, rule := range p.landlock {
 		if len(rule.Path) == 0 || len(rule.Path) > 4096 {
 			return nil, fmt.Errorf("invalid landlock path %q", rule.Path)
+		}
+		required := byte(0)
+		if rule.Required {
+			required = 1
+		}
+		if err := landlockBuf.WriteByte(required); err != nil {
+			return nil, err
 		}
 		if err := binary.Write(&landlockBuf, binary.LittleEndian, rule.Access); err != nil {
 			return nil, err
@@ -428,7 +607,7 @@ func encodePolicy(p *hardeningPolicy) ([]byte, error) {
 }
 
 func createPolicyMemfd(policy []byte) (int, error) {
-	fd, err := unix.MemfdCreate("launcher-policy", 0)
+	fd, err := unix.MemfdCreate("launcher-policy", unix.MFD_CLOEXEC)
 	if err != nil {
 		return -1, fmt.Errorf("memfd_create: %w", err)
 	}

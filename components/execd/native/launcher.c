@@ -76,7 +76,6 @@ struct policy_header {
 };
 
 #define MAX_CAPS 64
-#define MAX_LL_RULES 128
 
 /*
  * Landlock ABI (stable since Linux 5.13): syscalls 444-446 and the fs access
@@ -112,10 +111,12 @@ struct ll_path_beneath_attr {
     int32_t parent_fd;
 };
 
-/* Landlock rule from the policy: a path plus the access bits to grant. */
+/* Landlock rule from the policy: a path plus the access bits to grant.
+ * required rules must all install, or confinement is skipped entirely. */
 struct ll_rule {
     uint64_t access;
     const char *path;
+    int required;
 };
 
 static void log_err(const char *msg, int err)
@@ -164,7 +165,7 @@ struct cap_data {
     uint32_t inheritable;
 };
 
-static int capset_all(uint32_t kept)
+static int capset_all(uint64_t kept)
 {
     struct cap_header header;
     struct cap_data data[2];
@@ -173,12 +174,14 @@ static int capset_all(uint32_t kept)
     memset(data, 0, sizeof(data));
     header.version = _LINUX_CAPABILITY_VERSION_3;
     header.pid = 0;
-    data[0].effective = kept;
-    data[0].permitted = kept;
-    data[0].inheritable = kept;
-    data[1].effective = 0;
-    data[1].permitted = 0;
-    data[1].inheritable = 0;
+    /* Capability ABI v3 uses two 32-bit words; caps above 31 (e.g.
+     * CAP_PERFMON, CAP_BPF) live in the second one. */
+    data[0].effective = (uint32_t)kept;
+    data[0].permitted = (uint32_t)kept;
+    data[0].inheritable = (uint32_t)kept;
+    data[1].effective = (uint32_t)(kept >> 32);
+    data[1].permitted = (uint32_t)(kept >> 32);
+    data[1].inheritable = (uint32_t)(kept >> 32);
     return syscall(SYS_capset, &header, data);
 }
 
@@ -231,32 +234,53 @@ static void apply_landlock(const struct ll_rule *rules, size_t n_rules)
         }
     }
 
-    for (size_t i = 0; i < n_rules; i++) {
-        int fd;
-        uint64_t access = ll_trim_access(rules[i].access, abi);
+    {
+        int rule_failed = 0;
 
-        if (access == 0)
-            continue;
-        /* O_PATH: no read/write rights needed to build the rule. */
-        fd = open(rules[i].path, O_PATH | O_CLOEXEC);
-        if (fd < 0) {
-            fprintf(stderr, "opensandbox-launcher: landlock: skip %s: %s\n",
-                    rules[i].path, strerror(errno));
-            continue;
-        }
-        {
-            struct ll_path_beneath_attr path_attr = {
-                .allowed_access = access,
-                .parent_fd = fd,
-            };
+        for (size_t i = 0; i < n_rules; i++) {
+            int fd;
+            uint64_t access = ll_trim_access(rules[i].access, abi);
 
-            if (syscall(445, ruleset,
-                        LANDLOCK_RULE_PATH_BENEATH, &path_attr, 0) != 0)
+            if (access == 0)
+                continue;
+            /* O_PATH: no read/write rights needed to build the rule. */
+            fd = open(rules[i].path, O_PATH | O_CLOEXEC);
+            if (fd < 0) {
                 fprintf(stderr,
-                        "opensandbox-launcher: landlock: add_rule %s: %s\n",
+                        "opensandbox-launcher: landlock: skip %s: %s\n",
                         rules[i].path, strerror(errno));
+                rule_failed |= rules[i].required;
+                continue;
+            }
+            {
+                struct ll_path_beneath_attr path_attr = {
+                    .allowed_access = access,
+                    .parent_fd = fd,
+                };
+
+                if (syscall(445, ruleset,
+                            LANDLOCK_RULE_PATH_BENEATH, &path_attr, 0) != 0) {
+                    fprintf(stderr,
+                            "opensandbox-launcher: landlock: add_rule %s: %s\n",
+                            rules[i].path, strerror(errno));
+                    rule_failed |= rules[i].required;
+                }
+            }
+            close(fd);
         }
-        close(fd);
+
+        if (rule_failed) {
+            /* Fail closed per launch: a missing required rule would silently
+             * deny access the operator explicitly granted. Skip confinement
+             * entirely and report instead of restricting with a narrower
+             * policy. Best-effort (mount-expansion) failures are logged
+             * above and do not abort. */
+            fprintf(stderr,
+                    "opensandbox-launcher: landlock: rule installation failed; "
+                    "skipping filesystem confinement for this launch\n");
+            close(ruleset);
+            return;
+        }
     }
 
     if (syscall(446, ruleset, 0) != 0) {
@@ -277,7 +301,7 @@ int main(int argc, char **argv)
     size_t env_budget;
     struct sock_filter *filter = NULL;
     struct sock_fprog prog;
-    struct ll_rule ll_rules[MAX_LL_RULES];
+    struct ll_rule *ll_rules = NULL;
     size_t n_ll_rules = 0;
 
     if (argc < 4 || strcmp(argv[2], "--") != 0)
@@ -347,21 +371,30 @@ int main(int argc, char **argv)
             fail(policy_fd, "truncated seccomp filter");
     }
 
-    /* Landlock rules: repeated { u64 access; u16 pathlen; path bytes }. */
+    /* Landlock rules: repeated { u8 required; u64 access; u16 pathlen;
+     * path bytes }. Allocated dynamically: mount-heavy pods can exceed any
+     * fixed cap after the mount-expansion in the policy. */
     if (hdr.landlock_len > 0) {
         size_t left = hdr.landlock_len;
+        size_t max_rules = hdr.landlock_len / (sizeof(uint8_t) + sizeof(uint64_t) + sizeof(uint16_t));
 
-        while (left > 0 && n_ll_rules < MAX_LL_RULES) {
+        ll_rules = (struct ll_rule *)calloc(max_rules + 1, sizeof(struct ll_rule));
+        if (ll_rules == NULL)
+            fail(policy_fd, "out of memory for landlock rules");
+
+        while (left > 0) {
+            uint8_t required;
             uint64_t access;
             uint16_t pathlen;
             char *path;
 
-            if (left < sizeof(access) + sizeof(pathlen))
+            if (left < sizeof(required) + sizeof(access) + sizeof(pathlen))
                 fail(policy_fd, "truncated landlock rule header");
-            if (read_exact(policy_fd, &access, sizeof(access)) != 0 ||
+            if (read_exact(policy_fd, &required, sizeof(required)) != 0 ||
+                read_exact(policy_fd, &access, sizeof(access)) != 0 ||
                 read_exact(policy_fd, &pathlen, sizeof(pathlen)) != 0)
                 fail(policy_fd, "truncated landlock rule header");
-            left -= sizeof(access) + sizeof(pathlen);
+            left -= sizeof(required) + sizeof(access) + sizeof(pathlen);
             if (pathlen == 0 || pathlen > 4096)
                 fail(policy_fd, "invalid landlock path length");
             if (left < pathlen)
@@ -375,10 +408,11 @@ int main(int argc, char **argv)
             left -= pathlen;
             ll_rules[n_ll_rules].access = access;
             ll_rules[n_ll_rules].path = path;
+            ll_rules[n_ll_rules].required = required != 0;
             n_ll_rules++;
         }
         if (left > 0)
-            fail(policy_fd, "too many landlock rules");
+            fail(policy_fd, "truncated landlock rules");
     }
 
     if (close(policy_fd) != 0)
@@ -431,10 +465,10 @@ int main(int argc, char **argv)
 
     if (hdr.flags & FLAG_CAP_DROP) {
         /* 6. Final cap sets + ambient raise so kept caps survive execve. */
-        uint32_t kept = 0;
+        uint64_t kept = 0;
 
         for (uint32_t k = 0; k < hdr.n_keepcaps; k++)
-            kept |= (1u << keepcaps[k]);
+            kept |= (UINT64_C(1) << keepcaps[k]);
         if (capset_all(kept) != 0)
             log_err("capset", errno);
         for (uint32_t k = 0; k < hdr.n_keepcaps; k++) {
@@ -445,6 +479,7 @@ int main(int argc, char **argv)
 
     /* 6. Landlock filesystem confinement, before seccomp. */
     apply_landlock(ll_rules, n_ll_rules);
+    free(ll_rules);
 
     /* 7. Seccomp LAST: it must never block the setup above, and execve
      * (which the Go side reserves from the deny list) is still allowed. */

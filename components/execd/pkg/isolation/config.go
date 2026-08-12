@@ -53,6 +53,22 @@ type Config struct {
 	Ebpf *EbpfConfig `toml:"ebpf"`
 }
 
+// execdConfigEnvBlacklist enumerates execd's own configuration env vars.
+// They are always stripped so execd's credentials never leak into the
+// workload; the hardening launcher unsets the same set before execve.
+var execdConfigEnvBlacklist = []string{
+	"EXECD_ACCESS_TOKEN",
+	"JUPYTER_HOST",
+	"JUPYTER_TOKEN",
+	"EXECD_ISOLATION_CONFIG",
+	"EXECD_ENVS",
+}
+
+// ExecdConfigEnvBlacklist returns a copy of the execd config env names.
+func ExecdConfigEnvBlacklist() []string {
+	return append([]string(nil), execdConfigEnvBlacklist...)
+}
+
 // SeccompOverride specifies a custom syscall denylist that replaces the
 // built-in default when present.
 type SeccompOverride struct {

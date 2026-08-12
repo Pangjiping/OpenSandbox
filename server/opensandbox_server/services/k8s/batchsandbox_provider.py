@@ -376,7 +376,11 @@ class BatchSandboxProvider(WorkloadProvider):
             "replicas": 1,
             "poolRef": pool_ref,
         }
-        needs_task_template = env or entrypoint != DEFAULT_ENTRYPOINT
+        needs_task_template = (
+            env
+            or entrypoint != DEFAULT_ENTRYPOINT
+            or self.execd_run_as_init
+        )
         if needs_task_template:
             spec["taskTemplate"] = self._build_task_template(entrypoint, env)
         if expires_at is not None:
@@ -492,7 +496,9 @@ class BatchSandboxProvider(WorkloadProvider):
         """
         escaped_entrypoint = ' '.join(shlex.quote(arg) for arg in entrypoint)
         if self.execd_run_as_init:
-            user_process_cmd = f"/opt/opensandbox/bootstrap.sh {escaped_entrypoint}"
+            # exec: the task-executor shim's TERM trap signals its direct
+            # child, which must be execd (not an intermediate shell).
+            user_process_cmd = f"exec /opt/opensandbox/bootstrap.sh {escaped_entrypoint}"
         else:
             user_process_cmd = f"/opt/opensandbox/bootstrap.sh {escaped_entrypoint} &"
 

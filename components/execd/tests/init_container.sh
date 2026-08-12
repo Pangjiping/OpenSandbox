@@ -44,6 +44,12 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 IMAGE="${EXECD_TEST_IMAGE:-execd-init-container-test:test}"
 PREFIX="execd-init-$$"
 TESTDIR="$(mktemp -d)"
+# mktemp creates mode 700; with hardening the workload has no
+# CAP_DAC_OVERRIDE, so the host-side test dir must be fully accessible to
+# the container workload (traverse AND write for the hardened.out /
+# caps.json the workload produces). Docker Desktop's lax mount permissions
+# hide this locally; native Linux mounts do not.
+chmod 777 "${TESTDIR}"
 RUNNERS=()
 
 cleanup() {
@@ -71,6 +77,12 @@ wait_file() {
     sleep 0.5
   done
   return 1
+}
+
+dump_container_logs() {
+  local c="$1"
+  echo ">> Container logs for ${c}:"
+  docker logs "$c" 2>&1 | grep -E "launcher|landlock|FAIL|init:|hardening|exited" | tail -30 || true
 }
 
 echo "========================================="
@@ -138,7 +150,10 @@ docker run -d --name "$C1" \
   -v "${TESTDIR}:/mnt/test" \
   "${IMAGE}" \
   /mnt/test/verify_pid1.sh >/dev/null
-wait_file "${TESTDIR}/pid1.out" || fail "test 1: container did not produce pid1.out"
+if ! wait_file "${TESTDIR}/pid1.out"; then
+  dump_container_logs "$C1"
+  fail "test 1: container did not produce pid1.out"
+fi
 RC=$(docker wait "$C1")
 [ "$RC" = "0" ] || fail "test 1: container exited $RC: $(cat "${TESTDIR}/pid1.out")"
 grep -q "kill9_1_inert=yes" "${TESTDIR}/pid1.out" || fail "test 1: kill -9 1 was not inert"
@@ -216,14 +231,27 @@ cat > "${TESTDIR}/hardened.sh" <<'SCRIPT'
 #!/bin/sh
 out=/mnt/test/hardened.out
 : > "$out"
-grep -E "NoNewPrivs:|Seccomp:" /proc/self/status >> "$out"
-capeff=$(awk '/CapEff:/{print $2}' /proc/self/status)
-echo "capeff=$capeff" >> "$out"
+# /proc/self is read via the entrypoint process itself (a forked descendant
+# resolves its own /proc/<pid> dir, which the Landlock allowlist does not
+# cover — the documented /proc/self limitation of OSEP-0018).
+nnp=""; sec=""; capeff=""
+while IFS= read -r line; do
+  case "$line" in
+    NoNewPrivs:*) nnp="${line#*:	}" ;;
+    Seccomp:*) sec="${line#*:	}" ;;
+    CapEff:*) capeff="${line#*:	}" ;;
+  esac
+done < /proc/self/status
+echo "nnp=$nnp sec=$sec capeff=$capeff" >> "$out"
 
-grep -q "NoNewPrivs:	1" "$out" || { echo "FAIL: no_new_privs not set" >> "$out"; exit 93; }
-grep -q "Seccomp:	2" "$out" || { echo "FAIL: seccomp not in filter mode" >> "$out"; exit 94; }
+[ "$nnp" = "1" ] || { echo "FAIL: no_new_privs not set ($nnp)" >> "$out"; exit 93; }
+[ "$sec" = "2" ] || { echo "FAIL: seccomp not in filter mode ($sec)" >> "$out"; exit 94; }
 [ "$capeff" = "0000000000000000" ] || { echo "FAIL: CapEff=$capeff, want zero" >> "$out"; exit 95; }
-[ -z "${EXECD_ACCESS_TOKEN:-}" ] || { echo "FAIL: execd credential env leaked" >> "$out"; exit 96; }
+# The entrypoint keeps bootstrap env (JUPYTER_TOKEN) but never execd's
+# control-plane credential (EXECD_ACCESS_TOKEN) — its Jupyter kernels are
+# user code and must not see it.
+[ -z "${EXECD_ACCESS_TOKEN:-}" ] || { echo "FAIL: execd credential leaked to entrypoint" >> "$out"; exit 96; }
+[ "${JUPYTER_TOKEN:-}" = "jt-secret" ] || { echo "FAIL: bootstrap env not preserved" >> "$out"; exit 95; }
 
 # The execd API is guarded by the token we injected via the container env
 # (which the floor stripped from this workload's own environment).
@@ -261,10 +289,14 @@ docker run -d --name "$C4" \
   -e EXECD_INIT=1 \
   -e EXECD_ISOLATION_CONFIG=/mnt/test/isolation.toml \
   -e EXECD_ACCESS_TOKEN=supersecret \
+  -e JUPYTER_TOKEN=jt-secret \
   -v "${TESTDIR}:/mnt/test" \
   "${IMAGE}" \
   /mnt/test/hardened.sh >/dev/null
-wait_file "${TESTDIR}/hardened.out" || fail "test 4: container did not produce hardened.out"
+if ! wait_file "${TESTDIR}/hardened.out"; then
+  dump_container_logs "$C4"
+  fail "test 4: container did not produce hardened.out"
+fi
 RC=$(docker wait "$C4")
 [ "$RC" = "0" ] || fail "test 4: container exited $RC: $(cat "${TESTDIR}/hardened.out")"
 grep -q "hardened_ok=yes" "${TESTDIR}/hardened.out" || fail "test 4: floor assertions failed: $(cat "${TESTDIR}/hardened.out")"
@@ -304,7 +336,10 @@ docker run -d --name "$C5" \
   -v "${TESTDIR}:/mnt/test" \
   "${IMAGE}" \
   -c 'EXECD_INIT=1 /bootstrap.sh /mnt/test/subreaper.sh & wait' >/dev/null
-wait_file "${TESTDIR}/subreaper.out" || fail "test 5: container did not produce subreaper.out"
+if ! wait_file "${TESTDIR}/subreaper.out"; then
+  dump_container_logs "$C5"
+  fail "test 5: container did not produce subreaper.out"
+fi
 RC=$(docker wait "$C5")
 [ "$RC" = "0" ] || fail "test 5: container exited $RC: $(cat "${TESTDIR}/subreaper.out")"
 grep -q "subreaper_ok=yes" "${TESTDIR}/subreaper.out" || fail "test 5: subreaper assertions failed"

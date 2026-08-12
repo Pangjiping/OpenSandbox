@@ -175,8 +175,7 @@ private data class HardeningLayerStateResponse(
     val message: String? = null,
 )
 
-private fun HardeningLayerStateResponse.toDomain(): HardeningLayerState =
-    HardeningLayerState(state = state, message = message)
+private fun HardeningLayerStateResponse.toDomain(): HardeningLayerState = HardeningLayerState(state = state, message = message)
 
 private val json = Json { ignoreUnknownKeys = true }
 
@@ -577,16 +576,17 @@ internal class IsolatedSessionsAdapter(
                     usernsAvailable = resp.userns_available,
                     commitSupported = resp.commit_supported,
                     diffSupported = resp.diff_supported,
-                    hardening = resp.hardening?.let {
-                        HardeningStatus(
-                            initMode = it.init_mode,
-                            signalShield = it.signal_shield,
-                            capDrop = it.cap_drop?.toDomain(),
-                            seccomp = it.seccomp?.toDomain(),
-                            landlock = it.landlock?.toDomain(),
-                            ebpf = it.ebpf?.toDomain(),
-                        )
-                    },
+                    hardening =
+                        resp.hardening?.let {
+                            HardeningStatus(
+                                initMode = it.init_mode,
+                                signalShield = it.signal_shield,
+                                capDrop = it.cap_drop?.toDomain(),
+                                seccomp = it.seccomp?.toDomain(),
+                                landlock = it.landlock?.toDomain(),
+                                ebpf = it.ebpf?.toDomain(),
+                            )
+                        },
                 )
             }
         } catch (e: Exception) {

@@ -43,9 +43,10 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/alibaba/opensandbox/execd/pkg/log"
 	"github.com/alibaba/opensandbox/internal/safego"
 	"golang.org/x/sys/unix"
+
+	"github.com/alibaba/opensandbox/execd/pkg/log"
 )
 
 var (
@@ -129,7 +130,7 @@ type reaper struct {
 	owned    map[int]*managedProcess
 	sigchld  chan os.Signal
 	quit     chan struct{}
-	quitOnce sync.Once
+	quitOnce sync.Once //nolint:unused // test-only lifecycle; see stop
 	done     chan struct{}
 }
 
@@ -150,6 +151,8 @@ func (r *reaper) start() {
 
 // stop terminates the reaper and waits until its signal subscription is
 // removed. Test-only in practice; execd runs one reaper for its lifetime.
+//
+//nolint:unused // test-only lifecycle; execd runs one reaper for its lifetime
 func (r *reaper) stop() {
 	r.quitOnce.Do(func() { close(r.quit) })
 	<-r.done
@@ -210,6 +213,10 @@ func (r *reaper) drain() {
 				log.Error("init: reaper consume pid %d: %v", pid, err)
 				return
 			}
+			// Drop the child from the registry once reaped: stale entries
+			// would grow without bound and shutdown could signal a recycled
+			// process group.
+			delete(r.owned, pid)
 			mp.deliver(ws)
 			continue
 		}
@@ -234,6 +241,7 @@ type managedProcess struct {
 	cmd         *exec.Cmd
 	preReap     func()
 	noHardening bool
+	stripEnv    []string // nil = default blacklist; explicit list overrides
 	done        chan struct{}
 	once        sync.Once
 	ws          syscall.WaitStatus
@@ -299,6 +307,17 @@ func withoutHardening() launchOption {
 	}
 }
 
+// bootstrapEnv overrides the env strip for the user entrypoint: the image's
+// own entrypoint scripts may need JUPYTER_TOKEN/EXECD_ENVS to configure
+// themselves (e.g. the code-interpreter entrypoint), so those survive — but
+// EXECD_ACCESS_TOKEN is execd's control-plane credential and must never
+// reach the long-lived entrypoint (its Jupyter kernels are user code).
+func bootstrapEnv() launchOption {
+	return func(mp *managedProcess) {
+		mp.stripEnv = []string{"EXECD_ACCESS_TOKEN"}
+	}
+}
+
 // launchManagedWith starts the command and registers it with the reaper.
 // startFn is called under the reaper lock so the child cannot be observed
 // (and misclassified as an orphan) before registration. When the hardening
@@ -308,8 +327,12 @@ func launchManagedWith(cmd *exec.Cmd, startFn func() error, opts ...launchOption
 	for _, o := range opts {
 		o(mp)
 	}
-	if err := hardenCmd(cmd, mp.noHardening); err != nil {
+	policyFile, err := hardenCmd(cmd, mp.noHardening, mp.stripEnv)
+	if err != nil {
 		return nil, err
+	}
+	if policyFile != nil {
+		defer policyFile.Close()
 	}
 	if initReaper == nil {
 		if err := startFn(); err != nil {
@@ -389,11 +412,18 @@ func StartInitMode(entryArgs []string) {
 	safego.Go(initReaper.run)
 	log.Info("init: execd is the sandbox init (pid=%d mode=%s)", os.Getpid(), initModeName())
 
+	// Register the application-signal subscription before the entrypoint
+	// starts: an early SIGTERM must reach the forwarding loop instead of
+	// hitting the runtime default handler.
+	sigCh := make(chan os.Signal, 8)
+	signal.Notify(sigCh, initForwardedSignals...)
+
 	entry := launchEntrypoint(entryArgs)
 	if entry == nil {
+		signal.Stop(sigCh)
 		return
 	}
-	safego.Go(func() { forwardInitSignals(entry) })
+	safego.Go(func() { forwardInitSignals(entry, sigCh) })
 	safego.Go(func() { waitEntrypointExit(entry) })
 }
 
@@ -407,7 +437,7 @@ func launchEntrypoint(args []string) *managedProcess {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	mp, err := launchManaged(cmd)
+	mp, err := launchManaged(cmd, bootstrapEnv())
 	if err != nil {
 		log.Error("init: failed to start user entrypoint %q: %v", args[0], err)
 		os.Exit(1)
@@ -445,10 +475,7 @@ func initExitCode(mp *managedProcess) int {
 // group. SIGTERM additionally starts the graceful shutdown sequence, matching
 // the runtime-initiated container stop contract (Docker/K8s send SIGTERM to
 // PID 1).
-func forwardInitSignals(entry *managedProcess) {
-	ch := make(chan os.Signal, 8)
-	signal.Notify(ch, initForwardedSignals...)
-	defer signal.Stop(ch)
+func forwardInitSignals(entry *managedProcess, ch <-chan os.Signal) {
 	for sig := range ch {
 		s, ok := sig.(syscall.Signal)
 		if !ok {
@@ -495,14 +522,13 @@ func terminateInit(entry *managedProcess) {
 // SIGKILLs the survivors. Reaping is done by the reaper; the kernel reaps
 // anything left when execd exits.
 func stopChildrenExcept(keep *managedProcess) {
-	others := initReaper.snapshotOthers(keep)
+	// SIGTERM and the final SIGKILL pass are sent while holding the reaper
+	// lock: the pid is verified against the owned map and the reaper cannot
+	// consume (and release) the PID/PGID between verification and kill, so
+	// a recycled process group can never be signalled.
+	others := initReaper.signalOthers(keep, syscall.SIGTERM)
 	if len(others) == 0 {
 		return
-	}
-	for _, mp := range others {
-		if err := killGroup(mp.pid(), syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-			log.Warn("init: SIGTERM child group %d: %v", mp.pid(), err)
-		}
 	}
 	deadline := time.Now().Add(initShutdownGrace)
 	for _, mp := range others {
@@ -511,24 +537,22 @@ func stopChildrenExcept(keep *managedProcess) {
 		case <-time.After(time.Until(deadline)):
 		}
 	}
-	for _, mp := range others {
-		select {
-		case <-mp.done:
-		default:
-			if err := killGroup(mp.pid(), syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-				log.Warn("init: SIGKILL child group %d: %v", mp.pid(), err)
-			}
-		}
-	}
+	initReaper.signalOthers(keep, syscall.SIGKILL)
 }
 
-func (r *reaper) snapshotOthers(keep *managedProcess) []*managedProcess {
+// signalOthers delivers sig to every still-tracked child group except keep,
+// while holding the reaper lock. It returns the targets that were signalled.
+func (r *reaper) signalOthers(keep *managedProcess, sig syscall.Signal) []*managedProcess {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	others := make([]*managedProcess, 0, len(r.owned))
-	for _, mp := range r.owned {
-		if mp != keep {
-			others = append(others, mp)
+	var others []*managedProcess
+	for pid, mp := range r.owned {
+		if mp == keep {
+			continue
+		}
+		others = append(others, mp)
+		if err := killGroup(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+			log.Warn("init: %v child group %d: %v", sig, pid, err)
 		}
 	}
 	return others

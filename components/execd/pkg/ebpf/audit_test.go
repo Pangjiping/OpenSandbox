@@ -27,9 +27,6 @@ func TestDecodeExecEvent(t *testing.T) {
 	binary.LittleEndian.PutUint32(raw[4:8], 1)
 	copy(raw[8:24], "python3")
 	copy(raw[24:88], "/usr/bin/python3")
-	copy(raw[88:120], "-c")
-	copy(raw[120:152], "print(1)")
-
 	ev, ok := decodeEvent(raw)
 	if !ok {
 		t.Fatal("decode failed")
@@ -39,9 +36,6 @@ func TestDecodeExecEvent(t *testing.T) {
 	}
 	if ev.Comm != "python3" || ev.Filename != "/usr/bin/python3" {
 		t.Fatalf("exec fields = %q/%q", ev.Comm, ev.Filename)
-	}
-	if len(ev.Argv) != 2 || ev.Argv[0] != "-c" || ev.Argv[1] != "print(1)" {
-		t.Fatalf("argv = %v", ev.Argv)
 	}
 	if ev.TS == "" || ev.SandboxID != "" {
 		t.Fatalf("envelope ts/sandbox_id = %q/%q", ev.TS, ev.SandboxID)

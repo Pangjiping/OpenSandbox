@@ -32,10 +32,20 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/alibaba/opensandbox/execd/pkg/isolation"
 	"github.com/alibaba/opensandbox/execd/pkg/jupyter/execute"
 	"github.com/alibaba/opensandbox/execd/pkg/log"
 	"github.com/alibaba/opensandbox/execd/pkg/util/pathutil"
 )
+
+func containsStr(list []string, s string) bool {
+	for _, item := range list {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	envDumpStartMarker = "__ENV_DUMP_START__"
@@ -117,9 +127,14 @@ func newBashSession(cwd string) *bashSession {
 		StartupTimeout: 5 * time.Second,
 	}
 
+	// The session env snapshot is exported into the wrapped script at the
+	// top, after the launcher has stripped the process environment — so it
+	// must not carry execd's own config/credential vars or a session user
+	// could recover them with a plain `echo`.
+	blacklist := isolation.ExecdConfigEnvBlacklist()
 	env := make(map[string]string)
 	for _, kv := range os.Environ() {
-		if k, v, ok := splitEnvPair(kv); ok {
+		if k, v, ok := splitEnvPair(kv); ok && !containsStr(blacklist, k) {
 			env[k] = v
 		}
 	}

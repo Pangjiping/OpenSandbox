@@ -276,13 +276,23 @@ reports `unsupported` and skips FS confinement.
 
 With `[landlock] enabled`, user-code processes are allowlisted to: system
 paths (`/usr`, `/bin`, `/lib`, `/lib64`, `/etc`) read+exec, `/proc/self`
-and well-known read-only proc files (never all of `/proc`, which would
-re-expose `/proc/1` and execd's credentials), the needed `/dev` device
-files and the controlling tty, `/tmp`, `/run`, `allowed_writable`, plus
+and `/proc/sys` read+exec (never all of `/proc`, which would re-expose
+`/proc/1` and execd's credentials), the needed `/dev` device files and the
+controlling tty, `/tmp`, `/run`, `allowed_writable`, plus
 `extra_writable`/`extra_readable`. Everything else is denied. Note that
 only the initial workload process keeps `/proc/self` access (a Landlock
 rule is inode-based); forked descendants lose their own `/proc/self` —
 tooling that needs it should be run as the entrypoint process.
+
+Two Landlock kernel behaviors shape the policy:
+
+- `path_beneath` rules are scoped to the mount the path belongs to, so at
+  startup execd expands every rule onto each mount point beneath it —
+  bind-mounted workspaces (a separate mount) get the same access as their
+  parent path.
+- rules only accept directory parents, so per-file grants are impossible;
+  well-known proc files (`/proc/cpuinfo`, `/proc/meminfo`, …) are not
+  individually readable under Landlock.
 
 Recommended container ceiling (operator side): keep `CAP_SETPCAP`,
 `CAP_SETUID`, `CAP_SETGID` so execd can reduce children; drop the rest
@@ -308,7 +318,7 @@ CO-RE; 5.16+ use the `__data_loc` layout). Events are scoped to the
 sandbox cgroup, so only this sandbox's processes are observed; they are
 written as JSONL (one object per line) with a stable common envelope
 (`ts`, `event`, `sandbox_id`, `pid`, `comm`) plus per-kind fields
-(`filename`/`argv`/`ppid` for `exec`, `dst_ip`/`dst_port`/`proto` for
+(`filename`/`ppid` for `exec`, `dst_ip`/`dst_port`/`proto` for
 `connect`, uid/gid deltas and `cap_added` for `privilege`). Under
 gVisor/Kata the host kernel is not attachable, and the layer reports
 `unsupported`. Missing prerequisites never block startup.

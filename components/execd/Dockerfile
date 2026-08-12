@@ -96,24 +96,13 @@ RUN rm /usr/lib/libcap.so /usr/lib/libcap.so.2 && \
     ninja -C builddir && \
     cp builddir/bwrap /build/bwrap/bwrap
 
-FROM alpine:latest
-
-COPY --from=bwrap-builder /build/bwrap/bwrap /usr/local/bin/bwrap
-COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-session-gate /usr/local/libexec/opensandbox-session-gate
-COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-session-gate /opt/opensandbox/opensandbox-session-gate
-COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-launcher /opt/opensandbox/opensandbox-launcher
-COPY --from=builder /build/execd .
-COPY --from=builder /build/execd.exe ./execd.exe
-COPY --from=builder /build/opensandbox-supervisor ./opensandbox-supervisor
-COPY components/execd/bootstrap.sh ./bootstrap.sh
-COPY components/execd/install.bat ./install.bat
-
-ENTRYPOINT ["./execd"]
-
-# execd-ebpf: observation variant (OSEP-0018 §5). The default image above
+# execd-ebpf: observation variant (OSEP-0018 §5). The default image below
 # never contains eBPF code; this stage builds a CGO variant with the
 # exec/connect/privilege audit hooks attached.
 FROM golang:1.25.9 AS ebpf-builder
+ARG VERSION=dev
+ARG GIT_COMMIT=unknown
+ARG BUILD_TIME=unknown
 RUN apt-get update && apt-get install -y --no-install-recommends clang
 WORKDIR /build
 COPY components/internal/go.mod components/internal/go.sum ./components/internal/
@@ -123,13 +112,40 @@ RUN cd components/execd && go mod download
 COPY components/internal ./components/internal
 COPY components/execd ./components/execd
 WORKDIR /build/components/execd
-RUN CGO_ENABLED=1 go build -tags ebpf -trimpath -buildvcs=false \
+# cilium/ebpf is pure Go, so the variant builds fully static.
+RUN CGO_ENABLED=0 go build -tags ebpf -trimpath -buildvcs=false \
     -ldflags "-buildid= -B none \
               -X 'github.com/alibaba/opensandbox/internal/version.Version=${VERSION}' \
               -X 'github.com/alibaba/opensandbox/internal/version.BuildTime=${BUILD_TIME}' \
               -X 'github.com/alibaba/opensandbox/internal/version.GitCommit=${GIT_COMMIT}'" \
     -o /build/execd-ebpf ./main.go
 
+# The observation variant keeps the exact layout of the default image so it
+# can be used as runtime.execd_image: /execd, /bootstrap.sh and the native
+# helpers must be present for the server distribution paths.
 FROM alpine:latest AS ebpf
+COPY --from=bwrap-builder /build/bwrap/bwrap /usr/local/bin/bwrap
+COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-session-gate /usr/local/libexec/opensandbox-session-gate
+COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-session-gate /opt/opensandbox/opensandbox-session-gate
+COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-launcher /usr/local/libexec/opensandbox-launcher
+COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-launcher /opt/opensandbox/opensandbox-launcher
+COPY --from=ebpf-builder /build/execd-ebpf ./execd
 COPY --from=ebpf-builder /build/execd-ebpf ./execd-ebpf
-ENTRYPOINT ["./execd-ebpf"]
+COPY components/execd/bootstrap.sh ./bootstrap.sh
+COPY components/execd/install.bat ./install.bat
+ENTRYPOINT ["./execd"]
+
+FROM alpine:latest
+
+COPY --from=bwrap-builder /build/bwrap/bwrap /usr/local/bin/bwrap
+COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-session-gate /usr/local/libexec/opensandbox-session-gate
+COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-session-gate /opt/opensandbox/opensandbox-session-gate
+COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-launcher /usr/local/libexec/opensandbox-launcher
+COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-launcher /opt/opensandbox/opensandbox-launcher
+COPY --from=builder /build/execd .
+COPY --from=builder /build/execd.exe ./execd.exe
+COPY --from=builder /build/opensandbox-supervisor ./opensandbox-supervisor
+COPY components/execd/bootstrap.sh ./bootstrap.sh
+COPY components/execd/install.bat ./install.bat
+
+ENTRYPOINT ["./execd"]

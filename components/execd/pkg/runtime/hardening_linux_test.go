@@ -279,13 +279,12 @@ func TestLandlockDisabledByDefault(t *testing.T) {
 func TestLandlockActiveOrUnsupported(t *testing.T) {
 	buildLauncher(t)
 	launcherSearchPaths = append(launcherSearchPaths, launcherBuilt)
-	cfg := isolation.Config{
-		Hardening: &isolation.HardeningConfig{Enabled: true},
-		Landlock: &isolation.LandlockConfig{
-			Enabled:       true,
-			ExtraWritable: []string{"/cache"},
-			ExtraReadable: []string{"/opt/data"},
-		},
+	cfg := isolation.DefaultConfig()
+	cfg.Hardening = &isolation.HardeningConfig{Enabled: true}
+	cfg.Landlock = &isolation.LandlockConfig{
+		Enabled:       true,
+		ExtraWritable: []string{"/cache"},
+		ExtraReadable: []string{"/opt/data"},
 	}
 	initHardeningForTest(t, cfg)
 
@@ -304,14 +303,71 @@ func TestLandlockActiveOrUnsupported(t *testing.T) {
 		assertLandlockRule(t, rules, "/cache", llRwAccess)
 		assertLandlockRule(t, rules, "/opt/data", llReadFile|llReadDir|llExecute)
 		for _, rule := range rules {
-			if rule.Path == "/proc" {
-				t.Fatalf("all of /proc must not be granted: %+v", rule)
+			if rule.Path == "/proc" && rule.Access&llReadFile != 0 {
+				t.Fatalf("all of /proc must not be granted read access: %+v", rule)
 			}
+		}
+	case "degraded":
+		if !strings.Contains(report.Landlock.Message, "/cache") ||
+			!strings.Contains(report.Landlock.Message, "/opt/data") {
+			t.Fatalf("landlock degraded message = %q, want the missing extra paths", report.Landlock.Message)
 		}
 	case "unsupported":
 		t.Logf("landlock unsupported on this kernel; skipping rule assertions")
 	default:
-		t.Fatalf("landlock state = %q, want active or unsupported", report.Landlock.State)
+		t.Fatalf("landlock state = %q, want active, degraded or unsupported", report.Landlock.State)
+	}
+}
+
+func TestPathBeneath(t *testing.T) {
+	tests := []struct {
+		parent, path string
+		want         bool
+	}{
+		{"/", "/mnt/test/hardened.sh", true},
+		{"/mnt", "/mnt/test", true},
+		{"/mnt", "/mnt/test/hardened.sh", true},
+		{"/mnt", "/mnt", true},
+		{"/mnt", "/mntx", false},
+		{"/mnt", "/", false},
+		{"/usr", "/usr/bin/bash", true},
+	}
+	for _, tt := range tests {
+		if got := pathBeneath(tt.parent, tt.path); got != tt.want {
+			t.Fatalf("pathBeneath(%q, %q) = %v, want %v", tt.parent, tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestRuleForPathMergesMatches(t *testing.T) {
+	rules := []landlockRule{
+		{Access: llExecute, Path: "/"},
+		{Access: llRwAccess, Path: "/mnt"},
+	}
+	// A bind-mounted workspace beneath /mnt must keep execute access from
+	// the "/" rule merged with the writable grant.
+	access, ok := ruleForPath(rules, "/mnt/test/hardened.sh")
+	if !ok || access != llRwAccess|llExecute {
+		t.Fatalf("ruleForPath(/mnt/test/hardened.sh) = %#x/%v, want rw+exec", access, ok)
+	}
+	access, ok = ruleForPath(rules, "/etc/passwd")
+	if !ok || access != llExecute {
+		t.Fatalf("ruleForPath(/etc/passwd) = %#x/%v, want llExecute", access, ok)
+	}
+	if _, ok := ruleForPath(rules, "relative"); ok {
+		t.Fatal("ruleForPath accepted a relative path")
+	}
+}
+
+func TestDecodeMountPath(t *testing.T) {
+	if got := decodeMountPath(`/mnt/test\040dir`); got != "/mnt/test dir" {
+		t.Fatalf("decode = %q", got)
+	}
+	if got := decodeMountPath(`/a\134b`); got != `a\\b` && got != `/a\b` {
+		t.Fatalf("decode backslash = %q", got)
+	}
+	if got := decodeMountPath("/plain"); got != "/plain" {
+		t.Fatalf("decode plain = %q", got)
 	}
 }
 
