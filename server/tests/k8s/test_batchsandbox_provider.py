@@ -1495,6 +1495,21 @@ spec:
             {"name": "KEY2", "value": "value2"},
         ]
 
+    def test_build_task_template_injects_execd_run_as_init_when_enabled(self, mock_k8s_client):
+        config = AppConfig(
+            runtime=RuntimeConfig(type="kubernetes", execd_image="execd:test", execd_run_as_init=True),
+            kubernetes=KubernetesRuntimeConfig(namespace="test-ns"),
+        )
+        provider = BatchSandboxProvider(mock_k8s_client, config)
+
+        result = provider._build_task_template(
+            entrypoint=["/usr/bin/python", "app.py"], env={"KEY1": "value1"}
+        )
+
+        env = result["spec"]["process"]["env"]
+        assert {"name": "EXECD_INIT", "value": "1"} in env
+        assert {"name": "KEY1", "value": "value1"} in env
+
     def test_build_task_template_without_env(self, mock_k8s_client):
         """
         Test _build_task_template without environment variables.

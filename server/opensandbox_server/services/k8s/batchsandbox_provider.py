@@ -78,6 +78,7 @@ class BatchSandboxProvider(WorkloadProvider):
             logger.info(f"Using BatchSandbox template file: {template_file_path}")
         self.execd_init_resources = k8s_config.execd_init_resources if k8s_config else None
         self.image_pull_policy = k8s_config.image_pull_policy if k8s_config else "IfNotPresent"
+        self.execd_run_as_init = bool(app_config and app_config.runtime.execd_run_as_init)
 
         self.resolver = SecureRuntimeResolver(app_config) if app_config else None
         self.runtime_class = (
@@ -179,6 +180,8 @@ class BatchSandboxProvider(WorkloadProvider):
         )
         
         main_env = dict(env)
+        if self.execd_run_as_init:
+            main_env["EXECD_INIT"] = "1"
         if credential_proxy_enabled:
             main_env[OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT] = "true"
 
@@ -484,6 +487,8 @@ class BatchSandboxProvider(WorkloadProvider):
         
         wrapped_command = ["/bin/sh", "-c", user_process_cmd]
 
+        if self.execd_run_as_init:
+            env = {**env, "EXECD_INIT": "1"}
         env_list = [{"name": k, "value": v} for k, v in env.items()] if env else []
 
         return {
