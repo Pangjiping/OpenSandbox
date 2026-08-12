@@ -130,6 +130,14 @@ jobs:
           chmod +x components/execd/tests/smoke_bwrap.sh
           bash components/execd/tests/smoke_bwrap.sh
 
+      - name: Init-mode container regression (OSEP-0018)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        timeout-minutes: 30
+        run: |
+          chmod +x components/execd/tests/init_container.sh
+          bash components/execd/tests/init_container.sh
+
       - name: Show logs
         if: always()
         run: |
