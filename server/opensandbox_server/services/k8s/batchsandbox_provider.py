@@ -481,10 +481,21 @@ class BatchSandboxProvider(WorkloadProvider):
         entrypoint: List[str],
         env: Dict[str, str],
     ) -> Dict[str, Any]:
-        """Build pool taskTemplate with shell-escaped bootstrap command."""
+        """Build pool taskTemplate with shell-escaped bootstrap command.
+
+        With execd_run_as_init enabled, the task is NOT backgrounded: the
+        shim's shell execs bootstrap.sh, which execs `execd --init` (the
+        EXECD_INIT env is injected below), so execd becomes the root of the
+        task process tree. It reaps orphaned task children (subreaper) and
+        propagates the entrypoint exit code back to the shim. Without it,
+        the classic background-and-wait topology is preserved.
+        """
         escaped_entrypoint = ' '.join(shlex.quote(arg) for arg in entrypoint)
-        user_process_cmd = f"/opt/opensandbox/bootstrap.sh {escaped_entrypoint} &"
-        
+        if self.execd_run_as_init:
+            user_process_cmd = f"/opt/opensandbox/bootstrap.sh {escaped_entrypoint}"
+        else:
+            user_process_cmd = f"/opt/opensandbox/bootstrap.sh {escaped_entrypoint} &"
+
         wrapped_command = ["/bin/sh", "-c", user_process_cmd]
 
         if self.execd_run_as_init:

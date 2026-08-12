@@ -362,6 +362,41 @@ Behavioral contract in init mode:
 - The actual mode is reported on `GET /v1/isolated/capabilities` under
   `hardening.init_mode` (`pid1` | `subreaper` | `none`).
 
+### Pool (pre-warmed) sandboxes
+
+Pool tasks are executed by the task-executor with `bootstrap.sh <entrypoint>`.
+With `execd_run_as_init` enabled, the generated task no longer backgrounds
+bootstrap: the task-executor's shim shell execs bootstrap, which execs
+`execd --init`, so execd becomes the root of the task process tree —
+orphaned task children are reaped (subreaper mode, since the task process is
+not the container's PID 1) and the entrypoint exit code propagates back to
+the shim and the task status.
+
+To make execd the *container's* PID 1 in pooled pods, the operator's Pool pod
+template should start the main container with `bootstrap.sh` plus a
+keep-alive entrypoint and `EXECD_INIT=1`:
+
+```yaml
+spec:
+  template:
+    spec:
+      containers:
+        - name: sandbox
+          image: opensandbox/execd:latest
+          command: ["/bootstrap.sh", "/bin/sh", "-c", "while :; do sleep 3600; done"]
+          env:
+            - name: EXECD_INIT
+              value: "1"
+            - name: EXECD
+              value: /execd
+```
+
+execd then stays alive as PID 1 (reaping + kernel signal shield) while the
+task-executor keeps running user tasks in the pod. The K8s Restart recycle
+strategy (`kill 1` via pod exec) keeps working against init-mode execd: the
+signal is forwarded and execd exits with the workload's status, so the
+kubelet restarts the container.
+
 ## Linux clone3 Compatibility
 Some sandbox environments fail on `clone3(2)`.
 Set `EXECD_CLONE3_COMPAT` in sandbox env to force fallback behavior:

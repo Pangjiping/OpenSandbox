@@ -1510,6 +1510,15 @@ spec:
         assert {"name": "EXECD_INIT", "value": "1"} in env
         assert {"name": "KEY1", "value": "value1"} in env
 
+        # With execd_run_as_init the task is NOT backgrounded: the shim's
+        # shell execs bootstrap.sh, which execs `execd --init` as the root of
+        # the task process tree (orphan reaping + exit-code propagation).
+        command = result["spec"]["process"]["command"]
+        assert command[0] == "/bin/sh"
+        assert command[1] == "-c"
+        assert "/opt/opensandbox/bootstrap.sh /usr/bin/python app.py" in command[2]
+        assert " &" not in command[2]
+
     def test_build_task_template_without_env(self, mock_k8s_client):
         """
         Test _build_task_template without environment variables.
