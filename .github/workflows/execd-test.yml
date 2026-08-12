@@ -55,6 +55,11 @@ jobs:
         run: |
           go test -v -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./pkg/...
 
+      - name: Run execd-ebpf variant tests
+        working-directory: components/execd
+        run: |
+          CGO_ENABLED=1 go test -tags ebpf -count=1 ./pkg/ebpf/
+
       - name: Calculate coverage and generate summary
         working-directory: components/execd
         id: coverage

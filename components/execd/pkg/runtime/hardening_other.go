@@ -25,6 +25,9 @@ func InitHardening(cfg isolation.Config) error {
 	return nil
 }
 
+// SetEbpfState is a no-op off Linux.
+func SetEbpfState(state LayerState) {}
+
 // HardeningReport reports that no hardening layer is in effect.
 func ReportHardening() HardeningReport {
 	initMode, shield := InitModeReport()

@@ -282,9 +282,9 @@ func TestLandlockActiveOrUnsupported(t *testing.T) {
 	cfg := isolation.Config{
 		Hardening: &isolation.HardeningConfig{Enabled: true},
 		Landlock: &isolation.LandlockConfig{
-			Enabled:        true,
-			ExtraWritable:  []string{"/cache"},
-			ExtraReadable:  []string{"/opt/data"},
+			Enabled:       true,
+			ExtraWritable: []string{"/cache"},
+			ExtraReadable: []string{"/opt/data"},
 		},
 	}
 	initHardeningForTest(t, cfg)

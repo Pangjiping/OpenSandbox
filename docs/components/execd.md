@@ -250,6 +250,12 @@ keep_capabilities = []
 # startup ("execveat" stays allowed).
 [seccomp]
 deny = ["mount", "ptrace", "bpf", "seccomp"]
+
+# Optional: Landlock filesystem confinement on top of the floor.
+[landlock]
+enabled = true
+extra_writable = []   # writable paths beyond the built-in set
+extra_readable = []   # read-only paths beyond the built-in set
 ```
 
 When enabled, every user-code process (entrypoint, `/command`, `/code`,
@@ -262,14 +268,53 @@ installed last. Isolated-session workloads are already reduced inside the
 bwrap namespace and are not additionally wrapped.
 
 Everything is fail-open and reported on `GET /v1/isolated/capabilities`
-under `hardening.cap_drop` / `hardening.seccomp` (`active` | `degraded` |
-`disabled` with a reason message). Missing `CAP_SETPCAP` degrades the cap
-drop but keeps seccomp; a missing launcher binary disables the floor.
+under `hardening.cap_drop` / `hardening.seccomp` / `hardening.landlock`
+(`active` | `degraded` | `unsupported` | `disabled` with a reason message).
+Missing `CAP_SETPCAP` degrades the cap drop but keeps seccomp; a missing
+launcher binary disables the floor; a kernel without Landlock (ABI < 1)
+reports `unsupported` and skips FS confinement.
+
+With `[landlock] enabled`, user-code processes are allowlisted to: system
+paths (`/usr`, `/bin`, `/lib`, `/lib64`, `/etc`) read+exec, `/proc/self`
+and well-known read-only proc files (never all of `/proc`, which would
+re-expose `/proc/1` and execd's credentials), the needed `/dev` device
+files and the controlling tty, `/tmp`, `/run`, `allowed_writable`, plus
+`extra_writable`/`extra_readable`. Everything else is denied. Note that
+only the initial workload process keeps `/proc/self` access (a Landlock
+rule is inode-based); forked descendants lose their own `/proc/self` —
+tooling that needs it should be run as the entrypoint process.
 
 Recommended container ceiling (operator side): keep `CAP_SETPCAP`,
 `CAP_SETUID`, `CAP_SETGID` so execd can reduce children; drop the rest
 (`NET_RAW`, `SYS_MODULE`, `SYS_TIME`, `SYS_TTY_CONFIG`, `AUDIT_WRITE`,
 `MKNOD`).
+
+### eBPF Observation
+
+Opt-in exec/connect/privilege audit (OSEP-0018 §5), off by default:
+
+```toml
+[ebpf]
+enabled = true
+observe = ["exec", "connect", "privilege"]   # default: all three
+audit_file = "/var/log/opensandbox/ebpf-audit.jsonl"  # rotated JSONL
+```
+
+Requires the `execd-ebpf` build variant (CGO + `cilium/ebpf`), a
+container with `CAP_BPF` + `CAP_PERFMON`, and a BTF-capable kernel —
+Linux ≥ 5.10 with `CONFIG_DEBUG_INFO_BTF` (5.10–5.15 kernels use the
+inline-`filename` trace event layout, which the BPF program detects via
+CO-RE; 5.16+ use the `__data_loc` layout). Events are scoped to the
+sandbox cgroup, so only this sandbox's processes are observed; they are
+written as JSONL (one object per line) with a stable common envelope
+(`ts`, `event`, `sandbox_id`, `pid`, `comm`) plus per-kind fields
+(`filename`/`argv`/`ppid` for `exec`, `dst_ip`/`dst_port`/`proto` for
+`connect`, uid/gid deltas and `cap_added` for `privilege`). Under
+gVisor/Kata the host kernel is not attachable, and the layer reports
+`unsupported`. Missing prerequisites never block startup.
+
+The default image does not contain eBPF code; `make build-ebpf` or the
+Dockerfile's `ebpf` target produce the observation variant.
 
 ## Observability
 

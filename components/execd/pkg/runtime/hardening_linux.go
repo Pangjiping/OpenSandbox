@@ -146,13 +146,13 @@ func landlockABI() int64 {
 // memfd. Field order must stay in sync with struct policy_header in
 // native/launcher.c.
 type hardeningPolicy struct {
-	flags       uint32
-	uid         uint32
-	gid         uint32
-	keepcaps    []uint32
-	stripEnv    []string
-	seccomp     []byte
-	landlock    []landlockRule
+	flags    uint32
+	uid      uint32
+	gid      uint32
+	keepcaps []uint32
+	stripEnv []string
+	seccomp  []byte
+	landlock []landlockRule
 }
 
 type policyHeader struct {
@@ -174,6 +174,13 @@ var hardening struct {
 	capDrop      atomic.Pointer[LayerState]
 	seccomp      atomic.Pointer[LayerState]
 	landlock     atomic.Pointer[LayerState]
+	ebpf         atomic.Pointer[LayerState]
+}
+
+// SetEbpfState records the eBPF observation state reported by the observer
+// (execd-ebpf variant) for the capabilities endpoint.
+func SetEbpfState(state LayerState) {
+	hardening.ebpf.Store(&state)
 }
 
 // InitHardening activates the floor from the isolation config. It returns an
@@ -451,7 +458,7 @@ func ReportHardening() HardeningReport {
 		},
 		Ebpf: LayerState{
 			State:   "disabled",
-			Message: "eBPF observation is not enabled (phase 4)",
+			Message: "eBPF observation is not enabled",
 		},
 	}
 	if cs := hardening.capDrop.Load(); cs != nil {
@@ -462,6 +469,9 @@ func ReportHardening() HardeningReport {
 	}
 	if ls := hardening.landlock.Load(); ls != nil {
 		report.Landlock = *ls
+	}
+	if es := hardening.ebpf.Load(); es != nil {
+		report.Ebpf = *es
 	}
 	return report
 }

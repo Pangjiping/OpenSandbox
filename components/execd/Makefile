@@ -148,6 +148,16 @@ build: vet build-session-gate build-launcher ## Build execd and the Linux native
 	@mkdir -p bin
 	go build $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -o bin/execd main.go
 
+.PHONY: build-ebpf
+build-ebpf: ## Build the execd-ebpf observation variant (CGO + cilium/ebpf).
+	@if [ "$$(uname -s 2>/dev/null || echo non-linux)" != "Linux" ]; then \
+		echo "execd-ebpf requires Linux (BPF attachable host)" >&2; \
+		exit 1; \
+	fi
+	@mkdir -p bin
+	CGO_ENABLED=1 go build -tags ebpf $(GO_BUILD_FLAGS) -ldflags "$(GO_LDFLAGS)" -o bin/execd-ebpf main.go
+	@echo "built bin/execd-ebpf"
+
 .PHONY: test-integration
 test-integration: ## Run integration tests (Linux + bwrap required).
 	go test -v -tags="linux,bwrap" -run Integration ./pkg/runtime/bwrap_test/

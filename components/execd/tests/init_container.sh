@@ -246,6 +246,8 @@ else
   grep -q '"landlock":{"state":"unsupported"' /mnt/test/caps.json || { echo "FAIL: landlock neither active nor unsupported" >> "$out"; exit 91; }
   echo "landlock=unsupported (skipped)" >> "$out"
 fi
+# The default image has no eBPF code; the layer must report disabled.
+grep -q '"ebpf":{"state":"disabled"' /mnt/test/caps.json || { echo "FAIL: ebpf not disabled in the default image" >> "$out"; exit 92; }
 echo "hardened_ok=yes" >> "$out"
 exit 0
 SCRIPT

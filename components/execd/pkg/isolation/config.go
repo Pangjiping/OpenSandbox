@@ -46,6 +46,11 @@ type Config struct {
 	// Landlock adds filesystem confinement (OSEP-0018 §5) on top of the
 	// hardening floor. Defaults to off.
 	Landlock *LandlockConfig `toml:"landlock"`
+
+	// Ebpf enables exec/connect/privilege observation (OSEP-0018 §5),
+	// written as JSONL to a rotating audit file. Requires the execd-ebpf
+	// build variant. Defaults to off.
+	Ebpf *EbpfConfig `toml:"ebpf"`
 }
 
 // SeccompOverride specifies a custom syscall denylist that replaces the
@@ -78,6 +83,19 @@ type LandlockConfig struct {
 	ExtraReadable []string `toml:"extra_readable"`
 }
 
+// EbpfConfig controls the eBPF observation layer (OSEP-0018 §5).
+type EbpfConfig struct {
+	// Enabled turns observation on (requires the execd-ebpf build variant
+	// and CAP_BPF + CAP_PERFMON).
+	Enabled bool `toml:"enabled"`
+	// Observe lists the event kinds to record: "exec" | "connect" |
+	// "privilege". Default: all three.
+	Observe []string `toml:"observe"`
+	// AuditFile is the append-only JSONL audit sink (rotated). Default:
+	// /var/log/opensandbox/ebpf-audit.jsonl.
+	AuditFile string `toml:"audit_file"`
+}
+
 // DefaultConfig returns the built-in defaults used when no config file is
 // provided or when individual fields are missing from the file.
 func DefaultConfig() Config {
@@ -89,6 +107,7 @@ func DefaultConfig() Config {
 		Seccomp:         nil, // use built-in denylist
 		Hardening:       nil, // floor off
 		Landlock:        nil, // confinement off
+		Ebpf:            nil, // observation off
 	}
 }
 

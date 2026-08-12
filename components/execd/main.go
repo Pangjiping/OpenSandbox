@@ -31,6 +31,7 @@ import (
 	_ "go.uber.org/automaxprocs/maxprocs"
 
 	"github.com/alibaba/opensandbox/execd/pkg/clone3compat"
+	"github.com/alibaba/opensandbox/execd/pkg/ebpf"
 	"github.com/alibaba/opensandbox/execd/pkg/flag"
 	"github.com/alibaba/opensandbox/execd/pkg/isolation"
 	"github.com/alibaba/opensandbox/execd/pkg/log"
@@ -75,6 +76,14 @@ func run() int {
 	if err := runtime.InitHardening(isoCfg); err != nil {
 		log.Error("hardening: %v", err)
 		return 1
+	}
+
+	// Start the eBPF observation layer ([ebpf] enabled, OSEP-0018 §5).
+	// The stub build reports disabled; the execd-ebpf variant attaches the
+	// exec/connect/privilege hooks.
+	{
+		ebpfState, ebpfMessage := ebpf.Init(isoCfg.Ebpf, os.Getenv("OPENSANDBOX_ID"))
+		runtime.SetEbpfState(runtime.LayerState{State: ebpfState, Message: ebpfMessage})
 	}
 
 	// Probe isolation runtime capabilities.

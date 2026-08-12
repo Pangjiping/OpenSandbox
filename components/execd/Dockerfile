@@ -109,3 +109,27 @@ COPY components/execd/bootstrap.sh ./bootstrap.sh
 COPY components/execd/install.bat ./install.bat
 
 ENTRYPOINT ["./execd"]
+
+# execd-ebpf: observation variant (OSEP-0018 §5). The default image above
+# never contains eBPF code; this stage builds a CGO variant with the
+# exec/connect/privilege audit hooks attached.
+FROM golang:1.25.9 AS ebpf-builder
+RUN apt-get update && apt-get install -y --no-install-recommends clang
+WORKDIR /build
+COPY components/internal/go.mod components/internal/go.sum ./components/internal/
+COPY components/execd/go.mod components/execd/go.sum ./components/execd/
+RUN cd components/internal && go mod download
+RUN cd components/execd && go mod download
+COPY components/internal ./components/internal
+COPY components/execd ./components/execd
+WORKDIR /build/components/execd
+RUN CGO_ENABLED=1 go build -tags ebpf -trimpath -buildvcs=false \
+    -ldflags "-buildid= -B none \
+              -X 'github.com/alibaba/opensandbox/internal/version.Version=${VERSION}' \
+              -X 'github.com/alibaba/opensandbox/internal/version.BuildTime=${BUILD_TIME}' \
+              -X 'github.com/alibaba/opensandbox/internal/version.GitCommit=${GIT_COMMIT}'" \
+    -o /build/execd-ebpf ./main.go
+
+FROM alpine:latest AS ebpf
+COPY --from=ebpf-builder /build/execd-ebpf ./execd-ebpf
+ENTRYPOINT ["./execd-ebpf"]

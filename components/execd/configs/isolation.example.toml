@@ -117,3 +117,18 @@ allowed_writable = ["/workspace", "/mnt", "/media", "/data"]
 #
 #   # Extra read-only paths beyond the built-in set (read+exec).
 #   extra_readable = ["/opt/readonly"]
+
+# eBPF observation (OSEP-0018 §5). Default OFF. Requires the execd-ebpf
+# build variant (CGO + cilium/ebpf), CAP_BPF + CAP_PERFMON, and a
+# BTF-capable kernel (5.10+ with CONFIG_DEBUG_INFO_BTF). Observation is
+# scoped to the sandbox cgroup and written as JSONL to a rotating audit
+# file. Missing prerequisites degrade to "unsupported" and are skipped.
+#
+# [ebpf]
+# enabled = true
+#
+#   # Event kinds to record. Default: all three.
+#   observe = ["exec", "connect", "privilege"]
+#
+#   # Append-only JSONL audit sink (rotated). Default below.
+#   audit_file = "/var/log/opensandbox/ebpf-audit.jsonl"
