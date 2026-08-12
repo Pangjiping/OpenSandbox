@@ -3,8 +3,8 @@ title: execd as Sandbox Init
 authors:
   - "@pjp"
 creation-date: 2026-07-27
-last-updated: 2026-07-27
-status: draft
+last-updated: 2026-08-12
+status: implementing
 ---
 
 # OSEP-0018: execd as Sandbox Init
@@ -33,6 +33,49 @@ status: draft
 - [Open Implementation Questions](#open-implementation-questions)
 - [Upgrade & Migration Strategy](#upgrade--migration-strategy)
 <!-- /toc -->
+
+## Implementation Status
+
+> Updated 2026-08-12. Status: **implementing** — the phased rollout below is
+> implemented on branch `feat/execd-init-mode` (Phases 1–5 plus the server
+> switch); remaining items are the trusted stop channel (§3), Pool pod-level
+> PID 1 automation, kernel-5.10 empirical validation, and e2e coverage.
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | execd `--init` mode: single reaper (only wait4 caller), managedProcess abstraction replacing `Cmd.Wait` on every launch path, signal forwarding (TERM/HUP/USR1/USR2/WINCH), entrypoint-owned container lifecycle, subreaper fallback, `PR_SET_DUMPABLE`, `bootstrap.sh` `EXECD_INIT` exec branch, hardening endpoint reporting | ✅ implemented |
+| 2 | Pre-exec floor (`[hardening] enabled`): `opensandbox-launcher` native helper (env strip → KEEPCAPS → bounding trim → no_new_privs → identity drop → ambient caps → seccomp last → execve), `[seccomp] deny` reuse with `execve` reserved, `keep_capabilities`; fail-open per layer | ✅ implemented |
+| 3 | Landlock (`[landlock] enabled`): allowlist policy (system paths + `/proc/self` + device files + `/tmp`/`/run`/`allowed_writable` + extras), ABI probe v1–v4 with access-bit trimming; ABI < 1 → `unsupported` | ✅ implemented |
+| 4 | eBPF observation (`[ebpf] enabled`, `execd-ebpf` variant): exec/connect/privilege hooks (CO-RE), sandbox cgroup filter, rotating JSONL audit file; kernel ≥5.10 with BTF | ✅ implemented |
+| 5 | Pool taskTemplate: with `execd_run_as_init`, tasks are no longer backgrounded — execd becomes the task process-tree root (subreaper + exit-code propagation); `kill 1` recycle contract confirmed compatible under current SIGTERM semantics | ✅ implemented (task level) |
+| — | Server switch `runtime.execd_run_as_init` injects `EXECD_INIT=1` across Docker / K8s Batch/Agent / Pool paths — resolves Open Question 1 | ✅ implemented |
+
+**Open implementation questions — resolution:**
+
+1. **Single enable switch** — resolved: the server sets `EXECD_INIT` from the
+   single `runtime.execd_run_as_init` config (default `false`); `bootstrap.sh`
+   passes `--init` iff `EXECD_INIT` is truthy, so topology and flag stay in
+   lockstep by construction.
+2. **External SIGTERM forwarding** — implemented: SIGTERM is forwarded to the
+   entrypoint and execd exits with the workload's status. Distinguishing
+   external vs in-namespace SIGTERM (the §3 trusted-stop mechanism) is still
+   open: today an in-namespace `kill 1` also stops the sandbox (same as the
+   pre-OSEP bootstrap behavior) — tracked as remaining work.
+3. **Managed-process abstraction** — implemented (reaper delivers
+   `WaitStatus`; per-call-site pipes/teardown are owned by the abstraction).
+4. **Landlock device files** — resolved: `null/zero/full/random/urandom/tty`
+   writable + `/dev/pts` subtree for the controlling terminal.
+5. **Landlock `/proc/self` for descendants** — resolved by accepting the
+   limitation: only the initial workload keeps `/proc/self` access; forked
+   descendants get EACCES on their own procfs (documented in
+   `docs/components/execd.md`).
+
+**Remaining work** (tracked locally, see the handoff document next to this
+OSEP): trusted out-of-band stop channel + `restart_default.go` reconciliation
+(§3); Pool pod-level PID 1 (operator-side template config today); kernel-5.10
+eBPF empirical validation; Kind/SDK e2e coverage; `execd-ebpf` image build
+step in CI; default-on rollout of `execd_run_as_init` / `[hardening]`.
+
 
 ## Summary
 
