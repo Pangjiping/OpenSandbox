@@ -665,5 +665,19 @@ func ReportHardening() HardeningReport {
 	if es := hardening.ebpf.Load(); es != nil {
 		report.Ebpf = *es
 	}
+	// Without init mode (classic background-and-wait topology), the image
+	// entrypoint — and any /code kernels it spawns — is launched by the
+	// bootstrap shell, not by execd, so it never passes through the launcher.
+	// The layer states above only cover execd-spawned commands/sessions; say
+	// so instead of letting the endpoint claim full enforcement.
+	if mode == "none" && report.CapDrop.State == "active" {
+		msg := "hardening active but execd is not the sandbox init (EXECD_INIT unset): " +
+			"the image entrypoint and its /code kernels are not wrapped; only " +
+			"execd-spawned commands/sessions are reduced. Enable " +
+			"runtime.execd_run_as_init for full coverage"
+		report.CapDrop = LayerState{State: "degraded", Message: msg}
+		report.Seccomp = LayerState{State: "degraded", Message: msg}
+		report.Landlock = LayerState{State: "degraded", Message: msg}
+	}
 	return report
 }

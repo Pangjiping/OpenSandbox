@@ -461,8 +461,10 @@ int main(int argc, char **argv)
         log_err("PR_SET_NO_NEW_PRIVS", errno);
 
     if (hdr.flags & FLAG_UID_DROP) {
-        /* 5. Identity change. Same-uid re-apply succeeds; a foreign target
-         * without privileges fails and is skipped (fail-open). */
+        /* 5. Identity change. The requested identity is part of the launch
+         * contract: a same-uid re-apply always succeeds, but a foreign
+         * target that cannot be applied must abort the launch (os/exec
+         * would fail) instead of silently running as the wrong user. */
         if (hdr.n_groups > 0) {
             gid_t *gids = (gid_t *)malloc(hdr.n_groups * sizeof(gid_t));
 
@@ -471,15 +473,15 @@ int main(int argc, char **argv)
             for (uint32_t g = 0; g < hdr.n_groups; g++)
                 gids[g] = (gid_t)groups[g];
             if (setgroups(hdr.n_groups, gids) != 0)
-                log_err("setgroups", errno);
+                fail(-1, "setgroups: cannot apply requested supplementary groups");
             free(gids);
-        } else {
-            (void)setgroups(0, NULL);
+        } else if (setgroups(0, NULL) != 0) {
+            fail(-1, "setgroups: cannot clear supplementary groups");
         }
         if (setgid((gid_t)hdr.gid) != 0)
-            log_err("setgid", errno);
+            fail(-1, "setgid: cannot apply requested gid");
         if (setuid((uid_t)hdr.uid) != 0)
-            log_err("setuid", errno);
+            fail(-1, "setuid: cannot apply requested uid");
     }
 
     if (hdr.flags & FLAG_CAP_DROP) {
