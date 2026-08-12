@@ -207,6 +207,9 @@ echo ">> Test 4: hardening floor ([hardening] enabled)"
 cat > "${TESTDIR}/isolation.toml" <<'TOML'
 [hardening]
 enabled = true
+
+[landlock]
+enabled = true
 TOML
 
 cat > "${TESTDIR}/hardened.sh" <<'SCRIPT'
@@ -232,6 +235,17 @@ done
 grep -q '"init_mode":"pid1"' /mnt/test/caps.json || { echo "FAIL: init_mode != pid1" >> "$out"; exit 97; }
 grep -q '"cap_drop":{"state":"active"' /mnt/test/caps.json || { echo "FAIL: cap_drop not active" >> "$out"; exit 98; }
 grep -q '"seccomp":{"state":"active"' /mnt/test/caps.json || { echo "FAIL: seccomp not active" >> "$out"; exit 99; }
+if grep -q '"landlock":{"state":"active"' /mnt/test/caps.json; then
+  echo "landlock=active" >> "$out"
+  if cat /proc/1/environ >/dev/null 2>&1; then
+    echo "FAIL: /proc/1/environ readable despite landlock" >> "$out"; exit 90
+  fi
+else
+  # Kernel without Landlock (e.g. some CI VM kernels): the launcher fails
+  # open and the layer reports unsupported.
+  grep -q '"landlock":{"state":"unsupported"' /mnt/test/caps.json || { echo "FAIL: landlock neither active nor unsupported" >> "$out"; exit 91; }
+  echo "landlock=unsupported (skipped)" >> "$out"
+fi
 echo "hardened_ok=yes" >> "$out"
 exit 0
 SCRIPT

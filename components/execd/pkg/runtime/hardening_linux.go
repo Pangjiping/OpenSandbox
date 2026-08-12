@@ -55,29 +55,116 @@ const (
 
 	// capSetpcap is the capability number required to trim bounding sets.
 	capSetpcap = 8
+
+	// Landlock fs access bits (stable kernel UAPI, linux/landlock.h).
+	llExecute    uint64 = 1 << 0
+	llWriteFile  uint64 = 1 << 1
+	llReadFile   uint64 = 1 << 2
+	llReadDir    uint64 = 1 << 3
+	llRemoveDir  uint64 = 1 << 4
+	llRemoveFile uint64 = 1 << 5
+	llMakeChar   uint64 = 1 << 6
+	llMakeDir    uint64 = 1 << 7
+	llMakeReg    uint64 = 1 << 8
+	llMakeSock   uint64 = 1 << 9
+	llMakeFifo   uint64 = 1 << 10
+	llMakeBlock  uint64 = 1 << 11
+	llMakeSym    uint64 = 1 << 12
+	llRefer      uint64 = 1 << 13 // ABI >= 2
+	llTruncate   uint64 = 1 << 14 // ABI >= 3
+
+	// llRwAccess is the full writable-subtree mask (creation, removal,
+	// rename, truncate); the launcher trims bits its kernel ABI lacks.
+	llRwAccess = llReadFile | llWriteFile | llReadDir | llMakeChar |
+		llMakeDir | llMakeReg | llMakeSock | llMakeFifo | llMakeBlock |
+		llMakeSym | llRemoveDir | llRemoveFile | llRefer | llTruncate
 )
+
+// landlockRule grants access beneath path (OSEP-0018 §5). Rules only grant
+// access; everything else under the handled set is denied.
+type landlockRule struct {
+	Access uint64
+	Path   string
+}
+
+// buildLandlockRules assembles the default allowlist. The root rule grants
+// EXECUTE only: it covers path traversal and execve of any binary without
+// exposing any read access. /proc is deliberately limited to /proc/self and
+// read-only well-known files — never all of /proc, which would re-expose
+// /proc/1 (and execd's credentials) to a same-uid workload.
+func buildLandlockRules(cfg isolation.Config) []landlockRule {
+	var rules []landlockRule
+
+	rules = append(rules, landlockRule{Access: llExecute, Path: "/"})
+
+	readExec := llReadFile | llReadDir | llExecute
+	for _, p := range []string{"/usr", "/bin", "/lib", "/lib64", "/etc"} {
+		rules = append(rules, landlockRule{Access: readExec, Path: p})
+	}
+	for _, p := range []string{
+		"/proc/self", "/proc/sys", "/proc/cpuinfo", "/proc/meminfo",
+		"/proc/stat", "/proc/version", "/proc/uptime", "/proc/loadavg",
+		"/proc/filesystems",
+	} {
+		rules = append(rules, landlockRule{Access: readExec, Path: p})
+	}
+
+	deviceRW := llReadFile | llWriteFile
+	for _, p := range []string{
+		"/dev/null", "/dev/zero", "/dev/full", "/dev/random",
+		"/dev/urandom", "/dev/tty",
+	} {
+		rules = append(rules, landlockRule{Access: deviceRW, Path: p})
+	}
+	// The controlling terminal lives beneath /dev/pts.
+	rules = append(rules, landlockRule{Access: deviceRW, Path: "/dev/pts"})
+
+	for _, p := range append([]string{"/tmp", "/run"}, cfg.AllowedWritable...) {
+		rules = append(rules, landlockRule{Access: llRwAccess, Path: p})
+	}
+	if cfg.Landlock != nil {
+		for _, p := range cfg.Landlock.ExtraWritable {
+			rules = append(rules, landlockRule{Access: llRwAccess, Path: p})
+		}
+		for _, p := range cfg.Landlock.ExtraReadable {
+			rules = append(rules, landlockRule{Access: readExec, Path: p})
+		}
+	}
+	return rules
+}
+
+// landlockABI probes the kernel Landlock ABI version (0 = unavailable).
+func landlockABI() int64 {
+	abi, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, 0, 0, 1)
+	if errno != 0 {
+		return 0
+	}
+	return int64(abi)
+}
 
 // hardeningPolicy is the serialized policy handed to the launcher over a
 // memfd. Field order must stay in sync with struct policy_header in
 // native/launcher.c.
 type hardeningPolicy struct {
-	flags    uint32
-	uid      uint32
-	gid      uint32
-	keepcaps []uint32
-	stripEnv []string
-	seccomp  []byte
+	flags       uint32
+	uid         uint32
+	gid         uint32
+	keepcaps    []uint32
+	stripEnv    []string
+	seccomp     []byte
+	landlock    []landlockRule
 }
 
 type policyHeader struct {
-	Magic      uint32
-	Version    uint32
-	Flags      uint32
-	UID        uint32
-	GID        uint32
-	NKeepCaps  uint32
-	NEnv       uint32
-	SeccompLen uint32
+	Magic       uint32
+	Version     uint32
+	Flags       uint32
+	UID         uint32
+	GID         uint32
+	NKeepCaps   uint32
+	NEnv        uint32
+	SeccompLen  uint32
+	LandlockLen uint32
 }
 
 var hardening struct {
@@ -86,6 +173,7 @@ var hardening struct {
 	policy       *hardeningPolicy
 	capDrop      atomic.Pointer[LayerState]
 	seccomp      atomic.Pointer[LayerState]
+	landlock     atomic.Pointer[LayerState]
 }
 
 // InitHardening activates the floor from the isolation config. It returns an
@@ -106,6 +194,7 @@ func InitHardening(cfg isolation.Config) error {
 
 	setLayer(&hardening.capDrop, disabled("hardening not enabled"))
 	setLayer(&hardening.seccomp, disabled("hardening not enabled"))
+	setLayer(&hardening.landlock, disabled("landlock not enabled"))
 
 	if cfg.Hardening == nil || !cfg.Hardening.Enabled {
 		return nil
@@ -133,12 +222,30 @@ func InitHardening(cfg isolation.Config) error {
 		log.Warn("hardening: %s", msg)
 		setLayer(&hardening.capDrop, degraded(msg))
 		setLayer(&hardening.seccomp, degraded(msg))
+		setLayer(&hardening.landlock, degraded(msg))
 		return nil
 	}
 
 	seccompBPF, err := isolation.GenerateSeccompDenyBPF(cfg.Seccomp)
 	if err != nil {
 		return fmt.Errorf("hardening: generate seccomp floor: %w", err)
+	}
+
+	var landlockRules []landlockRule
+	if cfg.Landlock != nil && cfg.Landlock.Enabled {
+		if abi := landlockABI(); abi < 1 {
+			msg := fmt.Sprintf(
+				"landlock unavailable: kernel ABI < 1 (needs >= 5.13, detected %d); FS confinement skipped",
+				abi,
+			)
+			log.Warn("hardening: %s", msg)
+			setLayer(&hardening.landlock, LayerState{State: "unsupported", Message: msg})
+		} else {
+			landlockRules = buildLandlockRules(cfg)
+			msg := fmt.Sprintf("landlock active (kernel ABI %d, %d rules)", abi, len(landlockRules))
+			log.Info("hardening: %s", msg)
+			setLayer(&hardening.landlock, LayerState{State: "active", Message: msg})
+		}
 	}
 
 	hardening.launcherPath = path
@@ -148,6 +255,7 @@ func InitHardening(cfg isolation.Config) error {
 		keepcaps: keepcaps,
 		stripEnv: isolation.ExecdConfigEnvBlacklist(),
 		seccomp:  seccompBPF,
+		landlock: landlockRules,
 	}
 	// The identity drop is only meaningful when execd is root (a non-root
 	// execd already runs as the image's user).
@@ -270,16 +378,30 @@ func encodePolicy(p *hardeningPolicy) ([]byte, error) {
 			return nil, fmt.Errorf("invalid env-strip name %q", name)
 		}
 	}
+	var landlockBuf bytes.Buffer
+	for _, rule := range p.landlock {
+		if len(rule.Path) == 0 || len(rule.Path) > 4096 {
+			return nil, fmt.Errorf("invalid landlock path %q", rule.Path)
+		}
+		if err := binary.Write(&landlockBuf, binary.LittleEndian, rule.Access); err != nil {
+			return nil, err
+		}
+		if err := binary.Write(&landlockBuf, binary.LittleEndian, uint16(len(rule.Path))); err != nil {
+			return nil, err
+		}
+		landlockBuf.WriteString(rule.Path)
+	}
 	buf := new(bytes.Buffer)
 	hdr := policyHeader{
-		Magic:      policyMagic,
-		Version:    policyVersion,
-		Flags:      p.flags,
-		UID:        p.uid,
-		GID:        p.gid,
-		NKeepCaps:  uint32(len(p.keepcaps)),
-		NEnv:       uint32(len(p.stripEnv)),
-		SeccompLen: uint32(len(p.seccomp)),
+		Magic:       policyMagic,
+		Version:     policyVersion,
+		Flags:       p.flags,
+		UID:         p.uid,
+		GID:         p.gid,
+		NKeepCaps:   uint32(len(p.keepcaps)),
+		NEnv:        uint32(len(p.stripEnv)),
+		SeccompLen:  uint32(len(p.seccomp)),
+		LandlockLen: uint32(landlockBuf.Len()),
 	}
 	if err := binary.Write(buf, binary.LittleEndian, &hdr); err != nil {
 		return nil, err
@@ -294,6 +416,7 @@ func encodePolicy(p *hardeningPolicy) ([]byte, error) {
 		buf.WriteByte(0)
 	}
 	buf.Write(p.seccomp)
+	buf.Write(landlockBuf.Bytes())
 	return buf.Bytes(), nil
 }
 
@@ -336,6 +459,9 @@ func ReportHardening() HardeningReport {
 	}
 	if ss := hardening.seccomp.Load(); ss != nil {
 		report.Seccomp = *ss
+	}
+	if ls := hardening.landlock.Load(); ls != nil {
+		report.Landlock = *ls
 	}
 	return report
 }

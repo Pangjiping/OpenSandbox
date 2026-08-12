@@ -72,9 +72,51 @@ struct policy_header {
     uint32_t n_keepcaps;
     uint32_t n_env;
     uint32_t seccomp_len;
+    uint32_t landlock_len;
 };
 
 #define MAX_CAPS 64
+#define MAX_LL_RULES 128
+
+/*
+ * Landlock ABI (stable since Linux 5.13): syscalls 444-446 and the fs access
+ * bits below are part of the kernel UAPI and are defined here so the helper
+ * does not depend on a specific linux/landlock.h.
+ */
+#define LL_EXECUTE (1ULL << 0)
+#define LL_WRITE_FILE (1ULL << 1)
+#define LL_READ_FILE (1ULL << 2)
+#define LL_READ_DIR (1ULL << 3)
+#define LL_REMOVE_DIR (1ULL << 4)
+#define LL_REMOVE_FILE (1ULL << 5)
+#define LL_MAKE_CHAR (1ULL << 6)
+#define LL_MAKE_DIR (1ULL << 7)
+#define LL_MAKE_REG (1ULL << 8)
+#define LL_MAKE_SOCK (1ULL << 9)
+#define LL_MAKE_FIFO (1ULL << 10)
+#define LL_MAKE_BLOCK (1ULL << 11)
+#define LL_MAKE_SYM (1ULL << 12)
+#define LL_REFER (1ULL << 13)   /* ABI >= 2 */
+#define LL_TRUNCATE (1ULL << 14) /* ABI >= 3 */
+
+#define LANDLOCK_CREATE_RULESET_VERSION 1
+#define LANDLOCK_CREATE_RULESET 0
+#define LANDLOCK_RULE_PATH_BENEATH 1
+
+struct ll_ruleset_attr {
+    uint64_t handled_access_fs;
+};
+
+struct ll_path_beneath_attr {
+    uint64_t allowed_access;
+    int32_t parent_fd;
+};
+
+/* Landlock rule from the policy: a path plus the access bits to grant. */
+struct ll_rule {
+    uint64_t access;
+    const char *path;
+};
 
 static void log_err(const char *msg, int err)
 {
@@ -145,6 +187,86 @@ static int raise_ambient(uint32_t cap)
     return prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, (unsigned long)cap, 0, 0);
 }
 
+/* Trim an access mask to what the detected Landlock ABI supports. */
+static uint64_t ll_trim_access(uint64_t access, long abi)
+{
+    if (abi < 2)
+        access &= ~(uint64_t)LL_REFER;
+    if (abi < 3)
+        access &= ~(uint64_t)LL_TRUNCATE;
+    return access;
+}
+
+/* Apply the Landlock filesystem confinement from the policy (fail-open). */
+static void apply_landlock(const struct ll_rule *rules, size_t n_rules)
+{
+    long abi;
+    int ruleset = -1;
+    uint64_t handled;
+
+    if (n_rules == 0)
+        return;
+
+    abi = syscall(444, NULL, 0,
+                  LANDLOCK_CREATE_RULESET_VERSION);
+    if (abi < 1) {
+        log_err("landlock unavailable (kernel ABI < 1)", ENOSYS);
+        return;
+    }
+
+    handled = LL_EXECUTE | LL_WRITE_FILE | LL_READ_FILE | LL_READ_DIR |
+              LL_REMOVE_DIR | LL_REMOVE_FILE | LL_MAKE_CHAR | LL_MAKE_DIR |
+              LL_MAKE_REG | LL_MAKE_SOCK | LL_MAKE_FIFO | LL_MAKE_BLOCK |
+              LL_MAKE_SYM | LL_REFER | LL_TRUNCATE;
+    handled = ll_trim_access(handled, abi);
+
+    {
+        struct ll_ruleset_attr attr = { .handled_access_fs = handled };
+
+        ruleset = (int)syscall(444, &attr,
+                               sizeof(attr), LANDLOCK_CREATE_RULESET);
+        if (ruleset < 0) {
+            log_err("landlock_create_ruleset", errno);
+            return;
+        }
+    }
+
+    for (size_t i = 0; i < n_rules; i++) {
+        int fd;
+        uint64_t access = ll_trim_access(rules[i].access, abi);
+
+        if (access == 0)
+            continue;
+        /* O_PATH: no read/write rights needed to build the rule. */
+        fd = open(rules[i].path, O_PATH | O_CLOEXEC);
+        if (fd < 0) {
+            fprintf(stderr, "opensandbox-launcher: landlock: skip %s: %s\n",
+                    rules[i].path, strerror(errno));
+            continue;
+        }
+        {
+            struct ll_path_beneath_attr path_attr = {
+                .allowed_access = access,
+                .parent_fd = fd,
+            };
+
+            if (syscall(445, ruleset,
+                        LANDLOCK_RULE_PATH_BENEATH, &path_attr, 0) != 0)
+                fprintf(stderr,
+                        "opensandbox-launcher: landlock: add_rule %s: %s\n",
+                        rules[i].path, strerror(errno));
+        }
+        close(fd);
+    }
+
+    if (syscall(446, ruleset, 0) != 0) {
+        log_err("landlock_restrict_self", errno);
+        return;
+    }
+    close(ruleset);
+    /* Irrevocable: from here on the process is confined to the granted set. */
+}
+
 int main(int argc, char **argv)
 {
     int policy_fd;
@@ -155,6 +277,8 @@ int main(int argc, char **argv)
     size_t env_budget;
     struct sock_filter *filter = NULL;
     struct sock_fprog prog;
+    struct ll_rule ll_rules[MAX_LL_RULES];
+    size_t n_ll_rules = 0;
 
     if (argc < 4 || strcmp(argv[2], "--") != 0)
         fail(-1, "usage: opensandbox-launcher <policy-fd> -- <argv...>");
@@ -223,6 +347,40 @@ int main(int argc, char **argv)
             fail(policy_fd, "truncated seccomp filter");
     }
 
+    /* Landlock rules: repeated { u64 access; u16 pathlen; path bytes }. */
+    if (hdr.landlock_len > 0) {
+        size_t left = hdr.landlock_len;
+
+        while (left > 0 && n_ll_rules < MAX_LL_RULES) {
+            uint64_t access;
+            uint16_t pathlen;
+            char *path;
+
+            if (left < sizeof(access) + sizeof(pathlen))
+                fail(policy_fd, "truncated landlock rule header");
+            if (read_exact(policy_fd, &access, sizeof(access)) != 0 ||
+                read_exact(policy_fd, &pathlen, sizeof(pathlen)) != 0)
+                fail(policy_fd, "truncated landlock rule header");
+            left -= sizeof(access) + sizeof(pathlen);
+            if (pathlen == 0 || pathlen > 4096)
+                fail(policy_fd, "invalid landlock path length");
+            if (left < pathlen)
+                fail(policy_fd, "truncated landlock path");
+            path = malloc((size_t)pathlen + 1);
+            if (path == NULL)
+                fail(policy_fd, "out of memory for landlock path");
+            if (read_exact(policy_fd, path, pathlen) != 0)
+                fail(policy_fd, "truncated landlock path");
+            path[pathlen] = '\0';
+            left -= pathlen;
+            ll_rules[n_ll_rules].access = access;
+            ll_rules[n_ll_rules].path = path;
+            n_ll_rules++;
+        }
+        if (left > 0)
+            fail(policy_fd, "too many landlock rules");
+    }
+
     if (close(policy_fd) != 0)
         _exit(LAUNCH_FAILURE);
 
@@ -284,6 +442,9 @@ int main(int argc, char **argv)
                 log_err("PR_CAP_AMBIENT_RAISE", errno);
         }
     }
+
+    /* 6. Landlock filesystem confinement, before seccomp. */
+    apply_landlock(ll_rules, n_ll_rules);
 
     /* 7. Seccomp LAST: it must never block the setup above, and execve
      * (which the Go side reserves from the deny list) is still allowed. */

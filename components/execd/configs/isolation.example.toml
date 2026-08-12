@@ -101,3 +101,19 @@ allowed_writable = ["/workspace", "/mnt", "/media", "/data"]
 # Missing runtime support (no CAP_SETPCAP, launcher binary absent) is
 # reported on GET /v1/isolated/capabilities under "hardening" and skipped,
 # never fatal.
+
+# Landlock filesystem confinement (OSEP-0018 §5) on top of [hardening].
+# Default OFF. When enabled, user-code processes are allowlisted: system
+# paths read+exec, /proc/self and well-known read-only proc files, the
+# needed /dev device files, /tmp, /run, and allowed_writable — everything
+# else is denied. A kernel without Landlock (ABI < 1) degrades to
+# "unsupported" and is skipped.
+#
+# [landlock]
+# enabled = true
+#
+#   # Extra writable paths beyond the built-in set (read+write+create).
+#   extra_writable = ["/var/cache"]
+#
+#   # Extra read-only paths beyond the built-in set (read+exec).
+#   extra_readable = ["/opt/readonly"]

@@ -42,6 +42,10 @@ type Config struct {
 	// user-code process is launched through the native launcher with reduced
 	// capabilities, no_new_privs, and the seccomp floor. Defaults to off.
 	Hardening *HardeningConfig `toml:"hardening"`
+
+	// Landlock adds filesystem confinement (OSEP-0018 §5) on top of the
+	// hardening floor. Defaults to off.
+	Landlock *LandlockConfig `toml:"landlock"`
 }
 
 // SeccompOverride specifies a custom syscall denylist that replaces the
@@ -60,6 +64,20 @@ type HardeningConfig struct {
 	KeepCapabilities []string `toml:"keep_capabilities"`
 }
 
+// LandlockConfig controls Landlock filesystem confinement (OSEP-0018 §5).
+type LandlockConfig struct {
+	// Enabled applies a Landlock allowlist to user-code processes, on top
+	// of the [hardening] floor.
+	Enabled bool `toml:"enabled"`
+	// ExtraWritable grants read+write (and file creation) beneath extra
+	// paths beyond the built-in set (system paths, /proc/self, /tmp, /run,
+	// allowed_writable).
+	ExtraWritable []string `toml:"extra_writable"`
+	// ExtraReadable grants read+exec beneath extra paths beyond the
+	// built-in read set.
+	ExtraReadable []string `toml:"extra_readable"`
+}
+
 // DefaultConfig returns the built-in defaults used when no config file is
 // provided or when individual fields are missing from the file.
 func DefaultConfig() Config {
@@ -70,6 +88,7 @@ func DefaultConfig() Config {
 		AllowedWritable: []string{"/workspace", "/mnt", "/media", "/data"},
 		Seccomp:         nil, // use built-in denylist
 		Hardening:       nil, // floor off
+		Landlock:        nil, // confinement off
 	}
 }
 

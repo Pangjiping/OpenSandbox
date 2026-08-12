@@ -68,6 +68,7 @@ func resetHardening() {
 	hardening.policy = nil
 	hardening.capDrop.Store(nil)
 	hardening.seccomp.Store(nil)
+	hardening.landlock.Store(nil)
 	launcherSearchPaths = []string{launcherRuntimePath}
 }
 
@@ -257,9 +258,8 @@ func TestHardeningReportLayers(t *testing.T) {
 	launcherSearchPaths = append(launcherSearchPaths, launcherBuilt)
 	initHardeningForTest(t, hardenedCfg())
 	report := ReportHardening()
-	if report.Landlock.State != "disabled" || report.Ebpf.State != "disabled" {
-		t.Fatalf("future layers = %q/%q, want disabled/disabled",
-			report.Landlock.State, report.Ebpf.State)
+	if report.Ebpf.State != "disabled" {
+		t.Fatalf("ebpf layer = %q, want disabled", report.Ebpf.State)
 	}
 	if report.CapDrop.State != "active" && report.CapDrop.State != "degraded" {
 		t.Fatalf("cap_drop state = %q, want active or degraded (root)", report.CapDrop.State)
@@ -267,4 +267,63 @@ func TestHardeningReportLayers(t *testing.T) {
 	if report.Seccomp.State != "active" {
 		t.Fatalf("seccomp state = %q, want active", report.Seccomp.State)
 	}
+}
+
+func TestLandlockDisabledByDefault(t *testing.T) {
+	initHardeningForTest(t, isolation.Config{})
+	if report := ReportHardening(); report.Landlock.State != "disabled" {
+		t.Fatalf("landlock state = %q, want disabled", report.Landlock.State)
+	}
+}
+
+func TestLandlockActiveOrUnsupported(t *testing.T) {
+	buildLauncher(t)
+	launcherSearchPaths = append(launcherSearchPaths, launcherBuilt)
+	cfg := isolation.Config{
+		Hardening: &isolation.HardeningConfig{Enabled: true},
+		Landlock: &isolation.LandlockConfig{
+			Enabled:        true,
+			ExtraWritable:  []string{"/cache"},
+			ExtraReadable:  []string{"/opt/data"},
+		},
+	}
+	initHardeningForTest(t, cfg)
+
+	report := ReportHardening()
+	switch report.Landlock.State {
+	case "active":
+		if report.Landlock.Message == "" {
+			t.Fatalf("landlock active but no message")
+		}
+		rules := buildLandlockRules(cfg)
+		assertLandlockRule(t, rules, "/", llExecute)
+		assertLandlockRule(t, rules, "/usr", llReadFile|llReadDir|llExecute)
+		assertLandlockRule(t, rules, "/proc/self", llReadFile|llReadDir|llExecute)
+		assertLandlockRule(t, rules, "/tmp", llRwAccess)
+		assertLandlockRule(t, rules, "/workspace", llRwAccess)
+		assertLandlockRule(t, rules, "/cache", llRwAccess)
+		assertLandlockRule(t, rules, "/opt/data", llReadFile|llReadDir|llExecute)
+		for _, rule := range rules {
+			if rule.Path == "/proc" {
+				t.Fatalf("all of /proc must not be granted: %+v", rule)
+			}
+		}
+	case "unsupported":
+		t.Logf("landlock unsupported on this kernel; skipping rule assertions")
+	default:
+		t.Fatalf("landlock state = %q, want active or unsupported", report.Landlock.State)
+	}
+}
+
+func assertLandlockRule(t *testing.T, rules []landlockRule, path string, access uint64) {
+	t.Helper()
+	for _, rule := range rules {
+		if rule.Path == path {
+			if rule.Access != access {
+				t.Fatalf("landlock rule %s access = %#x, want %#x", path, rule.Access, access)
+			}
+			return
+		}
+	}
+	t.Fatalf("landlock rule for %s missing", path)
 }
