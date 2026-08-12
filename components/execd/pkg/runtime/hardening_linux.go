@@ -115,7 +115,7 @@ func buildLandlockRules(cfg isolation.Config) []landlockRule {
 	rules = append(rules, bestEffort(llExecute, "/"))
 
 	readExec := llReadFile | llReadDir | llExecute
-	for _, p := range []string{"/usr", "/bin", "/lib", "/lib64", "/etc"} {
+	for _, p := range []string{"/usr", "/bin", "/lib", "/lib64", "/etc", "/opt"} {
 		rules = append(rules, bestEffort(readExec, p))
 	}
 	// Only directory paths are usable here: the kernel rejects path_beneath
@@ -285,6 +285,7 @@ type hardeningPolicy struct {
 	flags    uint32
 	uid      uint32
 	gid      uint32
+	groups   []uint32
 	keepcaps []uint32
 	stripEnv []string
 	seccomp  []byte
@@ -297,6 +298,7 @@ type policyHeader struct {
 	Flags       uint32
 	UID         uint32
 	GID         uint32
+	NGroups     uint32
 	NKeepCaps   uint32
 	NEnv        uint32
 	SeccompLen  uint32
@@ -527,9 +529,14 @@ func hardenCmd(cmd *exec.Cmd, noHardening bool, stripEnv []string) (*os.File, er
 		pol = &cp
 	}
 	if cmd.SysProcAttr != nil && cmd.SysProcAttr.Credential != nil {
+		cred := cmd.SysProcAttr.Credential
 		cp := *pol
-		cp.uid = cmd.SysProcAttr.Credential.Uid
-		cp.gid = cmd.SysProcAttr.Credential.Gid
+		cp.uid = cred.Uid
+		cp.gid = cred.Gid
+		cp.groups = append([]uint32(nil), cred.Groups...)
+		// The launcher must perform the identity drop even when execd is
+		// not root (the flag is normally only set for root execd).
+		cp.flags |= flagUIDDrop
 		pol = &cp
 		cmd.SysProcAttr.Credential = nil
 	}
@@ -584,6 +591,7 @@ func encodePolicy(p *hardeningPolicy) ([]byte, error) {
 		Flags:       p.flags,
 		UID:         p.uid,
 		GID:         p.gid,
+		NGroups:     uint32(len(p.groups)),
 		NKeepCaps:   uint32(len(p.keepcaps)),
 		NEnv:        uint32(len(p.stripEnv)),
 		SeccompLen:  uint32(len(p.seccomp)),
@@ -591,6 +599,11 @@ func encodePolicy(p *hardeningPolicy) ([]byte, error) {
 	}
 	if err := binary.Write(buf, binary.LittleEndian, &hdr); err != nil {
 		return nil, err
+	}
+	for _, g := range p.groups {
+		if err := binary.Write(buf, binary.LittleEndian, g); err != nil {
+			return nil, err
+		}
 	}
 	for _, capNum := range p.keepcaps {
 		if err := binary.Write(buf, binary.LittleEndian, capNum); err != nil {

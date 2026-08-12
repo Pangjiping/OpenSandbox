@@ -274,6 +274,7 @@ class AgentSandboxProvider(WorkloadProvider):
             disable_ipv6_for_egress=disable_ipv6_for_egress,
         )
         main_env = dict(env)
+        main_env["OPENSANDBOX_ID"] = sandbox_id
         if self.execd_run_as_init:
             main_env["EXECD_INIT"] = "1"
         if credential_proxy_enabled:

@@ -92,6 +92,7 @@ type Observer struct {
 	sandboxID string
 	kinds     map[string]bool
 	reader    *ringbuf.Reader
+	objs      *auditObjects
 	links     []link.Link
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -188,6 +189,9 @@ func newObserver(cfg *isolation.EbpfConfig, sandboxID string, cgroupID uint64) (
 
 	reader, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
+		for _, l := range links {
+			_ = l.Close()
+		}
 		objs.Close()
 		return nil, fmt.Errorf("ringbuf reader: %w", err)
 	}
@@ -220,6 +224,7 @@ func newObserver(cfg *isolation.EbpfConfig, sandboxID string, cgroupID uint64) (
 		sandboxID: sandboxID,
 		kinds:     kinds,
 		reader:    reader,
+		objs:      &objs,
 		links:     links,
 		closed:    make(chan struct{}),
 	}, nil
@@ -250,6 +255,9 @@ func (o *Observer) Close() {
 		for _, l := range o.links {
 			_ = l.Close()
 		}
+		if o.objs != nil {
+			o.objs.Close()
+		}
 		_ = o.logger.Close()
 	})
 }
@@ -270,7 +278,9 @@ func (o *Observer) handleRecord(raw []byte) {
 		return
 	}
 	o.mu.Lock()
-	_, _ = o.logger.Write(append(line, '\n'))
+	if _, err := o.logger.Write(append(line, '\n')); err != nil {
+		log.Error("ebpf: audit write failed: %v", err)
+	}
 	o.mu.Unlock()
 }
 

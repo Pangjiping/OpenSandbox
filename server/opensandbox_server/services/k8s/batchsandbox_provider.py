@@ -180,6 +180,7 @@ class BatchSandboxProvider(WorkloadProvider):
         )
         
         main_env = dict(env)
+        main_env["OPENSANDBOX_ID"] = sandbox_id
         if self.execd_run_as_init:
             main_env["EXECD_INIT"] = "1"
         if credential_proxy_enabled:
@@ -382,7 +383,7 @@ class BatchSandboxProvider(WorkloadProvider):
             or self.execd_run_as_init
         )
         if needs_task_template:
-            spec["taskTemplate"] = self._build_task_template(entrypoint, env)
+            spec["taskTemplate"] = self._build_task_template(entrypoint, env, batchsandbox_name)
         if expires_at is not None:
             spec["expireTime"] = expires_at.isoformat()
         runtime_manifest = {
@@ -484,6 +485,7 @@ class BatchSandboxProvider(WorkloadProvider):
         self,
         entrypoint: List[str],
         env: Dict[str, str],
+        sandbox_id: str,
     ) -> Dict[str, Any]:
         """Build pool taskTemplate with shell-escaped bootstrap command.
 
@@ -507,6 +509,7 @@ class BatchSandboxProvider(WorkloadProvider):
         if self.execd_run_as_init:
             env = {**env, "EXECD_INIT": "1"}
         env_list = [{"name": k, "value": v} for k, v in env.items()] if env else []
+        env_list.append({"name": "OPENSANDBOX_ID", "value": sandbox_id})
 
         return {
             "spec": {

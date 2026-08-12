@@ -69,6 +69,7 @@ struct policy_header {
     uint32_t flags;
     uint32_t uid;
     uint32_t gid;
+    uint32_t n_groups;
     uint32_t n_keepcaps;
     uint32_t n_env;
     uint32_t seccomp_len;
@@ -296,6 +297,7 @@ int main(int argc, char **argv)
     int policy_fd;
     struct policy_header hdr;
     uint32_t keepcaps[MAX_CAPS];
+    uint32_t groups[MAX_CAPS];
     char *env_names[MAX_CAPS];
     int n_env;
     size_t env_budget;
@@ -327,6 +329,8 @@ int main(int argc, char **argv)
     if (hdr.magic != POLICY_MAGIC || hdr.version != POLICY_VERSION)
         fail(policy_fd, "invalid policy header");
 
+    if (hdr.n_groups > MAX_CAPS)
+        fail(policy_fd, "too many supplementary groups");
     if (hdr.n_keepcaps > MAX_CAPS)
         fail(policy_fd, "too many kept capabilities");
     if (hdr.n_env > MAX_CAPS)
@@ -334,6 +338,9 @@ int main(int argc, char **argv)
     if (hdr.seccomp_len % sizeof(struct sock_filter) != 0)
         fail(policy_fd, "seccomp filter length is not a multiple of sock_filter");
 
+    if (hdr.n_groups > 0 &&
+        read_exact(policy_fd, groups, hdr.n_groups * sizeof(uint32_t)) != 0)
+        fail(policy_fd, "truncated group list");
     if (hdr.n_keepcaps > 0 &&
         read_exact(policy_fd, keepcaps, hdr.n_keepcaps * sizeof(uint32_t)) != 0)
         fail(policy_fd, "truncated capability list");
@@ -456,7 +463,19 @@ int main(int argc, char **argv)
     if (hdr.flags & FLAG_UID_DROP) {
         /* 5. Identity change. Same-uid re-apply succeeds; a foreign target
          * without privileges fails and is skipped (fail-open). */
-        (void)setgroups(0, NULL);
+        if (hdr.n_groups > 0) {
+            gid_t *gids = (gid_t *)malloc(hdr.n_groups * sizeof(gid_t));
+
+            if (gids == NULL)
+                fail(-1, "out of memory for supplementary groups");
+            for (uint32_t g = 0; g < hdr.n_groups; g++)
+                gids[g] = (gid_t)groups[g];
+            if (setgroups(hdr.n_groups, gids) != 0)
+                log_err("setgroups", errno);
+            free(gids);
+        } else {
+            (void)setgroups(0, NULL);
+        }
         if (setgid((gid_t)hdr.gid) != 0)
             log_err("setgid", errno);
         if (setuid((uid_t)hdr.uid) != 0)

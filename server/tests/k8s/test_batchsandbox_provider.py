@@ -530,8 +530,8 @@ spec:
         body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
         env_vars = body["spec"]["template"]["spec"]["containers"][0]["env"]
 
-        # Should have user env vars plus EXECD
-        assert len(env_vars) == 3
+        # Should have user env vars plus OPENSANDBOX_ID and EXECD
+        assert len(env_vars) == 4
         env_dict = {e["name"]: e["value"] for e in env_vars}
         assert env_dict["FOO"] == "bar"
         assert env_dict["BAZ"] == "qux"
@@ -1454,7 +1454,10 @@ spec:
         # Example: /opt/opensandbox/bootstrap.sh python app.py &
         assert "/opt/opensandbox/bootstrap.sh python app.py" in command[2]
         assert command[2].endswith(" &")
-        assert task_template["spec"]["process"]["env"] == [{"name": "FOO", "value": "bar"}]
+        assert task_template["spec"]["process"]["env"] == [
+            {"name": "FOO", "value": "bar"},
+            {"name": "OPENSANDBOX_ID", "value": "test-id"},
+        ]
 
     def test_build_task_template_with_env(self, mock_k8s_client):
         """
@@ -1471,7 +1474,7 @@ spec:
         provider = BatchSandboxProvider(mock_k8s_client)
 
         result = provider._build_task_template(
-            entrypoint=["/usr/bin/python", "app.py"], env={"KEY1": "value1", "KEY2": "value2"}
+            entrypoint=["/usr/bin/python", "app.py"], env={"KEY1": "value1", "KEY2": "value2"}, sandbox_id="bs-1"
         )
 
         assert "spec" in result
@@ -1493,6 +1496,7 @@ spec:
         assert process_task["env"] == [
             {"name": "KEY1", "value": "value1"},
             {"name": "KEY2", "value": "value2"},
+            {"name": "OPENSANDBOX_ID", "value": "bs-1"},
         ]
 
     def test_build_task_template_injects_execd_run_as_init_when_enabled(self, mock_k8s_client):
@@ -1503,12 +1507,13 @@ spec:
         provider = BatchSandboxProvider(mock_k8s_client, config)
 
         result = provider._build_task_template(
-            entrypoint=["/usr/bin/python", "app.py"], env={"KEY1": "value1"}
+            entrypoint=["/usr/bin/python", "app.py"], env={"KEY1": "value1"}, sandbox_id="bs-1"
         )
 
         env = result["spec"]["process"]["env"]
         assert {"name": "EXECD_INIT", "value": "1"} in env
         assert {"name": "KEY1", "value": "value1"} in env
+        assert {"name": "OPENSANDBOX_ID", "value": "bs-1"} in env
 
         # With execd_run_as_init the task is NOT backgrounded: the shim's
         # shell execs bootstrap.sh, which execs `execd --init` as the root of
@@ -1530,12 +1535,12 @@ spec:
         """
         provider = BatchSandboxProvider(mock_k8s_client)
 
-        result = provider._build_task_template(entrypoint=["/usr/bin/python", "app.py"], env={})
+        result = provider._build_task_template(entrypoint=["/usr/bin/python", "app.py"], env={}, sandbox_id="bs-1")
 
         assert "spec" in result
         assert "process" in result["spec"]
         process_task = result["spec"]["process"]
-        assert process_task["env"] == []
+        assert process_task["env"] == [{"name": "OPENSANDBOX_ID", "value": "bs-1"}]
         # Without env, command directly calls bootstrap.sh in background
         command = process_task["command"]
         assert command[0] == "/bin/sh"
@@ -1557,7 +1562,7 @@ spec:
         provider = BatchSandboxProvider(mock_k8s_client)
 
         result = provider._build_task_template(
-            entrypoint=["python", "app.py"], env={"TEST_VAR": "test_value"}
+            entrypoint=["python", "app.py"], env={"TEST_VAR": "test_value"}, sandbox_id="bs-1"
         )
 
         command = result["spec"]["process"]["command"][2]
@@ -1579,6 +1584,7 @@ spec:
         result = provider._build_task_template(
             entrypoint=["python", "-c", 'print("hello world")'],
             env={"KEY": "value with spaces", "QUOTE": "it's fine"},
+            sandbox_id="bs-1",
         )
 
         command = result["spec"]["process"]["command"][2]
@@ -1692,7 +1698,10 @@ spec:
         assert body["spec"]["poolRef"] == "my-pool"
         assert "taskTemplate" in body["spec"]
         task_template = body["spec"]["taskTemplate"]
-        assert task_template["spec"]["process"]["env"] == [{"name": "VERSION", "value": "11"}]
+        assert task_template["spec"]["process"]["env"] == [
+            {"name": "VERSION", "value": "11"},
+            {"name": "OPENSANDBOX_ID", "value": "test-id"},
+        ]
 
     def test_create_workload_poolref_none_entrypoint_no_env_omits_task_template(self, mock_k8s_client):
         """When entrypoint is None and env is empty, taskTemplate is omitted.
