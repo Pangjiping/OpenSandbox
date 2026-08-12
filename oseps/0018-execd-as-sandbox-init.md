@@ -72,9 +72,11 @@ status: implementing
 
 **Remaining work** (tracked locally, see the handoff document next to this
 OSEP): trusted out-of-band stop channel + `restart_default.go` reconciliation
-(§3); Pool pod-level PID 1 (operator-side template config today); kernel-5.10
-eBPF empirical validation; Kind/SDK e2e coverage; `execd-ebpf` image build
-step in CI; default-on rollout of `execd_run_as_init` / `[hardening]`.
+(§3); Pool pod-level PID 1 is a **declined follow-up** (subreaper + per-child
+floor holds without PID 1; operator template config available); kernel-5.10
+eBPF empirical validation; cross-language SDK e2e coverage; `execd-ebpf`
+server-side binary selection (the default image ships both binaries; selection
+wiring is deferred); default-on rollout of `execd_run_as_init` / `[hardening]`.
 
 
 ## Summary

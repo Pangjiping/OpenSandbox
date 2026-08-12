@@ -23,6 +23,8 @@ container-level init contract through the SDK:
 - execd is PID 1 and the workload's parent
 - orphaned children are reaped (no zombie accumulation under PID 1)
 - in-namespace ``kill -9 1`` is inert (kernel signal shield)
+- the workload cannot read execd's environment (``/proc/1/environ`` denied by
+  non-dumpable, independent of Landlock)
 - ``GET /v1/isolated/capabilities`` reports ``hardening.init_mode = pid1``
 """
 
@@ -96,6 +98,12 @@ class TestExecdInitE2E:
 
     def test_kill9_pid1_is_inert(self, sandbox) -> None:
         assert "alive" in _run_command(sandbox, "kill -9 1; echo alive")
+
+    def test_workload_cannot_read_execd_environ(self, sandbox) -> None:
+        result = sandbox.commands.run("cat /proc/1/environ", opts=RunCommandOpts())
+        assert result.error is not None, "reading execd's /proc/1/environ must be denied"
+        stderr = "".join(msg.text for msg in result.logs.stderr)
+        assert "Permission denied" in stderr or "Operation not permitted" in stderr
 
     def test_hardening_reports_pid1(self, sandbox) -> None:
         probe = (

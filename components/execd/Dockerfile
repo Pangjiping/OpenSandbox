@@ -96,9 +96,12 @@ RUN rm /usr/lib/libcap.so /usr/lib/libcap.so.2 && \
     ninja -C builddir && \
     cp builddir/bwrap /build/bwrap/bwrap
 
-# execd-ebpf: observation variant (OSEP-0018 §5). The default image below
-# never contains eBPF code; this stage builds a CGO variant with the
-# exec/connect/privilege audit hooks attached.
+# execd-ebpf: observation variant binary (OSEP-0018 §5). The default image
+# below carries both the minimal control-plane binary and this variant; who
+# runs which is decided at launch time (bootstrap.sh honors the EXECD env,
+# defaulting to /opt/opensandbox/execd). The variant attaches
+# exec/connect/privilege audit hooks and needs CAP_BPF + CAP_PERFMON in the
+# container ceiling.
 FROM golang:1.25.9 AS ebpf-builder
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
@@ -120,21 +123,6 @@ RUN CGO_ENABLED=0 go build -tags ebpf -trimpath -buildvcs=false \
               -X 'github.com/alibaba/opensandbox/internal/version.GitCommit=${GIT_COMMIT}'" \
     -o /build/execd-ebpf ./main.go
 
-# The observation variant keeps the exact layout of the default image so it
-# can be used as runtime.execd_image: /execd, /bootstrap.sh and the native
-# helpers must be present for the server distribution paths.
-FROM alpine:latest AS ebpf
-COPY --from=bwrap-builder /build/bwrap/bwrap /usr/local/bin/bwrap
-COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-session-gate /usr/local/libexec/opensandbox-session-gate
-COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-session-gate /opt/opensandbox/opensandbox-session-gate
-COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-launcher /usr/local/libexec/opensandbox-launcher
-COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-launcher /opt/opensandbox/opensandbox-launcher
-COPY --from=ebpf-builder /build/execd-ebpf ./execd
-COPY --from=ebpf-builder /build/execd-ebpf ./execd-ebpf
-COPY components/execd/bootstrap.sh ./bootstrap.sh
-COPY components/execd/install.bat ./install.bat
-ENTRYPOINT ["./execd"]
-
 FROM alpine:latest
 
 COPY --from=bwrap-builder /build/bwrap/bwrap /usr/local/bin/bwrap
@@ -145,6 +133,7 @@ COPY --from=bwrap-builder --chown=0:0 --chmod=0555 /build/opensandbox-launcher /
 COPY --from=builder /build/execd .
 COPY --from=builder /build/execd.exe ./execd.exe
 COPY --from=builder /build/opensandbox-supervisor ./opensandbox-supervisor
+COPY --from=ebpf-builder /build/execd-ebpf ./execd-ebpf
 COPY components/execd/bootstrap.sh ./bootstrap.sh
 COPY components/execd/install.bat ./install.bat
 
