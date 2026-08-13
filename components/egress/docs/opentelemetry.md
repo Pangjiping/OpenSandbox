@@ -91,6 +91,25 @@ Metric export is enabled only when at least one OTLP endpoint is set.
 
 If both are unset, egress keeps metrics local (no OTLP export).
 
+### Automatic Egress Allow Rule
+
+When an OTLP endpoint is configured, egress automatically injects an
+always-allow egress rule for the endpoint host (domain or IP, any port), so
+telemetry export works under the default deny-all policy without manually
+managing allowlist rules. This also covers the egress sidecar's own metric
+export, which shares the sandbox network namespace and would otherwise be
+blocked by its own egress chain.
+
+- The rule follows the standard precedence: `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`
+  wins over `OTEL_EXPORTER_OTLP_ENDPOINT`.
+- The host is taken from the endpoint URL (`https://host:4318/v1/metrics`),
+  `host:port`, or bare `host` forms.
+- The rule lives in the always-allow layer: it survives user `POST`/`PATCH`/`DELETE`
+  policy updates and always-rule file reloads. Operators can still block the target
+  with `deny.always`, which takes precedence.
+- Rules are host-scoped (any port), matching the egress rule model; ports are not
+  enforced per rule.
+
 ### Minimal Example
 
 ```bash
