@@ -123,7 +123,14 @@ object Scenarios {
         mock.reset()
         val pool = PoolRunner.build(cfg, "steady-state")
         pool.start()
-        val fillMs = PoolRunner.waitForIdle(pool, cfg.maxIdle, cfg.coldStartTimeoutMs)
+        // Extreme-cold-start mode: loaders race the fill instead of waiting
+        // for the idle buffer (fillMs = -1 in that case).
+        val fillMs =
+            if (cfg.steadyStartImmediately) {
+                -1L
+            } else {
+                PoolRunner.waitForIdle(pool, cfg.maxIdle, cfg.coldStartTimeoutMs)
+            }
         val createdBefore = num(mock.stats(), "stats.created")
         val killedBefore = num(mock.stats(), "stats.killed")
 
@@ -176,6 +183,7 @@ object Scenarios {
         val idleStat = client["poolIdleCount"] as Map<String, Any>
         return mapOf(
             "fillTimeMs" to fillMs,
+            "startImmediately" to cfg.steadyStartImmediately,
             "durationMs" to durationMs,
             "actualLoaderDurationMs" to loaderDurationMs,
             "workers" to cfg.steadyWorkers,

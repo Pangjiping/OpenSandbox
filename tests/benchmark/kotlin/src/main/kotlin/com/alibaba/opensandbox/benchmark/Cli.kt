@@ -41,6 +41,7 @@ data class BenchmarkConfig(
     val steadyWorkers: Int,
     val steadyDurationS: Int,
     val acquireRatePerMin: Int,
+    val steadyStartImmediately: Boolean,
     val holdMinMs: Long,
     val holdMaxMs: Long,
     val replenishRounds: Int,
@@ -81,6 +82,7 @@ object Cli {
             "steady-workers",
             "steady-duration-s",
             "acquire-rate-per-min",
+            "steady-start-immediately",
             "hold-min-ms",
             "hold-max-ms",
             "replenish-rounds",
@@ -105,12 +107,18 @@ object Cli {
                 throw IllegalArgumentException("unexpected argument: $key")
             }
             val name = key.removePrefix("--")
-            val value = args.getOrNull(i + 1) ?: throw IllegalArgumentException("missing value for $key")
             if (name !in allKeys) {
                 throw IllegalArgumentException("unknown option: $key")
             }
-            map[name] = value
-            i += 2
+            // Boolean flags may be passed without a value (--flag == --flag true).
+            val next = args.getOrNull(i + 1)
+            if (next == null || next.startsWith("--")) {
+                map[name] = "true"
+                i += 1
+            } else {
+                map[name] = next
+                i += 2
+            }
         }
         return BenchmarkConfig(
             mockBaseUrl = map["mock-base-url"] ?: "http://127.0.0.1:18080",
@@ -138,6 +146,10 @@ object Cli {
             // 0 = unlimited (workers run back-to-back); > 0 paces acquires
             // evenly across each minute at this many acquires per minute.
             acquireRatePerMin = (map["acquire-rate-per-min"] ?: "0").toInt(),
+            // Start loaders immediately after pool.start() instead of waiting
+            // for the idle buffer to fill (pool startup races high-frequency
+            // acquire — extreme cold-start-under-load scenario).
+            steadyStartImmediately = (map["steady-start-immediately"] ?: "false").toBoolean(),
             holdMinMs = (map["hold-min-ms"] ?: "1000").toLong(),
             holdMaxMs = (map["hold-max-ms"] ?: "5000").toLong(),
             replenishRounds = (map["replenish-rounds"] ?: "20").toInt(),

@@ -130,6 +130,7 @@ private fun cfgValues(cfg: BenchmarkConfig): Map<String, Any> =
         "steadyWorkers" to cfg.steadyWorkers,
         "steadyDurationS" to cfg.steadyDurationS,
         "acquireRatePerMin" to cfg.acquireRatePerMin,
+        "steadyStartImmediately" to cfg.steadyStartImmediately,
         "holdMinMs" to cfg.holdMinMs,
         "holdMaxMs" to cfg.holdMaxMs,
         "failureCreateRate" to cfg.failureCreateRate,
