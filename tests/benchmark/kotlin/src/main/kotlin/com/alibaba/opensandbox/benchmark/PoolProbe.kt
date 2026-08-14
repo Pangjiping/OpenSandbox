@@ -18,27 +18,30 @@ package com.alibaba.opensandbox.benchmark
 
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolState
 import com.alibaba.opensandbox.sandbox.pool.SandboxPool
+import java.io.File
 import java.lang.management.GarbageCollectorMXBean
 import java.lang.management.ManagementFactory
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Continuous client-side instrumentation: JVM threads, heap/GC, and pool
  * health (snapshot-based) sampled every [intervalMs] during a scenario.
+ * Aggregates go into the report; the raw per-sample series are written to a
+ * CSV in the run directory for offline analysis.
  */
 class PoolProbe(
     private val pool: SandboxPool,
     private val intervalMs: Long = 500,
 ) {
     private val running = AtomicBoolean(true)
+    private val lock = Any()
+    private val sampleTimesMs = ArrayList<Long>()
     private val threadCounts = ArrayList<Int>()
     private val heapUsedMb = ArrayList<Double>()
     private val idleSamples = ArrayList<Int>()
-    private val degradedSamples = AtomicInteger()
-    private val backoffSamples = AtomicInteger()
-    private val inFlightMax = AtomicInteger()
-    private val lock = Any()
+    private val inFlightSamples = ArrayList<Int>()
+    private val degradedSamples = ArrayList<Boolean>()
+    private val backoffSamples = ArrayList<Boolean>()
     private var thread: Thread? = null
 
     private val threadBean = ManagementFactory.getThreadMXBean()
@@ -78,25 +81,39 @@ class PoolProbe(
 
     private fun sample() {
         val heap = memoryBean.heapMemoryUsage
-        val snap = pool.snapshot()
+        val snap =
+            try {
+                pool.snapshot()
+            } catch (_: Exception) {
+                // Pool snapshot may fail while the state store is faulted.
+                return
+            }
+        val nowMs = System.currentTimeMillis()
         synchronized(lock) {
+            sampleTimesMs.add(nowMs)
             threadCounts.add(threadBean.threadCount)
             heapUsedMb.add(heap.used / (1024.0 * 1024.0))
             idleSamples.add(snap.idleCount)
+            inFlightSamples.add(snap.inFlightOperations)
+            degradedSamples.add(snap.state == PoolState.DEGRADED)
+            backoffSamples.add(snap.backoffActive)
         }
-        if (snap.state == PoolState.DEGRADED) degradedSamples.incrementAndGet()
-        if (snap.backoffActive) backoffSamples.incrementAndGet()
-        inFlightMax.accumulateAndGet(snap.inFlightOperations) { a, b -> maxOf(a, b) }
     }
 
     fun report(): Map<String, Any> {
         val threads: LongArray
         val heap: DoubleArray
         val idle: IntArray
+        val inFlight: IntArray
+        val degradedCount: Int
+        val backoffCount: Int
         synchronized(lock) {
             threads = LongArray(threadCounts.size) { threadCounts[it].toLong() }
             heap = DoubleArray(heapUsedMb.size) { heapUsedMb[it] }
             idle = IntArray(idleSamples.size) { idleSamples[it] }
+            inFlight = IntArray(inFlightSamples.size) { inFlightSamples[it] }
+            degradedCount = degradedSamples.count { it }
+            backoffCount = backoffSamples.count { it }
         }
         val zeroIdleRatio =
             if (idle.isEmpty()) 0.0 else idle.count { it == 0 }.toDouble() / idle.size
@@ -108,9 +125,50 @@ class PoolProbe(
             "gcTimeMs" to (gcBeans.sumOf { it.collectionTime } - gcStartTimeMs),
             "poolIdleCount" to stat(idle.map { it.toLong() }.toLongArray()),
             "poolIdleZeroRatio" to zeroIdleRatio,
-            "poolDegradedSamples" to degradedSamples.get(),
-            "poolBackoffSamples" to backoffSamples.get(),
-            "poolInFlightMax" to inFlightMax.get(),
+            "poolInFlight" to stat(inFlight.map { it.toLong() }.toLongArray()),
+            "poolDegradedSamples" to degradedCount,
+            "poolBackoffSamples" to backoffCount,
+        )
+    }
+
+    /**
+     * Writes the raw per-sample series as CSV (time offset ms, threads,
+     * heap MB, idle, inFlight, degraded, backoff) for offline analysis.
+     */
+    fun writeCsv(file: File) {
+        val times: LongArray
+        val threads: IntArray
+        val heap: DoubleArray
+        val idle: IntArray
+        val inFlight: IntArray
+        val degraded: BooleanArray
+        val backoff: BooleanArray
+        synchronized(lock) {
+            times = sampleTimesMs.toLongArray()
+            threads = threadCounts.toIntArray()
+            heap = heapUsedMb.toDoubleArray()
+            idle = idleSamples.toIntArray()
+            inFlight = inFlightSamples.toIntArray()
+            degraded = degradedSamples.toBooleanArray()
+            backoff = backoffSamples.toBooleanArray()
+        }
+        if (times.isEmpty()) return
+        val start = times[0]
+        file.parentFile?.mkdirs()
+        file.writeText(
+            buildString {
+                appendLine("tMs,threads,heapUsedMb,idleCount,inFlight,degraded,backoff")
+                for (i in times.indices) {
+                    append(times[i] - start)
+                    append(',').append(threads[i])
+                    append(',').append(heap[i])
+                    append(',').append(idle[i])
+                    append(',').append(inFlight[i])
+                    append(',').append(if (degraded[i]) 1 else 0)
+                    append(',').append(if (backoff[i]) 1 else 0)
+                    appendLine()
+                }
+            },
         )
     }
 

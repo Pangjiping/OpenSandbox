@@ -63,6 +63,8 @@ func main() {
 	log.Printf("mock lifecycle server listening on http://%s", *lifecycleAddr)
 	log.Printf("mock execd server listening on http://%s", *execdAddr)
 
+	go mock.startAliveTicker()
+
 	errCh := make(chan error, 2)
 	go func() { errCh <- lifecycleSrv.ListenAndServe() }()
 	go func() { errCh <- execdSrv.ListenAndServe() }()

@@ -45,6 +45,7 @@ type MockServer struct {
 
 	stats Stats
 	qps   *QpsRegistry
+	alive *gaugeTracker
 }
 
 // Sandbox is the mock's view of a sandbox on the lifecycle side.
@@ -71,6 +72,28 @@ func newMockServer(cfg *Config, execdHost string, execdPort int, windowSec int) 
 		execdHost: execdHost,
 		execdPort: execdPort,
 		qps:       newQpsRegistry(windowSec),
+		alive:     newGaugeTracker(windowSec),
+	}
+}
+
+// startAliveTicker records the alive-sandbox count once per second so the
+// driver can see the pool-size trajectory (over-creation, shrink, drift).
+func (m *MockServer) startAliveTicker() {
+	record := func(now time.Time) {
+		m.mu.RLock()
+		alive := 0
+		for _, sb := range m.sandboxes {
+			if sb.alive(now) {
+				alive++
+			}
+		}
+		m.mu.RUnlock()
+		m.alive.record(now, int64(alive))
+	}
+	record(time.Now())
+	ticker := time.NewTicker(time.Second)
+	for range ticker.C {
+		record(time.Now())
 	}
 }
 
@@ -335,6 +358,7 @@ func (m *MockServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"stats":      stats,
 		"alive":      alive,
+		"aliveStats": m.alive.snapshot(time.Now()),
 		"poisoned":   poisoned,
 		"config":     m.cfgSnapshot(),
 		"qps":        m.qps.snapshot(time.Now()),
@@ -361,6 +385,16 @@ func (m *MockServer) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		m.mu.Unlock()
 	}
+	if f.PoisonRate != nil {
+		rate := *f.PoisonRate
+		m.mu.Lock()
+		for _, sb := range m.sandboxes {
+			if sb.alive(time.Now()) && rand.Float64() < rate {
+				sb.Poisoned = true
+			}
+		}
+		m.mu.Unlock()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"config": m.cfgSnapshot()})
 }
 
@@ -368,6 +402,7 @@ func (m *MockServer) handleReset(w http.ResponseWriter, r *http.Request) {
 	_ = r.Body.Close()
 	m.stats.reset()
 	m.qps.reset(time.Now())
+	m.alive.reset(time.Now())
 	writeJSON(w, http.StatusOK, map[string]any{"reset": true})
 }
 

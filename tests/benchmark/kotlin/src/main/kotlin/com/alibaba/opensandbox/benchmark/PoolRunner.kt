@@ -20,6 +20,7 @@ import com.alibaba.opensandbox.sandbox.pool.SandboxPool
 import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
 import com.alibaba.opensandbox.sandbox.domain.pool.AcquirePolicy
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolCreationSpec
+import com.alibaba.opensandbox.sandbox.domain.pool.PoolStateStore
 import com.alibaba.opensandbox.sandbox.infrastructure.pool.InMemoryPoolStateStore
 import java.time.Duration
 
@@ -37,6 +38,7 @@ object PoolRunner {
         idleTimeoutS: Long = cfg.idleTimeoutS,
         maxAcquireRetries: Int = cfg.staleRetries,
         acquireReadyTimeoutMs: Long = cfg.acquireReadyTimeoutMs,
+        stateStore: PoolStateStore = InMemoryPoolStateStore(),
     ): SandboxPool {
         val connectionConfig =
             ConnectionConfig.builder()
@@ -49,7 +51,7 @@ object PoolRunner {
             .poolName(poolName)
             .ownerId("bench-owner-$poolName")
             .maxIdle(maxIdle)
-            .stateStore(InMemoryPoolStateStore())
+            .stateStore(stateStore)
             .connectionConfig(connectionConfig)
             .creationSpec(
                 PoolCreationSpec.builder()
@@ -88,11 +90,32 @@ object PoolRunner {
         target: Int,
         timeoutMs: Long,
     ): Long {
-        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        val start = System.nanoTime()
+        val deadline = start + timeoutMs * 1_000_000
         while (true) {
             val idle = pool.snapshot().idleCount
             if (idle >= target) {
-                return (System.nanoTime() - (deadline - timeoutMs * 1_000_000)) / 1_000_000
+                return (System.nanoTime() - start) / 1_000_000
+            }
+            if (System.nanoTime() > deadline) {
+                return -1L
+            }
+            Thread.sleep(100)
+        }
+    }
+
+    /** Polls snapshot until idleCount drops to [target] or below (shrink); returns elapsed ms or -1 on timeout. */
+    fun waitForIdleBelow(
+        pool: SandboxPool,
+        target: Int,
+        timeoutMs: Long,
+    ): Long {
+        val start = System.nanoTime()
+        val deadline = start + timeoutMs * 1_000_000
+        while (true) {
+            val idle = pool.snapshot().idleCount
+            if (idle <= target) {
+                return (System.nanoTime() - start) / 1_000_000
             }
             if (System.nanoTime() > deadline) {
                 return -1L

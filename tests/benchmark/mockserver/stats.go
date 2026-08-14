@@ -208,3 +208,82 @@ func (r *QpsRegistry) snapshot(now time.Time) map[string]QpsSnapshot {
 	}
 	return out
 }
+
+// GaugeSnapshot is the per-second view of a gauge (e.g. alive sandboxes).
+type GaugeSnapshot struct {
+	Max         int64   `json:"max"`
+	SeriesStart int64   `json:"seriesStartUnixSec"`
+	Series      []int64 `json:"series"`
+}
+
+// gaugeTracker keeps the per-second peak of a gauge (ring buffer) plus the
+// all-time max since the last reset.
+type gaugeTracker struct {
+	mu       sync.Mutex
+	window   int64
+	buckets  []int64
+	secs     []int64
+	startSec int64
+	maxAll   int64
+}
+
+func newGaugeTracker(windowSec int) *gaugeTracker {
+	return &gaugeTracker{
+		window:  int64(windowSec),
+		buckets: make([]int64, windowSec),
+		secs:    make([]int64, windowSec),
+	}
+}
+
+func (g *gaugeTracker) record(now time.Time, value int64) {
+	sec := now.Unix()
+	idx := sec % g.window
+	g.mu.Lock()
+	if g.secs[idx] != sec {
+		g.secs[idx] = sec
+		g.buckets[idx] = value
+	} else if value > g.buckets[idx] {
+		g.buckets[idx] = value
+	}
+	if value > g.maxAll {
+		g.maxAll = value
+	}
+	if g.startSec == 0 {
+		g.startSec = sec
+	}
+	g.mu.Unlock()
+}
+
+func (g *gaugeTracker) reset(now time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i := range g.buckets {
+		g.buckets[i] = 0
+		g.secs[i] = 0
+	}
+	g.maxAll = 0
+	g.startSec = now.Unix()
+}
+
+func (g *gaugeTracker) snapshot(now time.Time) GaugeSnapshot {
+	sec := now.Unix()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.startSec == 0 {
+		g.startSec = sec
+	}
+	begin := g.startSec
+	if sec-begin+1 > g.window {
+		begin = sec - g.window + 1
+	}
+	series := make([]int64, 0, sec-begin+1)
+	for s := begin; s <= sec; s++ {
+		idx := s % g.window
+		value := g.buckets[idx]
+		if g.secs[idx] != s {
+			value = 0
+		}
+		series = append(series, value)
+	}
+	return GaugeSnapshot{Max: g.maxAll, SeriesStart: begin, Series: series}
+}

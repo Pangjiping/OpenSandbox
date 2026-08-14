@@ -23,7 +23,7 @@ package com.alibaba.opensandbox.benchmark
 class LatencyCollector {
     private val lock = Any()
     private val samples = ArrayList<Long>()
-    private var failures = 0L
+    private val failureCounts = LinkedHashMap<String, Long>()
 
     fun record(elapsedMs: Long) {
         synchronized(lock) {
@@ -31,24 +31,27 @@ class LatencyCollector {
         }
     }
 
-    fun recordFailure() {
+    fun recordFailure(reason: String = "other") {
         synchronized(lock) {
-            failures++
+            failureCounts[reason] = (failureCounts[reason] ?: 0L) + 1
         }
     }
 
     fun snapshot(): LatencyStats {
         val sorted: LongArray
-        var failureCount: Long
+        val failures: Long
+        val failureByType: Map<String, Long>
         synchronized(lock) {
             sorted = LongArray(samples.size)
             for ((i, v) in samples.withIndex()) sorted[i] = v
             sorted.sort()
-            failureCount = failures
+            failures = failureCounts.values.sum()
+            failureByType = failureCounts.toMap()
         }
         return LatencyStats(
             n = sorted.size.toLong(),
-            failures = failureCount,
+            failures = failures,
+            failuresByType = failureByType,
             meanMs = if (sorted.isEmpty()) 0.0 else sorted.average(),
             p50 = percentile(sorted, 0.50),
             p90 = percentile(sorted, 0.90),
@@ -69,6 +72,7 @@ class LatencyCollector {
 data class LatencyStats(
     val n: Long,
     val failures: Long,
+    val failuresByType: Map<String, Long> = emptyMap(),
     val meanMs: Double,
     val p50: Long,
     val p90: Long,
@@ -81,6 +85,7 @@ data class LatencyStats(
         mapOf(
             "count" to n,
             "failures" to failures,
+            "failuresByType" to failuresByType,
             "meanMs" to meanMs,
             "p50Ms" to p50,
             "p90Ms" to p90,
