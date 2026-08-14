@@ -301,6 +301,20 @@ class PoolDestroyedException(
     )
 
 /**
+ * Thrown when an acquire falls through to direct create but the pool's
+ * in-flight create quota ([PoolConfig.warmupConcurrency], shared with warmups)
+ * stayed exhausted for the bounded wait.
+ */
+class PoolCapacityExceededException(
+    message: String? = "Pool in-flight create capacity exhausted",
+    cause: Throwable? = null,
+) : SandboxException(
+        message = message,
+        cause = cause,
+        error = SandboxError(SandboxError.POOL_CAPACITY_EXCEEDED, message),
+    )
+
+/**
  * Thrown when a pool destroy operation has started but did not complete. The pool namespace
  * remains fenced in DESTROYING state so callers can retry destroy instead of silently resuming
  * a partially-cleaned pool.
@@ -360,5 +374,8 @@ data class SandboxError(
 
         /** Pool destroy started but did not complete. */
         const val POOL_DESTROY_INCOMPLETE = "POOL_DESTROY_INCOMPLETE"
+
+        /** Pool-specific: direct-create quota exhausted and the bounded wait expired. */
+        const val POOL_CAPACITY_EXCEEDED = "POOL_CAPACITY_EXCEEDED"
     }
 }

@@ -20,6 +20,7 @@ import com.alibaba.opensandbox.sandbox.Sandbox
 import com.alibaba.opensandbox.sandbox.SandboxManager
 import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
 import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolAcquireFailedException
+import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolCapacityExceededException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolDestroyedException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolEmptyException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolNotRunningException
@@ -1308,6 +1309,23 @@ class SandboxPool internal constructor(
         // instead of surfacing the outage. See ensurePoolNamespaceActiveForAcquire for
         // the full rationale.
         ensurePoolNamespaceActiveForAcquire(policy)
+        val run = currentRun ?: throw PoolNotRunningException("Cannot acquire without an active pool run")
+        // Direct creates share the warmup quota (warmingCount): total in-flight
+        // creates (warmups + direct creates) never exceeds warmupConcurrency.
+        // Under over-demand this bounds the synchronous-create burst instead of
+        // letting every waiting caller create concurrently (see #1520).
+        waitForDirectCreateSlot(run)
+        try {
+            return directCreateInternal(sandboxTimeout, policy)
+        } finally {
+            run.warmingCount.decrementAndGet()
+        }
+    }
+
+    private fun directCreateInternal(
+        sandboxTimeout: Duration?,
+        policy: AcquirePolicy,
+    ): Sandbox {
         sandboxCreator?.let {
             val sandbox =
                 buildSandboxFromCreator(
@@ -1354,6 +1372,41 @@ class SandboxPool internal constructor(
         // has already killed and closed the sandbox.
         ensurePoolNamespaceActiveOrDispose(sandbox, policy)
         return sandbox
+    }
+
+    /**
+     * Waits until an in-flight create slot is available, bounded by
+     * [PoolConfig.acquireReadyTimeout] (the acquire's overall duration knob).
+     * The wait is interruptible and re-validates pool state on every iteration,
+     * so a stopping/destroyed pool fails fast with the usual exceptions.
+     *
+     * @throws PoolCapacityExceededException when the quota stayed exhausted for
+     * the whole budget.
+     */
+    private fun waitForDirectCreateSlot(run: RunContext) {
+        val deadlineNanos = System.nanoTime() + config.acquireReadyTimeout.toNanos()
+        while (true) {
+            ensureAcquireRunActive(run)
+            val current = run.warmingCount.get()
+            if (current < config.warmupConcurrency &&
+                run.warmingCount.compareAndSet(current, current + 1)
+            ) {
+                return
+            }
+            if (System.nanoTime() >= deadlineNanos) {
+                throw PoolCapacityExceededException(
+                    "Pool in-flight create capacity exhausted " +
+                        "(warmupConcurrency=${config.warmupConcurrency}): " +
+                        "all slots are held by warmups and/or direct creates",
+                )
+            }
+            try {
+                Thread.sleep(DIRECT_CREATE_SLOT_POLL_MS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw e
+            }
+        }
     }
 
     private fun ensurePoolNamespaceActive() {
@@ -1751,6 +1804,9 @@ class SandboxPool internal constructor(
     companion object {
         /** Minimum spacing between completion-driven reconcile ticks (see [requestReconcile]). */
         private const val COMPLETION_RECONCILE_MIN_INTERVAL_MS = 500L
+
+        /** Poll interval while waiting for a direct-create quota slot. */
+        private const val DIRECT_CREATE_SLOT_POLL_MS = 50L
 
         @JvmStatic
         fun builder(): Builder = Builder()
