@@ -23,6 +23,7 @@ import com.alibaba.opensandbox.sandbox.domain.pool.PoolCreationSpec
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolStateStore
 import com.alibaba.opensandbox.sandbox.infrastructure.pool.InMemoryPoolStateStore
 import java.time.Duration
+import java.util.concurrent.TimeUnit
 
 /**
  * Builds a [SandboxPool] wired to the mock server. Health checks stay enabled
@@ -47,8 +48,14 @@ object PoolRunner {
                 .requestTimeout(Duration.ofSeconds(30))
                 .disableMetrics()
                 .also { builder ->
-                    if (cfg.sharedConnectionPool) {
-                        builder.connectionPool(okhttp3.ConnectionPool())
+                    if (cfg.sharedConnectionPoolSize > 0) {
+                        builder.connectionPool(
+                            okhttp3.ConnectionPool(
+                                cfg.sharedConnectionPoolSize,
+                                5,
+                                TimeUnit.MINUTES,
+                            ),
+                        )
                     }
                 }
                 .build()
