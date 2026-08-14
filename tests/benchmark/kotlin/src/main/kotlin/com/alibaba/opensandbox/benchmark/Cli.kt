@@ -51,6 +51,7 @@ data class BenchmarkConfig(
     val staleRetries: Int,
     val staleAcquireReadyTimeoutMs: Long,
     val stalePoisonRate: Double,
+    val sharedConnectionPool: Boolean,
     val idleExpiryIdleTimeoutS: Long,
     val idleExpiryDurationS: Int,
 ) {
@@ -90,6 +91,7 @@ object Cli {
             "stale-retries",
             "stale-acquire-ready-timeout-ms",
             "stale-poison-rate",
+            "shared-connection-pool",
             "idle-expiry-idle-timeout-s",
             "idle-expiry-duration-s",
         )
@@ -147,6 +149,10 @@ object Cli {
             staleAcquireReadyTimeoutMs = (map["stale-acquire-ready-timeout-ms"] ?: "3000").toLong(),
             // fraction (0..1] of idle sandboxes to poison in stale-idle; 1.0 = poison all
             stalePoisonRate = (map["stale-poison-rate"] ?: "1.0").toDouble(),
+            // Share one OkHttp connection pool across all sandbox clients
+            // (diagnostic: distinguishes connection-establishment bottlenecks
+            // from the SDK warmup submission chain).
+            sharedConnectionPool = (map["shared-connection-pool"] ?: "false").toBoolean(),
             idleExpiryIdleTimeoutS = (map["idle-expiry-idle-timeout-s"] ?: "20").toLong(),
             idleExpiryDurationS = (map["idle-expiry-duration-s"] ?: "40").toInt(),
         )

@@ -25,6 +25,7 @@ import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolStateStoreUnavailab
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutException
 import com.alibaba.opensandbox.sandbox.domain.pool.AcquirePolicy
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolState
+import com.alibaba.opensandbox.sandbox.pool.PoolWarmupDiagnostics
 import com.alibaba.opensandbox.sandbox.pool.SandboxPool
 import kotlinx.serialization.json.JsonPrimitive
 import java.io.File
@@ -47,12 +48,14 @@ object Scenarios {
 
     fun coldStart(cfg: BenchmarkConfig, mock: MockControl): Map<String, Any> {
         mock.reset()
+        PoolWarmupDiagnostics.reset()
         val pool = PoolRunner.build(cfg, "cold-start")
         pool.start()
         val t0 = System.nanoTime()
         val fillMs = PoolRunner.waitForIdle(pool, cfg.maxIdle, cfg.coldStartTimeoutMs)
         val stats = mock.stats()
         pool.shutdown(graceful = false)
+        val diagnostics = PoolWarmupDiagnostics.snapshot()
 
         val created = num(stats, "stats.created")
         return mapOf(
@@ -61,6 +64,19 @@ object Scenarios {
             "serverCreated" to created,
             "serverAliveAtFill" to num(stats, "alive"),
             "overCreationOvershoot" to (created - cfg.maxIdle).coerceAtLeast(0),
+            "warmupPipeline" to
+                mapOf(
+                    "queueWaitMs" to diagnostics.queueWaitMs,
+                    "createDurationMs" to diagnostics.createDurationMs,
+                    "commitDurationMs" to diagnostics.commitDurationMs,
+                    "tickIntervalMs" to diagnostics.tickIntervalMs,
+                    "tickDurationMs" to diagnostics.tickDurationMs,
+                    "submitBurst" to diagnostics.submitBurst,
+                    "submitCalls" to diagnostics.submitCalls,
+                    "inFlightPeak" to diagnostics.inFlightPeak,
+                    "inFlightMean" to diagnostics.inFlightMean,
+                    "createFailures" to diagnostics.createFailures,
+                ),
         )
     }
 

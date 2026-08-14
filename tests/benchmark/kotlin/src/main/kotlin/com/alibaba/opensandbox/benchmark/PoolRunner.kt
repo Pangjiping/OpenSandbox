@@ -46,6 +46,11 @@ object PoolRunner {
                 .protocol("http")
                 .requestTimeout(Duration.ofSeconds(30))
                 .disableMetrics()
+                .also { builder ->
+                    if (cfg.sharedConnectionPool) {
+                        builder.connectionPool(okhttp3.ConnectionPool())
+                    }
+                }
                 .build()
         return SandboxPool.builder()
             .poolName(poolName)

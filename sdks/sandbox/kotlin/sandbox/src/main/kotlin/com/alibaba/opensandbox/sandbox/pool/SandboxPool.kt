@@ -906,6 +906,7 @@ class SandboxPool internal constructor(
             if (!isCurrentRun(run) || lifecycleState.get() != LifecycleState.RUNNING) return
             if (!isPoolNamespaceActive()) return
             val reconcileConfig = config.withMaxIdle(resolveMaxIdle())
+            val tickStart = System.nanoTime()
             try {
                 run.primaryOwned.set(
                     PoolReconciler.runReconcileTick(
@@ -920,6 +921,8 @@ class SandboxPool internal constructor(
             } catch (e: Exception) {
                 run.primaryOwned.set(false)
                 throw e
+            } finally {
+                PoolWarmupDiagnostics.recordTick(System.nanoTime(), System.nanoTime() - tickStart)
             }
         } finally {
             endOperation(run)
@@ -999,6 +1002,7 @@ class SandboxPool internal constructor(
         run: RunContext,
         count: Int,
     ) {
+        PoolWarmupDiagnostics.recordSubmitBurst(count)
         repeat(count) {
             if (!isCurrentRun(run) ||
                 lifecycleState.get() != LifecycleState.RUNNING ||
@@ -1024,20 +1028,26 @@ class SandboxPool internal constructor(
     private inner class TrackedWarmupTask(
         private val run: RunContext,
     ) : Runnable {
+        private val submittedAtNanos = System.nanoTime()
         private val completed = AtomicBoolean(false)
 
         init {
             run.warmingCount.incrementAndGet()
+            PoolWarmupDiagnostics.recordInFlight(run.warmingCount.get())
             beginOperation(run)
         }
 
         override fun run() {
+            PoolWarmupDiagnostics.recordQueueWait(System.nanoTime() - submittedAtNanos)
+            val createStart = System.nanoTime()
             val outcome =
                 try {
                     WarmupOutcome.Success(createOneSandbox())
                 } catch (failure: Throwable) {
+                    PoolWarmupDiagnostics.recordCreateFailure(failure)
                     WarmupOutcome.Failure(failure)
                 }
+            PoolWarmupDiagnostics.recordCreate(System.nanoTime() - createStart)
             dispatchCompletion(outcome)
         }
 
@@ -1066,6 +1076,7 @@ class SandboxPool internal constructor(
                 handleWarmupOutcome(run, outcome)
             } finally {
                 run.warmingCount.decrementAndGet()
+                PoolWarmupDiagnostics.recordInFlight(run.warmingCount.get())
                 endOperation(run)
                 // Only successful completions trigger an immediate reconcile. A failed warmup
                 // frees its slot but must not cause an immediate retry: fast-failing creates
@@ -1142,6 +1153,7 @@ class SandboxPool internal constructor(
     ) {
         var cleanupSource: String? = null
         run.commitLock.lock()
+        val commitStart = System.nanoTime()
         try {
             val state = lifecycleState.get()
             if (!isCurrentRun(run) || (state != LifecycleState.RUNNING && state != LifecycleState.DRAINING)) {
@@ -1189,6 +1201,7 @@ class SandboxPool internal constructor(
                 }
             }
         } finally {
+            PoolWarmupDiagnostics.recordCommit(System.nanoTime() - commitStart)
             run.commitLock.unlock()
         }
         cleanupSource?.let { source ->
