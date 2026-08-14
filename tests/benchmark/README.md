@@ -26,7 +26,7 @@ tests/benchmark/
 ## Quick start
 
 ```bash
-# default config: create/delete 300-800ms, execd ping 1-5s, others 50-100ms
+# default config: create/delete 300-800ms, execd ping 100ms, others 50-100ms
 ./run.sh
 
 # smoke run with fast provisioning
