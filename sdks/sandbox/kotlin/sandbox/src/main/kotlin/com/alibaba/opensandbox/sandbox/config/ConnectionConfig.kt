@@ -94,8 +94,13 @@ class ConnectionConfig private constructor(
     /**
      * Creates a copy of this ConnectionConfig that uses [connectionPool] and
      * marks it as SDK-managed (evicted when the owning component closes).
+     *
+     * Internal to the SDK: only [com.alibaba.opensandbox.sandbox.pool.SandboxPool]
+     * injects its pool-created shared pool this way and evicts it on shutdown.
+     * It is not public API — callers cannot rely on the eviction promise
+     * because [HttpClientProvider] only evicts pools it created itself.
      */
-    fun copyWithConnectionPool(connectionPool: ConnectionPool): ConnectionConfig =
+    internal fun copyWithConnectionPool(connectionPool: ConnectionPool): ConnectionConfig =
         ConnectionConfig(
             apiKey = this.apiKey,
             domain = this.domain,
