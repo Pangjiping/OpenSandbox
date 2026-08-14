@@ -1,0 +1,11 @@
+{
+  "createLatencyMs": {
+    "distribution": "fixed",
+    "meanMs": 100
+  },
+  "createFailureRate": 0.0,
+  "bootDelayMs": 50,
+  "execdFailureRate": 0.0,
+  "defaultTtlSeconds": 3600,
+  "latencyOverrides": {}
+}

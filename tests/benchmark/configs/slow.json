@@ -1,0 +1,13 @@
+{
+  "createLatencyMs": {
+    "distribution": "lognormal",
+    "meanMs": 2000,
+    "stddevMs": 1000,
+    "minMs": 100
+  },
+  "createFailureRate": 0.0,
+  "bootDelayMs": 1000,
+  "execdFailureRate": 0.0,
+  "defaultTtlSeconds": 3600,
+  "latencyOverrides": {}
+}

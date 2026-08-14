@@ -1,0 +1,43 @@
+{
+  "createLatencyMs": {
+    "distribution": "uniform",
+    "minMs": 300,
+    "maxMs": 800
+  },
+  "createFailureRate": 0.0,
+  "bootDelayMs": 300,
+  "execdFailureRate": 0.0,
+  "defaultTtlSeconds": 3600,
+  "latencyOverrides": {
+    "lifecycle.delete": {
+      "distribution": "uniform",
+      "minMs": 300,
+      "maxMs": 800
+    },
+    "lifecycle.get": {
+      "distribution": "uniform",
+      "minMs": 50,
+      "maxMs": 100
+    },
+    "lifecycle.renew": {
+      "distribution": "uniform",
+      "minMs": 50,
+      "maxMs": 100
+    },
+    "lifecycle.endpoint": {
+      "distribution": "uniform",
+      "minMs": 50,
+      "maxMs": 100
+    },
+    "execd.ping": {
+      "distribution": "uniform",
+      "minMs": 1000,
+      "maxMs": 5000
+    },
+    "execd.other": {
+      "distribution": "uniform",
+      "minMs": 50,
+      "maxMs": 100
+    }
+  }
+}
