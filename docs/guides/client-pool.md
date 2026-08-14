@@ -146,6 +146,50 @@ canonical reference; refer to the per-language builder or constructor for exact 
   old-template sandbox IDs into the shared buffer during a rolling deploy.
 - `resize(max_idle)` and `release_all_idle()` can be called from any node.
 
+### Connection reuse at high warmup concurrency
+
+**Problem.** Pool-created sandboxes go through the SDK transport per sandbox, and by
+default each sandbox's HTTP client opens its own TCP connections — a warmup create
+typically uses 2-4 fresh connections (create + endpoint lookups + readiness probe +
+renew). At high `warmup_concurrency` the resulting connection burst can exceed what the
+server listener can absorb (for example macOS accept backlog 128), producing intermittent
+TCP-level `Connection reset` / `Broken pipe` failures. Failed warmups are retried
+(backoff-gated), amplifying attempts several-fold and making fills slower and burstier
+than at lower concurrency — measured in the Kotlin SDK benchmark harness at
+`warmup_concurrency=1000`: ~80% of warmup attempts failed with 5x attempt amplification.
+
+**Fix: share one transport connection pool.** Warmup creates then reuse connections
+instead of opening new ones. Measured fill of 2000 idles at `warmup_concurrency=1000`
+(Kotlin SDK, mock server):
+
+| shared pool size | fill time | create failures | attempt amplification |
+|---|---|---|---|
+| 0 (per-sandbox connections) | ~20 s | ~8000 | 5x |
+| 100 | ~9 s | ~2700 | 2.3x |
+| 200 | ~7 s | ~1300 | 1.7x |
+| 500 | ~4 s | 0 | 1x |
+
+**Kotlin/Java.** Inject a shared `okhttp3.ConnectionPool` through the standard
+`ConnectionConfig` — no pool-specific option is needed:
+
+```kotlin
+ConnectionConfig.builder()
+    .connectionPool(ConnectionPool(500, 5, TimeUnit.MINUTES)) // ~= warmup_concurrency
+    .build()
+```
+
+The pool uses this config for every sandbox it creates (warmup, direct create, idle
+connect). A user-provided pool is treated as user-managed and is never evicted by the
+SDK. A pool-created shared pool sized by `warmup_concurrency` will become the SDK
+default once the companion change lands; until then configure it explicitly.
+
+**Rule of thumb.** `warmup_concurrency` beyond ~200-300 only pays off together with a
+shared connection pool — without reuse the extra threads mostly produce
+connection-reset retries. If connections cannot be shared, keep
+`warmup_concurrency` in the 200-300 range. The same principle applies to any SDK whose
+transport opens connections per sandbox; see the language-local transport docs for how
+to share a connection pool.
+
 ## Minimal usage
 
 ### Python (sync)
