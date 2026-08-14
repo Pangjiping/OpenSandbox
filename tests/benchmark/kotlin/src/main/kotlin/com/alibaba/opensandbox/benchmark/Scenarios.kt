@@ -69,6 +69,8 @@ object Scenarios {
         val start = CountDownLatch(1)
         val workers = cfg.warmWorkers
         val rounds = cfg.warmRoundsPerWorker
+        val probe = PoolProbe(pool)
+        probe.start()
         val threads = Executors.newFixedThreadPool(workers)
         repeat(workers) {
             threads.submit {
@@ -88,17 +90,21 @@ object Scenarios {
         start.countDown()
         threads.shutdown()
         threads.awaitTermination(10, TimeUnit.MINUTES)
+        probe.stop()
 
         val createdDelta = num(mock.stats(), "stats.created") - createdBefore
         val acquires = rounds * workers.toLong()
+        val latencyStats = latency.snapshot()
         pool.shutdown(graceful = false)
 
         return mapOf(
             "fillTimeMs" to fillMs,
-            "latency" to latency.snapshot().toMap(),
+            "latency" to latencyStats.toMap(),
             "acquires" to acquires,
+            "successRate" to successRate(latencyStats),
             "serverCreatedDelta" to createdDelta,
             "hitRatio" to (1.0 - createdDelta.toDouble() / acquires).coerceIn(0.0, 1.0),
+            "client" to probe.report(),
         )
     }
 
@@ -118,15 +124,8 @@ object Scenarios {
         val latency = LatencyCollector()
         val acquires = AtomicLong(0)
 
-        val idleSamples = CopyOnWriteArrayList<Int>()
-        val sampler = Thread {
-            while (running.get()) {
-                idleSamples.add(pool.snapshot().idleCount)
-                Thread.sleep(500)
-            }
-        }
-        sampler.isDaemon = true
-        sampler.start()
+        val probe = PoolProbe(pool)
+        probe.start()
 
         val rng = Random(System.nanoTime())
         val pacer = RatePacer(cfg.acquireRatePerMin)
@@ -152,17 +151,15 @@ object Scenarios {
         threads.shutdown()
         threads.awaitTermination(15, TimeUnit.MINUTES)
         running.set(false)
+        probe.stop()
 
         val createdDelta = num(mock.stats(), "stats.created") - createdBefore
         val killedDelta = num(mock.stats(), "stats.killed") - killedBefore
+        val latencyStats = latency.snapshot()
+        val client = probe.report()
         pool.shutdown(graceful = false)
 
-        val idleMin = idleSamples.minOrNull() ?: 0
-        val idleMean = if (idleSamples.isEmpty()) 0.0 else idleSamples.average()
-        val idleZeroRatio =
-            if (idleSamples.isEmpty()) 0.0
-            else idleSamples.count { it == 0 }.toDouble() / idleSamples.size
-
+        val idleStat = client["poolIdleCount"] as Map<String, Any>
         return mapOf(
             "fillTimeMs" to fillMs,
             "durationMs" to durationMs,
@@ -171,13 +168,19 @@ object Scenarios {
             "acquiredCount" to acquires.get(),
             "achievedAcquiresPerMin" to (acquires.get().toDouble() * 60_000 / durationMs),
             "throughputAcquiresPerSec" to (acquires.get().toDouble() / cfg.steadyDurationS),
-            "latency" to latency.snapshot().toMap(),
+            "successRate" to successRate(latencyStats),
+            "latency" to latencyStats.toMap(),
             "serverCreatedDelta" to createdDelta,
             "serverKilledDelta" to killedDelta,
-            "idleSamples" to idleSamples.size,
-            "idleMin" to idleMin,
-            "idleMean" to idleMean,
-            "idleEmptyRatio" to idleZeroRatio,
+            "replenishRatePerSec" to (createdDelta.toDouble() / cfg.steadyDurationS),
+            "killRatePerSec" to (killedDelta.toDouble() / cfg.steadyDurationS),
+            "directCreateRatio" to
+                ((createdDelta - killedDelta).coerceAtLeast(0).toDouble() / acquires.get().coerceAtLeast(1)),
+            "idleSamples" to (idleStat["samples"] as Int),
+            "idleMin" to (idleStat["min"] as Long),
+            "idleMean" to (idleStat["mean"] as Double),
+            "idleEmptyRatio" to (client["poolIdleZeroRatio"] as Double),
+            "client" to client,
         )
     }
 
@@ -360,6 +363,11 @@ object Scenarios {
     }
 
     // ---------- helpers ----------
+
+    private fun successRate(stats: LatencyStats): Double {
+        val total = stats.n + stats.failures
+        return if (total == 0L) 0.0 else (stats.n.toDouble() / total)
+    }
 
     private fun killAndClose(sandbox: Sandbox) {
         try {

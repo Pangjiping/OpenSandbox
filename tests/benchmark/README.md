@@ -258,6 +258,23 @@ want to measure pure idle-hit latency: when workers outnumber the idle buffer,
 acquires drain it and fall through to direct create (which the `hitRatio`
 column will show).
 
+### What is measured
+
+| Concern | Where it shows up |
+|---|---|
+| Acquire latency (p50/90/95/99/999) | `results.<scenario>.latency` |
+| Acquire success rate | `successRate` (successful acquires / attempts, failures counted in `latency.failures`) |
+| Idle-hit vs direct-create | `hitRatio` (warm-latency), `directCreateRatio` (steady-state) |
+| Pool health | `client.poolIdleCount` (min/mean/max samples), `poolIdleZeroRatio`, `poolDegradedSamples`, `poolBackoffSamples`, `poolInFlightMax`; failure scenarios also report `poolStateAfterBurst`/`backoffActive`/`failureCount` |
+| Replenish throughput | `replenishRatePerSec` / `killRatePerSec` (server-observed), plus the per-second `lifecycle.create`/`lifecycle.delete` QPS series under `mockQps` |
+| Client threads | `client.threads` (min/mean/max sampled every 500ms) + `client.threadPeakSinceProbeStart` |
+| Client memory/GC | `client.heapUsedMb` (min/mean/max), `client.gcCollections`, `client.gcTimeMs` |
+| Server QPS (all APIs) | `perScenarioQps.<scenario>.<route>` — per-route totals, 1s/5s/60s rates, and the full per-second series |
+
+The `client` block is produced by a probe thread sampling
+`SandboxPool.snapshot()` plus JVM thread/heap/GC beans every 500ms during the
+scenario.
+
 ## Reusing the mock from other SDKs
 
 Point any SDK's `ConnectionConfig` at the mock:
