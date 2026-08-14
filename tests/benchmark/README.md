@@ -143,13 +143,12 @@ and accumulate the series yourself.
 | `latencyOverrides` | Response time per route: `lifecycle.get`, `lifecycle.delete`, `lifecycle.renew`, `lifecycle.endpoint`, `execd.ping`, `execd.other`. Routes without an override respond immediately; an override for `lifecycle.create` replaces `createLatencyMs`. Execd route latency only applies once the sandbox is booted — not-ready probes fail fast |
 
 Default profile (no `-config`): create/delete uniform **300-800ms**, execd
-`/ping` uniform **1-5s** (readiness probes are slow), all other APIs uniform
-**50-100ms**.
+`/ping` fixed **100ms**, all other APIs uniform **50-100ms**.
 
 The readiness sequence a client observes is therefore: create latency, then a
-few fast `404` polls while the sandbox boots, then a slow successful ping —
-typically one ping for the default profile (min 1s ping vs. max 300ms boot
-window).
+few fast `404` polls while the sandbox boots, then one successful ping —
+typically one ping for the default profile (fixed 100ms ping vs. max 300ms
+boot window).
 
 So the full create-to-ready time a client observes is
 `createLatencyMs + bootDelayMs` plus one successful ping (once booted, the
@@ -249,7 +248,7 @@ Notes for this kind of run:
   one scenario per invocation.
 - For higher acquire frequency, shrink the `execd.ping` latency via
   `latencyOverrides` in the mock config: each acquire pays one readiness ping
-  (1-5s by default), which caps the sustainable acquire rate.
+  (100ms by default), which caps the sustainable acquire rate.
 - `primaryLockTtl` and `drainTimeout` do not change single-node benchmark
   behavior (in-memory state store always grants the lock; the driver never
   shuts down gracefully); they are reproduced for config fidelity only.

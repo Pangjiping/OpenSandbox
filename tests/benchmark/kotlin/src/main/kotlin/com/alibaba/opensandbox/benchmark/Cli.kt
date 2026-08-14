@@ -40,6 +40,7 @@ data class BenchmarkConfig(
     val warmRoundsPerWorker: Int,
     val steadyWorkers: Int,
     val steadyDurationS: Int,
+    val acquireRatePerMin: Int,
     val holdMinMs: Long,
     val holdMaxMs: Long,
     val replenishRounds: Int,
@@ -77,6 +78,7 @@ object Cli {
             "warm-rounds-per-worker",
             "steady-workers",
             "steady-duration-s",
+            "acquire-rate-per-min",
             "hold-min-ms",
             "hold-max-ms",
             "replenish-rounds",
@@ -129,6 +131,9 @@ object Cli {
             warmRoundsPerWorker = (map["warm-rounds-per-worker"] ?: "150").toInt(),
             steadyWorkers = (map["steady-workers"] ?: "16").toInt(),
             steadyDurationS = (map["steady-duration-s"] ?: "60").toInt(),
+            // 0 = unlimited (workers run back-to-back); > 0 paces acquires
+            // evenly across each minute at this many acquires per minute.
+            acquireRatePerMin = (map["acquire-rate-per-min"] ?: "0").toInt(),
             holdMinMs = (map["hold-min-ms"] ?: "1000").toLong(),
             holdMaxMs = (map["hold-max-ms"] ?: "5000").toLong(),
             replenishRounds = (map["replenish-rounds"] ?: "20").toInt(),

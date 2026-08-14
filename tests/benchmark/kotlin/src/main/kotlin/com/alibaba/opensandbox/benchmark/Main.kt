@@ -124,6 +124,7 @@ private fun cfgValues(cfg: BenchmarkConfig): Map<String, Any> =
         "warmRoundsPerWorker" to cfg.warmRoundsPerWorker,
         "steadyWorkers" to cfg.steadyWorkers,
         "steadyDurationS" to cfg.steadyDurationS,
+        "acquireRatePerMin" to cfg.acquireRatePerMin,
         "holdMinMs" to cfg.holdMinMs,
         "holdMaxMs" to cfg.holdMaxMs,
         "failureCreateRate" to cfg.failureCreateRate,
