@@ -110,10 +110,23 @@ blocked by its own egress chain.
 - Rules are host-scoped (any port), matching the egress rule model; ports are not
   enforced per rule.
 
+> **Note**: use a fully-qualified service name or an IP in the endpoint.
+> Single-label names (e.g. `otel-collector`) are subject to resolver
+> search-domain expansion, and the deny-all DNS proxy answers the expanded
+> names (e.g. `otel-collector.<ns>.svc.cluster.local`) with NXDOMAIN without
+> falling back to the bare name, so the auto-generated exact-host allow rule
+> would not be reached.
+
 ### Minimal Example
 
 ```bash
-export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://otel-collector:4318"
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://otel-collector.sandbox.svc.cluster.local:4318"
+```
+
+An IP endpoint works as well:
+
+```bash
+export OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://10.0.0.5:4318"
 ```
 
 ### Service Name
