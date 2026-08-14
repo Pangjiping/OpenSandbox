@@ -65,6 +65,17 @@ object PoolRunner {
             .warmupHealthCheckPollingInterval(Duration.ofMillis(cfg.healthCheckPollingIntervalMs))
             .idleTimeout(Duration.ofSeconds(idleTimeoutS))
             .maxAcquireRetries(maxAcquireRetries)
+            .also { builder ->
+                if (cfg.acquireMinRemainingTtlS > 0) {
+                    builder.acquireMinRemainingTtl(Duration.ofSeconds(cfg.acquireMinRemainingTtlS))
+                }
+                if (cfg.primaryLockTtlS > 0) {
+                    builder.primaryLockTtl(Duration.ofSeconds(cfg.primaryLockTtlS))
+                }
+                if (cfg.degradedThreshold > 0) {
+                    builder.degradedThreshold(cfg.degradedThreshold)
+                }
+            }
             .build()
     }
 
