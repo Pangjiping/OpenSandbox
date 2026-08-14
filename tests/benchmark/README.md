@@ -211,6 +211,7 @@ cd kotlin
 | `--report-dir` | `results/run-<ts>` | Report output directory (`run.sh` passes an absolute path) |
 | `--max-idle` | `20` | Pool idle-buffer target |
 | `--warmup-concurrency` | `4` | Concurrent warmup creation workers |
+| `--shared-connection-pool-size` | `0` | Inject one shared OkHttp `ConnectionPool` with this many idle slots across all sandbox clients (`0` = each sandbox uses its own fresh connections). See "Warmup throughput and connection reuse" below |
 | `--reconcile-interval-ms` | `1000` | Pool reconcile tick interval |
 | `--idle-timeout-s` | `1800` | Server-side TTL applied to pool-created sandboxes |
 | `--acquire-min-remaining-ttl-s` | `0` | Idle entries with less remaining TTL than this are discarded on acquire; `0` = SDK auto default (`min(60s, idleTimeout/2)`) |
@@ -278,6 +279,53 @@ For `warm-latency`, keep `maxIdle` comfortably above `--warm-workers` if you
 want to measure pure idle-hit latency: when workers outnumber the idle buffer,
 acquires drain it and fall through to direct create (which the `hitRatio`
 column will show).
+
+### Warmup throughput and connection reuse
+
+**Problem.** The Kotlin SDK creates a fresh OkHttp client (and fresh TCP
+connections) for every sandbox — each warmup create opens ~2-4 connections
+(create + endpoint lookups + execd ping + renew). At high
+`warmupConcurrency` the resulting connection burst can exceed what the server
+listener can absorb (e.g. macOS accept backlog 128), producing intermittent
+TCP-level `Connection reset`/`Broken pipe` failures. Failed warmups are
+retried (backoff-gated), amplifying attempts several-fold and making fills
+slower and burstier than at lower concurrency — measured at `wc=1000`:
+**~80% of warmup attempts failed, 5x attempt amplification** (see the
+`warmupPipeline.createFailures` block in `cold-start` reports).
+
+**Fix: share one connection pool.** A shared `ConnectionPool` sized to the
+warmup concurrency makes warmup creates reuse connections instead of opening
+new ones. Measured fill of 2000 idles at `wc=1000`:
+
+| shared pool size | fill | create failures | attempt amplification |
+|---|---|---|---|
+| 0 (baseline) | ~20s | ~8000 | 5x |
+| 100 | ~9s | ~2700 | 2.3x |
+| 200 | ~7s | ~1300 | 1.7x |
+| 500 | ~4s | 0 | 1x |
+
+**Configuration guidance.**
+
+- In the benchmark, pass `--shared-connection-pool-size <N>` (rule of thumb:
+  `max(warmupConcurrency, 200)`, i.e. ~1:1 with the warmup workers).
+- In production, the pool already accepts a shared pool through the standard
+  `ConnectionConfig` (no SDK change needed):
+
+  ```kotlin
+  ConnectionConfig.builder()
+      .connectionPool(ConnectionPool(500, 5, TimeUnit.MINUTES)) // ~= warmupConcurrency
+      .build()
+  ```
+
+  The pool uses this config for every sandbox it creates (warmup, direct
+  create, idle connect); a user-provided pool is never evicted by the SDK.
+- `warmupConcurrency` beyond ~200-300 only pays off together with a shared
+  pool: without reuse the extra threads mostly produce connection-reset
+  retries. If you cannot share connections, keep `warmupConcurrency` in the
+  200-300 range.
+- This will become the SDK default behavior (pool-created shared pool sized
+  by `warmupConcurrency`) once the companion SDK change is merged
+  (opensandbox-group/OpenSandbox#1517); until then configure it explicitly.
 
 ### What is measured
 
