@@ -78,6 +78,9 @@ type FaultConfig struct {
 	// Newly created sandboxes are unaffected. Used to simulate stale idle
 	// sandboxes (e.g. sandboxes that died server-side).
 	PoisonExisting bool `json:"poisonExisting"`
+	// PoisonRate flips a random subset (probability [0,1]) of currently-alive
+	// sandboxes into the poisoned state, simulating partial failure.
+	PoisonRate *float64 `json:"poisonRate"`
 }
 
 func loadConfig(path string) (*Config, error) {

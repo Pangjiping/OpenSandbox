@@ -49,8 +49,25 @@ publish/install step. `com.alibaba.opensandbox:sandbox:1.0.18` in
 `kotlin/build.gradle.kts` is a module coordinate that the composite build
 substitutes with the local `:sandbox` project (the version is informational).
 
-Reports land in `results/run-<timestamp>/report.{json,md}`; the mock log is at
-`results/mockserver.log`. Exit code is non-zero when a scenario fails.
+Reports and every artifact of a run land in one directory,
+`results/run-<timestamp>/`:
+
+```
+results/run-<ts>/
+├── report.json               # full results: per-scenario metrics + per-scenario QPS + end stats
+├── report.md                 # human-readable view of report.json
+├── server-timeseries-<scenario>.csv  # per-second: alive + each API request count
+├── client-<scenario>.csv     # per-500ms: threads, heap MB, idle, inFlight, degraded, backoff
+├── mock-stats-end.json       # raw /__stats snapshot at end of run
+├── mock-config.json          # mock server config used for this run
+├── driver-args.txt           # driver CLI arguments
+└── mockserver.log            # mock server log
+```
+
+The `server-timeseries-*.csv` files merge the mock's per-second per-API QPS
+series with the alive-sandbox gauge into one table
+(`second,alive,create,delete,get,renew,endpoint,execd.ping,execd.other`) for
+direct plotting; the full per-second series is also embedded in `report.json`.
 
 ## Mock server
 
@@ -179,8 +196,11 @@ cd kotlin
 | `steady-state` | Sustained acquires/sec under concurrent loaders with hold time; idle trajectory (min/mean/empty ratio) |
 | `replenish-lag` | Time for a released idle slot to be refilled (completion-driven reconcile) |
 | `failure-injection` | Pool behavior at `createFailureRate` 60%: success rate, backoff, DEGRADED transition, recovery after fault removal |
-| `stale-idle` | Poisoned idle candidates: retry cost, stale cleanup, refill with fresh sandboxes |
+| `stale-idle` | Poisoned idle candidates (`--stale-poison-rate`, default 1.0 = all): retry cost, stale cleanup, refill with fresh sandboxes |
 | `idle-expiry` | Self-healing under short server-side TTL: reap + recreate keeps the buffer near `maxIdle` |
+| `resize` | Shrink accuracy and speed (excess idles killed by reconcile), regrow speed, server-side alive check |
+| `shutdown-race` | Workers hammering acquire while the pool drains: success rate in the running phase vs rejections during DRAINING (`poolNotRunning`), drain duration |
+| `store-outage` | State-store outage (OSEP-0005): DIRECT_CREATE must fall through to direct create and stay available; FAIL_FAST must fail closed with `storeUnavailable`; refill after recovery |
 
 ### Driver options
 
@@ -212,6 +232,7 @@ cd kotlin
 | `--failure-acquires` | `60` | Acquire attempts in `failure-injection` |
 | `--stale-acquires` | `100` | Acquire attempts in `stale-idle` |
 | `--stale-retries` | `3` | Pool `maxAcquireRetries` in `stale-idle` (idle candidates tried per acquire) |
+| `--stale-poison-rate` | `1.0` | Fraction (0..1] of alive sandboxes poisoned in `stale-idle`; `1.0` = all (partial rates simulate real-world partial failure) |
 | `--stale-acquire-ready-timeout-ms` | `3000` | `acquireReadyTimeout` in `stale-idle`; short because the SDK polls a failing execd for the full timeout before discarding a candidate |
 | `--idle-expiry-idle-timeout-s` | `20` | `idleTimeout` in `idle-expiry` (short TTL so server-side expiry is exercised) |
 | `--idle-expiry-duration-s` | `40` | `idle-expiry` run duration |
@@ -263,10 +284,12 @@ column will show).
 | Concern | Where it shows up |
 |---|---|
 | Acquire latency (p50/90/95/99/999) | `results.<scenario>.latency` |
-| Acquire success rate | `successRate` (successful acquires / attempts, failures counted in `latency.failures`) |
+| Acquire success rate | `successRate` (successful acquires / attempts) |
+| Failure breakdown | `latency.failuresByType`: `readyTimeout` / `createFailed`-style `other` / `poolNotRunning` / `poolEmpty` / `acquireFailed` / `storeUnavailable` |
 | Idle-hit vs direct-create | `hitRatio` (warm-latency), `directCreateRatio` (steady-state) |
 | Pool health | `client.poolIdleCount` (min/mean/max samples), `poolIdleZeroRatio`, `poolDegradedSamples`, `poolBackoffSamples`, `poolInFlightMax`; failure scenarios also report `poolStateAfterBurst`/`backoffActive`/`failureCount` |
 | Replenish throughput | `replenishRatePerSec` / `killRatePerSec` (server-observed), plus the per-second `lifecycle.create`/`lifecycle.delete` QPS series under `mockQps` |
+| Pool-size trajectory / over-creation | mock `aliveStats.max` + per-second `alive` series (server view); pool idle should never exceed `maxIdle` + in-flight warmups |
 | Client threads | `client.threads` (min/mean/max sampled every 500ms) + `client.threadPeakSinceProbeStart` |
 | Client memory/GC | `client.heapUsedMb` (min/mean/max), `client.gcCollections`, `client.gcTimeMs` |
 | Server QPS (all APIs) | `perScenarioQps.<scenario>.<route>` — per-route totals, 1s/5s/60s rates, and the full per-second series |

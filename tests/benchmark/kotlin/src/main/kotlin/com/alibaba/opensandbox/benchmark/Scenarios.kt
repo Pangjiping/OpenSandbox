@@ -17,9 +17,17 @@
 package com.alibaba.opensandbox.benchmark
 
 import com.alibaba.opensandbox.sandbox.Sandbox
-import com.alibaba.opensandbox.sandbox.pool.SandboxPool
+import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolAcquireFailedException
+import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolDestroyedException
+import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolEmptyException
+import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolNotRunningException
+import com.alibaba.opensandbox.sandbox.domain.exceptions.PoolStateStoreUnavailableException
+import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutException
+import com.alibaba.opensandbox.sandbox.domain.pool.AcquirePolicy
 import com.alibaba.opensandbox.sandbox.domain.pool.PoolState
+import com.alibaba.opensandbox.sandbox.pool.SandboxPool
 import kotlinx.serialization.json.JsonPrimitive
+import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
@@ -82,7 +90,7 @@ object Scenarios {
                         latency.record((System.nanoTime() - t0) / 1_000_000)
                         killAndClose(sb)
                     } catch (t: Throwable) {
-                        latency.recordFailure()
+                        latency.recordFailure(classifyFailure(t))
                     }
                 }
             }
@@ -91,6 +99,7 @@ object Scenarios {
         threads.shutdown()
         threads.awaitTermination(10, TimeUnit.MINUTES)
         probe.stop()
+        probe.writeCsv(File(cfg.reportDir, "client-warm-latency.csv"))
 
         val createdDelta = num(mock.stats(), "stats.created") - createdBefore
         val acquires = rounds * workers.toLong()
@@ -142,7 +151,7 @@ object Scenarios {
                         Thread.sleep(rng.nextLong(cfg.holdMinMs, cfg.holdMaxMs + 1))
                         killAndClose(sb)
                     } catch (t: Throwable) {
-                        latency.recordFailure()
+                        latency.recordFailure(classifyFailure(t))
                         Thread.sleep(200)
                     }
                 }
@@ -152,6 +161,7 @@ object Scenarios {
         threads.awaitTermination(15, TimeUnit.MINUTES)
         running.set(false)
         probe.stop()
+        probe.writeCsv(File(cfg.reportDir, "client-steady-state.csv"))
 
         val createdDelta = num(mock.stats(), "stats.created") - createdBefore
         val killedDelta = num(mock.stats(), "stats.killed") - killedBefore
@@ -236,7 +246,7 @@ object Scenarios {
                 latency.record((System.nanoTime() - t0) / 1_000_000)
                 killAndClose(sb)
             } catch (t: Throwable) {
-                latency.recordFailure()
+                latency.recordFailure(classifyFailure(t))
             }
         }
         Thread.sleep(500)
@@ -276,9 +286,11 @@ object Scenarios {
         val fillMs = PoolRunner.waitForIdle(pool, cfg.maxIdle, cfg.coldStartTimeoutMs)
         val createdBefore = num(mock.stats(), "stats.created")
 
-        // Poison every currently-alive sandbox: their execd endpoints start
-        // failing, so idle candidates cannot be connected.
-        mock.setFaults(poisonExisting = true)
+        // Poison a fraction (default 1.0 = all) of the currently-alive
+        // sandboxes: their execd endpoints start failing, so idle candidates
+        // cannot be connected. Partial poisoning simulates real-world failure
+        // where the pool must skip bad candidates and return good ones.
+        mock.setFaults(poisonRate = cfg.stalePoisonRate)
 
         val latency = LatencyCollector()
         repeat(cfg.staleAcquires) {
@@ -288,7 +300,7 @@ object Scenarios {
                 latency.record((System.nanoTime() - t0) / 1_000_000)
                 killAndClose(sb)
             } catch (t: Throwable) {
-                latency.recordFailure()
+                latency.recordFailure(classifyFailure(t))
             }
         }
         val stats = mock.stats()
@@ -300,7 +312,9 @@ object Scenarios {
         return mapOf(
             "fillTimeMs" to fillMs,
             "acquires" to cfg.staleAcquires,
+            "poisonRate" to cfg.stalePoisonRate,
             "latency" to latency.snapshot().toMap(),
+            "successRate" to successRate(latency.snapshot()),
             "serverExecdPoisoned" to num(stats, "stats.execdPoisoned"),
             "serverCreatedDelta" to (num(stats, "stats.created") - createdBefore),
             "serverAliveAfter" to num(stats, "alive"),
@@ -362,12 +376,193 @@ object Scenarios {
         )
     }
 
+    // ---------- resize (shrink + regrow) ----------
+
+    fun resize(cfg: BenchmarkConfig, mock: MockControl): Map<String, Any> {
+        mock.reset()
+        val pool = PoolRunner.build(cfg, "resize")
+        pool.start()
+        val fillMs = PoolRunner.waitForIdle(pool, cfg.maxIdle, cfg.coldStartTimeoutMs)
+        val createdBefore = num(mock.stats(), "stats.created")
+        val killedBefore = num(mock.stats(), "stats.killed")
+
+        // Shrink: excess idles must be drained and killed by reconcile.
+        val shrinkTarget = maxOf(1, cfg.maxIdle / 2)
+        pool.resize(shrinkTarget)
+        val shrinkMs = PoolRunner.waitForIdleBelow(pool, shrinkTarget, cfg.coldStartTimeoutMs)
+        Thread.sleep(1000) // let server-side kills settle
+        val killedDuringShrink = num(mock.stats(), "stats.killed") - killedBefore
+
+        // Regrow back to the original target.
+        pool.resize(cfg.maxIdle)
+        val regrowMs = PoolRunner.waitForIdle(pool, cfg.maxIdle, cfg.coldStartTimeoutMs)
+        val stats = mock.stats()
+        pool.shutdown(graceful = false)
+
+        return mapOf(
+            "fillTimeMs" to fillMs,
+            "shrinkTo" to shrinkTarget,
+            "shrinkTimeMs" to shrinkMs,
+            "killedDuringShrink" to killedDuringShrink,
+            "regrowTimeMs" to regrowMs,
+            "serverCreatedDelta" to (num(stats, "stats.created") - createdBefore),
+            "serverAliveAtEnd" to num(stats, "alive"),
+        )
+    }
+
+    // ---------- acquire racing graceful shutdown ----------
+
+    fun shutdownRace(cfg: BenchmarkConfig, mock: MockControl): Map<String, Any> {
+        mock.reset()
+        val pool = PoolRunner.build(cfg, "shutdown-race")
+        pool.start()
+        val fillMs = PoolRunner.waitForIdle(pool, cfg.maxIdle, cfg.coldStartTimeoutMs)
+
+        val shutdownStarted = AtomicBoolean(false)
+        val stop = AtomicBoolean(false)
+        // Collector 1: attempts while the pool is RUNNING. Collector 2: the
+        // race window itself (acquires racing DRAINING/STOPPED).
+        val runningLatency = LatencyCollector()
+        val raceLatency = LatencyCollector()
+        val runningAttempts = AtomicLong(0)
+        val raceAttempts = AtomicLong(0)
+        val threads = Executors.newFixedThreadPool(cfg.steadyWorkers)
+        repeat(cfg.steadyWorkers) {
+            threads.submit {
+                while (!stop.get()) {
+                    val inRace = shutdownStarted.get()
+                    if (inRace) raceAttempts.incrementAndGet() else runningAttempts.incrementAndGet()
+                    val latency = if (inRace) raceLatency else runningLatency
+                    try {
+                        val sb = pool.acquire(cfg.acquireTimeout, PoolRunner.DEFAULT_POLICY)
+                        latency.record(0)
+                        killAndClose(sb)
+                    } catch (t: Throwable) {
+                        latency.recordFailure(classifyFailure(t))
+                    }
+                }
+            }
+        }
+        Thread.sleep(2000) // let workers hammer the warm pool
+        shutdownStarted.set(true)
+        val shutdownT0 = System.nanoTime()
+        pool.shutdown(graceful = true)
+        val shutdownMs = (System.nanoTime() - shutdownT0) / 1_000_000
+        stop.set(true)
+        threads.shutdownNow()
+        threads.awaitTermination(30, TimeUnit.SECONDS)
+
+        val runningStats = runningLatency.snapshot()
+        val raceStats = raceLatency.snapshot()
+        return mapOf(
+            "fillTimeMs" to fillMs,
+            "runningPhaseAttempts" to runningAttempts.get(),
+            "runningPhase" to
+                mapOf(
+                    "successRate" to successRate(runningStats),
+                    "latency" to runningStats.toMap(),
+                ),
+            "raceWindowAttempts" to raceAttempts.get(),
+            "raceWindow" to
+                mapOf(
+                    "successRate" to successRate(raceStats),
+                    "latency" to raceStats.toMap(),
+                    "rejectedDuringDraining" to (raceStats.failuresByType["poolNotRunning"] ?: 0L),
+                ),
+            "shutdownMs" to shutdownMs,
+        )
+    }
+
+    // ---------- state-store outage (OSEP-0005 fallthrough) ----------
+
+    fun storeOutage(cfg: BenchmarkConfig, mock: MockControl): Map<String, Any> {
+        mock.reset()
+        val store = FailingPoolStateStore()
+        val pool =
+            PoolRunner.build(
+                cfg,
+                "store-outage",
+                maxAcquireRetries = 1,
+                stateStore = store,
+            )
+        pool.start()
+        val fillMs = PoolRunner.waitForIdle(pool, cfg.maxIdle, cfg.coldStartTimeoutMs)
+        val createdBefore = num(mock.stats(), "stats.created")
+
+        // Drain part of the idle buffer before the outage so recovery has
+        // real refill work (the pool cannot commit warmups while the store
+        // is down, and fallthrough acquires never touch the store).
+        val drainCount = maxOf(1, cfg.maxIdle / 3)
+        repeat(drainCount) {
+            val sb = pool.acquire(cfg.acquireTimeout, PoolRunner.DEFAULT_POLICY)
+            killAndClose(sb)
+        }
+
+        // Phase 1: store down, DIRECT_CREATE policy must fall through to
+        // direct create (OSEP-0005) and keep acquire available.
+        store.setFailing(true)
+        Thread.sleep(500)
+        val phase1 = LatencyCollector()
+        repeat(cfg.failureAcquires) {
+            val t0 = System.nanoTime()
+            try {
+                val sb = pool.acquire(cfg.acquireTimeout, PoolRunner.DEFAULT_POLICY)
+                phase1.record((System.nanoTime() - t0) / 1_000_000)
+                killAndClose(sb)
+            } catch (t: Throwable) {
+                phase1.recordFailure(classifyFailure(t))
+            }
+        }
+        val phase1Stats = phase1.snapshot()
+        val errorsPhase1 = store.errorCount()
+
+        // Phase 2: store still down, FAIL_FAST must fail closed and surface
+        // PoolStateStoreUnavailableException.
+        val phase2 = LatencyCollector()
+        repeat(10) {
+            try {
+                val sb = pool.acquire(cfg.acquireTimeout, AcquirePolicy.FAIL_FAST)
+                phase2.record(0)
+                killAndClose(sb)
+            } catch (t: Throwable) {
+                phase2.recordFailure(classifyFailure(t))
+            }
+        }
+        val phase2Stats = phase2.snapshot()
+
+        // Phase 3: store recovers; the pool must refill.
+        store.setFailing(false)
+        val refillMs = PoolRunner.waitForIdle(pool, cfg.maxIdle, cfg.coldStartTimeoutMs)
+        val stats = mock.stats()
+        pool.shutdown(graceful = false)
+
+        return mapOf(
+            "fillTimeMs" to fillMs,
+            "phase1DirectCreateFallthrough" to phase1Stats.toMap(),
+            "phase1StoreErrorCount" to errorsPhase1,
+            "phase2FailFastFailClosed" to phase2Stats.toMap(),
+            "refillTimeMsAfterRecovery" to refillMs,
+            "serverCreatedDelta" to (num(stats, "stats.created") - createdBefore),
+        )
+    }
+
     // ---------- helpers ----------
 
     private fun successRate(stats: LatencyStats): Double {
         val total = stats.n + stats.failures
         return if (total == 0L) 0.0 else (stats.n.toDouble() / total)
     }
+
+    private fun classifyFailure(t: Throwable): String =
+        when (t) {
+            is SandboxReadyTimeoutException -> "readyTimeout"
+            is PoolNotRunningException -> "poolNotRunning"
+            is PoolEmptyException -> "poolEmpty"
+            is PoolAcquireFailedException -> "acquireFailed"
+            is PoolDestroyedException -> "poolDestroyed"
+            is PoolStateStoreUnavailableException -> "storeUnavailable"
+            else -> "other"
+        }
 
     private fun killAndClose(sandbox: Sandbox) {
         try {
@@ -404,5 +599,8 @@ object Scenarios {
             "failure-injection" to ::failureInjection,
             "stale-idle" to ::staleIdle,
             "idle-expiry" to ::idleExpiry,
+            "resize" to ::resize,
+            "shutdown-race" to ::shutdownRace,
+            "store-outage" to ::storeOutage,
         )
 }

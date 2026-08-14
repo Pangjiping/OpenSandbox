@@ -88,14 +88,21 @@ done
 echo "== building mock server =="
 (cd "${BENCH_DIR}/mockserver" && go build -o "${BENCH_DIR}/bin/mockserver" .)
 
-# 2. start the mock server
-mkdir -p "${BENCH_DIR}/results"
+# 2. one run directory holds every artifact of this run (reports, CSVs,
+#    mock config, driver args, mock log) for convenient offline analysis.
+RUN_DIR="${BENCH_DIR}/results/run-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "${RUN_DIR}"
+printf '%s\n' "${DRIVER_ARGS[@]}" > "${RUN_DIR}/driver-args.txt"
+cp "${MOCK_CONFIG}" "${RUN_DIR}/mock-config.json"
+
+# 3. start the mock server
 echo "== starting mock server (lifecycle=${LIFECYCLE_ADDR}, execd=${EXECD_ADDR}, config=${MOCK_CONFIG}) =="
+echo "== run directory: ${RUN_DIR} =="
 "${BENCH_DIR}/bin/mockserver" \
   -lifecycle-addr "${LIFECYCLE_ADDR}" \
   -execd-addr "${EXECD_ADDR}" \
   -config "${MOCK_CONFIG}" \
-  > "${BENCH_DIR}/results/mockserver.log" 2>&1 &
+  > "${RUN_DIR}/mockserver.log" 2>&1 &
 MOCK_PID=$!
 
 for _ in $(seq 1 50); do
@@ -106,14 +113,14 @@ for _ in $(seq 1 50); do
 done
 if ! curl -fsS "http://${LIFECYCLE_ADDR}/__stats" > /dev/null 2>&1; then
   echo "error: mock server did not come up" >&2
-  cat "${BENCH_DIR}/results/mockserver.log" >&2
+  cat "${RUN_DIR}/mockserver.log" >&2
   exit 1
 fi
 
-# 3. run the driver (Kotlin SDK is built from source via composite build,
+# 4. run the driver (Kotlin SDK is built from source via composite build,
 #    see kotlin/settings.gradle.kts)
 echo "== running benchmark driver =="
-DRIVER_ARGS+=("--report-dir" "${BENCH_DIR}/results/run-$(date +%Y%m%d-%H%M%S)")
+DRIVER_ARGS+=("--report-dir" "${RUN_DIR}")
 (cd "${BENCH_DIR}/kotlin" && ./gradlew --console=plain run --args="${DRIVER_ARGS[*]}")
 
-echo "== done =="
+echo "== done: ${RUN_DIR} =="

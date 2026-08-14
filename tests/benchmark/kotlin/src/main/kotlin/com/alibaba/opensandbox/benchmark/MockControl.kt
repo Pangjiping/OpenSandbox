@@ -57,12 +57,18 @@ class MockControl(
         post("__reset", buildJsonObject {})
     }
 
-    fun setFaults(createFailureRate: Double? = null, execdFailureRate: Double? = null, poisonExisting: Boolean = false) {
+    fun setFaults(
+        createFailureRate: Double? = null,
+        execdFailureRate: Double? = null,
+        poisonExisting: Boolean = false,
+        poisonRate: Double? = null,
+    ) {
         val body =
             buildJsonObject {
                 createFailureRate?.let { put("createFailureRate", it) }
                 execdFailureRate?.let { put("execdFailureRate", it) }
                 if (poisonExisting) put("poisonExisting", true)
+                poisonRate?.let { put("poisonRate", it) }
             }
         post("__config", body)
     }

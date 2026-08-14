@@ -84,12 +84,15 @@ fun main(args: Array<String>) {
         results[name] = section
         // Precise per-API QPS observed by the mock during this scenario. The
         // mock ring keeps per-second counts; the series is included in the JSON
-        // report for offline analysis.
-        perScenarioQps[name] = mock.stats()["qps"]
+        // report and exported as a per-scenario CSV for offline analysis.
+        val stats = mock.stats()
+        perScenarioQps[name] = stats["qps"]
+        writeTimeseriesCsv(File(cfg.reportDir, "server-timeseries-$name.csv"), name, stats)
     }
     results["perScenarioQps"] = perScenarioQps
 
-    results["mockServerStats"] = mock.stats()
+    val endStats = mock.stats()
+    results["mockServerStats"] = endStats
 
     val report =
         buildJsonObject {
@@ -101,6 +104,8 @@ fun main(args: Array<String>) {
 
     val outDir = File(cfg.reportDir)
     outDir.mkdirs()
+    File(outDir, "mock-stats-end.json")
+        .writeText(Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), endStats as JsonObject))
     File(outDir, "report.json").writeText(Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), report))
     File(outDir, "report.md").writeText(renderMarkdown(cfg, results))
     println("\n== done: report written to ${outDir.absolutePath}/report.{json,md} ==")
@@ -129,6 +134,7 @@ private fun cfgValues(cfg: BenchmarkConfig): Map<String, Any> =
         "holdMaxMs" to cfg.holdMaxMs,
         "failureCreateRate" to cfg.failureCreateRate,
         "staleRetries" to cfg.staleRetries,
+        "stalePoisonRate" to cfg.stalePoisonRate,
     )
 
 private fun toJsonElement(value: Any?): JsonElement =
@@ -191,4 +197,79 @@ private fun renderMap(
             else -> sb.appendLine("$indent$k: $v")
         }
     }
+}
+
+/**
+ * Merges the mock's per-second series (per-API QPS + alive gauge) for one
+ * scenario into a single CSV: `second,alive,create,delete,get,renew,
+ * endpoint,execd.ping,execd.other` (second = offset from the earliest second
+ * recorded in the scenario window).
+ */
+private data class Series(
+    val start: Long,
+    val values: List<Long>,
+)
+
+private fun writeTimeseriesCsv(
+    file: File,
+    scenario: String,
+    stats: Map<String, Any?>,
+) {
+    fun extractSeries(
+        key: String,
+        value: Any?,
+    ): Series? {
+        if (value !is Map<*, *>) return null
+        val start = (value["seriesStartUnixSec"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return null
+        val raw = value["series"] as? List<*> ?: return null
+        val values = raw.mapNotNull { (it as? JsonPrimitive)?.content?.toLongOrNull() }
+        return Series(start, values)
+    }
+
+    val routes =
+        listOf(
+            "lifecycle.create",
+            "lifecycle.delete",
+            "lifecycle.get",
+            "lifecycle.renew",
+            "lifecycle.endpoint",
+            "execd.ping",
+            "execd.other",
+        )
+    val qps = stats["qps"] as? Map<*, *> ?: return
+    val aliveStats = stats["aliveStats"]
+    val seriesByRoute = routes.associateWith { route -> extractSeries(route, qps[route]) }
+    val alive = extractSeries("alive", aliveStats)
+
+    val allStarts = seriesByRoute.values.mapNotNull { it?.start } + (alive?.start ?: 0L)
+    if (allStarts.isEmpty()) return
+    val begin = allStarts.min()
+    val end = allStarts.maxOf { start ->
+        val s = seriesByRoute.values.firstOrNull { it?.start == start } ?: alive
+        start + (s?.values?.size?.toLong() ?: 1L) - 1
+    }
+
+    val sb = StringBuilder()
+    sb.appendLine("second,alive,create,delete,get,renew,endpoint,execd.ping,execd.other")
+    for (sec in begin..end) {
+        val offset = sec - begin
+        sb.append(offset)
+        sb.append(',').append(valueAt(alive, sec))
+        for (route in routes) {
+            sb.append(',').append(valueAt(seriesByRoute[route], sec))
+        }
+        sb.appendLine()
+    }
+    file.parentFile?.mkdirs()
+    file.writeText(sb.toString())
+}
+
+private fun valueAt(
+    series: Series?,
+    second: Long,
+): Long {
+    if (series == null) return 0L
+    val idx = (second - series.start).toInt()
+    if (idx < 0 || idx >= series.values.size) return 0L
+    return series.values[idx]
 }
