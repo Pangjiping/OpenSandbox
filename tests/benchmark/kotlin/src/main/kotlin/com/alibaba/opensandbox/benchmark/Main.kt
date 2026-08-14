@@ -135,7 +135,7 @@ private fun cfgValues(cfg: BenchmarkConfig): Map<String, Any> =
         "failureCreateRate" to cfg.failureCreateRate,
         "staleRetries" to cfg.staleRetries,
         "stalePoisonRate" to cfg.stalePoisonRate,
-        "sharedConnectionPoolSize" to cfg.sharedConnectionPoolSize,
+        "sharedConnectionPoolSize" to (cfg.sharedConnectionPoolSize ?: "auto"),
     )
 
 private fun toJsonElement(value: Any?): JsonElement =

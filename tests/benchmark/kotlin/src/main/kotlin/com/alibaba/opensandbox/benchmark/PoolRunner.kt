@@ -48,10 +48,15 @@ object PoolRunner {
                 .requestTimeout(Duration.ofSeconds(30))
                 .disableMetrics()
                 .also { builder ->
-                    if (cfg.sharedConnectionPoolSize > 0) {
+                    // Shared connection pool by default (auto-sized to the
+                    // warmup concurrency) so high-concurrency runs do not hit
+                    // the per-sandbox fresh-connection churn documented in
+                    // docs/guides/client-pool.md. Explicit 0 disables sharing.
+                    val sharedPoolSize = cfg.sharedConnectionPoolSize ?: maxOf(cfg.warmupConcurrency, 200)
+                    if (sharedPoolSize > 0) {
                         builder.connectionPool(
                             okhttp3.ConnectionPool(
-                                cfg.sharedConnectionPoolSize,
+                                sharedPoolSize,
                                 5,
                                 TimeUnit.MINUTES,
                             ),

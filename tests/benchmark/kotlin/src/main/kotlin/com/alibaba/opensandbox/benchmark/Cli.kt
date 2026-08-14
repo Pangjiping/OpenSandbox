@@ -51,7 +51,7 @@ data class BenchmarkConfig(
     val staleRetries: Int,
     val staleAcquireReadyTimeoutMs: Long,
     val stalePoisonRate: Double,
-    val sharedConnectionPoolSize: Int,
+    val sharedConnectionPoolSize: Int?,
     val idleExpiryIdleTimeoutS: Long,
     val idleExpiryDurationS: Int,
 ) {
@@ -149,10 +149,12 @@ object Cli {
             staleAcquireReadyTimeoutMs = (map["stale-acquire-ready-timeout-ms"] ?: "3000").toLong(),
             // fraction (0..1] of idle sandboxes to poison in stale-idle; 1.0 = poison all
             stalePoisonRate = (map["stale-poison-rate"] ?: "1.0").toDouble(),
-            // Inject a shared OkHttp ConnectionPool with this many idle
-            // connections across all sandbox clients (0 = each sandbox keeps
-            // its own fresh connections). Diagnostic: tests connection reuse.
-            sharedConnectionPoolSize = (map["shared-connection-pool-size"] ?: "0").toInt(),
+            // Inject a shared OkHttp ConnectionPool across all sandbox
+            // clients. null = auto-size to max(warmupConcurrency, 200);
+            // 0 = each sandbox keeps its own fresh connections (reproduces
+            // the connection-reset pathology at high concurrency); N = that
+            // many idle slots.
+            sharedConnectionPoolSize = map["shared-connection-pool-size"]?.toInt(),
             idleExpiryIdleTimeoutS = (map["idle-expiry-idle-timeout-s"] ?: "20").toLong(),
             idleExpiryDurationS = (map["idle-expiry-duration-s"] ?: "40").toInt(),
         )

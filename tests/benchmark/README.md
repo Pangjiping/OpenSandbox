@@ -211,7 +211,7 @@ cd kotlin
 | `--report-dir` | `results/run-<ts>` | Report output directory (`run.sh` passes an absolute path) |
 | `--max-idle` | `20` | Pool idle-buffer target |
 | `--warmup-concurrency` | `4` | Concurrent warmup creation workers |
-| `--shared-connection-pool-size` | `0` | Inject one shared OkHttp `ConnectionPool` with this many idle slots across all sandbox clients (`0` = each sandbox uses its own fresh connections). See "Warmup throughput and connection reuse" below |
+| `--shared-connection-pool-size` | `auto` | Inject one shared OkHttp `ConnectionPool` across all sandbox clients. `auto` = `max(warmupConcurrency, 200)` idle slots (recommended; matches the guidance in the [client pool guide](/guides/client-pool#connection-reuse-at-high-warmup-concurrency)); `0` = per-sandbox fresh connections (reproduces the connection-reset pathology); `N` = explicit idle slots |
 | `--reconcile-interval-ms` | `1000` | Pool reconcile tick interval |
 | `--idle-timeout-s` | `1800` | Server-side TTL applied to pool-created sandboxes |
 | `--acquire-min-remaining-ttl-s` | `0` | Idle entries with less remaining TTL than this are discarded on acquire; `0` = SDK auto default (`min(60s, idleTimeout/2)`) |
@@ -288,9 +288,10 @@ cause intermittent `Connection reset` failures and retry amplification (see
 configuration guidance (including production `ConnectionConfig` setup) are documented
 in the [client pool guide](/guides/client-pool#connection-reuse-at-high-warmup-concurrency).
 
-In the benchmark, reproduce or verify it with `--shared-connection-pool-size <N>`
-(rule of thumb: `max(warmupConcurrency, 200)`); the flag injects one shared OkHttp
-`ConnectionPool` with that many idle slots across all sandbox clients.
+In the benchmark, the shared pool is **on by default** (auto-sized to
+`max(warmupConcurrency, 200)`), so high-concurrency runs already follow the
+guidance. Pass `--shared-connection-pool-size 0` to reproduce the
+per-sandbox-connection pathology, or an explicit `N` to sweep pool sizes.
 
 ### What is measured
 
