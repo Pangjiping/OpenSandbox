@@ -139,6 +139,7 @@ object Scenarios {
         val rng = Random(System.nanoTime())
         val pacer = RatePacer(cfg.acquireRatePerMin)
         val threads = Executors.newFixedThreadPool(cfg.steadyWorkers)
+        val loaderStart = System.nanoTime()
         repeat(cfg.steadyWorkers) {
             threads.submit {
                 while (System.nanoTime() < deadline) {
@@ -158,7 +159,10 @@ object Scenarios {
             }
         }
         threads.shutdown()
-        threads.awaitTermination(15, TimeUnit.MINUTES)
+        // The loaders run for the full configured duration; the wait must not
+        // truncate them (a 15-min cap would silently halve a 30-min run).
+        threads.awaitTermination(durationMs / 1000 + 300, TimeUnit.SECONDS)
+        val loaderDurationMs = (System.nanoTime() - loaderStart) / 1_000_000
         running.set(false)
         probe.stop()
         probe.writeCsv(File(cfg.reportDir, "client-steady-state.csv"))
@@ -173,11 +177,13 @@ object Scenarios {
         return mapOf(
             "fillTimeMs" to fillMs,
             "durationMs" to durationMs,
+            "actualLoaderDurationMs" to loaderDurationMs,
             "workers" to cfg.steadyWorkers,
             "targetAcquiresPerMin" to cfg.acquireRatePerMin,
             "acquiredCount" to acquires.get(),
-            "achievedAcquiresPerMin" to (acquires.get().toDouble() * 60_000 / durationMs),
-            "throughputAcquiresPerSec" to (acquires.get().toDouble() / cfg.steadyDurationS),
+            "achievedAcquiresPerMin" to
+                (acquires.get().toDouble() * 60_000 / loaderDurationMs.coerceAtLeast(1)),
+            "throughputAcquiresPerSec" to (acquires.get().toDouble() * 1000 / loaderDurationMs.coerceAtLeast(1)),
             "successRate" to successRate(latencyStats),
             "latency" to latencyStats.toMap(),
             "serverCreatedDelta" to createdDelta,
