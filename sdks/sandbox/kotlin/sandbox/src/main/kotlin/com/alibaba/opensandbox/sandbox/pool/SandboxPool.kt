@@ -39,6 +39,7 @@ import com.alibaba.opensandbox.sandbox.domain.pool.SandboxPreparer
 import com.alibaba.opensandbox.sandbox.infrastructure.pool.PoolReconciler
 import com.alibaba.opensandbox.sandbox.infrastructure.pool.ReconcileState
 import com.alibaba.opensandbox.sandbox.internal.isCausedByInterruption
+import okhttp3.ConnectionPool
 import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
@@ -92,7 +93,7 @@ import kotlin.concurrent.withLock
 class SandboxPool internal constructor(
     config: PoolConfig,
     private val sandboxManagerFactory: (ConnectionConfig) -> SandboxManager,
-    private val idleSandboxConnector: (String) -> Sandbox,
+    idleSandboxConnector: ((String) -> Sandbox)?,
 ) {
     internal constructor(
         config: PoolConfig,
@@ -102,7 +103,7 @@ class SandboxPool internal constructor(
     ) : this(
         config = config,
         sandboxManagerFactory = sandboxManagerFactory,
-        idleSandboxConnector = defaultIdleSandboxConnector(config),
+        idleSandboxConnector = null,
     )
 
     private val logger = LoggerFactory.getLogger(SandboxPool::class.java)
@@ -113,6 +114,47 @@ class SandboxPool internal constructor(
     private val creationSpec: PoolCreationSpec = config.creationSpec
     private val sandboxCreator: PooledSandboxCreator? = config.sandboxCreator
     private val reconcileState = ReconcileState(config.degradedThreshold)
+
+    /**
+     * A pool-wide shared OkHttp connection pool, created by the pool when the
+     * user's [ConnectionConfig] does not carry one. Sized from
+     * [PoolConfig.warmupConcurrency] so concurrent warmup creates reuse
+     * connections instead of each opening fresh TCP connections — at high
+     * concurrency the per-sandbox connection churn otherwise causes
+     * connection resets and retry amplification. Pool-managed: evicted when
+     * the pool closes. Null when the user supplied their own pool.
+     */
+    private val sharedConnectionPool: ConnectionPool? =
+        if (config.connectionConfig.connectionPool == null) {
+            ConnectionPool(
+                maxIdleConnections = maxOf(config.warmupConcurrency, 1),
+                keepAliveDuration = DEFAULT_SHARED_POOL_KEEPALIVE_MINUTES,
+                timeUnit = TimeUnit.MINUTES,
+            )
+        } else {
+            null
+        }
+
+    /**
+     * The [ConnectionConfig] used for every sandbox the pool creates
+     * (warmup, direct create, idle connect). When [sharedConnectionPool] was
+     * created it is injected here so all sandbox HTTP clients reuse it. The
+     * pool's internal manager client deliberately keeps
+     * [ConnectionConfig.copyWithoutConnectionPool] semantics and is not part
+     * of this sharing.
+     */
+    private val poolConnectionConfig: ConnectionConfig =
+        sharedConnectionPool?.let { connectionConfig.copyWithConnectionPool(it) } ?: connectionConfig
+
+    /**
+     * The default idle-sandbox connector, resolved after [poolConnectionConfig]
+     * so acquired sandboxes share the pool's connection pool.
+     */
+    private val idleSandboxConnector: (String) -> Sandbox =
+        idleSandboxConnector ?: defaultIdleSandboxConnector(config, poolConnectionConfig)
+
+    /** Exposed for tests: the pool-created shared connection pool, or null when user-provided. */
+    internal fun sharedConnectionPoolForTests(): ConnectionPool? = sharedConnectionPool
 
     @Volatile
     private var currentMaxIdle: Int = config.maxIdle
@@ -1293,7 +1335,7 @@ class SandboxPool internal constructor(
                     .readyTimeout(config.warmupReadyTimeout)
                     .healthCheckPollingInterval(config.warmupHealthCheckPollingInterval)
                     .skipHealthCheck(config.warmupSkipHealthCheck)
-                    .connectionConfig(connectionConfig),
+                    .connectionConfig(poolConnectionConfig),
             )
         config.warmupHealthCheck?.let { builder.healthCheck(it) }
         return builder.build()
@@ -1338,7 +1380,7 @@ class SandboxPool internal constructor(
                     .readyTimeout(config.acquireReadyTimeout)
                     .healthCheckPollingInterval(config.acquireHealthCheckPollingInterval)
                     .skipHealthCheck(config.acquireSkipHealthCheck)
-                    .connectionConfig(connectionConfig),
+                    .connectionConfig(poolConnectionConfig),
             )
         config.acquireHealthCheck?.let { builder.healthCheck(it) }
         val sandbox = builder.build()
@@ -1461,7 +1503,7 @@ class SandboxPool internal constructor(
                 healthCheckPollingInterval = healthCheckPollingInterval,
                 skipHealthCheck = skipHealthCheck,
                 healthCheck = customHealthCheck,
-                connectionConfig = connectionConfig,
+                connectionConfig = poolConnectionConfig,
             )
         return creator.create(context)
     }
@@ -1685,6 +1727,13 @@ class SandboxPool internal constructor(
             logger.warn("Error closing pool SandboxManager", e)
         }
         sandboxManager = null
+        // Evict the pool-created shared pool so its idle connections are
+        // released on shutdown. A user-provided pool is never touched here.
+        try {
+            sharedConnectionPool?.evictAll()
+        } catch (e: Exception) {
+            logger.warn("Error evicting pool shared connection pool", e)
+        }
     }
 
     private fun isCurrentRun(run: RunContext): Boolean = currentRun === run && run.active.get()
@@ -1752,17 +1801,23 @@ class SandboxPool internal constructor(
         /** Minimum spacing between completion-driven reconcile ticks (see [requestReconcile]). */
         private const val COMPLETION_RECONCILE_MIN_INTERVAL_MS = 500L
 
+        /** Keep-alive of the pool-created shared connection pool. */
+        private const val DEFAULT_SHARED_POOL_KEEPALIVE_MINUTES = 5L
+
         @JvmStatic
         fun builder(): Builder = Builder()
 
-        private fun defaultIdleSandboxConnector(config: PoolConfig): (String) -> Sandbox =
+        private fun defaultIdleSandboxConnector(
+            config: PoolConfig,
+            connectionConfig: ConnectionConfig,
+        ): (String) -> Sandbox =
             { sandboxId ->
                 Sandbox.connector()
                     .sandboxId(sandboxId)
                     .connectTimeout(config.acquireReadyTimeout)
                     .healthCheckPollingInterval(config.acquireHealthCheckPollingInterval)
                     .skipHealthCheck(config.acquireSkipHealthCheck)
-                    .connectionConfig(config.connectionConfig)
+                    .connectionConfig(connectionConfig)
                     .run {
                         config.acquireHealthCheck?.let { healthCheck(it) } ?: this
                     }.connect()
