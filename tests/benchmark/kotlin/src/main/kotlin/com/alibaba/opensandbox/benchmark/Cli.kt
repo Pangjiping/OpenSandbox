@@ -29,6 +29,9 @@ data class BenchmarkConfig(
     val warmupConcurrency: Int,
     val reconcileIntervalMs: Long,
     val idleTimeoutS: Long,
+    val acquireMinRemainingTtlS: Long,
+    val primaryLockTtlS: Long,
+    val degradedThreshold: Int,
     val acquireReadyTimeoutMs: Long,
     val warmupReadyTimeoutMs: Long,
     val healthCheckPollingIntervalMs: Long,
@@ -63,6 +66,9 @@ object Cli {
             "warmup-concurrency",
             "reconcile-interval-ms",
             "idle-timeout-s",
+            "acquire-min-remaining-ttl-s",
+            "primary-lock-ttl-s",
+            "degraded-threshold",
             "acquire-ready-timeout-ms",
             "warmup-ready-timeout-ms",
             "health-check-polling-interval-ms",
@@ -109,6 +115,12 @@ object Cli {
             warmupConcurrency = (map["warmup-concurrency"] ?: "4").toInt(),
             reconcileIntervalMs = (map["reconcile-interval-ms"] ?: "1000").toLong(),
             idleTimeoutS = (map["idle-timeout-s"] ?: "1800").toLong(),
+            // 0 = leave the SDK's auto-derived default (min(60s, idleTimeout/2))
+            acquireMinRemainingTtlS = (map["acquire-min-remaining-ttl-s"] ?: "0").toLong(),
+            // 0 = leave the SDK default (60s)
+            primaryLockTtlS = (map["primary-lock-ttl-s"] ?: "0").toLong(),
+            // 0 = leave the SDK default (3)
+            degradedThreshold = (map["degraded-threshold"] ?: "0").toInt(),
             acquireReadyTimeoutMs = (map["acquire-ready-timeout-ms"] ?: "15000").toLong(),
             warmupReadyTimeoutMs = (map["warmup-ready-timeout-ms"] ?: "15000").toLong(),
             healthCheckPollingIntervalMs = (map["health-check-polling-interval-ms"] ?: "200").toLong(),

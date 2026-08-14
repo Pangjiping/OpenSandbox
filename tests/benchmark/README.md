@@ -194,6 +194,9 @@ cd kotlin
 | `--warmup-concurrency` | `4` | Concurrent warmup creation workers |
 | `--reconcile-interval-ms` | `1000` | Pool reconcile tick interval |
 | `--idle-timeout-s` | `1800` | Server-side TTL applied to pool-created sandboxes |
+| `--acquire-min-remaining-ttl-s` | `0` | Idle entries with less remaining TTL than this are discarded on acquire; `0` = SDK auto default (`min(60s, idleTimeout/2)`) |
+| `--primary-lock-ttl-s` | `0` | Distributed primary-lock TTL; `0` = SDK default (60s). No effect with the in-memory state store (single node always holds the lock) |
+| `--degraded-threshold` | `0` | Consecutive create failures before the pool enters DEGRADED; `0` = SDK default (3) |
 | `--acquire-ready-timeout-ms` | `15000` | `checkReady` timeout when acquiring (idle connect + direct create) |
 | `--warmup-ready-timeout-ms` | `15000` | `checkReady` timeout for warmup creations |
 | `--health-check-polling-interval-ms` | `200` | `checkReady` probe interval (execd ping cadence) |
@@ -216,6 +219,40 @@ cd kotlin
 
 Each scenario resets the mock's counters and QPS history first, so
 `report.json`'s per-scenario QPS sections cover exactly that scenario.
+
+### Reproducing a production pool profile
+
+Any `PoolConfig`-level profile maps 1:1 onto driver knobs. Example — a
+large-pool / high-frequency-acquire / high-frequency-replenish production
+profile (`maxIdle=13815, warmupConcurrency=1000, idleTtl=4h,
+acquireMinRemainingTtl=15min, reconcile=30s, acquireReady=60s,
+warmupReady=180s, primaryLockTtl=360s, degradedThreshold=5`):
+
+```bash
+./run.sh -- --max-idle 13815 --warmup-concurrency 1000 \
+  --reconcile-interval-ms 30000 --idle-timeout-s 14400 \
+  --acquire-min-remaining-ttl-s 900 --primary-lock-ttl-s 360 \
+  --degraded-threshold 5 --acquire-ready-timeout-ms 60000 \
+  --warmup-ready-timeout-ms 180000 --cold-start-timeout-ms 300000 \
+  --scenarios cold-start,steady-state --steady-workers 300 \
+  --steady-duration-s 120 --hold-min-ms 200 --hold-max-ms 2000
+```
+
+Notes for this kind of run:
+
+- `--cold-start-timeout-ms` must cover a full fill: with
+  `warmupConcurrency=1000` and the default profile (~2-6s per sandbox) a
+  13815-sandbox pool fills in roughly 30-90s.
+- At this scale each scenario still starts a fresh pool, but the mock's
+  sandbox registry accumulates across scenarios (previous pools are not
+  killed on non-graceful shutdown) — budget mock memory accordingly or run
+  one scenario per invocation.
+- For higher acquire frequency, shrink the `execd.ping` latency via
+  `latencyOverrides` in the mock config: each acquire pays one readiness ping
+  (1-5s by default), which caps the sustainable acquire rate.
+- `primaryLockTtl` and `drainTimeout` do not change single-node benchmark
+  behavior (in-memory state store always grants the lock; the driver never
+  shuts down gracefully); they are reproduced for config fidelity only.
 
 For `warm-latency`, keep `maxIdle` comfortably above `--warm-workers` if you
 want to measure pure idle-hit latency: when workers outnumber the idle buffer,
