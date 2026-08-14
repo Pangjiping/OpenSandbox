@@ -20,14 +20,20 @@ import (
 	inttelemetry "github.com/alibaba/opensandbox/internal/telemetry"
 )
 
-// telemetryAllowRules returns an always-allow egress rule for the configured OTLP
-// endpoint (OTEL_EXPORTER_OTLP_METRICS_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT), so
-// metric export works under the default deny-all policy without operator-provided
-// allowlist rules. The rule targets the endpoint host (any port), matching the
-// egress rule model. Operators can still block the target via deny.always, which
-// takes precedence. Returns nil when no endpoint is configured.
+// telemetryAllowRules returns an always-allow egress rule for the OTLP
+// destination the exporter will dial, so metric export works under the default
+// deny-all policy without operator-provided allowlist rules. The destination
+// is the configured endpoint
+// (OTEL_EXPORTER_OTLP_METRICS_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT) or, when
+// neither is set, the exporter fallback node IP (HOST_IP / /etc/hostinfo). The
+// rule targets the host (any port), matching the egress rule model. Operators
+// can still block the target via deny.always, which takes precedence. Returns
+// nil when no OTLP destination is configured.
 func telemetryAllowRules() []policy.EgressRule {
 	host, port, ok := inttelemetry.OTLPEndpointHostPort()
+	if !ok {
+		host, port, ok = inttelemetry.OTLPEndpointFallbackHostPort()
+	}
 	if !ok {
 		return nil
 	}

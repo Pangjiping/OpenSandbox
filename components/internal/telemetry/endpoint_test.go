@@ -35,6 +35,9 @@ func TestParseOTLPEndpoint(t *testing.T) {
 		{name: "ip port", raw: "10.0.0.1:4318", host: "10.0.0.1", port: "4318", ok: true},
 		{name: "bare host", raw: "collector.example", host: "collector.example", port: "443", ok: true},
 		{name: "bare ip", raw: "10.0.0.1", host: "10.0.0.1", port: "443", ok: true},
+		{name: "fqdn url trailing dot", raw: "http://otel-collector.ns.svc.cluster.local.:4318", host: "otel-collector.ns.svc.cluster.local", port: "4318", ok: true},
+		{name: "fqdn trailing dot", raw: "otel-collector.ns.svc.cluster.local.:4318", host: "otel-collector.ns.svc.cluster.local", port: "4318", ok: true},
+		{name: "bare fqdn trailing dot", raw: "collector.example.", host: "collector.example", port: "443", ok: true},
 		{name: "scheme only", raw: "http://", ok: false},
 		{name: "malformed url", raw: "https://:443", ok: false},
 	}
@@ -78,5 +81,19 @@ func TestOTLPEndpointHostPortPrecedence(t *testing.T) {
 	host, port, ok = OTLPEndpointHostPort()
 	if !ok || host != "fallback.example" || port != "4318" {
 		t.Fatalf("blank metrics endpoint should fall back; parsed as (%q, %q, %v)", host, port, ok)
+	}
+}
+
+func TestOTLPEndpointFallbackHostPort(t *testing.T) {
+	t.Setenv(envHostIP, "10.0.0.9")
+	host, port, ok := OTLPEndpointFallbackHostPort()
+	if !ok || host != "10.0.0.9" || port != otlpHTTPPort {
+		t.Fatalf("fallback from HOST_IP parsed as (%q, %q, %v)", host, port, ok)
+	}
+
+	t.Setenv(envHostIP, "   ")
+	host, _, ok = OTLPEndpointFallbackHostPort()
+	if ok {
+		t.Fatalf("expected no fallback without a resolvable node IP, got %q", host)
 	}
 }

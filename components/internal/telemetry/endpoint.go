@@ -24,14 +24,28 @@ import (
 // endpoint. Endpoint precedence matches the exporters:
 // OTEL_EXPORTER_OTLP_METRICS_ENDPOINT, then OTEL_EXPORTER_OTLP_ENDPOINT.
 // A missing port falls back to the scheme default (https->443, http->80);
-// a bare host:port or host without a scheme is treated as https. ok is false
-// when no endpoint is configured or it cannot be parsed.
+// a bare host:port or host without a scheme is treated as https. Domain
+// hosts are returned without the trailing dot, matching DNS policy
+// normalization. ok is false when no endpoint is configured or it cannot
+// be parsed.
 func OTLPEndpointHostPort() (host, port string, ok bool) {
 	raw := otlpEndpointFromEnv()
 	if raw == "" {
 		return "", "", false
 	}
 	return parseOTLPEndpoint(raw)
+}
+
+// OTLPEndpointFallbackHostPort returns the exporter fallback destination used
+// when no standard OTEL endpoint env var is set: the resolved node IP
+// (HOST_IP, then /etc/hostinfo) on the default OTLP/HTTP port 4318. ok is
+// false when no node IP can be resolved.
+func OTLPEndpointFallbackHostPort() (host, port string, ok bool) {
+	ip, ok := resolveNodeIP()
+	if !ok {
+		return "", "", false
+	}
+	return ip, otlpHTTPPort, true
 }
 
 func parseOTLPEndpoint(raw string) (host, port string, ok bool) {
@@ -44,7 +58,7 @@ func parseOTLPEndpoint(raw string) (host, port string, ok bool) {
 		if err != nil {
 			return "", "", false
 		}
-		host = strings.TrimSpace(u.Hostname())
+		host = strings.TrimRight(strings.TrimSpace(u.Hostname()), ".")
 		if host == "" {
 			return "", "", false
 		}
@@ -56,12 +70,13 @@ func parseOTLPEndpoint(raw string) (host, port string, ok bool) {
 	}
 	if h, p, err := net.SplitHostPort(raw); err == nil {
 		host, port = strings.TrimSpace(h), strings.TrimSpace(p)
+		host = strings.TrimRight(host, ".")
 		if host == "" {
 			return "", "", false
 		}
 		return host, port, true
 	}
-	host = strings.TrimSpace(raw)
+	host = strings.TrimRight(strings.TrimSpace(raw), ".")
 	if host == "" {
 		return "", "", false
 	}

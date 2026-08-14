@@ -53,6 +53,32 @@ func TestTelemetryAllowRulesFallbackEndpoint(t *testing.T) {
 	require.Equal(t, "otel-collector", rules[0].Target)
 }
 
+func TestTelemetryAllowRulesFallbackNodeIP(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("HOST_IP", "10.0.0.9")
+	rules := telemetryAllowRules()
+	require.Len(t, rules, 1)
+	require.Equal(t, "10.0.0.9", rules[0].Target)
+
+	merged := policy.MergeAlwaysOverlay(policy.DefaultDenyPolicy(), nil, rules)
+	allowV4, allowV6, _, _ := merged.StaticIPSets()
+	require.Equal(t, []string{"10.0.0.9"}, allowV4, "fallback node IP must land in the static allow v4 set")
+	require.Empty(t, allowV6)
+}
+
+func TestTelemetryAllowRulesFQDNTrailingDot(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://otel-collector.ns.svc.cluster.local.:4318")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	rules := telemetryAllowRules()
+	require.Len(t, rules, 1)
+	require.Equal(t, "otel-collector.ns.svc.cluster.local", rules[0].Target)
+
+	merged := policy.MergeAlwaysOverlay(policy.DefaultDenyPolicy(), nil, rules)
+	require.Equal(t, policy.ActionAllow, merged.Evaluate("otel-collector.ns.svc.cluster.local."), "trailing-dot host must match DNS policy normalization")
+	require.Equal(t, policy.ActionDeny, merged.Evaluate("other.ns.svc.cluster.local."))
+}
+
 func TestTelemetryAllowRulesIPEndpoint(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://10.0.0.5:4317")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
