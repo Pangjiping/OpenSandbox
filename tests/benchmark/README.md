@@ -18,8 +18,10 @@ tests/benchmark/
 ## Prerequisites
 
 - Go (any recent version; mock server uses stdlib only)
-- JDK 17+ (driver + Kotlin SDK)
-- A Gradle wrapper is included under `kotlin/`.
+- JDK 17+ (driver + Kotlin SDK; `run.sh` picks a suitable JDK automatically
+  on macOS)
+- A Gradle wrapper is included under `kotlin/`. The SDK sources are referenced
+  in place (composite build), so no separate install is needed.
 
 ## Quick start
 
@@ -36,12 +38,16 @@ tests/benchmark/
 
 `run.sh` performs three steps:
 
-1. Publishes the Kotlin SDK to `mavenLocal` (`sdks/sandbox/kotlin/publishToMavenLocal`);
-   the driver then resolves that exact version (`project.version` from
-   `gradle.properties`). Pass `--skip-sdk-publish` to reuse the last published
-   snapshot.
-2. Builds and starts the mock server (`go build` + exec).
+1. Builds the mock server (`go build` + exec).
+2. Starts the mock server.
 3. Runs the driver: `./gradlew run` with forwarded `--key value` args.
+
+The Kotlin SDK is **built from source**: the driver uses a Gradle composite
+build (`includeBuild` in `kotlin/settings.gradle.kts`), so the benchmark always
+runs the checked-out SDK code and picks up SDK changes without any
+publish/install step. `com.alibaba.opensandbox:sandbox:1.0.18` in
+`kotlin/build.gradle.kts` is a module coordinate that the composite build
+substitutes with the local `:sandbox` project (the version is informational).
 
 Reports land in `results/run-<timestamp>/report.{json,md}`; the mock log is at
 `results/mockserver.log`. Exit code is non-zero when a scenario fails.

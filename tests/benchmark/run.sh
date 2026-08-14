@@ -48,7 +48,6 @@ fi
 LIFECYCLE_ADDR="${LIFECYCLE_ADDR:-127.0.0.1:18080}"
 EXECD_ADDR="${EXECD_ADDR:-127.0.0.1:18081}"
 MOCK_CONFIG="${MOCK_CONFIG:-${BENCH_DIR}/configs/default.json}"
-SKIP_SDK_PUBLISH="${SKIP_SDK_PUBLISH:-false}"
 MOCK_PID=""
 
 cleanup() {
@@ -61,7 +60,7 @@ trap cleanup EXIT
 
 usage() {
   cat <<'EOF'
-Usage: run.sh [--skip-sdk-publish] [--mock-config <path>] [-- <driver args...>]
+Usage: run.sh [--mock-config <path>] [-- <driver args...>]
 
 Environment:
   LIFECYCLE_ADDR  lifecycle mock listen address (default 127.0.0.1:18080)
@@ -77,7 +76,6 @@ EOF
 DRIVER_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --skip-sdk-publish) SKIP_SDK_PUBLISH=true ;;
     --mock-config) shift; MOCK_CONFIG="$1" ;;
     --) shift; DRIVER_ARGS=("$@"); break ;;
     -h|--help) usage; exit 0 ;;
@@ -86,19 +84,11 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# 1. publish the Kotlin SDK to mavenLocal (driver resolves com.alibaba.opensandbox:sandbox:latest.integration)
-if [ "${SKIP_SDK_PUBLISH}" != "true" ]; then
-  echo "== publishing Kotlin SDK to mavenLocal =="
-  (cd "${REPO_ROOT}/sdks/sandbox/kotlin" && ./gradlew -q publishToMavenLocal --no-build-cache)
-else
-  echo "== skipping SDK publish (--skip-sdk-publish) =="
-fi
-
-# 2. build the mock server
+# 1. build the mock server
 echo "== building mock server =="
 (cd "${BENCH_DIR}/mockserver" && go build -o "${BENCH_DIR}/bin/mockserver" .)
 
-# 3. start the mock server
+# 2. start the mock server
 mkdir -p "${BENCH_DIR}/results"
 echo "== starting mock server (lifecycle=${LIFECYCLE_ADDR}, execd=${EXECD_ADDR}, config=${MOCK_CONFIG}) =="
 "${BENCH_DIR}/bin/mockserver" \
@@ -120,10 +110,10 @@ if ! curl -fsS "http://${LIFECYCLE_ADDR}/__stats" > /dev/null 2>&1; then
   exit 1
 fi
 
-# 4. run the driver
-SDK_VERSION="$(grep '^project.version=' "${REPO_ROOT}/sdks/sandbox/kotlin/gradle.properties" | cut -d= -f2 | tr -d '[:space:]')"
-echo "== running benchmark driver (sandbox SDK ${SDK_VERSION}) =="
+# 3. run the driver (Kotlin SDK is built from source via composite build,
+#    see kotlin/settings.gradle.kts)
+echo "== running benchmark driver =="
 DRIVER_ARGS+=("--report-dir" "${BENCH_DIR}/results/run-$(date +%Y%m%d-%H%M%S)")
-(cd "${BENCH_DIR}/kotlin" && ./gradlew --console=plain run -PsandboxVersion="${SDK_VERSION}" --args="${DRIVER_ARGS[*]}")
+(cd "${BENCH_DIR}/kotlin" && ./gradlew --console=plain run --args="${DRIVER_ARGS[*]}")
 
 echo "== done =="

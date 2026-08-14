@@ -28,29 +28,14 @@ java {
 }
 
 repositories {
-    mavenLocal()
-    exclusiveContent {
-        forRepository {
-            mavenLocal()
-        }
-        filter {
-            includeGroup("com.alibaba.opensandbox")
-        }
-    }
     mavenCentral()
 }
 
-configurations.configureEach {
-    resolutionStrategy.cacheDynamicVersionsFor(0, "seconds")
-    resolutionStrategy.cacheChangingModulesFor(0, "seconds")
-}
-
 dependencies {
-    // OpenSandbox Kotlin SDK (published to mavenLocal; see tests/benchmark/README.md).
-    // The version is taken from the SDK's own gradle.properties so run.sh and
-    // this module cannot drift; pass -PsandboxVersion=... to override.
-    val sandboxVersion = (project.findProperty("sandboxVersion") as String?) ?: "1.0.18"
-    implementation("com.alibaba.opensandbox:sandbox:$sandboxVersion")
+    // OpenSandbox Kotlin SDK, built from source via composite build
+    // (see settings.gradle.kts). The module coordinate is substituted by the
+    // included build's :sandbox project; the version is informational only.
+    implementation("com.alibaba.opensandbox:sandbox:1.0.18")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
@@ -71,4 +56,3 @@ tasks.withType<JavaCompile> {
     sourceCompatibility = "11"
     targetCompatibility = "11"
 }
-

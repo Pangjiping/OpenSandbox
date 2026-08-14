@@ -15,3 +15,7 @@
  */
 
 rootProject.name = "opensandbox-pool-benchmark"
+
+// Build the Kotlin SDK from source (Gradle composite build) so the benchmark
+// always runs the checked-out SDK code; no mavenLocal publish step needed.
+includeBuild("../../../sdks/sandbox/kotlin")
