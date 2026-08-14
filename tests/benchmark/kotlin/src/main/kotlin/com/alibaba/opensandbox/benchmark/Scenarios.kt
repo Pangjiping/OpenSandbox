@@ -66,12 +66,12 @@ object Scenarios {
             "overCreationOvershoot" to (created - cfg.maxIdle).coerceAtLeast(0),
             "warmupPipeline" to
                 mapOf(
-                    "queueWaitMs" to diagnostics.queueWaitMs,
-                    "createDurationMs" to diagnostics.createDurationMs,
-                    "commitDurationMs" to diagnostics.commitDurationMs,
-                    "tickIntervalMs" to diagnostics.tickIntervalMs,
-                    "tickDurationMs" to diagnostics.tickDurationMs,
-                    "submitBurst" to diagnostics.submitBurst,
+                    "queueWaitMs" to phaseStats(diagnostics.queueWaitMs),
+                    "createDurationMs" to phaseStats(diagnostics.createDurationMs),
+                    "commitDurationMs" to phaseStats(diagnostics.commitDurationMs),
+                    "tickIntervalMs" to phaseStats(diagnostics.tickIntervalMs),
+                    "tickDurationMs" to phaseStats(diagnostics.tickDurationMs),
+                    "submitBurst" to phaseStats(diagnostics.submitBurst),
                     "submitCalls" to diagnostics.submitCalls,
                     "inFlightPeak" to diagnostics.inFlightPeak,
                     "inFlightMean" to diagnostics.inFlightMean,
@@ -569,6 +569,15 @@ object Scenarios {
     }
 
     // ---------- helpers ----------
+
+    private fun phaseStats(s: PoolWarmupDiagnostics.PhaseStats): Map<String, Any> =
+        mapOf(
+            "count" to s.count,
+            "meanMs" to s.meanMs,
+            "p50Ms" to s.p50Ms,
+            "p95Ms" to s.p95Ms,
+            "maxMs" to s.maxMs,
+        )
 
     private fun successRate(stats: LatencyStats): Double {
         val total = stats.n + stats.failures
