@@ -31,13 +31,13 @@ func TestParseOTLPEndpoint(t *testing.T) {
 		{name: "http url without port", raw: "http://collector.example/v1/metrics", host: "collector.example", port: "80", ok: true},
 		{name: "ip url", raw: "http://10.0.0.1:4317", host: "10.0.0.1", port: "4317", ok: true},
 		{name: "ipv6 url", raw: "http://[::1]:4318/v1/metrics", host: "::1", port: "4318", ok: true},
-		{name: "host port", raw: "collector.example:4318", host: "collector.example", port: "4318", ok: true},
-		{name: "ip port", raw: "10.0.0.1:4318", host: "10.0.0.1", port: "4318", ok: true},
-		{name: "bare host", raw: "collector.example", host: "collector.example", port: "443", ok: true},
-		{name: "bare ip", raw: "10.0.0.1", host: "10.0.0.1", port: "443", ok: true},
+		{name: "host port without scheme", raw: "collector.example:4318", ok: false},
+		{name: "ip port without scheme", raw: "10.0.0.1:4318", ok: false},
+		{name: "bare host", raw: "collector.example", ok: false},
+		{name: "bare ip", raw: "10.0.0.1", ok: false},
 		{name: "fqdn url trailing dot", raw: "http://otel-collector.ns.svc.cluster.local.:4318", host: "otel-collector.ns.svc.cluster.local", port: "4318", ok: true},
-		{name: "fqdn trailing dot", raw: "otel-collector.ns.svc.cluster.local.:4318", host: "otel-collector.ns.svc.cluster.local", port: "4318", ok: true},
-		{name: "bare fqdn trailing dot", raw: "collector.example.", host: "collector.example", port: "443", ok: true},
+		{name: "fqdn trailing dot without scheme", raw: "otel-collector.ns.svc.cluster.local.:4318", ok: false},
+		{name: "bare fqdn trailing dot", raw: "collector.example.", ok: false},
 		{name: "scheme only", raw: "http://", ok: false},
 		{name: "malformed url", raw: "https://:443", ok: false},
 	}
@@ -65,7 +65,7 @@ func TestOTLPEndpointHostPortPrecedence(t *testing.T) {
 		t.Fatalf("expected empty host, got %q", host)
 	}
 
-	t.Setenv(envOTLPEndpoint, "fallback.example:4318")
+	t.Setenv(envOTLPEndpoint, "https://fallback.example:4318")
 	host, port, ok := OTLPEndpointHostPort()
 	if !ok || host != "fallback.example" || port != "4318" {
 		t.Fatalf("fallback endpoint parsed as (%q, %q, %v)", host, port, ok)
@@ -81,6 +81,25 @@ func TestOTLPEndpointHostPortPrecedence(t *testing.T) {
 	host, port, ok = OTLPEndpointHostPort()
 	if !ok || host != "fallback.example" || port != "4318" {
 		t.Fatalf("blank metrics endpoint should fall back; parsed as (%q, %q, %v)", host, port, ok)
+	}
+}
+
+func TestOTLPEndpointEnvSet(t *testing.T) {
+	t.Setenv(envOTLPMetricsEndpoint, "")
+	t.Setenv(envOTLPEndpoint, "")
+	if OTLPEndpointEnvSet() {
+		t.Fatal("expected env unset")
+	}
+
+	t.Setenv(envOTLPEndpoint, "http://")
+	if !OTLPEndpointEnvSet() {
+		t.Fatal("expected env set even when unparseable")
+	}
+
+	t.Setenv(envOTLPEndpoint, "")
+	t.Setenv(envOTLPMetricsEndpoint, "https://collector.example:4318")
+	if !OTLPEndpointEnvSet() {
+		t.Fatal("expected metrics endpoint env set")
 	}
 }
 

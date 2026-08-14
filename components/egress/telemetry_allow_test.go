@@ -47,7 +47,7 @@ func TestTelemetryAllowRulesFromMetricsEndpoint(t *testing.T) {
 
 func TestTelemetryAllowRulesFallbackEndpoint(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "otel-collector:4318")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://otel-collector:4318")
 	rules := telemetryAllowRules()
 	require.Len(t, rules, 1)
 	require.Equal(t, "otel-collector", rules[0].Target)
@@ -98,8 +98,20 @@ func TestTelemetryAllowRulesInvalidEndpoint(t *testing.T) {
 	require.Nil(t, telemetryAllowRules())
 }
 
+func TestTelemetryAllowRulesInvalidEndpointSkipsNodeIPFallback(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("HOST_IP", "10.0.0.9")
+	require.Nil(t, telemetryAllowRules(), "configured-but-invalid endpoint must not open node-IP egress")
+
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "")
+	rules := telemetryAllowRules()
+	require.Len(t, rules, 1, "unset endpoint should fall back to the node IP")
+	require.Equal(t, "10.0.0.9", rules[0].Target)
+}
+
 func TestWithTelemetryAllowAppends(t *testing.T) {
-	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "collector.example:4318")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "https://collector.example:4318")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	existingRule, err := policy.ParseValidatedEgressRule(policy.ActionAllow, "a.example.com")
 	require.NoError(t, err)

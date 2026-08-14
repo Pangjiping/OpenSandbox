@@ -102,11 +102,13 @@ sidecar's own metric export, which shares the sandbox network namespace and
 would otherwise be blocked by its own egress chain.
 
 - The rule follows the standard precedence: `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`
-  wins over `OTEL_EXPORTER_OTLP_ENDPOINT`; the fallback node IP applies when
-  neither is set.
-- The host is taken from the endpoint URL (`https://host:4318/v1/metrics`),
-  `host:port`, or bare `host` forms; a trailing root dot on FQDNs is trimmed to
-  match DNS policy normalization.
+  wins over `OTEL_EXPORTER_OTLP_ENDPOINT`; the fallback node IP applies only
+  when neither is set. A set-but-invalid endpoint never falls back (the
+  exporter does not either), so no rule is injected in that case.
+- The endpoint must be a URL (`https://host:4318/v1/metrics`) — the
+  `otlpmetrichttp` env-var form. Bare `host:port` or `host` values are not
+  accepted (the exporter parses them as opaque URLs with an empty host); a
+  trailing root dot on FQDNs is trimmed to match DNS policy normalization.
 - The rule lives in the always-allow layer: it survives user `POST`/`PATCH`/`DELETE`
   policy updates and always-rule file reloads. Operators can still block the target
   with `deny.always`, which takes precedence.
