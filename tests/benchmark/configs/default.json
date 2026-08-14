@@ -30,9 +30,8 @@
       "maxMs": 100
     },
     "execd.ping": {
-      "distribution": "uniform",
-      "minMs": 1000,
-      "maxMs": 5000
+      "distribution": "fixed",
+      "meanMs": 100
     },
     "execd.other": {
       "distribution": "uniform",

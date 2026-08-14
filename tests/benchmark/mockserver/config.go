@@ -83,8 +83,8 @@ type FaultConfig struct {
 func loadConfig(path string) (*Config, error) {
 	cfg := &Config{
 		// Default response-time profile: create and delete take a uniform
-		// 300-800ms, execd ping a uniform 1-5s (readiness probes are slow),
-		// every other API a uniform 50-100ms.
+		// 300-800ms, execd ping a fixed 100ms, every other API a uniform
+		// 50-100ms.
 		CreateLatencyMs: LatencySpec{
 			Distribution: "uniform",
 			MinMs:        300,
@@ -95,7 +95,7 @@ func loadConfig(path string) (*Config, error) {
 			"lifecycle.get":      {Distribution: "uniform", MinMs: 50, MaxMs: 100},
 			"lifecycle.renew":    {Distribution: "uniform", MinMs: 50, MaxMs: 100},
 			"lifecycle.endpoint": {Distribution: "uniform", MinMs: 50, MaxMs: 100},
-			"execd.ping":         {Distribution: "uniform", MinMs: 1000, MaxMs: 5000},
+			"execd.ping":         {Distribution: "fixed", MeanMs: 100},
 			"execd.other":        {Distribution: "uniform", MinMs: 50, MaxMs: 100},
 		},
 		DefaultTtlSeconds: 3600,

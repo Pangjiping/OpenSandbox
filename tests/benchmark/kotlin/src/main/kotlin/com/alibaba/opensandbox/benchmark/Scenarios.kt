@@ -129,10 +129,12 @@ object Scenarios {
         sampler.start()
 
         val rng = Random(System.nanoTime())
+        val pacer = RatePacer(cfg.acquireRatePerMin)
         val threads = Executors.newFixedThreadPool(cfg.steadyWorkers)
         repeat(cfg.steadyWorkers) {
             threads.submit {
                 while (System.nanoTime() < deadline) {
+                    pacer.waitForSlot()
                     val t0 = System.nanoTime()
                     try {
                         val sb = pool.acquire(cfg.acquireTimeout, PoolRunner.DEFAULT_POLICY)
@@ -165,6 +167,9 @@ object Scenarios {
             "fillTimeMs" to fillMs,
             "durationMs" to durationMs,
             "workers" to cfg.steadyWorkers,
+            "targetAcquiresPerMin" to cfg.acquireRatePerMin,
+            "acquiredCount" to acquires.get(),
+            "achievedAcquiresPerMin" to (acquires.get().toDouble() * 60_000 / durationMs),
             "throughputAcquiresPerSec" to (acquires.get().toDouble() / cfg.steadyDurationS),
             "latency" to latency.snapshot().toMap(),
             "serverCreatedDelta" to createdDelta,
