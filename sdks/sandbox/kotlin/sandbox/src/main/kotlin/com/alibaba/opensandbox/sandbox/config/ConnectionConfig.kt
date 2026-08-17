@@ -91,6 +91,34 @@ class ConnectionConfig private constructor(
             retryPolicy = this.retryPolicy,
         )
 
+    /**
+     * Creates a copy of this ConnectionConfig that uses [connectionPool] and
+     * marks it as SDK-managed (evicted when the owning component closes).
+     *
+     * Internal to the SDK: only [com.alibaba.opensandbox.sandbox.pool.SandboxPool]
+     * injects its pool-created shared pool this way and evicts it on shutdown.
+     * It is not public API — callers cannot rely on the eviction promise
+     * because [HttpClientProvider] only evicts pools it created itself.
+     */
+    internal fun copyWithConnectionPool(connectionPool: ConnectionPool): ConnectionConfig =
+        ConnectionConfig(
+            apiKey = this.apiKey,
+            domain = this.domain,
+            protocol = this.protocol,
+            requestTimeout = this.requestTimeout,
+            debug = this.debug,
+            userAgent = this.userAgent,
+            headers = this.headers,
+            connectionPool = connectionPool,
+            connectionPoolManagedByUser = false,
+            useServerProxy = this.useServerProxy,
+            endpointCacheTtl = this.endpointCacheTtl,
+            endpointCacheSize = this.endpointCacheSize,
+            endpointCacheDisabled = this.endpointCacheDisabled,
+            disableMetrics = this.disableMetrics,
+            retryPolicy = this.retryPolicy,
+        )
+
     companion object {
         private const val DEFAULT_DOMAIN = "localhost:8080"
         private const val DEFAULT_PROTOCOL = "http"

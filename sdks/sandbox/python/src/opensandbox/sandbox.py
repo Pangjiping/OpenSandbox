@@ -590,11 +590,13 @@ class Sandbox:
             )
             sandbox_id = response.id
 
-            execd_endpoint = await sandbox_service.get_sandbox_endpoint(
-                response.id, DEFAULT_EXECD_PORT, config.use_server_proxy
-            )
-            egress_endpoint = await sandbox_service.get_sandbox_endpoint(
-                response.id, DEFAULT_EGRESS_PORT, config.use_server_proxy
+            execd_endpoint, egress_endpoint = await asyncio.gather(
+                sandbox_service.get_sandbox_endpoint(
+                    response.id, DEFAULT_EXECD_PORT, config.use_server_proxy
+                ),
+                sandbox_service.get_sandbox_endpoint(
+                    response.id, DEFAULT_EGRESS_PORT, config.use_server_proxy
+                ),
             )
 
             sandbox = cls(
@@ -702,11 +704,13 @@ class Sandbox:
 
         try:
             sandbox_service = factory.create_sandbox_service()
-            execd_endpoint = await sandbox_service.get_sandbox_endpoint(
-                sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
-            )
-            egress_endpoint = await sandbox_service.get_sandbox_endpoint(
-                sandbox_id, DEFAULT_EGRESS_PORT, config.use_server_proxy
+            execd_endpoint, egress_endpoint = await asyncio.gather(
+                sandbox_service.get_sandbox_endpoint(
+                    sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
+                ),
+                sandbox_service.get_sandbox_endpoint(
+                    sandbox_id, DEFAULT_EGRESS_PORT, config.use_server_proxy
+                ),
             )
 
             sandbox = cls(
@@ -782,11 +786,13 @@ class Sandbox:
             sandbox_service = factory.create_sandbox_service()
             await sandbox_service.resume_sandbox(sandbox_id)
 
-            execd_endpoint = await sandbox_service.get_sandbox_endpoint(
-                sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
-            )
-            egress_endpoint = await sandbox_service.get_sandbox_endpoint(
-                sandbox_id, DEFAULT_EGRESS_PORT, config.use_server_proxy
+            execd_endpoint, egress_endpoint = await asyncio.gather(
+                sandbox_service.get_sandbox_endpoint(
+                    sandbox_id, DEFAULT_EXECD_PORT, config.use_server_proxy
+                ),
+                sandbox_service.get_sandbox_endpoint(
+                    sandbox_id, DEFAULT_EGRESS_PORT, config.use_server_proxy
+                ),
             )
 
             sandbox = cls(

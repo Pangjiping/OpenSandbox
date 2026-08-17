@@ -3,8 +3,8 @@ title: Pluggable Secure Container Runtime Support
 authors:
   - "@hittyt"
 creation-date: 2026-02-05
-last-updated: 2026-02-09
-status: implementing
+last-updated: 2026-07-27
+status: implemented
 ---
 
 # OSEP-0004: Pluggable Secure Container Runtime Support

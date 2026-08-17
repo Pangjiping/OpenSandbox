@@ -19,9 +19,19 @@ your SDK version if you rely on it in production.
 
 ## What it actually pools
 
-The pool does **not** pool HTTP connections, and it does **not** pool SDK `Sandbox`
-objects. It pools the **IDs of pre-warmed, ready sandboxes** running on the OpenSandbox
-server.
+The pool does **not** pool SDK `Sandbox` objects. It pools the **IDs of
+pre-warmed, ready sandboxes** running on the OpenSandbox server.
+
+The **Kotlin/Java** SDK additionally gives each `SandboxPool` a pool-wide
+shared HTTP connection pool. When the pool's `ConnectionConfig` carries no
+custom `connectionPool`, the pool creates one sized by `warmup_concurrency`
+(5-minute keep-alive) and uses it for every sandbox it creates — warmup,
+direct create, and idle connect — so concurrent warmups reuse TCP connections
+instead of each opening fresh ones. At high `warmup_concurrency`, per-sandbox
+connection churn otherwise causes intermittent connection resets and retry
+amplification. The pool evicts its shared pool on shutdown; a user-provided
+pool is never touched. Python and Go pools do not share HTTP connections
+across sandboxes today.
 
 ![Client pool architecture](/images/client-pool-architecture.svg)
 
