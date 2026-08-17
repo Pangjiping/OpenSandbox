@@ -74,3 +74,8 @@ func StartInitMode(entryArgs []string) {
 func InitModeReport() (mode string, signalShield bool) {
 	return "none", false
 }
+
+// initModeActive is always false off Linux: init mode never runs there.
+func initModeActive() bool {
+	return false
+}
