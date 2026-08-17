@@ -73,6 +73,7 @@ mode = "direct"
 [egress]
 image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress:v1.1.6"
 mode = "dns"
+readiness_timeout_seconds = 30.0
 
 # 按访问续期。默认关闭 — 见 server/README_zh.md。
 [renew_intent]

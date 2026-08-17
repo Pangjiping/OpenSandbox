@@ -166,6 +166,17 @@ osb sandbox metrics <sandbox-id>
 osb sandbox metrics <sandbox-id> --watch -o raw
 ```
 
+### Pause a sandbox
+
+Pause is asynchronous. `Pause request accepted` confirms that the server accepted
+the request, not that the sandbox has reached the `Paused` state. Poll the sandbox
+until the transition finishes:
+
+```bash
+osb sandbox pause <sandbox-id>
+osb sandbox get <sandbox-id> -o json
+```
+
 ### Expose a service
 
 ```bash

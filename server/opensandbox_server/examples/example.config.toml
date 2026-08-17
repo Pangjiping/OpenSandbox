@@ -76,6 +76,7 @@ mode = "direct"
 [egress]
 image = "opensandbox/egress:v1.1.6"
 mode = "dns"
+readiness_timeout_seconds = 30.0
 
 # Renew-on-access. Off by default — see server/README.md.
 [renew_intent]

@@ -60,6 +60,17 @@ class ConnectionConfig private constructor(
      */
     val disableMetrics: Boolean = false,
     /**
+     * Enable OpenTelemetry tracing for the client-side sandbox pool warmup path.
+     *
+     * Off by default. When enabled, each pool warmup creates an OpenTelemetry
+     * trace (`pool.warmup` root span plus per-phase spans) and the active
+     * trace context is propagated to lifecycle requests via the W3C
+     * `traceparent` header. Tracing is best-effort: without an
+     * OpenTelemetry SDK + exporter on the classpath, all span calls are
+     * no-ops and nothing is exported.
+     */
+    val enableTracing: Boolean = false,
+    /**
      * Retry policy applied to non-streaming requests. Enabled by default; pass
      * [RetryPolicy.disabled] to disable SDK-policy retries and fall back to
      * OkHttp's built-in connection recovery. SSE / streaming requests bypass
@@ -88,6 +99,7 @@ class ConnectionConfig private constructor(
             endpointCacheSize = this.endpointCacheSize,
             endpointCacheDisabled = this.endpointCacheDisabled,
             disableMetrics = this.disableMetrics,
+            enableTracing = this.enableTracing,
             retryPolicy = this.retryPolicy,
         )
 
@@ -216,6 +228,7 @@ class ConnectionConfig private constructor(
         private var endpointCacheSize: Int = 1024
         private var endpointCacheDisabled: Boolean = false
         private var disableMetrics: Boolean = false
+        private var enableTracing: Boolean = false
         private var retryPolicy: RetryPolicy = RetryPolicy()
 
         /**
@@ -253,6 +266,17 @@ class ConnectionConfig private constructor(
         @JvmOverloads
         fun disableMetrics(disabled: Boolean = true): Builder {
             this.disableMetrics = disabled
+            return this
+        }
+
+        /**
+         * Enable OpenTelemetry tracing for the client-side sandbox pool warmup path.
+         *
+         * Off by default; pass `true` to opt in. Tracing is best-effort and no-ops
+         * unless an OpenTelemetry SDK + exporter is on the classpath.
+         */
+        fun enableTracing(enable: Boolean = true): Builder {
+            this.enableTracing = enable
             return this
         }
 
@@ -411,6 +435,7 @@ class ConnectionConfig private constructor(
                 endpointCacheSize = endpointCacheSize,
                 endpointCacheDisabled = endpointCacheDisabled,
                 disableMetrics = disableMetrics,
+                enableTracing = enableTracing,
                 retryPolicy = retryPolicy,
             )
         }

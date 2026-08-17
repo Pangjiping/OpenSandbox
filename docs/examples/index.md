@@ -23,6 +23,7 @@ Run coding CLIs and AI agent frameworks inside isolated sandboxes.
 | [Qwen Code](/examples/qwen-code) | Run Qwen Code CLI in a sandbox |
 | [Kimi CLI](/examples/kimi-cli) | Run Kimi CLI (Moonshot AI) in a sandbox |
 | [LangGraph](/examples/langgraph) | LangGraph state-machine workflow with sandbox |
+| [Deep Agents](/examples/deep-agents) | Deep Agents file/shell tools running in a sandbox |
 | [Google ADK](/examples/google-adk) | Google ADK agent using OpenSandbox tools |
 | [OpenClaw](/examples/openclaw) | OpenClaw Gateway inside a sandbox |
 | [NullClaw](/examples/nullclaw) | NullClaw Gateway sandbox integration |

@@ -16,6 +16,7 @@ configs:
       [egress]
       image = "opensandbox/egress:v1.1.6"
       # image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress:v1.1.6"
+      readiness_timeout_seconds = 30.0
 
       [docker]
       network_mode = "bridge"

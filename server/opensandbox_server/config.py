@@ -751,6 +751,14 @@ class EgressConfig(BaseModel):
             "(e.g. IPv4-only CNI or experimenting with IPv6 egress despite gaps)."
         ),
     )
+    readiness_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "Maximum time in seconds to wait for the egress sidecar health endpoint "
+            "to become ready in Docker runtime."
+        ),
+    )
 
 
 class RuntimeConfig(BaseModel):

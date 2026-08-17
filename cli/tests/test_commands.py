@@ -569,12 +569,12 @@ class TestSandboxKill:
 
 
 class TestSandboxPause:
-    def test_pause_calls_manager(self, runner: CliRunner) -> None:
+    def test_pause_reports_request_accepted(self, runner: CliRunner) -> None:
         mock_mgr = MagicMock()
         result = _invoke(runner, ["sandbox", "pause", "sb-123"], manager=mock_mgr)
         assert result.exit_code == 0
         mock_mgr.pause_sandbox.assert_called_once_with("sb-123")
-        assert "Sandbox paused: sb-123" in result.output
+        assert "Pause request accepted: sb-123" in result.output
 
 
 class TestSandboxResume:
