@@ -19,7 +19,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -143,7 +142,15 @@ func (m *MockServer) handleLifecycle(w http.ResponseWriter, r *http.Request) {
 func (m *MockServer) handleCreate(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	defer m.recordQps("lifecycle.create", start)
-	_, _ = io.Copy(io.Discard, r.Body)
+	// Honor the requested server-side TTL when present (the SDK sends its
+	// configured idleTimeout here), falling back to the configured default.
+	var createReq struct {
+		TimeoutSeconds int64 `json:"timeout"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&createReq); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
 
 	cfg := m.cfgSnapshot()
 	if cfg.CreateFailureRate > 0 && rand.Float64() < cfg.CreateFailureRate {
@@ -160,7 +167,11 @@ func (m *MockServer) handleCreate(w http.ResponseWriter, r *http.Request) {
 	m.stats.recordCreateLatency(latency)
 
 	now := time.Now().UTC()
-	expiresAt := now.Add(cfg.DefaultTtl)
+	ttl := cfg.DefaultTtl
+	if createReq.TimeoutSeconds > 0 {
+		ttl = time.Duration(createReq.TimeoutSeconds) * time.Second
+	}
+	expiresAt := now.Add(ttl)
 	id := m.newSandboxID()
 	sandbox := &Sandbox{
 		ID:        id,
@@ -303,26 +314,31 @@ func (m *MockServer) handleExecd(w http.ResponseWriter, r *http.Request) {
 	m.stats.incExecdRequests()
 	token := r.Header.Get("X-EXECD-ACCESS-TOKEN")
 	id := strings.TrimPrefix(token, "mock-token-")
-	if token != "" && token == execdToken(id) {
-		m.mu.RLock()
-		sb := m.sandboxes[id]
-		m.mu.RUnlock()
-		if sb == nil || !sb.running(time.Now()) {
-			// Not booted yet, expired, or killed. Fail fast and answer with
-			// a non-retryable status (404): the SDK's retry interceptor
-			// retries 5xx and transport errors with backoff, which would
-			// pollute the readiness-poll timing this mock is meant to
-			// measure. 404 makes the SDK poll at its configured interval
-			// until ready. The readiness probe only starts paying the route
-			// latency once the sandbox is actually up.
-			writeError(w, http.StatusNotFound, "NOT_READY", "sandbox not ready: "+id)
-			return
-		}
-		if sb.Poisoned {
-			m.stats.incExecdPoisoned()
-			writeError(w, http.StatusNotFound, "POISONED", "sandbox endpoint poisoned")
-			return
-		}
+	if token == "" || token != execdToken(id) {
+		// A request without a valid per-sandbox endpoint token is not
+		// attributable to any sandbox; reject it instead of answering 200 so
+		// missing endpoint headers cannot fake readiness.
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid execd access token")
+		return
+	}
+	m.mu.RLock()
+	sb := m.sandboxes[id]
+	m.mu.RUnlock()
+	if sb == nil || !sb.running(time.Now()) {
+		// Not booted yet, expired, or killed. Fail fast and answer with
+		// a non-retryable status (404): the SDK's retry interceptor
+		// retries 5xx and transport errors with backoff, which would
+		// pollute the readiness-poll timing this mock is meant to
+		// measure. 404 makes the SDK poll at its configured interval
+		// until ready. The readiness probe only starts paying the route
+		// latency once the sandbox is actually up.
+		writeError(w, http.StatusNotFound, "NOT_READY", "sandbox not ready: "+id)
+		return
+	}
+	if sb.Poisoned {
+		m.stats.incExecdPoisoned()
+		writeError(w, http.StatusNotFound, "POISONED", "sandbox endpoint poisoned")
+		return
 	}
 	// A ready sandbox's requests pay the configured route latency.
 	m.applyRouteLatency(route)

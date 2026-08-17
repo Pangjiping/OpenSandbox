@@ -121,6 +121,11 @@ fi
 #    see kotlin/settings.gradle.kts)
 echo "== running benchmark driver =="
 DRIVER_ARGS+=("--report-dir" "${RUN_DIR}")
+# Forward the effective mock address unless the user pinned --mock-base-url.
+case " ${DRIVER_ARGS[*]} " in
+  *" --mock-base-url "*) ;;
+  *) DRIVER_ARGS+=("--mock-base-url" "http://${LIFECYCLE_ADDR}") ;;
+esac
 (cd "${BENCH_DIR}/kotlin" && ./gradlew --console=plain run --args="${DRIVER_ARGS[*]}")
 
 echo "== done: ${RUN_DIR} =="
