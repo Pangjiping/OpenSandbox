@@ -99,6 +99,7 @@ export default defineConfig({
             { text: "Windows Sandbox", link: "/guides/windows-sandbox" },
             { text: "Client Pool", link: "/guides/client-pool" },
             { text: "SDK Telemetry", link: "/guides/sdk-telemetry" },
+            { text: "SDK Tracing (Pool Warmup)", link: "/guides/sdk-tracing" },
           ],
         },
       ],

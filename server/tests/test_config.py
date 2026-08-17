@@ -919,8 +919,39 @@ def test_egress_config_mode_literal():
     base = EgressConfig(image="opensandbox/egress:v1")
     assert base.mode == EGRESS_MODE_DNS
     assert base.disable_ipv6 is True
+    assert base.readiness_timeout_seconds == 30.0
     cfg = EgressConfig(image="opensandbox/egress:v1", mode=EGRESS_MODE_DNS_NFT)
     assert cfg.mode == EGRESS_MODE_DNS_NFT
+
+
+def test_egress_config_readiness_timeout_must_be_positive():
+    cfg = EgressConfig(readiness_timeout_seconds=75.5)
+    assert cfg.readiness_timeout_seconds == 75.5
+
+    with pytest.raises(ValidationError):
+        EgressConfig(readiness_timeout_seconds=0)
+
+
+def test_load_config_with_egress_readiness_timeout(tmp_path, monkeypatch):
+    _reset_config(monkeypatch)
+    toml = textwrap.dedent(
+        """
+        [runtime]
+        type = "docker"
+        execd_image = "opensandbox/execd:test"
+
+        [egress]
+        image = "opensandbox/egress:test"
+        readiness_timeout_seconds = 75.5
+        """
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml)
+
+    loaded = config_module.load_config(config_path)
+
+    assert loaded.egress is not None
+    assert loaded.egress.readiness_timeout_seconds == 75.5
 
 
 def test_log_config_defaults():
@@ -1583,4 +1614,3 @@ class TestSecureAccessEnvOverride:
 
         with pytest.raises(ValidationError, match="not found in secure_access.keys"):
             config_module.load_config(config_path)
-
