@@ -669,15 +669,25 @@ func ReportHardening() HardeningReport {
 	// entrypoint — and any /code kernels it spawns — is launched by the
 	// bootstrap shell, not by execd, so it never passes through the launcher.
 	// The layer states above only cover execd-spawned commands/sessions; say
-	// so instead of letting the endpoint claim full enforcement.
-	if mode == "none" && report.CapDrop.State == "active" {
-		msg := "hardening active but execd is not the sandbox init (EXECD_INIT unset): " +
+	// so instead of letting the endpoint claim full enforcement. Key the
+	// correction off hardening being enabled (not off cap_drop's state: the
+	// layer can be degraded while seccomp/Landlock are active, or cap_drop
+	// can be active while a configured layer is disabled) and only touch the
+	// layers that are actually in effect.
+	if mode == "none" && hardening.enabled.Load() {
+		msg := "hardening enabled but execd is not the sandbox init (EXECD_INIT unset): " +
 			"the image entrypoint and its /code kernels are not wrapped; only " +
 			"execd-spawned commands/sessions are reduced. Enable " +
 			"runtime.execd_run_as_init for full coverage"
-		report.CapDrop = LayerState{State: "degraded", Message: msg}
-		report.Seccomp = LayerState{State: "degraded", Message: msg}
-		report.Landlock = LayerState{State: "degraded", Message: msg}
+		if report.CapDrop.State != "disabled" {
+			report.CapDrop = LayerState{State: "degraded", Message: msg}
+		}
+		if report.Seccomp.State != "disabled" {
+			report.Seccomp = LayerState{State: "degraded", Message: msg}
+		}
+		if report.Landlock.State != "disabled" {
+			report.Landlock = LayerState{State: "degraded", Message: msg}
+		}
 	}
 	return report
 }

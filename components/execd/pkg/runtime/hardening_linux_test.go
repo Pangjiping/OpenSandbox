@@ -256,6 +256,7 @@ func TestHardeningDegradesWhenLauncherMissing(t *testing.T) {
 func TestHardeningReportLayers(t *testing.T) {
 	buildLauncher(t)
 	launcherSearchPaths = append(launcherSearchPaths, launcherBuilt)
+	startReaperForTest(t)
 	initHardeningForTest(t, hardenedCfg())
 	report := ReportHardening()
 	if report.Ebpf.State != "disabled" {
@@ -269,6 +270,51 @@ func TestHardeningReportLayers(t *testing.T) {
 	}
 }
 
+func TestHardeningReportDegradesWithoutInitMode(t *testing.T) {
+	buildLauncher(t)
+	launcherSearchPaths = append(launcherSearchPaths, launcherBuilt)
+
+	// Without init topology the entrypoint and /code kernels never pass
+	// through the launcher; every enabled layer must report degraded, and a
+	// layer that is not configured must stay disabled rather than being
+	// dragged into the degradation.
+	initHardeningForTest(t, hardenedCfg())
+	report := ReportHardening()
+	if report.InitMode != "none" {
+		t.Fatalf("InitMode = %q, want none (no reaper in this test)", report.InitMode)
+	}
+	for _, layer := range []struct{ name, state string }{
+		{"cap_drop", report.CapDrop.State},
+		{"seccomp", report.Seccomp.State},
+	} {
+		if layer.state != "degraded" {
+			t.Fatalf("%s state = %q, want degraded (hardening enabled without init mode)", layer.name, layer.state)
+		}
+	}
+	if report.Landlock.State != "disabled" {
+		t.Fatalf("landlock state = %q, want disabled (not configured)", report.Landlock.State)
+	}
+	if !strings.Contains(report.CapDrop.Message, "EXECD_INIT") {
+		t.Fatalf("cap_drop message = %q, want EXECD_INIT guidance", report.CapDrop.Message)
+	}
+
+	// An enabled Landlock layer must be degraded too, regardless of the
+	// underlying kernel state.
+	resetHardening()
+	launcherSearchPaths = append(launcherSearchPaths, launcherBuilt)
+	cfg := isolation.DefaultConfig()
+	cfg.Hardening = &isolation.HardeningConfig{Enabled: true}
+	cfg.Landlock = &isolation.LandlockConfig{Enabled: true}
+	initHardeningForTest(t, cfg)
+	report = ReportHardening()
+	if report.Landlock.State != "degraded" {
+		t.Fatalf("landlock state = %q, want degraded (enabled without init mode)", report.Landlock.State)
+	}
+	if !strings.Contains(report.Landlock.Message, "EXECD_INIT") {
+		t.Fatalf("landlock message = %q, want EXECD_INIT guidance", report.Landlock.Message)
+	}
+}
+
 func TestLandlockDisabledByDefault(t *testing.T) {
 	initHardeningForTest(t, isolation.Config{})
 	if report := ReportHardening(); report.Landlock.State != "disabled" {
@@ -279,6 +325,7 @@ func TestLandlockDisabledByDefault(t *testing.T) {
 func TestLandlockActiveOrUnsupported(t *testing.T) {
 	buildLauncher(t)
 	launcherSearchPaths = append(launcherSearchPaths, launcherBuilt)
+	startReaperForTest(t)
 	cfg := isolation.DefaultConfig()
 	cfg.Hardening = &isolation.HardeningConfig{Enabled: true}
 	cfg.Landlock = &isolation.LandlockConfig{

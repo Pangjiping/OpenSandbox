@@ -1459,6 +1459,43 @@ spec:
             {"name": "OPENSANDBOX_ID", "value": "test-id"},
         ]
 
+    def test_create_workload_poolref_default_fast_path_skips_task_template(self, mock_k8s_client, monkeypatch):
+        """
+        The default pool allocation (no env, default entrypoint, no init mode)
+        must skip the task template and keep the warm fast path, while logging
+        that OPENSANDBOX_ID cannot be injected (eBPF audit attribution
+        unsupported on this path).
+        """
+        import opensandbox_server.services.k8s.batchsandbox_provider as provider_module
+
+        mock_logger = MagicMock()
+        monkeypatch.setattr(provider_module, "logger", mock_logger)
+        provider = BatchSandboxProvider(mock_k8s_client)
+        mock_k8s_client.create_custom_object.return_value = {
+            "metadata": {"name": "sandbox-test-id", "uid": "test-uid"}
+        }
+
+        result = provider.create_workload(
+            sandbox_id="test-id",
+            namespace="test-ns",
+            image_spec=ImageSpec(uri=""),
+            entrypoint=[],  # default entrypoint
+            env={},
+            resource_limits={},
+            labels={},
+            expires_at=datetime(2025, 12, 31, tzinfo=timezone.utc),
+            execd_image="execd:latest",
+            extensions={"poolRef": "my-pool"},
+        )
+
+        assert result == {"name": "sandbox-test-id", "uid": "test-uid", "apiVersion": "sandbox.opensandbox.io/v1alpha1", "kind": "BatchSandbox"}
+
+        body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
+        assert body["spec"]["poolRef"] == "my-pool"
+        assert "taskTemplate" not in body["spec"]
+        log_messages = " ".join(str(call) for call in mock_logger.info.call_args_list)
+        assert "OPENSANDBOX_ID" in log_messages
+
     def test_build_task_template_with_env(self, mock_k8s_client):
         """
         Test _build_task_template with environment variables.

@@ -384,6 +384,16 @@ class BatchSandboxProvider(WorkloadProvider):
         )
         if needs_task_template:
             spec["taskTemplate"] = self._build_task_template(entrypoint, env, batchsandbox_name)
+        else:
+            # Fast path: the pre-created pool pod keeps running its own warm
+            # entrypoint, so no per-allocation env can reach execd. The
+            # authoritative BatchSandbox id cannot be injected here; eBPF
+            # audit attribution reports unsupported for this allocation.
+            logger.info(
+                "pool sandbox %s: default allocation without a task template cannot inject "
+                "OPENSANDBOX_ID; eBPF audit sandbox_id attribution is unsupported on this path",
+                batchsandbox_name,
+            )
         if expires_at is not None:
             spec["expireTime"] = expires_at.isoformat()
         runtime_manifest = {

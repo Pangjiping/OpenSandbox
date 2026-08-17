@@ -108,6 +108,12 @@ func Init(cfg *isolation.EbpfConfig, sandboxID string) (state, message string) {
 	if cfg == nil || !cfg.Enabled {
 		return disabled("eBPF observation is not enabled ([ebpf] enabled = false)")
 	}
+	if sandboxID == "" {
+		return "unsupported",
+			"eBPF observation cannot attribute audit records: OPENSANDBOX_ID is not set " +
+				"(pool fast-path allocations without a task template cannot inject it); " +
+				"set it via the runtime env to enable sandbox_id attribution"
+	}
 	if !effectiveCapsHave(capBpf) || !effectiveCapsHave(capPerfmon) {
 		return "unsupported",
 			"eBPF observation requires CAP_BPF + CAP_PERFMON (execd-ebpf build with a privileged container)"
