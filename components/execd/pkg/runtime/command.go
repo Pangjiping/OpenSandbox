@@ -49,6 +49,27 @@ var forwardSignals = []os.Signal{
 	syscall.SIGWINCH,
 }
 
+// subscribeCommandSignals sets up the classic-mode subscription that
+// forwards application signals to a running /command process group, and
+// returns the signal channel plus a stop function. In init mode
+// (OSEP-0018) nothing is subscribed and the channel is nil: application
+// signals are owned by forwardInitSignals, which forwards them to the
+// entrypoint group (and SIGTERM triggers the shutdown sequence). An
+// additional subscription here would split each in-namespace signal
+// between two channels and leak HUP/USR*/WINCH into whatever /command
+// happens to be running.
+func subscribeCommandSignals() (chan os.Signal, func()) {
+	if initModeActive() {
+		return nil, func() {}
+	}
+	signals := make(chan os.Signal, len(forwardSignals)+1)
+	signal.Notify(signals, forwardSignals...)
+	return signals, func() {
+		signal.Stop(signals)
+		close(signals)
+	}
+}
+
 // getShell returns "bash" if available, otherwise "sh". The result is cached
 // for the process lifetime; tests that mutate PATH must call
 // resetShellCacheForTest.
@@ -125,24 +146,8 @@ func buildCredential(uid, gid *uint32) (*syscall.Credential, error) {
 func (c *Controller) runCommand(ctx context.Context, request *ExecuteCodeRequest) error {
 	session := c.newContextID()
 
-	signals := make(chan os.Signal, len(forwardSignals)+1)
-	defer func() {
-		if signals != nil {
-			close(signals)
-		}
-	}()
-	// In init mode (OSEP-0018), application signals are owned by
-	// forwardInitSignals: they are forwarded to the entrypoint group (and
-	// SIGTERM triggers the shutdown sequence), never to a /command child's
-	// own group. Installing an additional subscription here would split each
-	// in-namespace signal between two channels and leak HUP/USR*/WINCH into
-	// whatever /command happens to be running (the forward loop below would
-	// kill it). Classic mode keeps the subscription: execd is not PID 1
-	// there, so nothing else handles these signals.
-	if !initModeActive() {
-		signal.Notify(signals, forwardSignals...)
-		defer signal.Stop(signals)
-	}
+	signals, stopSignals := subscribeCommandSignals()
+	defer stopSignals()
 
 	stdout, stderr, err := c.stdLogDescriptor(session)
 	if err != nil {
@@ -309,14 +314,10 @@ func (c *Controller) runBackgroundCommand(ctx context.Context, cancel context.Ca
 	stdoutPath := c.combinedOutputFileName(session)
 	stderrPath := c.combinedOutputFileName(session)
 
-	// In init mode (OSEP-0018) the signal subscription is skipped: signals
-	// are owned by forwardInitSignals and this channel is never consumed.
-	if !initModeActive() {
-		signals := make(chan os.Signal, len(forwardSignals)+1)
-		defer close(signals)
-		signal.Notify(signals, forwardSignals...)
-		defer signal.Stop(signals)
-	}
+	// Classic-mode signal subscription (no-op in init mode; the channel is
+	// never consumed, keeping today's behavior of not dying on SIGHUP etc.).
+	_, stopSignals := subscribeCommandSignals()
+	defer stopSignals()
 
 	startAt := time.Now()
 	log.Info("received command: %v", log.SanitizeCommand(request.Code))
