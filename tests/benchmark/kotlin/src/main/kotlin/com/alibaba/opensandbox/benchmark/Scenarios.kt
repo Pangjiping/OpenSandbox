@@ -344,10 +344,11 @@ object Scenarios {
                 latency.recordFailure(classifyFailure(t))
             }
         }
-        val stats = mock.stats()
-
         // Pool must drain the stale idles and refill with fresh sandboxes.
         val refillMs = PoolRunner.waitForIdle(pool, cfg.maxIdle, cfg.coldStartTimeoutMs)
+        // Snapshot after the refill so creations completing during the wait
+        // are included in serverCreatedDelta / serverAliveAfter.
+        val stats = mock.stats()
 
         return try {
 

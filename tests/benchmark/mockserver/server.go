@@ -321,10 +321,13 @@ func (m *MockServer) handleExecd(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid execd access token")
 		return
 	}
+	// Read and judge the sandbox state while holding the lock: boot, renew,
+	// delete, and poisoning write State/ExpiresAt/Poisoned under m.mu, so a
+	// lock-free read would race those mutation goroutines.
 	m.mu.RLock()
 	sb := m.sandboxes[id]
-	m.mu.RUnlock()
 	if sb == nil || !sb.running(time.Now()) {
+		m.mu.RUnlock()
 		// Not booted yet, expired, or killed. Fail fast and answer with
 		// a non-retryable status (404): the SDK's retry interceptor
 		// retries 5xx and transport errors with backoff, which would
@@ -336,10 +339,12 @@ func (m *MockServer) handleExecd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if sb.Poisoned {
+		m.mu.RUnlock()
 		m.stats.incExecdPoisoned()
 		writeError(w, http.StatusNotFound, "POISONED", "sandbox endpoint poisoned")
 		return
 	}
+	m.mu.RUnlock()
 	// A ready sandbox's requests pay the configured route latency.
 	m.applyRouteLatency(route)
 	cfg := m.cfgSnapshot()
@@ -506,8 +511,13 @@ func (s *Stats) recordCreateLatency(d time.Duration) {
 	s.latencyMu.Lock()
 	s.createLatencyMs = append(s.createLatencyMs, ms)
 	s.latencyMu.Unlock()
-	if cur := s.maxCreateLatency.Load(); ms > cur {
-		s.maxCreateLatency.CompareAndSwap(cur, ms)
+	// CAS loop: a single CompareAndSwap can lose a larger sample to a
+	// concurrent smaller update (e.g. 200ms vs 100ms) and must retry.
+	for {
+		cur := s.maxCreateLatency.Load()
+		if ms <= cur || s.maxCreateLatency.CompareAndSwap(cur, ms) {
+			return
+		}
 	}
 }
 

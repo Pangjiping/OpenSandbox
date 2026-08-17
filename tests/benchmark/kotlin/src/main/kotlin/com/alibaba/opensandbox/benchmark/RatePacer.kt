@@ -39,8 +39,13 @@ class RatePacer(private val ratePerMin: Int) {
         var slot = nextSlot.get()
         while (true) {
             if (slot == 0L) {
-                if (nextSlot.compareAndSet(0L, System.nanoTime())) {
-                    slot = System.nanoTime()
+                // First caller runs immediately, but reserve the next slot one
+                // interval out; otherwise the second caller would claim the
+                // same stored timestamp and also run immediately, doubling the
+                // initial allowance.
+                val now = System.nanoTime()
+                if (nextSlot.compareAndSet(0L, now + intervalNanos)) {
+                    slot = now
                     break
                 }
                 slot = nextSlot.get()
