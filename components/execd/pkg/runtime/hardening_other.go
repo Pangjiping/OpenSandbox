@@ -18,20 +18,40 @@
 
 package runtime
 
-import "github.com/alibaba/opensandbox/execd/pkg/isolation"
+import (
+	"sync/atomic"
 
-// InitHardening is a no-op off Linux.
+	"github.com/alibaba/opensandbox/execd/pkg/isolation"
+)
+
+// Requested-state flags so the capabilities endpoint can distinguish a
+// configured layer that this platform cannot provide ("unsupported") from
+// an opt-out deployment ("disabled").
+var (
+	otherHardeningRequested atomic.Bool
+	otherLandlockRequested  atomic.Bool
+	otherEbpfRequested      atomic.Bool
+)
+
+// InitHardening is a no-op off Linux; it only records which layers were
+// requested so ReportHardening can report them as unsupported instead of
+// silently claiming they are disabled.
 func InitHardening(cfg isolation.Config) error {
+	otherHardeningRequested.Store(cfg.Hardening != nil && cfg.Hardening.Enabled)
+	otherLandlockRequested.Store(cfg.Landlock != nil && cfg.Landlock.Enabled)
 	return nil
 }
 
-// SetEbpfState is a no-op off Linux.
-func SetEbpfState(state LayerState) {}
+// SetEbpfState records whether eBPF observation was requested off Linux.
+func SetEbpfState(state LayerState) {
+	otherEbpfRequested.Store(state.State != "disabled")
+}
 
-// HardeningReport reports that no hardening layer is in effect.
+// HardeningReport reports that no hardening layer is in effect, marking
+// configured layers as unsupported rather than disabled.
 func ReportHardening() HardeningReport {
 	initMode, shield := InitModeReport()
-	return HardeningReport{
+	report := HardeningReport{
 		InitMode:     initMode,
 		SignalShield: shield,
 		CapDrop:      LayerState{State: "disabled", Message: "hardening is Linux-only"},
@@ -39,4 +59,18 @@ func ReportHardening() HardeningReport {
 		Landlock:     LayerState{State: "disabled", Message: "hardening is Linux-only"},
 		Ebpf:         LayerState{State: "disabled", Message: "hardening is Linux-only"},
 	}
+	if otherHardeningRequested.Load() {
+		msg := "hardening requested but unavailable on this platform (Linux-only)"
+		report.CapDrop = LayerState{State: "unsupported", Message: msg}
+		report.Seccomp = LayerState{State: "unsupported", Message: msg}
+	}
+	if otherLandlockRequested.Load() {
+		report.Landlock = LayerState{State: "unsupported",
+			Message: "landlock requested but unavailable on this platform (Linux-only)"}
+	}
+	if otherEbpfRequested.Load() {
+		report.Ebpf = LayerState{State: "unsupported",
+			Message: "eBPF observation requested but unavailable on this platform (Linux-only)"}
+	}
+	return report
 }

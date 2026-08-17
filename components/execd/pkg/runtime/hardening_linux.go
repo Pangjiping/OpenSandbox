@@ -49,6 +49,8 @@ import (
 const (
 	launcherRuntimePath = "/opt/opensandbox/opensandbox-launcher"
 
+	layerStateDisabled = "disabled"
+
 	policyMagic   = 0x4f534258 // "OSBX"
 	policyVersion = 1
 	flagUIDDrop   = 0x1
@@ -330,7 +332,7 @@ func InitHardening(cfg isolation.Config) error {
 		dst.Store(&s)
 	}
 	disabled := func(msg string) LayerState {
-		return LayerState{State: "disabled", Message: msg}
+		return LayerState{State: layerStateDisabled, Message: msg}
 	}
 	degraded := func(msg string) LayerState {
 		return LayerState{State: "degraded", Message: msg}
@@ -642,14 +644,14 @@ func ReportHardening() HardeningReport {
 	report := HardeningReport{
 		InitMode:     mode,
 		SignalShield: shield,
-		CapDrop:      LayerState{State: "disabled", Message: "hardening not enabled"},
-		Seccomp:      LayerState{State: "disabled", Message: "hardening not enabled"},
+		CapDrop:      LayerState{State: layerStateDisabled, Message: "hardening not enabled"},
+		Seccomp:      LayerState{State: layerStateDisabled, Message: "hardening not enabled"},
 		Landlock: LayerState{
-			State:   "disabled",
+			State:   layerStateDisabled,
 			Message: "landlock confinement is not enabled",
 		},
 		Ebpf: LayerState{
-			State:   "disabled",
+			State:   layerStateDisabled,
 			Message: "eBPF observation is not enabled",
 		},
 	}
@@ -679,13 +681,13 @@ func ReportHardening() HardeningReport {
 			"the image entrypoint and its /code kernels are not wrapped; only " +
 			"execd-spawned commands/sessions are reduced. Enable " +
 			"runtime.execd_run_as_init for full coverage"
-		if report.CapDrop.State != "disabled" {
+		if report.CapDrop.State != layerStateDisabled {
 			report.CapDrop = LayerState{State: "degraded", Message: msg}
 		}
-		if report.Seccomp.State != "disabled" {
+		if report.Seccomp.State != layerStateDisabled {
 			report.Seccomp = LayerState{State: "degraded", Message: msg}
 		}
-		if report.Landlock.State != "disabled" {
+		if report.Landlock.State != layerStateDisabled {
 			report.Landlock = LayerState{State: "degraded", Message: msg}
 		}
 	}

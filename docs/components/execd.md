@@ -323,8 +323,13 @@ written as JSONL (one object per line) with a stable common envelope
 gVisor/Kata the host kernel is not attachable, and the layer reports
 `unsupported`. Missing prerequisites never block startup.
 
-The default image does not contain eBPF code; `make build-ebpf` or the
-Dockerfile's `ebpf` target produce the observation variant.
+The default image ships both binaries: `execd` (the static default variant,
+without eBPF code) and `execd-ebpf` (the observation variant with CGO +
+cilium/ebpf, built in the Dockerfile's `ebpf-builder` stage and copied
+alongside `execd`). `make build-ebpf` produces the standalone
+`bin/execd-ebpf` variant. Server-side selection of the observation binary
+based on `[ebpf] enabled` is not wired up yet, so run the `execd-ebpf`
+binary explicitly when observation is required.
 
 ## Observability
 
