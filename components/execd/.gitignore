@@ -1,5 +1,0 @@
-# Kernel BTF dump for CO-RE compilation (bpf2go build-time only, never
-# committed — see pkg/ebpf/prog/audit.bpf.c). Regenerate with:
-#   bpftool btf dump file /sys/kernel/btf/vmlinux format c > pkg/ebpf/prog/vmlinux.h
-pkg/ebpf/prog/vmlinux.h
-pkg/ebpf/prog/vmlinux_*.h
