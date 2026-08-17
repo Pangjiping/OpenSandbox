@@ -18,7 +18,11 @@
 // variant only.
 
 // vmlinux.h provides every kernel type used below (including __u32/__u64),
-// so it must be included before the libbpf helper headers.
+// so it must be included before the libbpf helper headers. It is a
+// build-time-only artifact — a kernel BTF dump for CO-RE — regenerated with
+// `bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h` on a
+// target kernel before running bpf2go, and is NOT committed (the generated
+// bytecode embedded in the audit_bpf*.go bindings is what ships).
 #include "vmlinux.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
