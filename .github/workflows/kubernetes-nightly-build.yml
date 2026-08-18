@@ -175,6 +175,8 @@ jobs:
           name: execd-init-e2e-logs
           path: |
             /tmp/opensandbox-server-port-forward.log
+            /tmp/opensandbox-e2e-pods.yaml
+            /tmp/opensandbox-e2e-batchsandboxes.yaml
           if-no-files-found: ignore
           retention-days: 5
 

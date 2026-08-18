@@ -65,6 +65,20 @@ kubectl port-forward -n "${SERVER_NAMESPACE}" svc/opensandbox-server "${LIFECYCL
 PORT_FORWARD_PID=$!
 trap 'kill "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true' EXIT
 
+# Capture the sandbox pod specs and BatchSandbox CRs while the tests run: the
+# hardening leg has twice observed PVC mount paths showing up as noexec tmpfs
+# inside the container, so the pod-spec dump is needed to see what the
+# controller actually created.
+(
+  for _ in $(seq 1 600); do
+    kubectl get pods -n "${E2E_NAMESPACE}" -o yaml > /tmp/opensandbox-e2e-pods.yaml 2>/dev/null || true
+    kubectl get batchsandboxes -n "${E2E_NAMESPACE}" -o yaml > /tmp/opensandbox-e2e-batchsandboxes.yaml 2>/dev/null || true
+    sleep 2
+  done
+) &
+SPEC_WATCHER_PID=$!
+trap 'kill "${SPEC_WATCHER_PID}" >/dev/null 2>&1 || true; kill "${PORT_FORWARD_PID}" >/dev/null 2>&1 || true' EXIT
+
 k8s_e2e_wait_http_ok "http://127.0.0.1:${LIFECYCLE_LOCAL_PORT}/health"
 
 export OPENSANDBOX_TEST_DOMAIN="localhost:${LIFECYCLE_LOCAL_PORT}"

@@ -335,23 +335,22 @@ class TestHardeningE2E:
         workspace = K8S_WORKSPACE_EXEC if is_kubernetes_runtime() else "/workspace"
         script = f"{workspace}/hardening-e2e.sh"
         if is_kubernetes_runtime():
-            # k8s regression probe: confirm the PVC mount is really present
-            # and executable (the earlier /workspace attempt showed a noexec
-            # tmpfs there). /proc must be read with the shell's own loop: the
-            # Landlock /proc/self rule pins the launcher's pid, so forked
-            # helpers get EACCES on their own procfs (documented OSEP-0018
-            # limitation).
+            # k8s regression probe: /workspace AND /mnt/workspace-exec have
+            # both shown up as noexec tmpfs instead of the requested PVC
+            # mount, so dump the FULL mount table (with the shell's own loop:
+            # the Landlock /proc/self rule pins the launcher's pid, so forked
+            # helpers get EACCES on their own procfs) plus file mode, to see
+            # where the PVC actually landed.
             diag = _run_command(
                 sandbox,
                 f"id; "
                 f"printf '#!/bin/sh\\necho workspace-exec-ok\\n' > {script}"
                 f" && chmod +x {script}; "
-                "while IFS= read -r line; do case \"$line\" in "
-                "*workspace-exec*|*host-path*) echo \"$line\" ;; esac; "
+                "while IFS= read -r line; do echo \"$line\"; "
                 "done < /proc/self/mounts; "
                 f"stat -c '%A %a %U:%G %n' {script}",
             )
-            logger.info("workspace exec diagnostics:\n%s", diag)
+            logger.info("workspace exec diagnostics (full mounts):\n%s", diag)
         _run_command(
             sandbox,
             f"printf '#!/bin/sh\\necho workspace-exec-ok\\n' > {script}"
