@@ -139,6 +139,15 @@ func buildLandlockRules(cfg isolation.Config) []landlockRule {
 	for _, p := range append([]string{"/tmp", "/run"}, cfg.AllowedWritable...) {
 		rules = append(rules, bestEffort(llRwAccess, p))
 	}
+	// The workspace family (allowed_writable) must additionally be
+	// executable: workloads compile/run scripts there, and the e2e contract
+	// asserts it. Landlock anchors a rule on the mount the path resolves to,
+	// so granting llExecute here covers the workspace even when the
+	// mount-expansion rules below are incomplete (e.g. a mount not present
+	// in /proc/self/mounts at policy-build time).
+	for _, p := range cfg.AllowedWritable {
+		rules = append(rules, bestEffort(llRwAccess|llExecute, p))
+	}
 	if cfg.Landlock != nil {
 		for _, p := range cfg.Landlock.ExtraWritable {
 			rules = append(rules, required(llRwAccess, p))

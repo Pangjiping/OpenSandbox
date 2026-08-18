@@ -259,6 +259,13 @@ class TestHardeningE2E:
         assert report.landlock is not None
         assert report.landlock.state in ("active", "unsupported"), report.landlock
         assert report.ebpf is not None and report.ebpf.state == "disabled", report.ebpf
+        logger.info(
+            "hardening report: init_mode=%s cap_drop=%s seccomp=%s landlock=%s",
+            report.init_mode,
+            report.cap_drop,
+            report.seccomp,
+            report.landlock,
+        )
 
     def test_command_path_is_reduced(self, sandbox) -> None:
         # /command children go through the same launcher prelude as the
@@ -310,6 +317,19 @@ class TestHardeningE2E:
         # it exercises the /workspace read/write rule.
         if _landlock_state(sandbox) != "active":
             pytest.skip("landlock not active on this kernel")
+        if is_kubernetes_runtime():
+            # k8s regression probe (OSEP-0018 R-i k8s leg): when the exec
+            # below fails with EACCES, this diagnostics block distinguishes
+            # "mount is noexec" / "file mode wrong" / "workspace mount missing
+            # from /proc/self/mounts at policy-build time" from a Landlock
+            # execute-grant problem.
+            diag = _run_command(
+                sandbox,
+                "id; stat -c '%A %a %U:%G %n' /workspace/hardening-e2e.sh; "
+                "grep -E 'workspace|host-path' /proc/self/mounts; "
+                "mount | grep -E 'workspace'",
+            )
+            logger.info("workspace exec diagnostics:\n%s", diag)
         _run_command(
             sandbox,
             "printf '#!/bin/sh\\necho workspace-exec-ok\\n' > /workspace/hardening-e2e.sh"

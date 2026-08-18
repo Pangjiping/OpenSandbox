@@ -347,7 +347,10 @@ func TestLandlockActiveOrUnsupported(t *testing.T) {
 		assertLandlockRule(t, rules, "/usr", llReadFile|llReadDir|llExecute)
 		assertLandlockRule(t, rules, "/proc/self", llReadFile|llReadDir|llExecute)
 		assertLandlockRule(t, rules, "/tmp", llRwAccess)
-		assertLandlockRule(t, rules, "/workspace", llRwAccess)
+		// allowed_writable paths carry execute on the default rule: the
+		// mount-expansion rule is the backup, not the only source of the
+		// workspace exec grant.
+		assertLandlockRule(t, rules, "/workspace", llRwAccess|llExecute)
 		assertLandlockRule(t, rules, "/cache", llRwAccess)
 		assertLandlockRule(t, rules, "/opt/data", llReadFile|llReadDir|llExecute)
 		for _, rule := range rules {
