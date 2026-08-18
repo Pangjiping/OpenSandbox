@@ -61,7 +61,6 @@ and the credential env strip, and the hardening report stays intact around
 session create/run/delete.
 """
 
-import json
 import logging
 import os
 import time
@@ -70,6 +69,7 @@ import pytest
 from opensandbox import SandboxSync
 from opensandbox.models.isolated import (
     CreateIsolatedSessionRequest,
+    HardeningStatus,
     IsolatedWorkspaceSpec,
 )
 from opensandbox.models.sandboxes import PVC, Volume
@@ -79,7 +79,6 @@ from tests.base_e2e_test import (
     is_kubernetes_runtime,
 )
 from tests.test_execd_init_e2e import (
-    EXECD_CAPABILITIES_URL,
     _create_sandbox,
     _destroy,
     _run_command,
@@ -131,23 +130,27 @@ def _hardened_sandbox_options() -> dict:
         ],
     }
 
-_HARDENING_REPORT: dict | None = None
+_HARDENING_REPORT: HardeningStatus | None = None
 
 
-def _hardening_report(sandbox: SandboxSync) -> dict:
-    """Probe execd's capabilities endpoint once (per process) and cache."""
+def _hardening_report(sandbox: SandboxSync) -> HardeningStatus:
+    """Probe execd's capabilities endpoint via the SDK model (once per
+    process) and cache. Consuming ``IsolatedCapabilities.hardening`` also
+    pins the spec -> SDK -> implementation alignment of the hardening object
+    (OSEP-0018 R-r)."""
     global _HARDENING_REPORT
     if _HARDENING_REPORT is None:
-        probe = (
-            "python3 -c \"import json,urllib.request;"
-            f"print(json.dumps(json.load(urllib.request.urlopen('{EXECD_CAPABILITIES_URL}'))['hardening']))\""
-        )
-        _HARDENING_REPORT = json.loads(_run_command(sandbox, probe))
+        caps = sandbox.isolation.capabilities()
+        if caps.hardening is None:
+            pytest.fail("capabilities endpoint returned no hardening object")
+        _HARDENING_REPORT = caps.hardening
     return _HARDENING_REPORT
 
 
 def _landlock_state(sandbox: SandboxSync) -> str:
-    return _hardening_report(sandbox)["landlock"]["state"]
+    report = _hardening_report(sandbox)
+    assert report.landlock is not None
+    return report.landlock.state
 
 
 def _status_fields(sandbox: SandboxSync, fields: list[str]) -> dict:
@@ -245,14 +248,17 @@ class TestHardeningE2E:
 
     def test_capabilities_endpoint_reports_hardening(self, sandbox) -> None:
         report = _hardening_report(sandbox)
-        assert report["init_mode"] == "pid1", f"init_mode = {report['init_mode']}"
-        assert report["signal_shield"] is True
-        assert report["cap_drop"]["state"] == "active", report["cap_drop"]
-        assert report["seccomp"]["state"] == "active", report["seccomp"]
-        assert report["landlock"]["state"] in ("active", "unsupported"), (
-            report["landlock"]
+        assert report.init_mode == "pid1", f"init_mode = {report.init_mode}"
+        assert report.signal_shield is True
+        assert report.cap_drop is not None and report.cap_drop.state == "active", (
+            report.cap_drop
         )
-        assert report["ebpf"]["state"] == "disabled", report["ebpf"]
+        assert report.seccomp is not None and report.seccomp.state == "active", (
+            report.seccomp
+        )
+        assert report.landlock is not None
+        assert report.landlock.state in ("active", "unsupported"), report.landlock
+        assert report.ebpf is not None and report.ebpf.state == "disabled", report.ebpf
 
     def test_command_path_is_reduced(self, sandbox) -> None:
         # /command children go through the same launcher prelude as the
@@ -331,15 +337,17 @@ class TestHardeningDegradationE2E:
 
     def test_cap_drop_reports_degraded_with_reason(self, sandbox) -> None:
         report = _hardening_report(sandbox)
-        assert report["init_mode"] == "pid1", f"init_mode = {report['init_mode']}"
-        cap_drop = report["cap_drop"]
-        assert cap_drop["state"] == "degraded", cap_drop
-        assert "SETPCAP" in cap_drop["message"], cap_drop
+        assert report.init_mode == "pid1", f"init_mode = {report.init_mode}"
+        assert report.cap_drop is not None
+        cap_drop = report.cap_drop
+        assert cap_drop.state == "degraded", cap_drop
+        assert cap_drop.message is not None and "SETPCAP" in cap_drop.message, cap_drop
         # The remaining layers must not cascade: fail-open is per layer.
-        assert report["seccomp"]["state"] == "active", report["seccomp"]
-        assert report["landlock"]["state"] in ("active", "unsupported"), (
-            report["landlock"]
+        assert report.seccomp is not None and report.seccomp.state == "active", (
+            report.seccomp
         )
+        assert report.landlock is not None
+        assert report.landlock.state in ("active", "unsupported"), report.landlock
 
     def test_floor_still_applies_without_setpcap(self, sandbox) -> None:
         # Bounding-set trim is skipped without CAP_SETPCAP, but capset (drop
@@ -394,9 +402,13 @@ class TestIsolatedSessionHardeningE2E:
         # The floor must not be disturbed by the isolation extension or by
         # probing bwrap inside the hardened sandbox.
         report = _hardening_report(sandbox)
-        assert report["init_mode"] == "pid1", f"init_mode = {report['init_mode']}"
-        assert report["cap_drop"]["state"] == "active", report["cap_drop"]
-        assert report["seccomp"]["state"] == "active", report["seccomp"]
+        assert report.init_mode == "pid1", f"init_mode = {report.init_mode}"
+        assert report.cap_drop is not None and report.cap_drop.state == "active", (
+            report.cap_drop
+        )
+        assert report.seccomp is not None and report.seccomp.state == "active", (
+            report.seccomp
+        )
 
     def test_isolated_session_workload_has_floor(self, sandbox) -> None:
         # Inside the bwrap namespace the workload carries bwrap's own floor:
@@ -448,7 +460,7 @@ class TestIsolatedSessionHardeningE2E:
         session.delete()
 
         report = _hardening_report(sandbox)
-        assert report["init_mode"] == "pid1", f"init_mode = {report['init_mode']}"
+        assert report.init_mode == "pid1", f"init_mode = {report.init_mode}"
         status = _status_fields(sandbox, ["CapEff", "Seccomp", "NoNewPrivs"])
         assert status["CapEff"] == "0000000000000000", status
         assert status["Seccomp"] == "2", status

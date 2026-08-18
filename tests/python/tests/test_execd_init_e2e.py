@@ -147,12 +147,16 @@ class TestExecdInitE2E:
 
     @pytest.fixture(scope="module")
     def signal_sandbox(self):
-        """Sandbox whose entrypoint traps HUP — used to observe forwarding."""
+        """Sandbox whose entrypoint traps HUP/USR1/USR2/WINCH — used to
+        observe forwarding of the whole application-signal set."""
         sbx = _create_sandbox(
             entrypoint=[
                 "sh",
                 "-c",
                 "trap 'echo got-hup >> /tmp/execd-hup.log' HUP; "
+                "trap 'echo got-usr1 >> /tmp/execd-usr1.log' USR1; "
+                "trap 'echo got-usr2 >> /tmp/execd-usr2.log' USR2; "
+                "trap 'echo got-winch >> /tmp/execd-winch.log' WINCH; "
                 "while :; do sleep 1; done",
             ],
             tag="execd-init-e2e-signal",
@@ -167,16 +171,19 @@ class TestExecdInitE2E:
         yield sbx
         _destroy(sbx)
 
-    def test_application_signal_forwarded_to_entrypoint(self, signal_sandbox) -> None:
-        # An in-namespace HUP to PID 1 is delivered (execd installs a handler,
-        # so the kernel signal shield does not apply) and forwarded to the
-        # entrypoint process group. The /command shell runs in its own process
-        # group and must not receive it.
+    def test_application_signals_forwarded_to_entrypoint(self, signal_sandbox) -> None:
+        # In-namespace HUP/USR1/USR2/WINCH to PID 1 are delivered (execd
+        # installs handlers, so the kernel signal shield does not apply) and
+        # forwarded to the entrypoint process group. The /command shell runs
+        # in its own process group and must not receive them.
         out = _run_command(
             signal_sandbox,
-            "sleep 1; kill -HUP 1; sleep 2; cat /tmp/execd-hup.log",
+            "sleep 1; kill -HUP 1; kill -USR1 1; kill -USR2 1; kill -WINCH 1; "
+            "sleep 2; cat /tmp/execd-hup.log /tmp/execd-usr1.log "
+            "/tmp/execd-usr2.log /tmp/execd-winch.log",
         )
-        assert "got-hup" in out, out
+        for marker in ("got-hup", "got-usr1", "got-usr2", "got-winch"):
+            assert marker in out, f"forwarded signal marker {marker} missing: {out}"
 
     def test_entrypoint_exit_code_propagates(self) -> None:
         # When the user entrypoint exits, execd exits with the same status so
