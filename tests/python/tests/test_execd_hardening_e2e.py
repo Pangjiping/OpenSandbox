@@ -322,12 +322,18 @@ class TestHardeningE2E:
             # below fails with EACCES, this diagnostics block distinguishes
             # "mount is noexec" / "file mode wrong" / "workspace mount missing
             # from /proc/self/mounts at policy-build time" from a Landlock
-            # execute-grant problem.
+            # execute-grant problem. /proc must be read with the shell's own
+            # loop: the Landlock /proc/self rule pins the launcher's pid, so
+            # forked helpers get EACCES on their own procfs (documented
+            # OSEP-0018 limitation).
             diag = _run_command(
                 sandbox,
-                "id; stat -c '%A %a %U:%G %n' /workspace/hardening-e2e.sh; "
-                "grep -E 'workspace|host-path' /proc/self/mounts; "
-                "mount | grep -E 'workspace'",
+                "id; "
+                "printf '#!/bin/sh\\necho workspace-exec-ok\\n' "
+                "> /workspace/hardening-e2e.sh && chmod +x /workspace/hardening-e2e.sh; "
+                "while IFS= read -r line; do case \"$line\" in "
+                "*workspace*) echo \"$line\" ;; esac; done < /proc/self/mounts; "
+                "stat -c '%A %a %U:%G %n' /workspace/hardening-e2e.sh",
             )
             logger.info("workspace exec diagnostics:\n%s", diag)
         _run_command(
