@@ -185,7 +185,7 @@ jobs:
 
   publish-nightly-latest:
     name: Publish latest (${{ matrix.component }} nightly)
-    needs: k8s-mini-e2e
+    needs: [k8s-mini-e2e, execd-init-e2e]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     strategy:
@@ -250,7 +250,7 @@ jobs:
   required:
     name: Kubernetes Mini E2E CI
     if: ${{ always() && github.event_name == 'pull_request' }}
-    needs: [changes, k8s-mini-e2e]
+    needs: [changes, k8s-mini-e2e, execd-init-e2e]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs
@@ -258,13 +258,14 @@ jobs:
           RELEVANT: ${{ needs.changes.outputs.relevant }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           E2E_RESULT: ${{ needs.k8s-mini-e2e.result }}
+          EXECD_INIT_RESULT: ${{ needs.execd-init-e2e.result }}
         run: |
           if [[ "$CHANGES_RESULT" != "success" ]]; then
             echo "Change detection failed: $CHANGES_RESULT"
             exit 1
           fi
           if [[ "$RELEVANT" == "true" ]]; then
-            [[ "$E2E_RESULT" == "success" ]]
+            [[ "$E2E_RESULT" == "success" && "$EXECD_INIT_RESULT" == "success" ]]
           else
-            [[ "$RELEVANT" == "false" && "$E2E_RESULT" == "skipped" ]]
+            [[ "$RELEVANT" == "false" && "$E2E_RESULT" == "skipped" && "$EXECD_INIT_RESULT" == "skipped" ]]
           fi

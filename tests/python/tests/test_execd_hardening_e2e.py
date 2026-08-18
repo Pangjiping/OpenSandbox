@@ -133,13 +133,14 @@ def _hardened_sandbox_options() -> dict:
 _HARDENING_REPORT: HardeningStatus | None = None
 
 
-def _hardening_report(sandbox: SandboxSync) -> HardeningStatus:
-    """Probe execd's capabilities endpoint via the SDK model (once per
-    process) and cache. Consuming ``IsolatedCapabilities.hardening`` also
-    pins the spec -> SDK -> implementation alignment of the hardening object
-    (OSEP-0018 R-r)."""
+def _hardening_report(sandbox: SandboxSync, refresh: bool = False) -> HardeningStatus:
+    """Probe execd's capabilities endpoint via the SDK model and cache.
+    ``refresh=True`` forces a live probe (used where the assertion must
+    observe the endpoint AFTER a state change, e.g. session teardown).
+    Consuming ``IsolatedCapabilities.hardening`` also pins the spec -> SDK
+    -> implementation alignment of the hardening object (OSEP-0018 R-r)."""
     global _HARDENING_REPORT
-    if _HARDENING_REPORT is None:
+    if _HARDENING_REPORT is None or refresh:
         caps = sandbox.isolation.capabilities()
         if caps.hardening is None:
             pytest.fail("capabilities endpoint returned no hardening object")
@@ -485,7 +486,9 @@ class TestIsolatedSessionHardeningE2E:
         session.run("sleep 30 &")
         session.delete()
 
-        report = _hardening_report(sandbox)
+        # Fresh probe: the process-global cache was populated by earlier
+        # tests, so a cached report would make this assertion vacuous.
+        report = _hardening_report(sandbox, refresh=True)
         assert report.init_mode == "pid1", f"init_mode = {report.init_mode}"
         status = _status_fields(sandbox, ["CapEff", "Seccomp", "NoNewPrivs"])
         assert status["CapEff"] == "0000000000000000", status

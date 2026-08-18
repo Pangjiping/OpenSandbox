@@ -136,7 +136,7 @@ func buildLandlockRules(cfg isolation.Config) []landlockRule {
 	// The controlling terminal lives beneath /dev/pts.
 	rules = append(rules, bestEffort(deviceRW, "/dev/pts"))
 
-	for _, p := range append([]string{"/tmp", "/run"}, cfg.AllowedWritable...) {
+	for _, p := range []string{"/tmp", "/run"} {
 		rules = append(rules, bestEffort(llRwAccess, p))
 	}
 	// The workspace family (allowed_writable) must additionally be
@@ -144,7 +144,8 @@ func buildLandlockRules(cfg isolation.Config) []landlockRule {
 	// asserts it. Landlock anchors a rule on the mount the path resolves to,
 	// so granting llExecute here covers the workspace even when the
 	// mount-expansion rules below are incomplete (e.g. a mount not present
-	// in /proc/self/mounts at policy-build time).
+	// in /proc/self/mounts at policy-build time). One rule per path: a
+	// duplicate entry would shadow the combined access in rule matching.
 	for _, p := range cfg.AllowedWritable {
 		rules = append(rules, bestEffort(llRwAccess|llExecute, p))
 	}

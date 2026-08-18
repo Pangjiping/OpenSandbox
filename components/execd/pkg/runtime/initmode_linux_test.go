@@ -20,6 +20,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"syscall"
@@ -191,11 +192,15 @@ func TestReaperSweepBackstop(t *testing.T) {
 	r.start()
 	// Replace the subscribed channel before the run loop reads it: the kernel
 	// keeps signalling the subscribed channel (unread), so the loop below can
-	// only ever drain via the sweep ticker.
+	// only ever drain via the sweep ticker. Keep the original channel so
+	// cleanup can stop the subscription — signal.Stop on the replacement
+	// would leave the process-global SIGCHLD handler registered.
+	subscribed := r.sigchld
 	r.sigchld = make(chan os.Signal, 1)
 	initReaper = r
 	t.Cleanup(func() {
 		initReaper.stop()
+		signal.Stop(subscribed)
 		initReaper = nil
 	})
 	go r.run()
