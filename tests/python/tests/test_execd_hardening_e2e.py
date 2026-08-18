@@ -29,7 +29,9 @@ server config::
 
 Kubernetes (scripts/python-k8s-execd-init-e2e.sh) delivers the TOML in a
 ConfigMap mounted by the e2e batchsandbox template and points execd at it per
-request (``EXECD_ISOLATION_CONFIG`` env + the workspace PVC at /workspace).
+request (``EXECD_ISOLATION_CONFIG`` env + the workspace PVC mounted at
+/mnt/workspace-exec; /workspace itself is a runtime-provided noexec tmpfs on
+k8s).
 
 Verifies through the SDK, with the whole server -> sandbox -> execd path
 running with ``[hardening]``/``[landlock]`` enabled:
@@ -106,6 +108,14 @@ COMMAND_ENV_STRIPPED = [
 # ConfigMap, mounted by the e2e batchsandbox template at this path.
 K8S_EXECD_ISOLATION_CONFIG = "/etc/opensandbox/execd-isolation/isolation.hardened.toml"
 
+# Kubernetes: the container runtime mounts a noexec tmpfs at the image
+# WORKDIR (/workspace — the code-interpreter base declares VOLUME /workspace,
+# so the built image has no /workspace dir and the CRI fills it with tmpfs),
+# which would make the workspace exec assertion impossible. Mount the PVC at
+# /mnt/workspace-exec instead: /mnt is in the allowed_writable Landlock set,
+# so the mount-expansion rule grants write+exec there.
+K8S_WORKSPACE_EXEC = "/mnt/workspace-exec"
+
 
 def _hardened_sandbox_options() -> dict:
     """Sandbox create kwargs that point execd at the hardened TOML.
@@ -114,8 +124,9 @@ def _hardened_sandbox_options() -> dict:
     (config-level bind mount of isolation.hardened.toml at
     /etc/opensandbox/isolation.toml) — no request args needed. Kubernetes: the
     TOML arrives via the template-mounted ConfigMap, so the request env points
-    execd at it; the workspace PVC is mounted at /workspace so the Landlock
-    bind-mount expansion is exercised like the docker bind mount.
+    execd at it; the workspace PVC is mounted at /mnt/workspace-exec so the
+    Landlock bind-mount expansion is exercised like the docker bind mount
+    (/workspace itself is a runtime-provided noexec tmpfs on k8s).
     """
     if not is_kubernetes_runtime():
         return {}
@@ -125,7 +136,7 @@ def _hardened_sandbox_options() -> dict:
             Volume(
                 name="hardening-workspace",
                 pvc=PVC(claimName=get_test_pvc_name()),
-                mountPath="/workspace",
+                mountPath=K8S_WORKSPACE_EXEC,
             ),
         ],
     }
@@ -312,35 +323,39 @@ class TestHardeningE2E:
         assert result.error is not None, "writing /etc/passwd must be denied by landlock"
 
     def test_workspace_bind_mount_writable_and_executable(self, sandbox) -> None:
-        # The workspace is a bind mount (separate mount from /): executing a
-        # script from it exercises the launcher's mount expansion (the /
-        # execute grant must be merged onto the mount point), and writing to
-        # it exercises the /workspace read/write rule.
+        # The workspace is a separate mount from /: executing a script from it
+        # exercises the launcher's mount expansion (the grants beneath the
+        # mount point must be merged onto it), and writing to it exercises
+        # the workspace read/write rule. On k8s the exec workspace is
+        # /mnt/workspace-exec (the PVC) — /workspace is a runtime-provided
+        # noexec tmpfs there (image WORKDIR), so exec would be impossible
+        # regardless of Landlock.
         if _landlock_state(sandbox) != "active":
             pytest.skip("landlock not active on this kernel")
+        workspace = K8S_WORKSPACE_EXEC if is_kubernetes_runtime() else "/workspace"
+        script = f"{workspace}/hardening-e2e.sh"
         if is_kubernetes_runtime():
-            # k8s regression probe (OSEP-0018 R-i k8s leg): when the exec
-            # below fails with EACCES, this diagnostics block distinguishes
-            # "mount is noexec" / "file mode wrong" / "workspace mount missing
-            # from /proc/self/mounts at policy-build time" from a Landlock
-            # execute-grant problem. /proc must be read with the shell's own
-            # loop: the Landlock /proc/self rule pins the launcher's pid, so
-            # forked helpers get EACCES on their own procfs (documented
-            # OSEP-0018 limitation).
+            # k8s regression probe: confirm the PVC mount is really present
+            # and executable (the earlier /workspace attempt showed a noexec
+            # tmpfs there). /proc must be read with the shell's own loop: the
+            # Landlock /proc/self rule pins the launcher's pid, so forked
+            # helpers get EACCES on their own procfs (documented OSEP-0018
+            # limitation).
             diag = _run_command(
                 sandbox,
-                "id; "
-                "printf '#!/bin/sh\\necho workspace-exec-ok\\n' "
-                "> /workspace/hardening-e2e.sh && chmod +x /workspace/hardening-e2e.sh; "
+                f"id; "
+                f"printf '#!/bin/sh\\necho workspace-exec-ok\\n' > {script}"
+                f" && chmod +x {script}; "
                 "while IFS= read -r line; do case \"$line\" in "
-                "*workspace*) echo \"$line\" ;; esac; done < /proc/self/mounts; "
-                "stat -c '%A %a %U:%G %n' /workspace/hardening-e2e.sh",
+                "*workspace-exec*|*host-path*) echo \"$line\" ;; esac; "
+                "done < /proc/self/mounts; "
+                f"stat -c '%A %a %U:%G %n' {script}",
             )
             logger.info("workspace exec diagnostics:\n%s", diag)
         _run_command(
             sandbox,
-            "printf '#!/bin/sh\\necho workspace-exec-ok\\n' > /workspace/hardening-e2e.sh"
-            " && chmod +x /workspace/hardening-e2e.sh && /workspace/hardening-e2e.sh",
+            f"printf '#!/bin/sh\\necho workspace-exec-ok\\n' > {script}"
+            f" && chmod +x {script} && {script}",
         )
 
 
