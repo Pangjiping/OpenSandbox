@@ -100,6 +100,13 @@ image = "opensandbox/egress:local"
 mode = "dns+nft"
 [docker]
 network_mode = "bridge"
+# The container baseline must not mask the launcher's own floor: with
+# no_new_privileges=true (the server default) or Docker's default seccomp
+# profile, a launcher regression would still show NoNewPrivs=1/Seccomp=2
+# in the workload. Unset both so the observed values can only come from
+# the opensandbox-launcher.
+no_new_privileges = false
+seccomp_profile = "unconfined"
 sandbox_env = { EXECD_ISOLATION_CONFIG = "/etc/opensandbox/isolation.toml" }
 sandbox_binds = [
   "/tmp/opensandbox-e2e/workspace:/workspace",
