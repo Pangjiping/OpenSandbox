@@ -582,3 +582,10 @@ func InitModeReport() (mode string, signalShield bool) {
 	}
 	return "subreaper", false
 }
+
+// initModeActive reports whether the init-mode signal/runtime ownership is in
+// effect (execd started with --init). Shared launch paths consult it to avoid
+// competing with forwardInitSignals.
+func initModeActive() bool {
+	return initReaper != nil
+}
