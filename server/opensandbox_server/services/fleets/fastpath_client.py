@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# protobuf-generated modules expose dynamic attributes.
+
 # Copyright 2026 Alibaba Group Holding Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,8 +30,6 @@ status code; the fleets adapter must treat only `codes.NotFound` as 404.
 
 from __future__ import annotations
 
-# pyright: reportAttributeAccessIssue=false
-# protobuf-generated modules expose dynamic attributes.
 from typing import Optional
 
 import grpc
@@ -112,7 +113,7 @@ class FastPathClient:
     ) -> fastpath_pb2.SandboxInfo:
         """Create a sandbox through FastPath v2 (CRD-first, idempotent by request_id)."""
         return await self._call(
-            lambda: self._require_stub().CreateSandbox(request)
+            lambda: self._require_stub().CreateSandbox(request, timeout=self._timeout_seconds)
         )
 
     async def get_sandbox(
@@ -120,14 +121,14 @@ class FastPathClient:
     ) -> fastpath_pb2.SandboxInfo:
         """Get a sandbox; raises FastPathNotFound on gRPC NotFound."""
         request = fastpath_pb2.GetRequest(namespace=namespace, sandbox_name=sandbox_name)
-        return await self._call(lambda: self._require_stub().GetSandbox(request))
+        return await self._call(lambda: self._require_stub().GetSandbox(request, timeout=self._timeout_seconds))
 
     async def delete_sandbox(self, namespace: str, sandbox_name: str) -> None:
         """Submit an async (finalizer-driven) sandbox deletion."""
         request = fastpath_pb2.DeleteRequest(
             namespace=namespace, sandbox_name=sandbox_name
         )
-        await self._call(lambda: self._require_stub().DeleteSandbox(request))
+        await self._call(lambda: self._require_stub().DeleteSandbox(request, timeout=self._timeout_seconds))
 
     async def list_sandboxes(
         self,
@@ -144,7 +145,7 @@ class FastPathClient:
             request.page_size = page_size
         if page_token:
             request.page_token = page_token
-        return await self._call(lambda: self._require_stub().ListSandboxes(request))
+        return await self._call(lambda: self._require_stub().ListSandboxes(request, timeout=self._timeout_seconds))
 
     async def update_expiration(
         self, namespace: str, sandbox_name: str, expires_at_unix_seconds: int
@@ -154,7 +155,7 @@ class FastPathClient:
             namespace=namespace, sandbox_name=sandbox_name
         )
         request.expires_at_unix_seconds = expires_at_unix_seconds
-        response = await self._call(lambda: self._require_stub().UpdateSandbox(request))
+        response = await self._call(lambda: self._require_stub().UpdateSandbox(request, timeout=self._timeout_seconds))
         return response.sandbox
 
     async def update_metadata(
@@ -172,7 +173,7 @@ class FastPathClient:
             request.metadata_upsert.update(upsert)
         if delete_keys:
             request.metadata_delete_keys.extend(delete_keys)
-        response = await self._call(lambda: self._require_stub().UpdateSandbox(request))
+        response = await self._call(lambda: self._require_stub().UpdateSandbox(request, timeout=self._timeout_seconds))
         return response.sandbox
 
     async def get_sandbox_diagnostics(
@@ -183,7 +184,7 @@ class FastPathClient:
             namespace=namespace, sandbox_name=sandbox_name, limit=limit
         )
         return await self._call(
-            lambda: self._require_stub().GetSandboxDiagnostics(request)
+            lambda: self._require_stub().GetSandboxDiagnostics(request, timeout=self._timeout_seconds)
         )
 
     # -- readiness / endpoints --------------------------------------------
@@ -206,7 +207,9 @@ class FastPathClient:
         else:
             request.data_plane = data_plane
         return await self._call(
-            lambda: self._require_stub().WaitSandboxReady(request)
+            lambda: self._require_stub().WaitSandboxReady(
+                request, timeout=self._rpc_timeout(wait_timeout_millis)
+            )
         )
 
     async def resolve_endpoint(
@@ -228,8 +231,13 @@ class FastPathClient:
             wait_until_ready=wait_until_ready,
             wait_timeout_millis=wait_timeout_millis,
         )
+        deadline = (
+            self._rpc_timeout(wait_timeout_millis)
+            if wait_until_ready
+            else self._timeout_seconds
+        )
         return await self._call(
-            lambda: self._require_stub().ResolveEndpoint(request)
+            lambda: self._require_stub().ResolveEndpoint(request, timeout=deadline)
         )
 
     # -- pools -------------------------------------------------------------
@@ -239,14 +247,18 @@ class FastPathClient:
     ) -> fastpath_pb2.PoolInfo:
         """Get a SandboxPool; raises FastPathNotFound when absent."""
         request = fastpath_pb2.GetPoolRequest(namespace=namespace, pool_name=pool_name)
-        return await self._call(lambda: self._require_stub().GetPool(request))
+        return await self._call(lambda: self._require_stub().GetPool(request, timeout=self._timeout_seconds))
 
     async def list_pools(self, namespace: str) -> fastpath_pb2.ListPoolsResponse:
         """List SandboxPools in a namespace."""
         request = fastpath_pb2.ListPoolsRequest(namespace=namespace)
-        return await self._call(lambda: self._require_stub().ListPools(request))
+        return await self._call(lambda: self._require_stub().ListPools(request, timeout=self._timeout_seconds))
 
     # -- internals ---------------------------------------------------------
+
+    def _rpc_timeout(self, server_wait_millis: int) -> float:
+        """gRPC deadline must exceed the server-side readiness wait."""
+        return max(self._timeout_seconds, server_wait_millis / 1000 + 5.0)
 
     def _require_stub(self) -> fastpath_pb2_grpc.FastPathServiceStub:
         if self._stub is None:

@@ -59,6 +59,7 @@ dependencies = [
     "uvicorn[standard]",
     "websockets>=14.0",
     "grpcio>=1.83.0",
+    "protobuf>=7.35.1",
 ]
 
 [project.urls]
@@ -90,6 +91,7 @@ packages = ["opensandbox_server"]
 
 [dependency-groups]
 dev = [
+    "grpcio-tools>=1.83.0",
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",

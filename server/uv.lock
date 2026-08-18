@@ -610,12 +610,12 @@ dependencies = [
     { name = "docker" },
     { name = "fastapi" },
     { name = "grpcio" },
-    { name = "grpcio-tools" },
     { name = "httpx", extra = ["socks"] },
     { name = "kubernetes" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
+    { name = "protobuf" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-multipart" },
@@ -629,6 +629,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "grpcio-tools" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -641,12 +642,12 @@ requires-dist = [
     { name = "docker" },
     { name = "fastapi", specifier = ">=0.137.0" },
     { name = "grpcio", specifier = ">=1.83.0" },
-    { name = "grpcio-tools", specifier = ">=1.83.0" },
     { name = "httpx", extras = ["socks"] },
     { name = "kubernetes" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
+    { name = "protobuf", specifier = ">=7.35.1" },
     { name = "pydantic" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "python-multipart", specifier = ">=0.0.31" },
@@ -660,6 +661,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "grpcio-tools", specifier = ">=1.83.0" },
     { name = "pyright", specifier = ">=1.1.0" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.21.0" },

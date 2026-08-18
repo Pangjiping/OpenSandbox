@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# protobuf-generated modules expose dynamic attributes.
+
 # Copyright 2026 Alibaba Group Holding Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,8 +17,6 @@
 
 """Unit tests for the FastPath v2 gRPC client."""
 
-# pyright: reportAttributeAccessIssue=false
-# protobuf-generated modules expose dynamic attributes.
 import grpc
 import pytest
 import pytest_asyncio
@@ -248,6 +249,52 @@ async def test_pool_calls(client_and_server):
     assert pool.name == "default-pool"
     pools = await client.list_pools("ns-1")
     assert pools.items[0].name == "default-pool"
+
+
+class _TimeoutRecordingStub:
+    """Wrapper stub recording the transport deadline of each call."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.deadlines: list[float | None] = []
+
+    def _record(self, method_name):
+        async def call(request, timeout=None):
+            self.deadlines.append(timeout)
+            return await getattr(self._inner, method_name)(request, None)
+
+        return call
+
+    def __getattr__(self, name):
+        return self._record(name)
+
+
+@pytest.mark.asyncio
+async def test_deadline_accounts_for_readiness_wait(client_and_server):
+    client, service = client_and_server
+    recording = _TimeoutRecordingStub(service)
+    client._stub = recording  # noqa: SLF001
+    ref = namespaced_reference("ns-1", "sbx-1")
+
+    # Non-waiting endpoint lookups stay on the configured deadline even when a
+    # large server-side wait window is supplied.
+    await client.resolve_endpoint(
+        ref, component_target("execd"), wait_until_ready=False, wait_timeout_millis=60000
+    )
+    assert recording.deadlines[-1] == 30.0
+
+    # Wait-enabled calls extend the deadline beyond the server-side wait.
+    await client.resolve_endpoint(
+        ref, component_target("execd"), wait_until_ready=True, wait_timeout_millis=60000
+    )
+    assert recording.deadlines[-1] == 65.0
+
+    await client.wait_sandbox_ready(ref, data_plane=True, wait_timeout_millis=60000)
+    assert recording.deadlines[-1] == 65.0
+
+    # Plain lifecycle calls always use the configured deadline.
+    await client.get_sandbox("ns-1", "sbx-1")
+    assert recording.deadlines[-1] == 30.0
 
 
 @pytest.mark.asyncio
