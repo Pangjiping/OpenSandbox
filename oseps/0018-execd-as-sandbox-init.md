@@ -36,11 +36,12 @@ status: implementing
 
 ## Implementation Status
 
-> Updated 2026-08-12. Status: **implementing** — the phased rollout below is
+> Updated 2026-08-18. Status: **implementing** — the phased rollout below is
 > implemented on branch `feat/execd-init-mode` (Phases 1–5 plus the server
 > switch); remaining items are the trusted stop channel (§3), kernel-5.10
 > empirical validation, cross-language e2e, and the default-on rollout (see
-> the Remaining work table below).
+> the Remaining work table below). R-i (server-path hardening e2e, docker
+> bridge) landed in PR #1554.
 
 | Phase | Scope | Status |
 |---|---|---|
@@ -71,7 +72,7 @@ status: implementing
    descendants get EACCES on their own procfs (documented in
    `docs/components/execd.md`).
 
-**Remaining work** (status 2026-08-18, PR #1474 + #1546):
+**Remaining work** (status 2026-08-18, PR #1474 + #1546 + #1554):
 
 | # | Item | Status / plan |
 |---|---|---|
