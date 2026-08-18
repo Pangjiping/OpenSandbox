@@ -1,9 +1,9 @@
 ---
 title: execd as Sandbox Init
 authors:
-  - "@pjp"
+  - "@Pangjiping"
 creation-date: 2026-07-27
-last-updated: 2026-08-12
+last-updated: 2026-08-18
 status: implementing
 ---
 
@@ -71,7 +71,7 @@ status: implementing
    descendants get EACCES on their own procfs (documented in
    `docs/components/execd.md`).
 
-**Remaining work** (status 2026-08-12, PR #1474):
+**Remaining work** (status 2026-08-18, PR #1474 + #1546):
 
 | # | Item | Status / plan |
 |---|---|---|
@@ -83,6 +83,11 @@ status: implementing
 | R-f | Default-on rollout | `runtime.execd_run_as_init` and `[hardening] enabled` default `false` by design; flip after N releases of validation (owner decision), record in release notes |
 | R-g | `OPENSANDBOX_ID` reserved-env override (Codex round 7) | **Deferred.** Docker env builder appends `OPENSANDBOX_ID` after user env (pre-existing pattern); harden reserved-key filtering first if a duplicate-key spoofing path is demonstrated |
 | R-h | CI flake observation | PauseResume v1.32.2 (only) timed out at 900s on "commit/push fails with invalid registry" (Kubernetes CI); unrelated to this branch's recent commits — re-run to confirm flake |
+| R-i | Server-path hardening e2e (Python) | **Implemented (docker bridge)** — `tests/python/tests/test_execd_hardening_e2e.py` + `scripts/python-execd-hardening-e2e.sh` + CI job `python-execd-hardening-e2e` (PR #1560). The hardened isolation TOML (`components/execd/configs/isolation.hardened.toml`) is injected into every sandbox via a config-level bind mount + `EXECD_ISOLATION_CONFIG` (`[docker] sandbox_env`); the workspace bind additionally exercises the launcher's mount expansion. Covers: reduced caps/seccomp/NNP + env strip on entrypoint and `/command`, Landlock (`/tmp` writable, `/etc/passwd` read-only, workspace bind-mount write+exec; skipped when the kernel reports `unsupported`, per §6 fail-open), capabilities endpoint layer states, and the missing-`CAP_SETPCAP` degradation (phase 2, `cap_drop` degraded + `CapBnd` untrimmed while the rest of the floor stays active). K8s-path hardening e2e still open (needs the TOML injected on the Kubernetes runtime path) |
+| R-j | eBPF JSONL audit e2e | **Open.** No container/e2e test runs the `execd-ebpf` variant with `[ebpf] enabled` and asserts exec/connect/privilege events land in the rotating audit file; only event-decoding unit tests exist — the `commit_creds` privilege hook has never been validated on a real kernel (ties into R-c/R-e) |
+| R-k | Python e2e signal-forwarding breadth | **Open (low).** e2e asserts HUP forwarding only; USR1/USR2/WINCH (rest of the forwarded set) untested at e2e level (SIGTERM graceful shutdown covered by `tests/init_container.sh`) |
+| R-l | K8s init-mode e2e depth | **Open.** The k8s nightly runs the same Python file, which skips exit-code propagation there (BatchSandbox does not surface the container exit code); no Pool + `EXECD_INIT` subreaper-report case (R-b); no K8s Restart recycle (`kill 1`) against an init-mode pod — the `restart_default.go` "contract compatible" comment is unverified e2e |
+| R-m | Default-off assertion + sustained fork-heavy | **Open (low).** No explicit e2e pin that with init/hardening off the capabilities endpoint reports `init_mode: none` and layers `disabled`; the fork-heavy e2e loop is 20×5 short-lived children — a long-running mix of `/command` churn + background sleepers would closer match OSEP §Test-Plan |
 
 Closed this round (2026-08-12): CI green for all execd-init jobs; `/proc/1/environ`
 e2e assertion (`test_workload_cannot_read_execd_environ`); hardening report

@@ -64,7 +64,9 @@ jobs:
                 path.startsWith("components/execd/") ||
                 path.startsWith("components/egress/") ||
                 path.startsWith("sdks/") ||
-                path.startsWith("tests/"),
+                path.startsWith("tests/") ||
+                path === "scripts/python-execd-init-e2e.sh" ||
+                path === "scripts/python-execd-hardening-e2e.sh",
               egress: (path) =>
                 workflowChanged(path, "egress-test.yml") ||
                 path.startsWith("components/egress/") ||
