@@ -108,12 +108,13 @@ COMMAND_ENV_STRIPPED = [
 # ConfigMap, mounted by the e2e batchsandbox template at this path.
 K8S_EXECD_ISOLATION_CONFIG = "/etc/opensandbox/execd-isolation/isolation.hardened.toml"
 
-# Kubernetes: the container runtime mounts a noexec tmpfs at the image
-# WORKDIR (/workspace — the code-interpreter base declares VOLUME /workspace,
-# so the built image has no /workspace dir and the CRI fills it with tmpfs),
-# which would make the workspace exec assertion impossible. Mount the PVC at
-# /mnt/workspace-exec instead: /mnt is in the allowed_writable Landlock set,
-# so the mount-expansion rule grants write+exec there.
+# Kubernetes: the e2e PVC is backed by a hostPath PV on the kind node. The PV
+# used to live under the node's /tmp, which is a noexec tmpfs, so every mount
+# of the PVC was not executable (writes/reads fine, exec EACCES regardless of
+# Landlock). The e2e harness now places the PV on the node rootfs
+# (/var/opensandbox-e2e, scripts/common/kubernetes-e2e.sh); the workspace is
+# mounted at /mnt/workspace-exec, which sits in the allowed_writable Landlock
+# set so the mount-expansion rule grants write+exec.
 K8S_WORKSPACE_EXEC = "/mnt/workspace-exec"
 
 
@@ -327,30 +328,29 @@ class TestHardeningE2E:
         # exercises the launcher's mount expansion (the grants beneath the
         # mount point must be merged onto it), and writing to it exercises
         # the workspace read/write rule. On k8s the exec workspace is
-        # /mnt/workspace-exec (the PVC) — /workspace is a runtime-provided
-        # noexec tmpfs there (image WORKDIR), so exec would be impossible
-        # regardless of Landlock.
+        # /mnt/workspace-exec (the PVC); the e2e PV lives on the node rootfs
+        # since the previous hostPath location (/tmp) was a noexec tmpfs.
         if _landlock_state(sandbox) != "active":
             pytest.skip("landlock not active on this kernel")
         workspace = K8S_WORKSPACE_EXEC if is_kubernetes_runtime() else "/workspace"
         script = f"{workspace}/hardening-e2e.sh"
         if is_kubernetes_runtime():
-            # k8s regression probe: /workspace AND /mnt/workspace-exec have
-            # both shown up as noexec tmpfs instead of the requested PVC
-            # mount, so dump the FULL mount table (with the shell's own loop:
+            # k8s regression probe: confirm the PVC mount is really present
+            # and executable. /proc must be read with the shell's own loop:
             # the Landlock /proc/self rule pins the launcher's pid, so forked
-            # helpers get EACCES on their own procfs) plus file mode, to see
-            # where the PVC actually landed.
+            # helpers get EACCES on their own procfs (documented OSEP-0018
+            # limitation).
             diag = _run_command(
                 sandbox,
                 f"id; "
                 f"printf '#!/bin/sh\\necho workspace-exec-ok\\n' > {script}"
                 f" && chmod +x {script}; "
-                "while IFS= read -r line; do echo \"$line\"; "
+                "while IFS= read -r line; do case \"$line\" in "
+                f"*workspace-exec*) echo \"$line\" ;; esac; "
                 "done < /proc/self/mounts; "
                 f"stat -c '%A %a %U:%G %n' {script}",
             )
-            logger.info("workspace exec diagnostics (full mounts):\n%s", diag)
+            logger.info("workspace exec diagnostics:\n%s", diag)
         _run_command(
             sandbox,
             f"printf '#!/bin/sh\\necho workspace-exec-ok\\n' > {script}"
