@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# protobuf-generated modules expose dynamic attributes.
+
 # Copyright 2026 Alibaba Group Holding Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,8 +27,6 @@ Terminated. An actually missing CRD surfaces as gRPC NotFound at the client
 layer and maps to HTTP 404 (no synthetic Sandbox object).
 """
 
-# pyright: reportAttributeAccessIssue=false
-# protobuf-generated modules expose dynamic attributes.
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -65,9 +66,13 @@ def map_state(info: pb2.SandboxInfo) -> str:
 
 
 def map_reason(info: pb2.SandboxInfo) -> Optional[str]:
-    """Best-effort machine-readable reason for the mapped state."""
-    if info.runtime_state == "Stopped":
-        return "Expired"
+    """Best-effort machine-readable reason for the mapped state.
+
+    FastPath v2 SandboxInfo does not carry Conditions, so an Expired reason
+    cannot be confirmed for a retained Stopped object; the reason is left
+    unset rather than inventing a termination cause. Only states that are
+    self-describing (Failed) report a reason.
+    """
     if info.runtime_state == "Failed":
         return "Failed"
     return None

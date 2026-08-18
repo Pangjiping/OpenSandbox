@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# protobuf-generated modules expose dynamic attributes.
+
 # Copyright 2026 Alibaba Group Holding Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,8 +17,6 @@
 
 """Unit tests for fleets create/status mapping (OSEP-0007 simplified create)."""
 
-# pyright: reportAttributeAccessIssue=false
-# protobuf-generated modules expose dynamic attributes.
 from datetime import datetime, timezone
 
 import pytest
@@ -178,6 +179,60 @@ def test_map_create_request_rejects_unknown_extension_key():
     assert "extensions" in exc_info.value.field
 
 
+def test_map_create_request_reuses_absolute_expiry_on_remap():
+    # A transport retry of the same sandbox_id must reuse the first expiry,
+    # even when the clock has advanced, or FastPath rejects the changed intent.
+    first = map_create_request(_base_request(), "sbx-1", "ns-1", now=NOW)
+    retry = map_create_request(
+        _base_request(),
+        "sbx-1",
+        "ns-1",
+        now=datetime(2026, 8, 18, 13, 0, 0, tzinfo=timezone.utc),
+        expires_at_unix_seconds=first.expires_at_unix_seconds,
+    )
+    assert retry.expires_at_unix_seconds == first.expires_at_unix_seconds == EXPECTED_EXPIRY
+
+
+def test_map_create_request_accepts_matching_pool_resources():
+    request = _base_request(resource_limits=ResourceLimits(root={"cpu": "500m", "memory": "512Mi"}))
+    create = map_create_request(
+        request,
+        "sbx-1",
+        "ns-1",
+        now=NOW,
+        pool_resources={"cpu": "500m", "memory": "512Mi", "pids": "256"},
+    )
+    assert create.image == "python:3.11"
+
+
+def test_map_create_request_rejects_mismatched_pool_resources():
+    request = _base_request(resource_limits=ResourceLimits(root={"cpu": "1"}))
+    with pytest.raises(UnsupportedFieldError) as exc_info:
+        map_create_request(
+            request,
+            "sbx-1",
+            "ns-1",
+            now=NOW,
+            pool_resources={"cpu": "500m", "memory": "512Mi"},
+        )
+    assert exc_info.value.field == "resourceLimits"
+
+
+def test_map_create_request_rejects_undefinted_pool_resource_key():
+    request = _base_request(resource_limits=ResourceLimits(root={"gpu": "1"}))
+    with pytest.raises(UnsupportedFieldError) as exc_info:
+        map_create_request(
+            request, "sbx-1", "ns-1", now=NOW, pool_resources={"cpu": "500m"}
+        )
+    assert exc_info.value.field == "resourceLimits"
+
+
+def test_map_create_request_skips_pool_check_when_profile_unknown():
+    request = _base_request(resource_limits=ResourceLimits(root={"cpu": "1"}))
+    create = map_create_request(request, "sbx-1", "ns-1", now=NOW)
+    assert create.image == "python:3.11"
+
+
 # -- status mapping -----------------------------------------------------------
 
 
@@ -237,10 +292,13 @@ def test_map_sandbox_builds_public_model():
     assert sandbox.created_at == NOW
 
 
-def test_map_sandbox_terminated_on_expired_retained_crd():
+def test_map_sandbox_terminated_on_retained_stopped_crd():
+    # Retained Stopped objects map to Terminated, but the Expired reason
+    # cannot be confirmed from SandboxInfo (no Conditions field), so it stays
+    # unset.
     sandbox = map_sandbox(_info(runtime_state="Stopped"))
     assert sandbox.status.state == "Terminated"
-    assert sandbox.status.reason == "Expired"
+    assert sandbox.status.reason is None
 
 
 def test_map_sandbox_omits_empty_metadata_and_expiry():

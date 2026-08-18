@@ -1,3 +1,6 @@
+# pyright: reportAttributeAccessIssue=false
+# protobuf-generated modules expose dynamic attributes.
+
 # Copyright 2026 Alibaba Group Holding Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,8 +22,6 @@ Unsupported fields are rejected with a clear error instead of being silently
 ignored (see OSEP-0007 "Simplified Create").
 """
 
-# pyright: reportAttributeAccessIssue=false
-# protobuf-generated modules expose dynamic attributes.
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -63,14 +64,31 @@ def map_create_request(
     *,
     default_pool_ref: str = "default-pool",
     now: Optional[datetime] = None,
+    expires_at_unix_seconds: Optional[int] = None,
+    pool_resources: Optional[dict] = None,
 ) -> pb2.CreateRequest:
     """Map the accepted CreateSandboxRequest subset to a FastPath v2 CreateRequest.
 
     Raises UnsupportedFieldError for any field the shared-Fastlet model cannot
     honor. The caller supplies the OpenSandbox sandbox_id, which becomes the
     idempotency key (request_id) and the Sandbox CRD name.
+
+    Idempotency: FastPath treats expiry as part of the persisted initial
+    intent, so a transport retry of the same sandbox_id must reuse the first
+    absolute expiry. Callers can pass the previously normalized
+    ``expires_at_unix_seconds``; when omitted it is derived from ``now``.
+
+    Pool compatibility: ``pool_resources`` is the selected SandboxPool profile
+    (e.g. {"cpu": "500m", "memory": "512Mi", "pids": "256"}). When provided,
+    request ``resource_limits`` must match the pool for every key the pool
+    defines and must not declare keys the pool does not define; FastPath has
+    no per-sandbox resource field, so incompatible limits are rejected rather
+    than silently ignored.
     """
     _reject_unsupported_fields(request)
+
+    if pool_resources is not None:
+        _validate_resource_limits(request, pool_resources)
 
     image = request.image
     if image is None or not image.uri.strip():
@@ -90,8 +108,11 @@ def map_create_request(
     if request.entrypoint is None:
         raise UnsupportedFieldError("entrypoint", "entrypoint is required when image is provided")
 
-    now = now or datetime.now(timezone.utc)
-    expires_at = int(now.timestamp()) + request.timeout
+    if expires_at_unix_seconds is not None:
+        expires_at = expires_at_unix_seconds
+    else:
+        now = now or datetime.now(timezone.utc)
+        expires_at = int(now.timestamp()) + request.timeout
 
     create = pb2.CreateRequest(
         request_id=sandbox_id,
@@ -123,6 +144,28 @@ def map_create_request(
         create.metadata[RENEW_EXTEND_SECONDS_METADATA_KEY] = renew_value
 
     return create
+
+
+def _validate_resource_limits(
+    request: CreateSandboxRequest, pool_resources: dict
+) -> None:
+    """Reject resource_limits that are incompatible with the pool profile."""
+    if request.resource_limits is None:
+        return
+    limits = request.resource_limits.root
+    for key, value in limits.items():
+        if key not in pool_resources:
+            raise UnsupportedFieldError(
+                "resourceLimits",
+                f"{key!r} is not defined by the selected SandboxPool; "
+                "resources are fixed by SandboxPool.spec.sandboxResources",
+            )
+        if pool_resources[key] != value:
+            raise UnsupportedFieldError(
+                "resourceLimits",
+                f"{key!r}={value!r} does not match the SandboxPool profile "
+                f"{key!r}={pool_resources[key]!r}; resources are fixed per pool",
+            )
 
 
 def _reject_unsupported_fields(request: CreateSandboxRequest) -> None:

@@ -59,6 +59,7 @@ dependencies = [
     "uvicorn[standard]",
     "websockets>=14.0",
     "grpcio>=1.83.0",
+    "protobuf>=7.35.1",
 ]
 
 [project.urls]
