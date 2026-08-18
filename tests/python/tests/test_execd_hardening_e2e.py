@@ -165,13 +165,18 @@ class TestHardeningE2E:
         # Entrypoint: dump its own /proc/self/status + env to the
         # bind-mounted workspace (host-readable), then stay alive. The dump
         # is written once at startup, before any /command churn, so it
-        # reflects exactly the launcher-applied floor.
+        # reflects exactly the launcher-applied floor. The status is read
+        # with the shell's own loop, NOT `cat`: under Landlock a forked
+        # descendant resolves its own /proc/<pid>, which the inherited
+        # ruleset does not grant (documented OSEP-0018 limitation), so a
+        # forked helper would get EACCES.
         sbx = _create_sandbox(
             entrypoint=[
                 "sh",
                 "-c",
                 "out=/workspace/state-$OPENSANDBOX_ID.txt; "
-                "{ echo '=== status ==='; cat /proc/self/status; "
+                "{ echo '=== status ==='; "
+                "while IFS= read -r line; do echo \"$line\"; done < /proc/self/status; "
                 "echo '=== env ==='; env | sort; } > \"$out\" 2>&1; "
                 "while :; do sleep 1; done",
             ],
