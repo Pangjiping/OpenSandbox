@@ -79,7 +79,13 @@ def _process_count(sandbox) -> int:
     return int(_run_command(sandbox, "ls -d /proc/[0-9]* | wc -l").strip())
 
 
-def _create_sandbox(entrypoint: list[str] | None = None, tag: str = "execd-init-e2e") -> SandboxSync:
+def _create_sandbox(
+    entrypoint: list[str] | None = None,
+    tag: str = "execd-init-e2e",
+    extensions: dict[str, str] | None = None,
+    env: dict[str, str] | None = None,
+    volumes: list | None = None,
+) -> SandboxSync:
     connection_config = create_connection_config_sync()
     return SandboxSync.create(
         image=SandboxImageSpec(get_sandbox_image()),
@@ -88,6 +94,9 @@ def _create_sandbox(entrypoint: list[str] | None = None, tag: str = "execd-init-
         timeout=timedelta(minutes=5),
         ready_timeout=timedelta(seconds=60),
         entrypoint=entrypoint,
+        extensions=extensions,
+        env=env,
+        volumes=volumes,
         metadata={"tag": tag},
     )
 

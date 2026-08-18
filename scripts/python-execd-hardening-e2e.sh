@@ -123,7 +123,7 @@ EOF
 # ---------------------------------------------------------------------------
 write_server_config '["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]'
 run_server
-run_pytest "TestHardeningE2E"
+run_pytest "TestHardeningE2E or TestIsolatedSessionHardeningE2E"
 stop_server
 
 # ---------------------------------------------------------------------------
