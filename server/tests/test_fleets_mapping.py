@@ -193,6 +193,33 @@ def test_map_create_request_rejects_unknown_extension_key():
     assert "extensions" in exc_info.value.field
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"team.io/project": "agents"},  # dots and slashes are not DNS labels
+        {"Team": "agents"},  # uppercase is not a DNS label
+        {"a" * 64: "v"},  # key too long
+        {"ok-key": "bad value!"},  # value with spaces
+        {"ok-key": "v" * 64},  # value too long
+    ],
+)
+def test_map_create_request_rejects_non_label_metadata(metadata):
+    request = _base_request(metadata=metadata)
+    with pytest.raises(UnsupportedFieldError) as exc_info:
+        map_create_request(request, "sbx-1", "ns-1", now=NOW)
+    assert exc_info.value.field == "metadata"
+
+
+def test_map_create_request_accepts_label_compliant_metadata():
+    request = _base_request(
+        metadata={"team": "agents", "region-us-east-1": "prod"},
+        env={"K": "v"},
+    )
+    create = map_create_request(request, "sbx-1", "ns-1", now=NOW)
+    assert create.metadata["team"] == "agents"
+    assert create.metadata["region-us-east-1"] == "prod"
+
+
 def test_map_create_request_reuses_absolute_expiry_on_remap():
     # A transport retry of the same sandbox_id must reuse the first expiry,
     # even when the clock has advanced, or FastPath rejects the changed intent.

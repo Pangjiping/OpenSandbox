@@ -25,6 +25,7 @@ ignored (see OSEP-0007 "Simplified Create").
 from __future__ import annotations
 
 import decimal
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -35,7 +36,9 @@ from opensandbox_server.services.fleets.generated import (
 
 #: fleets-reserved FastPath metadata key persisting the renew-on-access
 #: extension value. Stripped from public metadata and list filters.
-RENEW_EXTEND_SECONDS_METADATA_KEY = "opensandbox.io/renew-extend-seconds"
+#: fast-sandbox persists metadata as labels under `metadata.sandbox.fast.io/`,
+#: so the key must be a DNS1123 label (lowercase alphanumeric + hyphens).
+RENEW_EXTEND_SECONDS_METADATA_KEY = "renew-extend-seconds"
 
 #: Public extensions keys accepted by the fleets backend.
 SUPPORTED_EXTENSION_KEYS = frozenset(
@@ -146,13 +149,17 @@ def map_create_request(
     if renew_value is not None:
         create.metadata[RENEW_EXTEND_SECONDS_METADATA_KEY] = renew_value
 
+    # fast-sandbox persists metadata as labels (metadata.sandbox.fast.io/<key>)
+    # and validates every entry; reject incompatible keys/values here so users
+    # get a clear error instead of a confusing gRPC rejection.
+    _validate_metadata(create.metadata)
+
     return create
 
 
 def _validate_resource_limits(
     request: CreateSandboxRequest, pool_resources: dict
 ) -> None:
-    """Reject resource_limits that are incompatible with the pool profile."""
     if request.resource_limits is None:
         return
     limits = request.resource_limits.root
@@ -175,6 +182,33 @@ def _validate_resource_limits(
 _DECIMAL_QUANTITY_SUFFIXES = {"k": 3, "M": 6, "G": 9, "T": 12, "P": 15, "E": 18}
 #: Kubernetes quantity binary-power suffixes.
 _BINARY_QUANTITY_SUFFIXES = {"Ki": 10, "Mi": 20, "Gi": 30, "Ti": 40, "Pi": 50, "Ei": 60}
+
+_DNS_LABEL_PATTERN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+_LABEL_VALUE_PATTERN = r"^[A-Za-z0-9]([-_.A-Za-z0-9]*[A-Za-z0-9])?$"
+_MAX_LABEL_LENGTH = 63
+
+
+def _validate_metadata(metadata: dict) -> None:
+    """Reject metadata entries fast-sandbox cannot persist as labels."""
+    for key, value in metadata.items():
+        if (
+            len(key) > _MAX_LABEL_LENGTH
+            or not re.fullmatch(_DNS_LABEL_PATTERN, key)
+        ):
+            raise UnsupportedFieldError(
+                "metadata",
+                f"metadata key {key!r} must be a DNS label (lowercase alphanumeric "
+                "and hyphens, max 63 chars): fast-sandbox persists metadata as labels",
+            )
+        if (
+            len(value) > _MAX_LABEL_LENGTH
+            or not re.fullmatch(_LABEL_VALUE_PATTERN, value)
+        ):
+            raise UnsupportedFieldError(
+                "metadata",
+                f"metadata value for {key!r} must be a Kubernetes label value "
+                "(alphanumeric, '-', '_', '.', max 63 chars)",
+            )
 
 
 def _quantities_equal(a: str, b: str) -> bool:
