@@ -24,6 +24,7 @@ ignored (see OSEP-0007 "Simplified Create").
 
 from __future__ import annotations
 
+import decimal
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -136,7 +137,9 @@ def map_create_request(
         create.metadata.update(request.metadata)
 
     extensions = request.extensions or {}
-    pool_ref = extensions.get("poolRef")
+    # Normalize before forwarding: a whitespace-only poolRef must not select
+    # an invalid pool, and a padded name must not reach FastPath as-is.
+    pool_ref = (extensions.get("poolRef") or "").strip()
     create.pool_ref = pool_ref or default_pool_ref
 
     renew_value = extensions.get("access.renew.extend.seconds")
@@ -160,12 +163,41 @@ def _validate_resource_limits(
                 f"{key!r} is not defined by the selected SandboxPool; "
                 "resources are fixed by SandboxPool.spec.sandboxResources",
             )
-        if pool_resources[key] != value:
+        if not _quantities_equal(pool_resources[key], value):
             raise UnsupportedFieldError(
                 "resourceLimits",
                 f"{key!r}={value!r} does not match the SandboxPool profile "
                 f"{key!r}={pool_resources[key]!r}; resources are fixed per pool",
             )
+
+
+#: Kubernetes quantity decimal-power suffixes (m is handled separately).
+_DECIMAL_QUANTITY_SUFFIXES = {"k": 3, "M": 6, "G": 9, "T": 12, "P": 15, "E": 18}
+#: Kubernetes quantity binary-power suffixes.
+_BINARY_QUANTITY_SUFFIXES = {"Ki": 10, "Mi": 20, "Gi": 30, "Ti": 40, "Pi": 50, "Ei": 60}
+
+
+def _quantities_equal(a: str, b: str) -> bool:
+    """Compare Kubernetes resource quantities canonically ("0.5" == "500m", "1Gi" == "1024Mi")."""
+    try:
+        return _canonical_quantity(a) == _canonical_quantity(b)
+    except Exception:
+        # Fall back to the raw comparison for unparseable values so the
+        # rejection message stays accurate.
+        return a == b
+
+
+def _canonical_quantity(value: str) -> decimal.Decimal:
+    value = value.strip()
+    if value.endswith("m"):
+        return decimal.Decimal(value[:-1]) / 1000
+    for suffix, exponent in _BINARY_QUANTITY_SUFFIXES.items():
+        if value.endswith(suffix):
+            return decimal.Decimal(value[: -len(suffix)]) * (decimal.Decimal(2) ** exponent)
+    for suffix, exponent in _DECIMAL_QUANTITY_SUFFIXES.items():
+        if value.endswith(suffix):
+            return decimal.Decimal(value[: -len(suffix)]) * (decimal.Decimal(10) ** exponent)
+    return decimal.Decimal(value)
 
 
 def _reject_unsupported_fields(request: CreateSandboxRequest) -> None:

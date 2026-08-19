@@ -99,6 +99,20 @@ def test_map_create_request_defaults_pool_ref():
     assert create.pool_ref == "default-pool"
 
 
+def test_map_create_request_strips_pool_ref():
+    # A whitespace-only poolRef must not reach FastPath; a padded name is
+    # normalized before forwarding.
+    blank = map_create_request(
+        _base_request(extensions={"poolRef": "   "}), "sbx-1", "ns-1", now=NOW
+    )
+    assert blank.pool_ref == "default-pool"
+
+    padded = map_create_request(
+        _base_request(extensions={"poolRef": " ml-pool "}), "sbx-1", "ns-1", now=NOW
+    )
+    assert padded.pool_ref == "ml-pool"
+
+
 def test_map_create_request_renew_extension_goes_to_reserved_metadata():
     request = _base_request(extensions={"access.renew.extend.seconds": "300"})
     create = map_create_request(request, "sbx-1", "ns-1", now=NOW)
@@ -225,6 +239,21 @@ def test_map_create_request_rejects_undefinted_pool_resource_key():
             request, "sbx-1", "ns-1", now=NOW, pool_resources={"cpu": "500m"}
         )
     assert exc_info.value.field == "resourceLimits"
+
+
+def test_map_create_request_compares_quantities_canonically():
+    # Same quantity expressed differently must not be rejected.
+    request = _base_request(
+        resource_limits=ResourceLimits(root={"cpu": "0.5", "memory": "1Gi"})
+    )
+    create = map_create_request(
+        request,
+        "sbx-1",
+        "ns-1",
+        now=NOW,
+        pool_resources={"cpu": "500m", "memory": "1024Mi", "pids": "256"},
+    )
+    assert create.image == "python:3.11"
 
 
 def test_map_create_request_skips_pool_check_when_profile_unknown():
