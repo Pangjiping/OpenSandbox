@@ -25,6 +25,7 @@ the simplified subset mapped by `create_mapping`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Optional
@@ -69,7 +70,10 @@ from opensandbox_server.services.fleets.status_mapping import (
     map_state,
 )
 from opensandbox_server.services.sandbox_service import SandboxService
-from opensandbox_server.services.validators import ensure_future_expiration
+from opensandbox_server.services.validators import (
+    ensure_future_expiration,
+    ensure_timeout_within_limit,
+)
 
 #: FastPath page size used while exhausting list pages.
 _FASTPATH_PAGE_SIZE = 200
@@ -103,6 +107,31 @@ class FleetSandboxService(SandboxService, ExtensionService):
             return tenant.namespace
         return self._fleets.namespace
 
+    def _resolve_namespace_for_lookup(self, sandbox_id: str) -> str:
+        """Resolve namespace with a cross-namespace fallback for background work.
+
+        Background renew workers have no request tenant in the ContextVar;
+        scan the tenant provider's namespaces to find the sandbox before
+        falling back to the global namespace.
+        """
+        from opensandbox_server.tenants.context import get_current_tenant
+
+        tenant = get_current_tenant()
+        if tenant is not None:
+            return tenant.namespace
+
+        if self._tenant_provider is not None:
+            for entry in self._tenant_provider.list_tenants():
+                if entry.namespace == self._fleets.namespace:
+                    continue
+                try:
+                    self._fastpath.get_sandbox(entry.namespace, sandbox_id)
+                except FastPathError:
+                    continue
+                return entry.namespace
+
+        return self._fleets.namespace
+
     def _pool_resources(self, namespace: str, pool_ref: str) -> Optional[dict]:
         """Return the SandboxPool profile as resource dict, or None when unknown."""
         try:
@@ -130,7 +159,18 @@ class FleetSandboxService(SandboxService, ExtensionService):
 
     async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         """Create a sandbox through FastPath v2; returns accepted Pending when
-        durable intent exists but the data plane is not ready yet."""
+        durable intent exists but the data plane is not ready yet.
+
+        The FastPath calls are synchronous gRPC, so the whole workflow runs
+        in a worker thread to keep the event loop responsive.
+        """
+        ensure_timeout_within_limit(
+            request.timeout,
+            self._app_config.server.max_sandbox_timeout_seconds,
+        )
+        return await asyncio.to_thread(self._create_sandbox_sync, request)
+
+    def _create_sandbox_sync(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         try:
             create_request = map_create_request(
                 request,
@@ -196,10 +236,19 @@ class FleetSandboxService(SandboxService, ExtensionService):
     def _build_create_response(
         self, request: CreateSandboxRequest, info: pb2.SandboxInfo
     ) -> CreateSandboxResponse:
+        metadata = None
+        if info.metadata:
+            metadata = {
+                key: value
+                for key, value in info.metadata.items()
+                if key not in RESERVED_METADATA_KEYS
+            }
+            if not metadata:
+                metadata = None
         return CreateSandboxResponse(
             id=info.sandbox_name,
             status=SandboxStatus(state=map_state(info)),
-            metadata=dict(info.metadata) if info.metadata else None,
+            metadata=metadata,
             expiresAt=_to_datetime(info.expires_at_unix_seconds),
             createdAt=_to_datetime(info.created_at_unix_seconds),
             entrypoint=request.entrypoint,
@@ -208,7 +257,7 @@ class FleetSandboxService(SandboxService, ExtensionService):
     def get_sandbox(self, sandbox_id: str) -> Sandbox:
         """Get a sandbox; a missing CRD maps to HTTP 404."""
         try:
-            info = self._fastpath.get_sandbox(self._resolve_namespace(), sandbox_id)
+            info = self._fastpath.get_sandbox(self._resolve_namespace_for_lookup(sandbox_id), sandbox_id)
         except FastPathNotFound as exc:
             raise self._fastpath_http_error(exc) from exc
         except FastPathError as exc:
@@ -264,7 +313,7 @@ class FleetSandboxService(SandboxService, ExtensionService):
     def delete_sandbox(self, sandbox_id: str) -> None:
         """Preflight Get to preserve the public 404 contract, then submit an
         async (finalizer-driven) deletion."""
-        namespace = self._resolve_namespace()
+        namespace = self._resolve_namespace_for_lookup(sandbox_id)
         try:
             self._fastpath.get_sandbox(namespace, sandbox_id)
         except FastPathError as exc:
@@ -286,7 +335,7 @@ class FleetSandboxService(SandboxService, ExtensionService):
         request: RenewSandboxExpirationRequest,
     ) -> RenewSandboxExpirationResponse:
         """Persist the absolute expiry on the Sandbox CRD."""
-        namespace = self._resolve_namespace()
+        namespace = self._resolve_namespace_for_lookup(sandbox_id)
         normalized = ensure_future_expiration(request.expires_at)
         try:
             info = self._fastpath.update_expiration(
@@ -309,7 +358,7 @@ class FleetSandboxService(SandboxService, ExtensionService):
         self, sandbox_id: str, patch: dict
     ) -> Sandbox:
         """Patch sandbox metadata (RFC 7396): non-null adds/replaces, null deletes."""
-        namespace = self._resolve_namespace()
+        namespace = self._resolve_namespace_for_lookup(sandbox_id)
         for key in patch:
             if key in RESERVED_METADATA_KEYS or key.startswith("opensandbox.io/"):
                 raise HTTPException(
@@ -405,7 +454,9 @@ class FleetSandboxService(SandboxService, ExtensionService):
     def get_access_renew_extend_seconds(self, sandbox_id: str) -> Optional[int]:
         """Read the renew-on-access value persisted under the reserved key."""
         try:
-            info = self._fastpath.get_sandbox(self._resolve_namespace(), sandbox_id)
+            info = self._fastpath.get_sandbox(
+                self._resolve_namespace_for_lookup(sandbox_id), sandbox_id
+            )
         except FastPathError:
             return None
         raw = info.metadata.get(RENEW_EXTEND_SECONDS_METADATA_KEY)

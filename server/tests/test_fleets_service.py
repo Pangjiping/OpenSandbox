@@ -56,6 +56,7 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
     def __init__(self):
         self.sandboxes: dict[str, pb2.SandboxInfo] = {}
         self.deleted: list[str] = []
+        self.last_get_namespace: str | None = None
         self.fail_create_with: grpc.StatusCode | None = None
         self.pool = pb2.PoolInfo(
             namespace="ns-1",
@@ -100,6 +101,7 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
         return info
 
     def GetSandbox(self, request, context):
+        self.last_get_namespace = request.namespace
         try:
             return self._get(request.sandbox_name)
         except KeyError:
@@ -167,6 +169,16 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
         return self.pool
 
 
+def _make_config() -> AppConfig:
+    from opensandbox_server.config import RuntimeConfig, ServerConfig
+
+    return AppConfig(
+        server=ServerConfig(host="0.0.0.0", port=8080, api_key="x"),
+        runtime=RuntimeConfig(type="fleets", execd_image="ghcr.io/opensandbox/execd:latest"),
+        fleets=FleetsRuntimeConfig(namespace="ns-1"),
+    )
+
+
 @pytest.fixture
 def service():
     fake = _FakeFastPathService()
@@ -179,13 +191,7 @@ def service():
     client._channel = channel  # noqa: SLF001
     client._stub = pb2_grpc.FastPathServiceStub(channel)
 
-    from opensandbox_server.config import RuntimeConfig, ServerConfig
-
-    config = AppConfig(
-        server=ServerConfig(host="0.0.0.0", port=8080, api_key="x"),
-        runtime=RuntimeConfig(type="fleets", execd_image="ghcr.io/opensandbox/execd:latest"),
-        fleets=FleetsRuntimeConfig(namespace="ns-1"),
-    )
+    config = _make_config()
     svc = FleetSandboxService(config, fastpath_client=client)
     try:
         yield svc, fake
@@ -216,6 +222,45 @@ async def test_create_sandbox_returns_running(service):
     assert response.id in fake.sandboxes
     assert response.expires_at is not None
     assert response.created_at == NOW
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_hides_reserved_metadata(service):
+    svc, fake = service
+    response = await svc.create_sandbox(
+        _create_request(extensions={"access.renew.extend.seconds": "300"})
+    )
+    assert response.metadata is None or RENEW_EXTEND_SECONDS_METADATA_KEY not in response.metadata
+    # The value is still persisted for ExtensionService.
+    assert fake.sandboxes[response.id].metadata[RENEW_EXTEND_SECONDS_METADATA_KEY] == "300"
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_enforces_max_timeout(service):
+    svc, fake = service
+    svc._app_config.server.max_sandbox_timeout_seconds = 600
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.create_sandbox(_create_request(timeout=3600))
+    assert exc_info.value.status_code == 400
+
+
+def test_lazy_connect_opened_on_first_call():
+    """The client connects on first use; no explicit connect() is required."""
+    fake = _FakeFastPathService()
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+    pb2_grpc.add_FastPathServiceServicer_to_server(fake, server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        config = _make_config()
+        client = FastPathClient(endpoint=f"127.0.0.1:{port}")
+        svc = FleetSandboxService(config, fastpath_client=client)
+        fake.sandboxes["sbx-1"] = fake._info("sbx-1")
+        sandbox = svc.get_sandbox("sbx-1")
+        assert sandbox.id == "sbx-1"
+        assert client._stub is not None
+    finally:
+        server.stop(None)
 
 
 @pytest.mark.asyncio
@@ -419,6 +464,32 @@ def test_access_renew_extend_seconds_missing_or_invalid(service):
     assert svc.get_access_renew_extend_seconds("plain") is None
     assert svc.get_access_renew_extend_seconds("bad") is None
     assert svc.get_access_renew_extend_seconds("missing") is None
+
+
+def test_background_lookup_falls_back_across_tenant_namespaces(service):
+    """Renew workers have no tenant context; the provider's namespaces are
+    scanned so equal sandbox IDs in tenant namespaces keep receiving renewals."""
+
+    class _FakeTenantProvider:
+        def __init__(self, entries):
+            self._entries = entries
+
+        def list_tenants(self):
+            return self._entries
+
+    from opensandbox_server.tenants.models import TenantEntry
+
+    svc, fake = service
+    # Sandbox lives in the tenant namespace, not in the global one.
+    tenant_ns = TenantEntry(name="tenant-1", namespace="ns-tenant")
+    fake.sandboxes["sbx-1"] = fake._info(
+        "sbx-1", metadata={RENEW_EXTEND_SECONDS_METADATA_KEY: "300"}
+    )
+    fake.pool.namespace = "ns-tenant"
+    svc._tenant_provider = _FakeTenantProvider([tenant_ns])  # noqa: SLF001
+
+    assert svc.get_access_renew_extend_seconds("sbx-1") == 300
+    assert fake.last_get_namespace == "ns-tenant"
 
 
 # -- startup wiring -------------------------------------------------------

@@ -299,6 +299,8 @@ class FastPathClient:
 
     def _require_stub(self) -> fastpath_pb2_grpc.FastPathServiceStub:
         if self._stub is None:
+            self.connect()
+        if self._stub is None:  # pragma: no cover - connect() always sets it
             raise FastPathUnavailable("channel-not-open", "FastPath client is not connected")
         return self._stub
 
