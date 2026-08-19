@@ -17,15 +17,21 @@
 
 """FastPath gRPC client for the fast-sandbox Fast-Path Server (FastPath v2).
 
-Wraps the generated `fastpath.v2.FastPathService` stubs with async semantics,
-typed helpers, and normalized error handling. OpenSandbox must not infer
-NotFound from error strings: only gRPC `codes.NotFound` maps to the public
-HTTP 404 contract.
+Wraps the generated `fastpath.v2.FastPathService` stubs with typed helpers and
+normalized error handling. OpenSandbox must not infer NotFound from error
+strings: only gRPC `codes.NotFound` maps to the public HTTP 404 contract.
+
+The client is deliberately **synchronous**: the lifecycle service methods are
+called from FastAPI thread-pool handlers and background renew workers
+(`asyncio.to_thread`), where an aio channel bound to another event loop would
+be unsafe. This matches the sync-call pattern of the Docker and Kubernetes
+backends.
 
 Note: upstream fast-sandbox `GetSandbox` (at `aac0c2c` and later) returns the
 raw Kubernetes Get error instead of passing it through `grpcKubernetesError`.
-Until that upstream fix lands, a missing Sandbox CRD surfaces as an unknown
-status code; the fleets adapter must treat only `codes.NotFound` as 404.
+Until that upstream fix lands (opensandbox-group/fast-sandbox#4), a missing
+Sandbox CRD surfaces as an unknown status code; the fleets adapter must treat
+only `codes.NotFound` as 404.
 """
 
 from __future__ import annotations
@@ -33,7 +39,6 @@ from __future__ import annotations
 from typing import Optional
 
 import grpc
-from grpc import aio
 
 from opensandbox_server.services.fleets.generated import (
     fastpath_pb2 as fastpath_pb2,
@@ -74,7 +79,7 @@ class FastPathConflict(FastPathError):
 
 
 class FastPathClient:
-    """Async gRPC client for the fast-sandbox FastPathService v2 API."""
+    """Synchronous gRPC client for the fast-sandbox FastPathService v2 API."""
 
     def __init__(
         self,
@@ -83,54 +88,64 @@ class FastPathClient:
     ) -> None:
         self._endpoint = endpoint
         self._timeout_seconds = timeout_seconds
-        self._channel: Optional[aio.Channel] = None
+        self._channel: Optional[grpc.Channel] = None
         self._stub: Optional[fastpath_pb2_grpc.FastPathServiceStub] = None
 
-    async def __aenter__(self) -> "FastPathClient":
-        await self.connect()
+    def __enter__(self) -> "FastPathClient":
+        self.connect()
         return self
 
-    async def __aexit__(self, *exc_info) -> None:
-        await self.close()
+    def __exit__(self, *exc_info) -> None:
+        self.close()
 
-    async def connect(self) -> None:
+    def connect(self) -> None:
         """Open the gRPC channel to the FastPath endpoint."""
         if self._channel is None:
-            self._channel = aio.insecure_channel(self._endpoint)
+            self._channel = grpc.insecure_channel(self._endpoint)
             self._stub = fastpath_pb2_grpc.FastPathServiceStub(self._channel)
 
-    async def close(self) -> None:
+    def close(self) -> None:
         """Close the gRPC channel if open."""
         if self._channel is not None:
-            await self._channel.close()
+            self._channel.close()
             self._channel = None
             self._stub = None
 
     # -- lifecycle ---------------------------------------------------------
 
-    async def create_sandbox(
+    def create_sandbox(
         self, request: fastpath_pb2.CreateRequest
     ) -> fastpath_pb2.SandboxInfo:
         """Create a sandbox through FastPath v2 (CRD-first, idempotent by request_id)."""
-        return await self._call(
-            lambda: self._require_stub().CreateSandbox(request, timeout=self._timeout_seconds)
+        return self._call(
+            lambda: self._require_stub().CreateSandbox(
+                request, timeout=self._timeout_seconds
+            )
         )
 
-    async def get_sandbox(
+    def get_sandbox(
         self, namespace: str, sandbox_name: str
     ) -> fastpath_pb2.SandboxInfo:
         """Get a sandbox; raises FastPathNotFound on gRPC NotFound."""
         request = fastpath_pb2.GetRequest(namespace=namespace, sandbox_name=sandbox_name)
-        return await self._call(lambda: self._require_stub().GetSandbox(request, timeout=self._timeout_seconds))
+        return self._call(
+            lambda: self._require_stub().GetSandbox(
+                request, timeout=self._timeout_seconds
+            )
+        )
 
-    async def delete_sandbox(self, namespace: str, sandbox_name: str) -> None:
+    def delete_sandbox(self, namespace: str, sandbox_name: str) -> None:
         """Submit an async (finalizer-driven) sandbox deletion."""
         request = fastpath_pb2.DeleteRequest(
             namespace=namespace, sandbox_name=sandbox_name
         )
-        await self._call(lambda: self._require_stub().DeleteSandbox(request, timeout=self._timeout_seconds))
+        self._call(
+            lambda: self._require_stub().DeleteSandbox(
+                request, timeout=self._timeout_seconds
+            )
+        )
 
-    async def list_sandboxes(
+    def list_sandboxes(
         self,
         namespace: str,
         metadata: Optional[dict] = None,
@@ -145,9 +160,13 @@ class FastPathClient:
             request.page_size = page_size
         if page_token:
             request.page_token = page_token
-        return await self._call(lambda: self._require_stub().ListSandboxes(request, timeout=self._timeout_seconds))
+        return self._call(
+            lambda: self._require_stub().ListSandboxes(
+                request, timeout=self._timeout_seconds
+            )
+        )
 
-    async def update_expiration(
+    def update_expiration(
         self, namespace: str, sandbox_name: str, expires_at_unix_seconds: int
     ) -> fastpath_pb2.SandboxInfo:
         """Persist an absolute expiry on the Sandbox CRD."""
@@ -155,10 +174,14 @@ class FastPathClient:
             namespace=namespace, sandbox_name=sandbox_name
         )
         request.expires_at_unix_seconds = expires_at_unix_seconds
-        response = await self._call(lambda: self._require_stub().UpdateSandbox(request, timeout=self._timeout_seconds))
+        response = self._call(
+            lambda: self._require_stub().UpdateSandbox(
+                request, timeout=self._timeout_seconds
+            )
+        )
         return response.sandbox
 
-    async def update_metadata(
+    def update_metadata(
         self,
         namespace: str,
         sandbox_name: str,
@@ -173,23 +196,29 @@ class FastPathClient:
             request.metadata_upsert.update(upsert)
         if delete_keys:
             request.metadata_delete_keys.extend(delete_keys)
-        response = await self._call(lambda: self._require_stub().UpdateSandbox(request, timeout=self._timeout_seconds))
+        response = self._call(
+            lambda: self._require_stub().UpdateSandbox(
+                request, timeout=self._timeout_seconds
+            )
+        )
         return response.sandbox
 
-    async def get_sandbox_diagnostics(
+    def get_sandbox_diagnostics(
         self, namespace: str, sandbox_name: str, limit: int = 50
     ) -> fastpath_pb2.SandboxDiagnosticsResponse:
         """Return lifecycle diagnostics (events only, not process output)."""
         request = fastpath_pb2.SandboxDiagnosticsRequest(
             namespace=namespace, sandbox_name=sandbox_name, limit=limit
         )
-        return await self._call(
-            lambda: self._require_stub().GetSandboxDiagnostics(request, timeout=self._timeout_seconds)
+        return self._call(
+            lambda: self._require_stub().GetSandboxDiagnostics(
+                request, timeout=self._timeout_seconds
+            )
         )
 
     # -- readiness / endpoints --------------------------------------------
 
-    async def wait_sandbox_ready(
+    def wait_sandbox_ready(
         self,
         reference: fastpath_pb2.SandboxReference,
         *,
@@ -206,13 +235,13 @@ class FastPathClient:
             request.component_name = component_name
         else:
             request.data_plane = data_plane
-        return await self._call(
+        return self._call(
             lambda: self._require_stub().WaitSandboxReady(
                 request, timeout=self._rpc_timeout(wait_timeout_millis)
             )
         )
 
-    async def resolve_endpoint(
+    def resolve_endpoint(
         self,
         reference: fastpath_pb2.SandboxReference,
         target: fastpath_pb2.EndpointTarget,
@@ -236,23 +265,31 @@ class FastPathClient:
             if wait_until_ready
             else self._timeout_seconds
         )
-        return await self._call(
+        return self._call(
             lambda: self._require_stub().ResolveEndpoint(request, timeout=deadline)
         )
 
     # -- pools -------------------------------------------------------------
 
-    async def get_pool(
+    def get_pool(
         self, namespace: str, pool_name: str
     ) -> fastpath_pb2.PoolInfo:
         """Get a SandboxPool; raises FastPathNotFound when absent."""
         request = fastpath_pb2.GetPoolRequest(namespace=namespace, pool_name=pool_name)
-        return await self._call(lambda: self._require_stub().GetPool(request, timeout=self._timeout_seconds))
+        return self._call(
+            lambda: self._require_stub().GetPool(
+                request, timeout=self._timeout_seconds
+            )
+        )
 
-    async def list_pools(self, namespace: str) -> fastpath_pb2.ListPoolsResponse:
+    def list_pools(self, namespace: str) -> fastpath_pb2.ListPoolsResponse:
         """List SandboxPools in a namespace."""
         request = fastpath_pb2.ListPoolsRequest(namespace=namespace)
-        return await self._call(lambda: self._require_stub().ListPools(request, timeout=self._timeout_seconds))
+        return self._call(
+            lambda: self._require_stub().ListPools(
+                request, timeout=self._timeout_seconds
+            )
+        )
 
     # -- internals ---------------------------------------------------------
 
@@ -265,14 +302,14 @@ class FastPathClient:
             raise FastPathUnavailable("channel-not-open", "FastPath client is not connected")
         return self._stub
 
-    async def _call(self, call):
+    def _call(self, call):
         try:
-            return await call()
-        except grpc.aio.AioRpcError as exc:
+            return call()
+        except grpc.RpcError as exc:
             raise _to_fastpath_error(exc) from exc
 
 
-def _to_fastpath_error(exc: grpc.aio.AioRpcError) -> FastPathError:
+def _to_fastpath_error(exc: grpc.RpcError) -> FastPathError:
     """Normalize a gRPC status to a typed FastPathError, without string matching."""
     code = exc.code()
     details = exc.details() or ""

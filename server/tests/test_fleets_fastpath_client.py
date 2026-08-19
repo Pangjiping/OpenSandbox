@@ -15,12 +15,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the FastPath v2 gRPC client."""
+"""Unit tests for the FastPath v2 gRPC client (synchronous)."""
+
+from concurrent import futures
 
 import grpc
 import pytest
-import pytest_asyncio
-from grpc import aio
 
 from opensandbox_server.services.fleets import fastpath_client
 from opensandbox_server.services.fleets.fastpath_client import (
@@ -59,7 +59,7 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
         )
         self.get_error: grpc.StatusCode | None = None
 
-    async def CreateSandbox(self, request, context):
+    def CreateSandbox(self, request, context):
         self.created.append(request)
         info = pb2.SandboxInfo()
         info.CopyFrom(self.sandbox)
@@ -67,20 +67,20 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
         info.namespace = request.namespace
         return info
 
-    async def GetSandbox(self, request, context):
+    def GetSandbox(self, request, context):
         if self.get_error is not None:
-            await context.abort(self.get_error, "scripted failure")
+            context.abort(self.get_error, "scripted failure")
         info = pb2.SandboxInfo()
         info.CopyFrom(self.sandbox)
         info.sandbox_name = request.sandbox_name
         info.namespace = request.namespace
         return info
 
-    async def DeleteSandbox(self, request, context):
+    def DeleteSandbox(self, request, context):
         self.last_delete = (request.namespace, request.sandbox_name)
         return pb2.DeleteResponse(success=True)
 
-    async def ListSandboxes(self, request, context):
+    def ListSandboxes(self, request, context):
         response = pb2.ListResponse()
         info = pb2.SandboxInfo()
         info.CopyFrom(self.sandbox)
@@ -88,7 +88,7 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
         response.items.append(info)
         return response
 
-    async def UpdateSandbox(self, request, context):
+    def UpdateSandbox(self, request, context):
         return pb2.UpdateResponse(
             success=True,
             sandbox=pb2.SandboxInfo(
@@ -101,17 +101,17 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
             ),
         )
 
-    async def GetSandboxDiagnostics(self, request, context):
+    def GetSandboxDiagnostics(self, request, context):
         return pb2.SandboxDiagnosticsResponse(
             sandbox=self.sandbox, assignment_state="assigned"
         )
 
-    async def WaitSandboxReady(self, request, context):
+    def WaitSandboxReady(self, request, context):
         info = pb2.SandboxInfo()
         info.CopyFrom(self.sandbox)
         return info
 
-    async def ResolveEndpoint(self, request, context):
+    def ResolveEndpoint(self, request, context):
         return pb2.ResolveEndpointResponse(
             sandbox_uid="uid-1",
             protocol="HTTP",
@@ -122,23 +122,23 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
             required_headers={"x-fast-sandbox-route-credential": "token-1"},
         )
 
-    async def GetPool(self, request, context):
+    def GetPool(self, request, context):
         return pb2.PoolInfo(namespace=request.namespace, name=request.pool_name)
 
-    async def ListPools(self, request, context):
+    def ListPools(self, request, context):
         return pb2.ListPoolsResponse(
             items=[pb2.PoolInfo(namespace=request.namespace, name="default-pool")]
         )
 
 
-@pytest_asyncio.fixture
-async def client_and_server():
+@pytest.fixture
+def client_and_server():
     service = _FakeFastPathService()
-    server = aio.server()
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     pb2_grpc.add_FastPathServiceServicer_to_server(service, server)
     port = server.add_insecure_port("127.0.0.1:0")
-    await server.start()
-    channel = aio.insecure_channel(f"127.0.0.1:{port}")
+    server.start()
+    channel = grpc.insecure_channel(f"127.0.0.1:{port}")
     stub = pb2_grpc.FastPathServiceStub(channel)
     client = FastPathClient(endpoint=f"127.0.0.1:{port}")
     client._channel = channel  # noqa: SLF001 - share the fixture channel
@@ -146,12 +146,11 @@ async def client_and_server():
     try:
         yield client, service
     finally:
-        await channel.close()
-        await server.stop(None)
+        channel.close()
+        server.stop(None)
 
 
-@pytest.mark.asyncio
-async def test_create_sandbox_passes_through_fields(client_and_server):
+def test_create_sandbox_passes_through_fields(client_and_server):
     client, service = client_and_server
     request = pb2.CreateRequest(
         request_id="sbx-1",
@@ -165,7 +164,7 @@ async def test_create_sandbox_passes_through_fields(client_and_server):
     )
     request.metadata.update({"team": "agents"})
 
-    info = await client.create_sandbox(request)
+    info = client.create_sandbox(request)
 
     assert info.sandbox_name == "sbx-1"
     assert info.namespace == "ns-1"
@@ -174,80 +173,72 @@ async def test_create_sandbox_passes_through_fields(client_and_server):
     assert service.created[-1].envs["PYTHONUNBUFFERED"] == "1"
 
 
-@pytest.mark.asyncio
-async def test_get_sandbox_round_trips_identity(client_and_server):
+def test_get_sandbox_round_trips_identity(client_and_server):
     client, _ = client_and_server
-    info = await client.get_sandbox("ns-1", "sbx-1")
+    info = client.get_sandbox("ns-1", "sbx-1")
     assert info.sandbox_name == "sbx-1"
     assert info.namespace == "ns-1"
 
 
-@pytest.mark.asyncio
-async def test_get_sandbox_not_found_maps_to_fastpath_not_found(client_and_server):
+def test_get_sandbox_not_found_maps_to_fastpath_not_found(client_and_server):
     client, service = client_and_server
     service.get_error = grpc.StatusCode.NOT_FOUND
     with pytest.raises(FastPathNotFound) as exc_info:
-        await client.get_sandbox("ns-1", "missing")
+        client.get_sandbox("ns-1", "missing")
     assert exc_info.value.code == "NOT_FOUND"
 
 
-@pytest.mark.asyncio
-async def test_delete_sandbox_passes_namespace_and_name(client_and_server):
+def test_delete_sandbox_passes_namespace_and_name(client_and_server):
     client, service = client_and_server
-    await client.delete_sandbox("ns-1", "sbx-1")
+    client.delete_sandbox("ns-1", "sbx-1")
     assert service.last_delete == ("ns-1", "sbx-1")
 
 
-@pytest.mark.asyncio
-async def test_list_sandboxes_applies_filter_and_paging(client_and_server):
+def test_list_sandboxes_applies_filter_and_paging(client_and_server):
     client, _ = client_and_server
-    response = await client.list_sandboxes(
+    response = client.list_sandboxes(
         "ns-1", metadata={"team": "agents"}, page_size=10, page_token="tok"
     )
     assert response.items[0].namespace == "ns-1"
 
 
-@pytest.mark.asyncio
-async def test_update_expiration_returns_sandbox(client_and_server):
+def test_update_expiration_returns_sandbox(client_and_server):
     client, _ = client_and_server
-    info = await client.update_expiration("ns-1", "sbx-1", 1750000000)
+    info = client.update_expiration("ns-1", "sbx-1", 1750000000)
     assert info.expires_at_unix_seconds == 1750000000
 
 
-@pytest.mark.asyncio
-async def test_update_metadata_upsert_and_delete_keys(client_and_server):
+def test_update_metadata_upsert_and_delete_keys(client_and_server):
     client, _ = client_and_server
-    info = await client.update_metadata(
+    info = client.update_metadata(
         "ns-1", "sbx-1", upsert={"a": "1"}, delete_keys=["b"]
     )
     assert info.sandbox_name == "sbx-1"
 
 
-@pytest.mark.asyncio
-async def test_diagnostics_and_ready_and_endpoint_calls(client_and_server):
+def test_diagnostics_and_ready_and_endpoint_calls(client_and_server):
     client, _ = client_and_server
 
-    diag = await client.get_sandbox_diagnostics("ns-1", "sbx-1", limit=10)
+    diag = client.get_sandbox_diagnostics("ns-1", "sbx-1", limit=10)
     assert diag.assignment_state == "assigned"
 
-    ready = await client.wait_sandbox_ready(
+    ready = client.wait_sandbox_ready(
         namespaced_reference("ns-1", "sbx-1"), data_plane=True
     )
     assert ready.runtime_state == "Ready"
 
-    resolved = await client.resolve_endpoint(
+    resolved = client.resolve_endpoint(
         namespaced_reference("ns-1", "sbx-1"), component_target("execd")
     )
     assert resolved.resolved_port == 44772
     assert resolved.required_headers["x-fast-sandbox-route-credential"] == "token-1"
 
 
-@pytest.mark.asyncio
-async def test_pool_calls(client_and_server):
+def test_pool_calls(client_and_server):
     client, _ = client_and_server
-    pool = await client.get_pool("ns-1", "default-pool")
+    pool = client.get_pool("ns-1", "default-pool")
     assert pool.name == "default-pool"
-    pools = await client.list_pools("ns-1")
+    pools = client.list_pools("ns-1")
     assert pools.items[0].name == "default-pool"
 
 
@@ -259,9 +250,9 @@ class _TimeoutRecordingStub:
         self.deadlines: list[float | None] = []
 
     def _record(self, method_name):
-        async def call(request, timeout=None):
+        def call(request, timeout=None):
             self.deadlines.append(timeout)
-            return await getattr(self._inner, method_name)(request, None)
+            return getattr(self._inner, method_name)(request, None)
 
         return call
 
@@ -269,8 +260,7 @@ class _TimeoutRecordingStub:
         return self._record(name)
 
 
-@pytest.mark.asyncio
-async def test_deadline_accounts_for_readiness_wait(client_and_server):
+def test_deadline_accounts_for_readiness_wait(client_and_server):
     client, service = client_and_server
     recording = _TimeoutRecordingStub(service)
     client._stub = recording  # noqa: SLF001
@@ -278,27 +268,26 @@ async def test_deadline_accounts_for_readiness_wait(client_and_server):
 
     # Non-waiting endpoint lookups stay on the configured deadline even when a
     # large server-side wait window is supplied.
-    await client.resolve_endpoint(
+    client.resolve_endpoint(
         ref, component_target("execd"), wait_until_ready=False, wait_timeout_millis=60000
     )
     assert recording.deadlines[-1] == 30.0
 
     # Wait-enabled calls extend the deadline beyond the server-side wait.
-    await client.resolve_endpoint(
+    client.resolve_endpoint(
         ref, component_target("execd"), wait_until_ready=True, wait_timeout_millis=60000
     )
     assert recording.deadlines[-1] == 65.0
 
-    await client.wait_sandbox_ready(ref, data_plane=True, wait_timeout_millis=60000)
+    client.wait_sandbox_ready(ref, data_plane=True, wait_timeout_millis=60000)
     assert recording.deadlines[-1] == 65.0
 
     # Plain lifecycle calls always use the configured deadline.
-    await client.get_sandbox("ns-1", "sbx-1")
+    client.get_sandbox("ns-1", "sbx-1")
     assert recording.deadlines[-1] == 30.0
 
 
-@pytest.mark.asyncio
-async def test_error_mapping_covers_common_codes():
+def test_error_mapping_covers_common_codes():
     cases = [
         (grpc.StatusCode.NOT_FOUND, FastPathNotFound),
         (grpc.StatusCode.INVALID_ARGUMENT, FastPathInvalidArgument),
@@ -315,11 +304,10 @@ async def test_error_mapping_covers_common_codes():
         assert error.code == code.name
 
 
-@pytest.mark.asyncio
-async def test_client_requires_connect_before_calls():
+def test_client_requires_connect_before_calls():
     client = FastPathClient(endpoint="127.0.0.1:1")
     with pytest.raises(FastPathUnavailable):
-        await client.create_sandbox(pb2.CreateRequest(request_id="x"))
+        client.create_sandbox(pb2.CreateRequest(request_id="x"))
 
 
 def test_reference_and_target_helpers():
@@ -331,11 +319,20 @@ def test_reference_and_target_helpers():
     assert port_target(8000).port == 8000
 
 
-def _abort_error(code: grpc.StatusCode) -> aio.AioRpcError:
-    """Build a minimal AioRpcError carrying only the status code."""
-    return aio.AioRpcError(
-        code,
-        aio.Metadata(),  # initial_metadata
-        aio.Metadata(),  # trailing_metadata
-        f"scripted {code.name}",
-    )
+def _abort_error(code: grpc.StatusCode) -> grpc.RpcError:
+    """Build a minimal RpcError carrying only the status code."""
+    return _ScriptedRpcError(code)
+
+
+class _ScriptedRpcError(grpc.RpcError):
+    """Minimal RpcError subclass carrying a scripted status."""
+
+    def __init__(self, code: grpc.StatusCode):
+        self._code = code
+        self._details = f"scripted {code.name}"
+
+    def code(self) -> grpc.StatusCode:
+        return self._code
+
+    def details(self) -> str:
+        return self._details
