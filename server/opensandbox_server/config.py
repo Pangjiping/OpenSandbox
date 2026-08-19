@@ -147,12 +147,12 @@ class RenewIntentRedisConfig(BaseModel):
 
 
 class OtelConfig(BaseModel):
-    """Optional OpenTelemetry export for ingested SDK metrics."""
+    """Optional OpenTelemetry export for Server and ingested SDK metrics."""
 
     enabled: bool = Field(
         default=False,
         description=(
-            "Enable OTLP metrics export. When false, SDK events are accepted but recorded as noop."
+            "Enable OTLP metrics export. When false, Server and SDK metrics are noops."
         ),
     )
     endpoint: Optional[str] = Field(

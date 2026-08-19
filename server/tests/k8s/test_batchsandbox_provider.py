@@ -644,6 +644,198 @@ spec:
         assert mount_names.count("opensandbox-bin") == 1
         assert "sandbox-shared-data" in mount_names
 
+    def test_create_workload_applies_template_container_security_context(self, mock_k8s_client, tmp_path):
+        template_file = tmp_path / "template.yaml"
+        template_file.write_text(
+            """
+spec:
+  template:
+    spec:
+      containers:
+        - name: sandbox
+          image: ubuntu:latest
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: Unconfined
+"""
+        )
+        provider = BatchSandboxProvider(
+            mock_k8s_client, _app_config_with_template(str(template_file))
+        )
+        mock_k8s_client.create_custom_object.return_value = {
+            "metadata": {"name": "sandbox-test", "uid": "uid"}
+        }
+
+        provider.create_workload(
+            sandbox_id="test-id",
+            namespace="test-ns",
+            image_spec=ImageSpec(uri="python:3.11"),
+            entrypoint=["/bin/bash"],
+            env={},
+            resource_limits={},
+            labels={},
+            expires_at=datetime(2025, 12, 31, tzinfo=timezone.utc),
+            execd_image="execd:latest",
+        )
+
+        body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
+        container = body["spec"]["template"]["spec"]["containers"][0]
+
+        # Template image must not override the runtime image, but its container
+        # securityContext should be propagated to the generated Pod.
+        assert container["name"] == "sandbox"
+        assert container["image"] == "python:3.11"
+        assert container["securityContext"] == {
+            "runAsNonRoot": True,
+            "seccompProfile": {"type": "Unconfined"},
+        }
+
+    def test_create_workload_merges_template_security_context_with_runtime_network_policy(
+        self, mock_k8s_client, tmp_path
+    ):
+        template_file = tmp_path / "template.yaml"
+        template_file.write_text(
+            """
+spec:
+  template:
+    spec:
+      containers:
+        - name: sandbox
+          image: ubuntu:latest
+          securityContext:
+            runAsNonRoot: true
+"""
+        )
+        provider = BatchSandboxProvider(
+            mock_k8s_client, _app_config_with_template(str(template_file))
+        )
+        mock_k8s_client.create_custom_object.return_value = {
+            "metadata": {"name": "sandbox-test", "uid": "uid"}
+        }
+
+        provider.create_workload(
+            sandbox_id="test-id",
+            namespace="test-ns",
+            image_spec=ImageSpec(uri="python:3.11"),
+            entrypoint=["/bin/bash"],
+            env={},
+            resource_limits={},
+            labels={},
+            expires_at=datetime(2025, 12, 31, tzinfo=timezone.utc),
+            execd_image="execd:latest",
+            network_policy=NetworkPolicy(default_action="deny", egress=[]),
+            egress_image="opensandbox/egress:v1.1.6",
+        )
+
+        body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
+        container = body["spec"]["template"]["spec"]["containers"][0]
+
+        # Runtime-provided securityContext keys (network policy capabilities) win;
+        # template-provided keys supplement rather than replace them.
+        assert container["securityContext"] == {
+            "runAsNonRoot": True,
+            "capabilities": {"drop": ["NET_ADMIN"]},
+        }
+
+    def test_create_workload_merges_template_nested_capabilities_with_runtime_network_policy(
+        self, mock_k8s_client, tmp_path
+    ):
+        template_file = tmp_path / "template.yaml"
+        template_file.write_text(
+            """
+spec:
+  template:
+    spec:
+      containers:
+        - name: sandbox
+          image: ubuntu:latest
+          securityContext:
+            capabilities:
+              add:
+                - SYS_PTRACE
+"""
+        )
+        provider = BatchSandboxProvider(
+            mock_k8s_client, _app_config_with_template(str(template_file))
+        )
+        mock_k8s_client.create_custom_object.return_value = {
+            "metadata": {"name": "sandbox-test", "uid": "uid"}
+        }
+
+        provider.create_workload(
+            sandbox_id="test-id",
+            namespace="test-ns",
+            image_spec=ImageSpec(uri="python:3.11"),
+            entrypoint=["/bin/bash"],
+            env={},
+            resource_limits={},
+            labels={},
+            expires_at=datetime(2025, 12, 31, tzinfo=timezone.utc),
+            execd_image="execd:latest",
+            network_policy=NetworkPolicy(default_action="deny", egress=[]),
+            egress_image="opensandbox/egress:v1.1.6",
+        )
+
+        body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
+        container = body["spec"]["template"]["spec"]["containers"][0]
+
+        # Nested dicts merge: the template's capabilities.add survives even though
+        # network-policy wiring populates a different member (capabilities.drop).
+        assert container["securityContext"] == {
+            "capabilities": {
+                "add": ["SYS_PTRACE"],
+                "drop": ["NET_ADMIN"],
+            },
+        }
+
+    def test_create_workload_runtime_capabilities_win_over_template_conflicts(
+        self, mock_k8s_client, tmp_path
+    ):
+        template_file = tmp_path / "template.yaml"
+        template_file.write_text(
+            """
+spec:
+  template:
+    spec:
+      containers:
+        - name: sandbox
+          image: ubuntu:latest
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+"""
+        )
+        provider = BatchSandboxProvider(
+            mock_k8s_client, _app_config_with_template(str(template_file))
+        )
+        mock_k8s_client.create_custom_object.return_value = {
+            "metadata": {"name": "sandbox-test", "uid": "uid"}
+        }
+
+        provider.create_workload(
+            sandbox_id="test-id",
+            namespace="test-ns",
+            image_spec=ImageSpec(uri="python:3.11"),
+            entrypoint=["/bin/bash"],
+            env={},
+            resource_limits={},
+            labels={},
+            expires_at=datetime(2025, 12, 31, tzinfo=timezone.utc),
+            execd_image="execd:latest",
+            network_policy=NetworkPolicy(default_action="deny", egress=[]),
+            egress_image="opensandbox/egress:v1.1.6",
+        )
+
+        body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
+        container = body["spec"]["template"]["spec"]["containers"][0]
+
+        # Conflicting leaves keep the runtime value (network-policy requirement).
+        assert container["securityContext"] == {
+            "capabilities": {"drop": ["NET_ADMIN"]},
+        }
+
     def test_create_workload_sets_resource_limits_and_requests(self, mock_k8s_client):
         provider = BatchSandboxProvider(mock_k8s_client)
         mock_k8s_client.create_custom_object.return_value = {

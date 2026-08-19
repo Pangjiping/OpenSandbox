@@ -61,6 +61,26 @@ from opensandbox_server.services.runtime_resolver import SecureRuntimeResolver
 logger = logging.getLogger(__name__)
 
 
+def _merge_security_context(
+    template_sc: Dict[str, Any], runtime_sc: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Merge the template's container securityContext into the runtime one.
+
+    Nested dicts (capabilities, seccompProfile, ...) merge recursively so a
+    template member on one key (e.g. capabilities.add) survives even when the
+    runtime populates another key of the same field (e.g. capabilities.drop from
+    network-policy wiring). On actual conflicting leaves, the runtime value wins.
+    """
+    merged = dict(template_sc)
+    for key, runtime_value in runtime_sc.items():
+        template_value = merged.get(key)
+        if isinstance(runtime_value, dict) and isinstance(template_value, dict):
+            merged[key] = _merge_security_context(template_value, runtime_value)
+        else:
+            merged[key] = runtime_value
+    return merged
+
+
 class BatchSandboxProvider(WorkloadProvider):
     """Workload provider for BatchSandbox CRDs."""
     
@@ -163,7 +183,7 @@ class BatchSandboxProvider(WorkloadProvider):
                 annotations=annotations,
             )
 
-        extra_volumes, extra_mounts = self._extract_template_pod_extras()
+        extra_volumes, extra_mounts, extra_security_context = self._extract_template_pod_extras()
 
         if windows_profile:
             validate_windows_profile_resource_limits(resource_limits)
@@ -289,7 +309,9 @@ class BatchSandboxProvider(WorkloadProvider):
             batchsandbox["spec"].pop("expireTime", None)
         else:
             batchsandbox["spec"]["expireTime"] = expires_at.isoformat()
-        self._merge_pod_spec_extras(batchsandbox, extra_volumes, extra_mounts)
+        self._merge_pod_spec_extras(
+            batchsandbox, extra_volumes, extra_mounts, extra_security_context
+        )
         merged_pod_spec = batchsandbox.get("spec", {}).get("template", {}).get("spec", {})
         ensure_egress_runtime_compatible(
             network_policy,
@@ -424,14 +446,17 @@ class BatchSandboxProvider(WorkloadProvider):
             "kind": "BatchSandbox",
         }
 
-    def _extract_template_pod_extras(self) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]]]:
-        """Extract extra template volumes and mounts for runtime merge."""
+    def _extract_template_pod_extras(
+        self,
+    ) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """Extract extra template volumes, mounts, and container securityContext for runtime merge."""
         template = self.template_manager.get_base_template()
         spec = template.get("spec", {}) if isinstance(template, dict) else {}
         template_spec = spec.get("template", {}).get("spec", {})
         extra_volumes = template_spec.get("volumes", []) or []
 
         extra_mounts: list[Dict[str, Any]] = []
+        extra_security_context: Optional[Dict[str, Any]] = None
         containers = template_spec.get("containers", []) or []
         if containers:
             target = None
@@ -442,20 +467,24 @@ class BatchSandboxProvider(WorkloadProvider):
             if target is None:
                 target = containers[0]
             extra_mounts = target.get("volumeMounts", []) or []
+            security_context = target.get("securityContext")
+            if isinstance(security_context, dict):
+                extra_security_context = security_context
 
         if not isinstance(extra_volumes, list):
             extra_volumes = []
         if not isinstance(extra_mounts, list):
             extra_mounts = []
-        return extra_volumes, extra_mounts
+        return extra_volumes, extra_mounts, extra_security_context
 
     def _merge_pod_spec_extras(
         self,
         batchsandbox: Dict[str, Any],
         extra_volumes: list[Dict[str, Any]],
         extra_mounts: list[Dict[str, Any]],
+        extra_security_context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Merge template-provided volumes and mounts into runtime pod spec."""
+        """Merge template-provided volumes, mounts, and securityContext into runtime pod spec."""
         try:
             spec = batchsandbox["spec"]["template"]["spec"]
         except KeyError:
@@ -478,6 +507,18 @@ class BatchSandboxProvider(WorkloadProvider):
         if not containers or not isinstance(containers, list):
             return
         main_container = containers[0]
+        if extra_security_context and isinstance(main_container, dict):
+            # The template's container securityContext is a base default: merge it
+            # into the runtime container's own securityContext (runtime leaves win,
+            # nested dicts merge so template members like capabilities.add survive),
+            # and fill the whole context when the runtime sets none.
+            runtime_security_context = main_container.get("securityContext")
+            if isinstance(runtime_security_context, dict):
+                main_container["securityContext"] = _merge_security_context(
+                    extra_security_context, runtime_security_context
+                )
+            else:
+                main_container["securityContext"] = extra_security_context
         mounts = main_container.get("volumeMounts", []) or []
         if isinstance(mounts, list) and extra_mounts:
             existing = {m.get("name") for m in mounts if isinstance(m, dict)}
