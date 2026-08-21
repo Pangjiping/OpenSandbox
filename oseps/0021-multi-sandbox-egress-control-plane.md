@@ -35,7 +35,7 @@ status: draft
 
 ## Summary
 
-A single egress control plane serves N sandboxes sharing one host/network domain (fast-sandbox Fastlet Pod, or bwrap isolated sessions). The existing single-sandbox sidecar profile is unchanged; `pod` profile adds a **Subject** abstraction — one opaque identifier per sandbox owning an isolated slice of policy, credentials, and kernel rules — dispatched by platform-provided identity keys. For fast-sandbox, the design deliberately avoids touching fast-sandbox's API: identity is observed from fastlet's existing network state store, policies are pushed by the server over fast-sandbox's own proxy-route mechanism, and credentials arrive via Secret volume (memory-only in egress). A subject is fail-closed (deny-everything) from the moment it is observed until its policy lands, so "create-then-configure" can never be fail-open.
+A single egress control plane serves N sandboxes sharing one host/network domain (fast-sandbox Fastlet Pod, or bwrap isolated sessions). The existing single-sandbox sidecar profile is unchanged; `pod` profile adds a **Subject** abstraction — one opaque identifier per sandbox owning an isolated slice of policy, credentials, and kernel rules — dispatched by platform-provided identity keys. For fast-sandbox, the design deliberately avoids touching fast-sandbox's API: identity is observed from fastlet's existing network state store, and both policies and credentials are pushed by the server over fast-sandbox's own proxy-route mechanism (credentials stay memory-only in egress, consistent with OSEP-0012). A subject is fail-closed (deny-everything) from the moment it is observed until its policy lands, so "create-then-configure" can never be fail-open.
 
 ## Motivation
 
@@ -72,17 +72,16 @@ type SubjectRuleBuilder interface { Predicates(subject Subject) (...) }    // co
 
 Single-sandbox mode is the process being one implicit subject (no-op layer); `pod` profile is N subjects. The authority over "who is who" never belongs to egress — each adapter must prove its key unforgeable (IPAM + per-sandbox netns without `NET_ADMIN`; execd-assigned uid).
 
-### Three Control Paths
+### Two Control Paths
 
-`pod` profile has **no sandbox-reachable policy surface** (a fast-sandbox guest root is untrusted and must not rewrite its own policy). All policy/credential state flows over three disjoint paths, none involving fastlet code:
+`pod` profile has **no sandbox-reachable policy surface** (a fast-sandbox guest root is untrusted and must not rewrite its own policy). All policy/credential state flows over two disjoint paths, none involving fastlet code:
 
 | Path | Direction | Auth | Carries |
 |------|-----------|------|---------|
-| **1. Proxy route** `/v1/sandboxfleets/{sandboxId}/egress/*` | server/SDK → fastlet-proxy → egress listener (`127.0.0.1:18080`, Pod netns) | Ed25519 route credential (proxy-verified) + `X-Fast-Sandbox-Uid` header added by proxy | Policy push and runtime policy/vault operations (existing `egress-api.yaml` semantics) |
-| **2. Slot store** `/run/fast-sandbox/network/*.json` | fastlet writes (existing logic), egress observes read-only | shared volume | Subject lifecycle: identity, `SubjectKey`, fencing — **no policy** |
-| **3. Secret volume** | server provisions Secret, kubelet syncs to egress mount | Kubernetes Secret | Credentials, loaded to egress memory only |
+| **1. Proxy route** `/v1/sandboxfleets/{sandboxId}/egress/*` | server/SDK → fastlet-proxy → egress listener (`127.0.0.1:18080`, Pod netns) | Ed25519 route credential (proxy-verified) + `X-Fast-Sandbox-Uid` header added by proxy | Policy push and runtime policy/vault operations (existing `egress-api.yaml` semantics) — **including credential pushes** (`/credential-vault`), memory-only in egress |
+| **2. Slot store** `/run/fast-sandbox/network/*.json` | fastlet writes (existing logic), egress observes read-only | shared volume | Subject lifecycle: identity, `SubjectKey`, fencing — **no policy, no credentials** |
 
-The listener binds `127.0.0.1:18080` (Pod netns loopback) — sandbox netns cannot reach it, so the proxy is the only peer; egress rejects unknown UIDs (404). There is no unix socket and no egress-managed state file.
+The listener binds `127.0.0.1:18080` (Pod netns loopback) — sandbox netns cannot reach it, so the proxy is the only peer; egress rejects unknown UIDs (404). Credentials are delivered by the server as complete vault revisions over the proxy route, consistent with OSEP-0012 (no Kubernetes Secret, no kubelet sync dependency). There is no unix socket, no Secret volume, and no egress-managed state file.
 
 ### Lifecycle and Fail-Closed Guarantee
 
@@ -94,7 +93,7 @@ absent ────────────► denying ────────�
 ```
 
 - **Register** on observing a bound slot (identity + fencing from `Owner`); **denying** state installs deny-first rules immediately (nft sets empty, resolv.conf → gateway, REDIRECT + forward rules) — the subject is fully blocked until policy lands.
-- **Update** on policy push (proxy route): DNS policy swap + one atomic nft batch (delete+add in a single `nft -f` transaction). Credential updates via Secret volume refresh (inotify), memory-only.
+- **Update** on policy push (proxy route): DNS policy swap + one atomic nft batch (delete+add in a single `nft -f` transaction). Credential updates are pushed the same way (`/credential-vault`), memory-only.
 - **Unload** on slot-file deletion (fastlet's existing release path): detach → deny → free.
 - **Race handling**: a push for an unknown UID is cached as pending (with TTL) until the slot appears; both sides idempotent. Fencing mismatch (same UID, new generation) discards old state — a reset can never carry old policy into a new sandbox.
 - **Recovery**: egress restart → rescan slot store, every live subject re-enters `denying`; server reconciliation re-pushes policies. No platform replay, no fastlet involvement.
@@ -127,7 +126,6 @@ sequenceDiagram
     participant E as Egress daemon
     participant P as fastlet-proxy
     participant SRV as OpenSandbox server
-    participant SEC as Secret volume
     participant SDK as User / SDK
 
     SRV->>C: CreateSandbox (no policy fields)
@@ -139,8 +137,8 @@ sequenceDiagram
     SRV->>P: PUT /v1/sandboxfleets/{sandboxId}/egress/policy
     P->>E: forward (UID header → subject)
     E->>E: apply policy atomically → active
-    SRV->>SEC: create Secret (credentials)
-    SEC->>E: kubelet sync → load to memory
+    SRV->>P: PUT /v1/sandboxfleets/{sandboxId}/egress/credential-vault
+    P->>E: forward (vault revision → subject vault, memory-only)
     SRV-->>SDK: sandbox ready (policy + credentials in place)
 ```
 
@@ -154,16 +152,15 @@ sequenceDiagram
     participant U as SDK / server
     participant P as fastlet-proxy
     participant E as Egress daemon
-    participant SEC as Secret volume
 
     alt Policy update
         U->>P: PATCH /v1/sandboxfleets/{sandboxId}/egress/policy
         P->>E: forward (route credential, UID header)
         E->>E: DNS swap (atomic) + nft batch rebuild
     else Credential update
-        U->>SEC: update Secret
-        SEC->>E: kubelet sync → inotify
-        E->>E: vault rebind in memory
+        U->>P: PUT /v1/sandboxfleets/{sandboxId}/egress/credential-vault
+        P->>E: forward (UID header → subject)
+        E->>E: vault rebind in memory; new flows pick up new credentials
     end
 ```
 
@@ -173,7 +170,7 @@ Unload is purely observational: sandbox deletion → slot file disappears → Un
 
 ### Profile Separation
 
-The two profiles are mutually exclusive deployment forms. `sidecar`: a service inside the sandbox network domain owning the public contract (18080, `/policy`, `/credential-vault`) — unchanged. `pod`: a host-domain control-plane component — identity from slot store, policy from server pushes, credentials from Secret volume.
+The two profiles are mutually exclusive deployment forms. `sidecar`: a service inside the sandbox network domain owning the public contract (18080, `/policy`, `/credential-vault`) — unchanged. `pod`: a host-domain control-plane component — identity from slot store, policies and credentials pushed by the server over the proxy route.
 
 ### Security Boundaries
 
@@ -181,7 +178,7 @@ The two profiles are mutually exclusive deployment forms. `sidecar`: a service i
 |----------|-----------|
 | No sandbox-reachable policy surface | Listener on Pod-netns loopback only; sandbox guests cannot reach it; UID header trust relies on the proxy being the only peer |
 | Control plane outside the sandbox | Egress daemon never runs in the guest (RFC #1582 trust-boundary analysis); sandbox users run privileged and cannot touch it |
-| Credentials memory-only | Secret volume is read into memory; never written to egress disk; no per-subject secret reuse (breach scoping) |
+| Credentials memory-only | Complete vault revisions are pushed over the proxy route (OSEP-0012 model) and held in egress memory; never written to egress disk; no per-subject secret reuse (breach scoping). Transport note: the proxy route is Pod-network HTTP — the same trust domain the existing route-credential mechanism already assumes |
 | Fail-closed at every transition | `denying` state, atomic policy swaps, deny-first registration |
 | Management plane independent of subject state | While a subject is `denying` (or `active`), policy pushes and runtime policy/vault operations remain fully usable: the proxy route terminates in the host domain (Pod-netns loopback) and never traverses sandbox traffic paths — only application traffic is blocked (DNS NXDOMAIN + forward drop) |
 | No creation window when egress is unavailable | The OpenSandbox runtime driver probes egress healthz (`127.0.0.1:18080/healthz`, same Pod netns) inside `EnsureSandbox` before creating the sandbox container; unready egress rejects creation — the normal path has no window anyway (slot `Bound` is written by `Acquire` before the container is created, so deny-first rules and the rewritten resolv.conf are in place before the first packet) |
@@ -197,12 +194,12 @@ The two profiles are mutually exclusive deployment forms. `sidecar`: a service i
 | DNS | proxy on `<gateway>:53`, resolv.conf rewritten | per-subject port REDIRECT `-m owner --uid-owner` (port = subject) |
 | MITM | shared mitmdump, vault by client IP | per-subject ports |
 | Lifecycle authority | fastlet slot store (read-only) | execd session registry, same watch pattern |
-| Credentials | Secret volume | proxy-route vault endpoints |
+| Credentials | proxy-route vault endpoints (OSEP-0012 model) | proxy-route vault endpoints |
 | Endpoint | `/v1/sandboxfleets/{sandboxId}/egress/*` via `ResolveEndpoint` (host delivery mode) | n/a |
 
 ### Scaling Constraints
 
-Two scales matter independently. **Cluster-wide** there is no centralized bottleneck: policy is pushed point-to-point per Fastlet Pod, identity observed from per-Pod slot stores, credentials ride Secret volumes — no watch storm, no etcd write amplification, no API-server dependency in the policy path (decisive argument against a CRD/ConfigMap policy carrier). **Per-Pod density** (target 64 subjects/Pod, ≤100 policy updates/s/Pod): nft dispatch is O(1) with incremental per-subject set updates; the connection-refresh loop must be bucketed per subject; one shared mitmdump; DNS proxy is a stateless map lookup; watch inotify count limits (default 8192) on shared hosts with polling fallback. Server orchestration must be idempotent — a failed push leaves the subject `denying` (safe) and the server retries before marking the sandbox usable.
+Two scales matter independently. **Cluster-wide** there is no centralized bottleneck: policy and credentials are pushed point-to-point per Fastlet Pod, identity observed from per-Pod slot stores — no watch storm, no etcd write amplification, no API-server dependency in the control path (decisive argument against a CRD/ConfigMap policy carrier). **Per-Pod density** (target 64 subjects/Pod, ≤100 policy updates/s/Pod): nft dispatch is O(1) with incremental per-subject set updates; the connection-refresh loop must be bucketed per subject; one shared mitmdump; DNS proxy is a stateless map lookup; watch inotify count limits (default 8192) on shared hosts with polling fallback. Server orchestration must be idempotent — a failed push leaves the subject `denying` (safe) and the server retries before marking the sandbox usable.
 
 ## Impact on fast-sandbox
 
@@ -215,7 +212,7 @@ Verified against current source; all are internal, no API/CRD/protocol changes:
 3. **UID propagation**: the proxy rewrites outbound paths to the suffix only (`proxy.go:140`), so it must inject `X-Fast-Sandbox-Uid` (outside `stripRouteHeaders`) — this is what answers "which subject".
 4. **Route parsing**: `parseTarget` currently recognizes only `/v1/sandboxes/` (ports) and `/v2/sandboxes/` (components) prefixes (`proxy.go:164-171`); it gains a `/v1/sandboxfleets/{sandboxId}/egress/*` branch that resolves the sandbox route, verifies the credential, and targets egress — independent of the component `Components` map.
 
-Deployment config: egress container in Pool `FastletTemplate` (Pod-netns privileges; slot-store, netns-mount, and Secret volumes shared/mounted).
+Deployment config: egress container in Pool `FastletTemplate` (Pod-netns privileges; slot-store and netns-mount volumes shared/mounted).
 
 **OpenSandbox runtime driver**: the OpenSandbox integration lands as a **new `internal/runtime/contract.Driver` implementation** (registered in the runtime factory alongside containerd/boxlite). The egress healthz probe lives inside its `EnsureSandbox` (after slot `Acquire`, before container creation): unready egress → reject with a runtime-unavailable error. Existing drivers are untouched; existing Fastlet Pods without the egress component behave exactly as today.
 
@@ -225,14 +222,14 @@ fast-sandbox CRDs, RPC protocol, `SandboxSpec`, fastlet phases/admission/deletio
 
 ### OpenSandbox Server
 
-- Fleets mapping removes the phase-1a rejection of `networkPolicy`/`credentialProxy` (`services/fleets/create_mapping.py:253,263`) and orchestrates create-then-configure (policy push + Secret provisioning) with idempotent retries.
+- Fleets mapping removes the phase-1a rejection of `networkPolicy`/`credentialProxy` (`services/fleets/create_mapping.py:253,263`) and orchestrates create-then-configure (policy push + credential-vault push) with idempotent retries.
 - Endpoint reuse: `fastpath_client.resolve_endpoint(...)` for the egress target; the returned proxy route uses the `/v1/sandboxfleets/{sandboxId}/egress/*` prefix. Route-credential issuance and proxy verification unchanged.
 - Egress readiness surfaced via the platform's `InfraComponentStatus` channel (optional, non-blocking).
 
 ## Test Plan
 
 - Unit: subject registry transitions and fail-closed invariants; rule-builder determinism; dispatch (DNS per-subject, nft sets, mitm vault selection).
-- fast-sandbox e2e (Kind): N sandboxes with distinct policies on one Fastlet Pod; per-subject allow/deny at DNS/nft; sibling isolation; fail-closed create-then-configure window (including push racing slot observation); Secret refresh rebinds vaults; restart recovery (rescan → `denying` → server re-push → active, no stale rules); sandbox cannot reach any policy-mutation surface; UID-header forgery rejected.
+- fast-sandbox e2e (Kind): N sandboxes with distinct policies on one Fastlet Pod; per-subject allow/deny at DNS/nft; sibling isolation; fail-closed create-then-configure window (including push racing slot observation); credential-vault push binds the right subject and rebinds on update; restart recovery (rescan → `denying` → server re-push → active, no stale rules); sandbox cannot reach any policy-mutation surface; UID-header forgery rejected.
 - bwrap: per-uid dispatch with host-uid allowlist intact. Kata: policy enforced via the Pod netns forward hook.
 - Compatibility: full egress suite in `sidecar` profile; `test_egress_helper.py` unchanged.
 - Manual: kill mid-transition; restart storm; failed push leaves subject `denying`, retry succeeds.
@@ -241,7 +238,7 @@ fast-sandbox CRDs, RPC protocol, `SandboxSpec`, fastlet phases/admission/deletio
 
 Drawbacks: a Pod-domain daemon is a larger trust domain than per-sandbox processes (mitigated by per-subject isolation + deny-first); create-then-configure changes provisioning semantics (usable only after push succeeds); policy has no cluster-side record, so the server must keep its own state and reconcile after restart.
 
-Alternatives considered: per-subject host-side processes (kept as deployment variant); per-sandbox sidecar in the guest netns (rejected — control plane inside the trust boundary it controls is not a security control); eBPF/cgroup dispatch (deferred); policy carrier via CRD/ConfigMap (rejected — semantic mismatch, etcd write amplification, watch storms, credential exposure, and it couples a generic component to the cluster API); credentials via a host-domain unix socket (replaced by Secret volume).
+Alternatives considered: per-subject host-side processes (kept as deployment variant); per-sandbox sidecar in the guest netns (rejected — control plane inside the trust boundary it controls is not a security control); eBPF/cgroup dispatch (deferred); policy carrier via CRD/ConfigMap (rejected — semantic mismatch, etcd write amplification, watch storms, credential exposure, and it couples a generic component to the cluster API); credentials via a host-domain unix socket or Kubernetes Secret volume (replaced by direct vault-API pushes over the proxy route, consistent with OSEP-0012).
 
 ## Infrastructure and Migration
 
