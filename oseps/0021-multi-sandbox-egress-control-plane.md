@@ -15,7 +15,7 @@ status: draft
 - [Goals and Non-Goals](#goals-and-non-goals)
 - [Core Design](#core-design)
   - [Subject Abstraction](#subject-abstraction)
-  - [Three Control Paths](#three-control-paths)
+  - [Two Control Paths](#two-control-paths)
   - [Lifecycle and Fail-Closed Guarantee](#lifecycle-and-fail-closed-guarantee)
   - [Per-Subject Policy Consumption](#per-subject-policy-consumption)
   - [Sequences](#sequences)
@@ -150,6 +150,7 @@ sequenceDiagram
     participant SDK as User / SDK
 
     SRV->>C: CreateSandbox (no policy fields)
+    C->>F: create runtime (RPC)
     F->>S: slot bound (slot.json written — existing logic)
     Note over E: fsnotify: bound slot
     E->>E: Register subject: deny-first rules, resolv.conf → gateway
@@ -202,8 +203,8 @@ The two profiles are mutually exclusive deployment forms. `sidecar`: a service i
 | Credentials memory-only | Complete vault revisions are pushed over the proxy route (OSEP-0012 model) and held in egress memory; never written to egress disk; no per-subject secret reuse (breach scoping). Transport note: the proxy route is Pod-network HTTP — the same trust domain the existing route-credential mechanism already assumes |
 | Fail-closed at every transition | `denying` state, atomic policy swaps, deny-first registration |
 | Management plane independent of subject state | While a subject is `denying` (or `active`), policy pushes and runtime policy/vault operations remain fully usable: the proxy route terminates in the host domain (Pod-netns loopback) and never traverses sandbox traffic paths — only application traffic is blocked (DNS NXDOMAIN + forward drop) |
-| No creation window when egress is unavailable | The OpenSandbox runtime driver probes egress healthz (`127.0.0.1:18080/healthz`, same Pod netns) inside `EnsureSandbox` before creating the sandbox container; unready egress rejects creation — the normal path has no window anyway (slot `Bound` is written by `Acquire` before the container is created, so deny-first rules and the rewritten resolv.conf are in place before the first packet) |
-| Dispatch key unforgeability | IPAM + per-sandbox netns without `NET_ADMIN`/`NET_RAW`; `iifname` binding hardens UDP spoofing |
+| No creation window when egress is unavailable | The OpenSandbox runtime driver probes egress healthz (`127.0.0.1:18080/healthz`, same Pod netns) inside `EnsureSandbox` before creating the sandbox container; unready egress rejects creation. The normal path has no window anyway (slot `Bound` is written by `Acquire` before the container is created, and deny-first installation is far faster than container startup); a fully deterministic guarantee (independent of timing) would additionally require the driver to confirm the subject is registered before container creation — recorded as a known trade-off |
+| Dispatch key unforgeability | IPAM + per-sandbox netns without `NET_ADMIN` (existing); the new OpenSandbox driver additionally drops `NET_RAW`; `iifname` binding remains as defense in depth |
 | Enforcement placement | Pod netns `hook forward` (MASQUERADE happens at POSTROUTING, source IP intact); per-sandbox netns OUTPUT installed from host (defense in depth, `linux_driver.go` precedent); Kata covered via TAP (same forward surface) |
 
 ### Platform Adapters
@@ -216,7 +217,7 @@ The two profiles are mutually exclusive deployment forms. `sidecar`: a service i
 | MITM | shared mitmdump, vault by client IP | per-subject ports |
 | Lifecycle authority | fastlet slot store (read-only) | execd session registry, same watch pattern |
 | Credentials | proxy-route vault endpoints (OSEP-0012 model) | proxy-route vault endpoints |
-| Endpoint | `/v1/sandboxfleets/{sandboxId}/egress/*` via `ResolveEndpoint` (host delivery mode) | n/a |
+| Endpoint | `/v1/sandboxfleets/{sandboxId}/egress/*` via `ResolveEndpoint` (host delivery mode) | TBD (execd adapter to be detailed separately) |
 
 ### Scaling Constraints
 
@@ -244,7 +245,7 @@ Verified against current source; all are internal, no API/CRD/protocol changes:
 1. **Host delivery mode** in the infra catalog (`InfraDeliveryMode`, e.g. `host-process`, alongside bind-mount/image-layer/guest-copy, `internal/catalog/runtime/catalog.go:36-43`): compiled into the Pool revision but excluded from the in-sandbox `sandbox-init` supervisor config; the daemon is provisioned by `FastletTemplate`; readiness probing targets the Pod-netns listener instead of the sandbox IP.
 2. **Host upstream in fastlet-proxy**: the proxy currently forwards to the sandbox `Access` address only (DirectIP/LocalForward, `internal/dataplane/fastletproxy/proxy.go:101-133`). The egress route must forward to the Pod-netns listener (`127.0.0.1:18080`) instead.
 3. **UID propagation**: the proxy rewrites outbound paths to the suffix only (`proxy.go:140`), so it must inject `X-Fast-Sandbox-Uid` (outside `stripRouteHeaders`) — this is what answers "which subject".
-4. **Route parsing**: `parseTarget` currently recognizes only `/v1/sandboxes/` (ports) and `/v2/sandboxes/` (components) prefixes (`proxy.go:164-171`); it gains a `/v1/sandboxfleets/{sandboxId}/egress/*` branch that resolves the sandbox route, verifies the credential, and targets egress — independent of the component `Components` map.
+4. **Route parsing**: `parseTarget` currently recognizes only `/v1/sandboxes/` (ports) and `/v2/sandboxes/` (components) prefixes (`proxy.go:164-171`); it gains a `/v1/sandboxfleets/{sandboxId}/egress/*` branch that resolves the sandbox route, verifies the credential, and targets egress — independent of the component `Components` map. The credential's target semantics in this branch must match what `ResolveEndpoint` issues for the egress target (component-target `egress`, or a dedicated sandboxfleets target — both sides must agree).
 
 Deployment config: egress container in Pool `FastletTemplate` (Pod-netns privileges; slot-store and netns-mount volumes shared/mounted).
 
