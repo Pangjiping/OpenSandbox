@@ -25,6 +25,7 @@ status: draft
   - [Platform Adapters](#platform-adapters)
   - [Scaling Constraints](#scaling-constraints)
 - [Impact on fast-sandbox](#impact-on-fast-sandbox)
+  - [Requirements on the Existing Implementation](#requirements-on-the-existing-implementation)
   - [Four Internal Additions](#four-internal-additions)
   - [Explicitly Untouched](#explicitly-untouched)
   - [OpenSandbox Server](#opensandbox-server)
@@ -202,6 +203,20 @@ The two profiles are mutually exclusive deployment forms. `sidecar`: a service i
 Two scales matter independently. **Cluster-wide** there is no centralized bottleneck: policy and credentials are pushed point-to-point per Fastlet Pod, identity observed from per-Pod slot stores — no watch storm, no etcd write amplification, no API-server dependency in the control path (decisive argument against a CRD/ConfigMap policy carrier). **Per-Pod density** (target 64 subjects/Pod, ≤100 policy updates/s/Pod): nft dispatch is O(1) with incremental per-subject set updates; the connection-refresh loop must be bucketed per subject; one shared mitmdump; DNS proxy is a stateless map lookup; watch inotify count limits (default 8192) on shared hosts with polling fallback. Server orchestration must be idempotent — a failed push leaves the subject `denying` (safe) and the server retries before marking the sandbox usable.
 
 ## Impact on fast-sandbox
+
+### Requirements on the Existing Implementation
+
+Verified against current source (`internal/runtime/containerd/driver.go`):
+
+| Requirement | Status | Notes |
+|------------|--------|-------|
+| Per-sandbox slot store (`Owner`, IP, netns, veth; Bound/delete lifecycle) | ✅ already present | consumed read-only by egress |
+| Slot pre-provisioning: netns/veth/MASQUERADE ready before sandbox creation; `Acquire` writes Bound before the container is created | ✅ already present | basis of the no-creation-window guarantee |
+| Sandbox without `NET_ADMIN` (dispatch key unforgeable) | ✅ already present | spec sets no capabilities (`driver.go:438`); runc defaults exclude `NET_ADMIN` |
+| Sandbox without `NET_RAW` | ⚠️ not dropped | runc defaults grant `NET_RAW` → UDP source spoofing possible; mitigated by `iifname` binding in nft, **or drop `NET_RAW` in the runtime driver (preferred, additive)** |
+| resolv.conf bind-mount from slot `DNSPath` | ✅ already present | rewritten by egress before the mount happens |
+| Route-credential issuance/verification + fastlet-proxy in Pod netns | ✅ already present | reused as-is |
+| Egress container mountable via `FastletTemplate` (shared volumes) | ✅ deployment-level | no code change |
 
 ### Four Internal Additions
 
