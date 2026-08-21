@@ -183,6 +183,8 @@ The two profiles are mutually exclusive deployment forms. `sidecar`: a service i
 | Control plane outside the sandbox | Egress daemon never runs in the guest (RFC #1582 trust-boundary analysis); sandbox users run privileged and cannot touch it |
 | Credentials memory-only | Secret volume is read into memory; never written to egress disk; no per-subject secret reuse (breach scoping) |
 | Fail-closed at every transition | `denying` state, atomic policy swaps, deny-first registration |
+| Management plane independent of subject state | While a subject is `denying` (or `active`), policy pushes and runtime policy/vault operations remain fully usable: the proxy route terminates in the host domain (Pod-netns loopback) and never traverses sandbox traffic paths — only application traffic is blocked (DNS NXDOMAIN + forward drop) |
+| No creation window when egress is unavailable | The OpenSandbox runtime driver probes egress healthz (`127.0.0.1:18080/healthz`, same Pod netns) inside `EnsureSandbox` before creating the sandbox container; unready egress rejects creation — the normal path has no window anyway (slot `Bound` is written by `Acquire` before the container is created, so deny-first rules and the rewritten resolv.conf are in place before the first packet) |
 | Dispatch key unforgeability | IPAM + per-sandbox netns without `NET_ADMIN`/`NET_RAW`; `iifname` binding hardens UDP spoofing |
 | Enforcement placement | Pod netns `hook forward` (MASQUERADE happens at POSTROUTING, source IP intact); per-sandbox netns OUTPUT installed from host (defense in depth, `linux_driver.go` precedent); Kata covered via TAP (same forward surface) |
 
@@ -215,9 +217,11 @@ Verified against current source; all are internal, no API/CRD/protocol changes:
 
 Deployment config: egress container in Pool `FastletTemplate` (Pod-netns privileges; slot-store, netns-mount, and Secret volumes shared/mounted).
 
+**OpenSandbox runtime driver**: the OpenSandbox integration lands as a **new `internal/runtime/contract.Driver` implementation** (registered in the runtime factory alongside containerd/boxlite). The egress healthz probe lives inside its `EnsureSandbox` (after slot `Acquire`, before container creation): unready egress → reject with a runtime-unavailable error. Existing drivers are untouched; existing Fastlet Pods without the egress component behave exactly as today.
+
 ### Explicitly Untouched
 
-fast-sandbox CRDs, RPC protocol, `SandboxSpec`, fastlet phases/admission/deletion paths, the data-plane reconcile loop, route-credential issuance/verification, `sandbox-init` supervisor. `specs/egress-api.yaml` and SDKs unchanged. The server's K8s-mode egress sidecar helper (`egress_helper.py`) is untouched.
+fast-sandbox CRDs, RPC protocol, `SandboxSpec`, fastlet phases/admission/deletion paths, the data-plane reconcile loop, route-credential issuance/verification, `sandbox-init` supervisor, and the existing containerd/boxlite runtime drivers. `specs/egress-api.yaml` and SDKs unchanged. The server's K8s-mode egress sidecar helper (`egress_helper.py`) is untouched.
 
 ### OpenSandbox Server
 
