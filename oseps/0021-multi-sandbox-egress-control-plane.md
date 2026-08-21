@@ -84,6 +84,26 @@ Single-sandbox mode is the process being one implicit subject (no-op layer); `po
 
 The listener binds `127.0.0.1:18080` (Pod netns loopback) — sandbox netns cannot reach it, so the proxy is the only peer; egress rejects unknown UIDs (404). Credentials are delivered by the server as complete vault revisions over the proxy route, consistent with OSEP-0012 (no Kubernetes Secret, no kubelet sync dependency). There is no unix socket, no Secret volume, and no egress-managed state file.
 
+#### Consumed slot fields
+
+Egress reads exactly these fields from a bound slot record (everything else in the slot is ignored):
+
+| Field | Used for |
+|-------|----------|
+| `id`, `phase` (`Bound`) | lifecycle trigger; clean/destroying slots ignored |
+| `owner.sandboxUid`, `owner.instanceGeneration`, `owner.assignmentAttempt` | Subject identity + fencing |
+| `ip` | dispatch key (`ip saddr`) |
+| `hostNetnsPath` | netns path for rule installation / defense-in-depth |
+| `hostVeth` | `iifname` binding against UDP spoofing |
+| `gateway` | DNS proxy bind target / resolv.conf rewrite |
+| `privateCidr` | sibling-isolation / defense-in-depth rules |
+| `dnsPath` | resolv.conf rewrite target file |
+
+**Contract status — open question**: this data currently comes from fastlet's **internal** file store (`FileStateStore`, `/run/fast-sandbox/network/*.json`): the path, JSON shape, and phase semantics are implementation details, not a public contract. Three drift risks follow: format changes (the slot `version` field is fastlet-internal — a mismatch triggers destruction, not compatibility), path/storage changes, and phase-semantics changes. Two stabilization options, pending fast-sandbox's decision:
+
+1. **File contract** (minimal): fast-sandbox declares the slot-store format/path/lifecycle as a supported v1 contract for host-domain consumers.
+2. **kubelet-style read-only endpoint** (recommended analogy): fastlet already serves an HTTP RPC server to the controller (`internal/fastlet/server/rpc_server.go`); adding a read-only slot-list endpoint (with fencing, watch support) makes the data a stable component API, decoupled from the storage medium. Cost: one small handler in fastlet, trading the "zero fastlet code" property for a real stability guarantee.
+
 ### Lifecycle and Fail-Closed Guarantee
 
 ```
@@ -213,7 +233,6 @@ Verified against current source (`internal/runtime/containerd/driver.go`):
 | Per-sandbox slot store (`Owner`, IP, netns, veth; Bound/delete lifecycle) | ✅ already present | consumed read-only by egress |
 | Slot pre-provisioning: netns/veth/MASQUERADE ready before sandbox creation; `Acquire` writes Bound before the container is created | ✅ already present | basis of the no-creation-window guarantee |
 | Sandbox without `NET_ADMIN` (dispatch key unforgeable) | ✅ already present | spec sets no capabilities (`driver.go:438`); runc defaults exclude `NET_ADMIN` |
-| Sandbox without `NET_RAW` | ⚠️ not dropped | runc defaults grant `NET_RAW` → UDP source spoofing possible; mitigated by `iifname` binding in nft, **or drop `NET_RAW` in the runtime driver (preferred, additive)** |
 | resolv.conf bind-mount from slot `DNSPath` | ✅ already present | rewritten by egress before the mount happens |
 | Route-credential issuance/verification + fastlet-proxy in Pod netns | ✅ already present | reused as-is |
 | Egress container mountable via `FastletTemplate` (shared volumes) | ✅ deployment-level | no code change |
@@ -229,7 +248,7 @@ Verified against current source; all are internal, no API/CRD/protocol changes:
 
 Deployment config: egress container in Pool `FastletTemplate` (Pod-netns privileges; slot-store and netns-mount volumes shared/mounted).
 
-**OpenSandbox runtime driver**: the OpenSandbox integration lands as a **new `internal/runtime/contract.Driver` implementation** (registered in the runtime factory alongside containerd/boxlite). The egress healthz probe lives inside its `EnsureSandbox` (after slot `Acquire`, before container creation): unready egress → reject with a runtime-unavailable error. Existing drivers are untouched; existing Fastlet Pods without the egress component behave exactly as today.
+**OpenSandbox runtime driver**: the OpenSandbox integration lands as a **new `internal/runtime/contract.Driver` implementation** (registered in the runtime factory alongside containerd/boxlite). Its container spec drops `NET_RAW` (runc defaults grant it → UDP source spoofing would weaken the source-IP dispatch key; `iifname` binding in nft remains as defense in depth). The egress healthz probe lives inside its `EnsureSandbox` (after slot `Acquire`, before container creation): unready egress → reject with a runtime-unavailable error. Existing drivers are untouched; existing Fastlet Pods without the egress component behave exactly as today.
 
 ### Explicitly Untouched
 
