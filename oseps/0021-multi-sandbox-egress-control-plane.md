@@ -182,7 +182,7 @@ sequenceDiagram
     else Credential update
         U->>P: PUT /v1/sandboxfleets/{sandboxId}/egress/credential-vault
         P->>E: forward (UID header → subject)
-        E->>E: vault rebind in memory; new flows pick up new credentials
+        E->>E: vault rebind in memory, new flows pick up new credentials
     end
 ```
 
