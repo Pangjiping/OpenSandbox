@@ -78,7 +78,7 @@ Single-sandbox mode is the process being one implicit subject (no-op layer); `po
 
 | Path | Direction | Auth | Carries |
 |------|-----------|------|---------|
-| **1. Proxy route** `/v2/sandboxes/{uid}/components/egress/*` | server/SDK → fastlet-proxy → egress listener (`127.0.0.1:18080`, Pod netns) | Ed25519 route credential (proxy-verified) + `X-Fast-Sandbox-Uid` header added by proxy | Policy push and runtime policy/vault operations (existing `egress-api.yaml` semantics) |
+| **1. Proxy route** `/v1/sandboxfleets/{sandboxId}/egress/*` | server/SDK → fastlet-proxy → egress listener (`127.0.0.1:18080`, Pod netns) | Ed25519 route credential (proxy-verified) + `X-Fast-Sandbox-Uid` header added by proxy | Policy push and runtime policy/vault operations (existing `egress-api.yaml` semantics) |
 | **2. Slot store** `/run/fast-sandbox/network/*.json` | fastlet writes (existing logic), egress observes read-only | shared volume | Subject lifecycle: identity, `SubjectKey`, fencing — **no policy** |
 | **3. Secret volume** | server provisions Secret, kubelet syncs to egress mount | Kubernetes Secret | Credentials, loaded to egress memory only |
 
@@ -134,9 +134,9 @@ sequenceDiagram
     F->>S: slot bound (slot.json written — existing logic)
     Note over E: fsnotify: bound slot
     E->>E: Register subject: deny-first rules, resolv.conf → gateway
-    SRV->>C: ResolveEndpoint(component="egress")
+    SRV->>C: ResolveEndpoint(egress route)
     C-->>SRV: route + route credential
-    SRV->>P: PUT /v2/sandboxes/{uid}/components/egress/policy
+    SRV->>P: PUT /v1/sandboxfleets/{sandboxId}/egress/policy
     P->>E: forward (UID header → subject)
     E->>E: apply policy atomically → active
     SRV->>SEC: create Secret (credentials)
@@ -157,7 +157,7 @@ sequenceDiagram
     participant SEC as Secret volume
 
     alt Policy update
-        U->>P: PATCH .../components/egress/policy
+        U->>P: PATCH /v1/sandboxfleets/{sandboxId}/egress/policy
         P->>E: forward (route credential, UID header)
         E->>E: DNS swap (atomic) + nft batch rebuild
     else Credential update
@@ -196,7 +196,7 @@ The two profiles are mutually exclusive deployment forms. `sidecar`: a service i
 | MITM | shared mitmdump, vault by client IP | per-subject ports |
 | Lifecycle authority | fastlet slot store (read-only) | execd session registry, same watch pattern |
 | Credentials | Secret volume | proxy-route vault endpoints |
-| Endpoint | Pool host component `egress` + `ResolveEndpoint` route | n/a |
+| Endpoint | `/v1/sandboxfleets/{sandboxId}/egress/*` via `ResolveEndpoint` (host delivery mode) | n/a |
 
 ### Scaling Constraints
 
@@ -209,9 +209,9 @@ Two scales matter independently. **Cluster-wide** there is no centralized bottle
 Verified against current source; all are internal, no API/CRD/protocol changes:
 
 1. **Host delivery mode** in the infra catalog (`InfraDeliveryMode`, e.g. `host-process`, alongside bind-mount/image-layer/guest-copy, `internal/catalog/runtime/catalog.go:36-43`): compiled into the Pool revision but excluded from the in-sandbox `sandbox-init` supervisor config; the daemon is provisioned by `FastletTemplate`; readiness probing targets the Pod-netns listener instead of the sandbox IP.
-2. **Host upstream in fastlet-proxy**: `ComponentRoute` gains a host target (`internal/dataplane/contract/route.go:42-45`); the proxy currently forwards components to the sandbox `Access` address only (DirectIP/LocalForward, `internal/dataplane/fastletproxy/proxy.go:101-133`).
+2. **Host upstream in fastlet-proxy**: the proxy currently forwards to the sandbox `Access` address only (DirectIP/LocalForward, `internal/dataplane/fastletproxy/proxy.go:101-133`). The egress route must forward to the Pod-netns listener (`127.0.0.1:18080`) instead.
 3. **UID propagation**: the proxy rewrites outbound paths to the suffix only (`proxy.go:140`), so it must inject `X-Fast-Sandbox-Uid` (outside `stripRouteHeaders`) — this is what answers "which subject".
-4. **Host-component route publication**: `routePublication` builds `Components` only from in-sandbox `InfraServices` (`internal/fastlet/sandbox/route_lifecycle.go:87-92`); the egress host component must be appended, or the proxy has no route to forward.
+4. **Route parsing**: `parseTarget` currently recognizes only `/v1/sandboxes/` (ports) and `/v2/sandboxes/` (components) prefixes (`proxy.go:164-171`); it gains a `/v1/sandboxfleets/{sandboxId}/egress/*` branch that resolves the sandbox route, verifies the credential, and targets egress — independent of the component `Components` map.
 
 Deployment config: egress container in Pool `FastletTemplate` (Pod-netns privileges; slot-store, netns-mount, and Secret volumes shared/mounted).
 
@@ -222,7 +222,7 @@ fast-sandbox CRDs, RPC protocol, `SandboxSpec`, fastlet phases/admission/deletio
 ### OpenSandbox Server
 
 - Fleets mapping removes the phase-1a rejection of `networkPolicy`/`credentialProxy` (`services/fleets/create_mapping.py:253,263`) and orchestrates create-then-configure (policy push + Secret provisioning) with idempotent retries.
-- Endpoint reuse: `fastpath_client.resolve_endpoint(..., component_target("egress"))` verbatim; route-credential issuance and proxy verification unchanged.
+- Endpoint reuse: `fastpath_client.resolve_endpoint(...)` for the egress target; the returned proxy route uses the `/v1/sandboxfleets/{sandboxId}/egress/*` prefix. Route-credential issuance and proxy verification unchanged.
 - Egress readiness surfaced via the platform's `InfraComponentStatus` channel (optional, non-blocking).
 
 ## Test Plan
