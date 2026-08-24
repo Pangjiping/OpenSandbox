@@ -7,7 +7,7 @@ last-updated: 2026-08-21
 status: draft
 ---
 
-# OSEP-0021: Multi-Sandbox Egress Control Plane
+# OSEP-0022: Multi-Sandbox Egress Control Plane
 
 <!-- toc -->
 - [Summary](#summary)
