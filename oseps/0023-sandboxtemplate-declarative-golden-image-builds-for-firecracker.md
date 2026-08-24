@@ -138,7 +138,7 @@ spec:
   machine:
     vcpu: "4"                        # Kubernetes resource quantity
     memory: "8Gi"                    # e.g. 512Mi / 2Gi / 8Gi
-  guestInit: /usr/local/sbin/guest-init    # empty: no injection
+  init: /usr/local/sbin/guest-init    # empty: no injection
   envs:                             # merged into /etc/sandbox-init.env
     - name: FOO
       value: bar
@@ -193,7 +193,7 @@ Every build emits a content-addressed `manifest.json`:
     "hostKernel": "5.10.134-18.al8.x86_64"
   },
   "entrypoint": ["tail", "-f", "/dev/null"],
-  "guestInit": "/usr/local/sbin/guest-init",            // empty: no injection
+  "init": "/usr/local/sbin/guest-init",            // empty: no injection
   "envs": [{"name": "FOO", "value": "bar"}],            // effective envs (OCI Config.Env + spec.envs)
   "files": { "rootfs": {"sha256": "...", "sizeBytes": 32212254720}, ... },
   "validation": { "booted": true, "restored": true, "iterations": 3, "timing": {...} }
@@ -268,9 +268,9 @@ type SandboxTemplateSpec struct {
     Entrypoint  []string          `json:"entrypoint,omitempty"`
     Execd       string            `json:"execd,omitempty"`
     Kernel      string            `json:"kernel"`                // required
-    // GuestInit is the injected PID 1 path inside the rootfs; empty means
+    // Init is the injected PID 1 path inside the rootfs; empty means
     // no injection (the kernel default or the image's own init applies).
-    GuestInit   string            `json:"guestInit,omitempty"`
+    Init        string            `json:"init,omitempty"`
     // Envs is injected as /etc/sandbox-init.env, merged with the
     // OCI Config.Env.
     Envs []corev1.EnvVar     `json:"envs,omitempty"`
