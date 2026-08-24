@@ -138,11 +138,10 @@ spec:
   machine:
     vcpu: "4"                        # Kubernetes resource quantity
     memory: "8Gi"                    # e.g. 512Mi / 2Gi / 8Gi
-  init:
-    guestInit: /usr/local/sbin/guest-init    # empty: no injection
-    environment:                             # merged into /etc/sandbox-init.env
-      - name: FOO
-        value: bar
+  guestInit: /usr/local/sbin/guest-init    # empty: no injection
+  environment:                             # merged into /etc/sandbox-init.env
+    - name: FOO
+      value: bar
   readiness:
     probe: tcp://127.0.0.1:44772             # custom first
     warmupSeconds: 60                        # fallback baseline
@@ -162,7 +161,7 @@ The build pipeline has three stages, selected by `output.format`:
    image (e.g. with the `oci2rootfs` tool), repair with `e2fsck`, then
    loop-mount briefly to inject execd/bootstrap/prepare/bwrap, the optional
    guest init, and `/etc/sandbox-init.env` (OCI `Config.Env` merged with
-   `spec.init.environment`).
+   `spec.environment`).
 2. **validate-boot** — boot the rootfs on a KVM host with the embedded
    kernel and wait for guest readiness. For `ext4` this is the terminal
    validation gate (start, reach readiness, stop; no snapshot artifacts are
@@ -263,15 +262,20 @@ Every build emits a content-addressed `manifest.json`:
 
 ```go
 type SandboxTemplateSpec struct {
-    Image      string         `json:"image"`                 // required
+    Image       string            `json:"image"`                 // required
     // Argv list; empty defaults to ["tail","-f","/dev/null"].
-    Entrypoint []string       `json:"entrypoint,omitempty"`
-    Execd      string         `json:"execd,omitempty"`
-    Kernel     string         `json:"kernel"`                // required
-    Machine    MachineSpec    `json:"machine"`
-    Init       InitSpec       `json:"init"`
-    Readiness  ReadinessSpec  `json:"readiness"`
-    Output     OutputSpec     `json:"output"`
+    Entrypoint  []string          `json:"entrypoint,omitempty"`
+    Execd       string            `json:"execd,omitempty"`
+    Kernel      string            `json:"kernel"`                // required
+    // GuestInit is the injected PID 1 path inside the rootfs; empty means
+    // no injection (the kernel default or the image's own init applies).
+    GuestInit   string            `json:"guestInit,omitempty"`
+    // Environment is injected as /etc/sandbox-init.env, merged with the
+    // OCI Config.Env.
+    Environment []corev1.EnvVar   `json:"environment,omitempty"`
+    Machine     MachineSpec       `json:"machine"`
+    Readiness   ReadinessSpec     `json:"readiness"`
+    Output      OutputSpec        `json:"output"`
 }
 
 type MachineSpec struct {
@@ -281,12 +285,6 @@ type MachineSpec struct {
     // Kubernetes resource quantity (e.g. "512Mi", "2Gi", "8Gi").
     // +kubebuilder:default="2Gi"
     Memory string `json:"memory"`
-}
-
-type InitSpec struct {
-    // Empty means no injection: the kernel default or the image's own init.
-    GuestInit   string          `json:"guestInit,omitempty"`
-    Environment []corev1.EnvVar `json:"environment,omitempty"`
 }
 
 type ReadinessSpec struct {
