@@ -84,10 +84,14 @@ user writes, the **manifest** is the contract a runtime consumes, and the
 
 - Not a general-purpose OCI-to-VM converter; scope is Firecracker golden
   images for OpenSandbox.
-- No runtime behavior change: the driver keeps consuming already-converted,
-  digest-addressed artifacts; this OSEP only changes how they are produced.
-- No new sandbox API surface (no changes to Sandbox specs in this proposal,
-  beyond documenting the per-sandbox `init` override contract).
+- No runtime behavior change in the drivers that consume the artifacts; this
+  OSEP only changes how the artifacts are produced (the existing
+  content-addressed rootfs cache contract in the fast-sandbox Firecracker
+  driver is the Phase 1 consumer, see [Runtime consumption](#runtime-consumption)).
+- Sandbox API surface is unchanged: the per-sandbox init override is carried
+  by the existing `CreateSandboxRequest.entrypoint` (argv list) — in free-init
+  mode the request entrypoint becomes the guest PID 1, in managed mode it
+  replaces the business command executed under the injected guest init.
 - Not covering pause/resume or snapshot restore orchestration at runtime.
 - Phase 2 does not include multi-tenancy, quotas, or scheduling policy for
   build Jobs beyond basic resource requests.
@@ -104,9 +108,17 @@ user writes, the **manifest** is the contract a runtime consumes, and the
   `ext4` (converted rootfs only) → `snapshot` (+ full snapshot) →
   `overlaybd` (+ LSMT layers).
 - The guest init must be selectable per template (injected PID 1, or the
-  image's own init) and overridable per sandbox at runtime.
+  image's own init) and overridable per sandbox at runtime. The override is
+  carried by the existing `CreateSandboxRequest.entrypoint` field — no new
+  sandbox API surface.
 - Readiness must be defined per template: custom probe first, execd `/ping`
   by default, time-based warmup plus image healthcheck as fallback.
+- Every produced format must pass a boot validation gate; for `ext4` this is
+  a boot-only validation (start, reach readiness, stop) without retaining
+  snapshot artifacts.
+- The manifest must record the snapshot compatibility tuple (kernel digest,
+  host kernel, CPU model, Firecracker version) so consumers can select a
+  compatible restore node.
 
 ## Proposal
 
@@ -119,7 +131,8 @@ metadata:
   name: ai-office-sandbox
 spec:
   image: registry.example.com/sandbox:v1.0.21
-  entrypoint: /opt/gem/run.sh          # empty: discovered from OCI config
+  entrypoint:                              # empty: discovered from OCI config
+    - /opt/gem/run.sh
   execd: registry.example.com/execd:v1.0.21
   kernel: vmlinux-6.1.177
   machine:
@@ -147,11 +160,14 @@ The build pipeline has three stages, selected by `output.format`:
    loop-mount briefly to inject execd/bootstrap/prepare/bwrap, the optional
    guest init, and `/etc/sandbox-init.env` (OCI `Config.Env` merged with
    `spec.init.environment`).
-2. **snapshot** — boot the rootfs on a KVM host with the embedded kernel,
-   wait for guest readiness (see readiness semantics), pause, and create a
-   full snapshot (`vmstate.snap` + `memory.snap`). Restore once for
-   validation.
-3. **package** — convert `rootfs.ext4` and `memory.snap` into independent
+2. **validate-boot** — boot the rootfs on a KVM host with the embedded
+   kernel and wait for guest readiness. For `ext4` this is the terminal
+   validation gate (start, reach readiness, stop; no snapshot artifacts are
+   retained). For `snapshot`/`overlaybd` it continues into the snapshot
+   stage.
+3. **snapshot** — pause the validated guest and create a full snapshot
+   (`vmstate.snap` + `memory.snap`); restore once for validation.
+4. **package** — convert `rootfs.ext4` and `memory.snap` into independent
    OverlayBD LSMT commit layers (windowed import, zero-run elision, seal,
    byte-for-byte verification).
 
@@ -163,24 +179,46 @@ Every build emits a content-addressed `manifest.json`:
   "sourceImage": "registry.example.com/sandbox:v1.0.21",
   "sourceImageDigest": "sha256:...",
   "execd": "registry.example.com/execd:v1.0.21",
-  "kernel": "vmlinux-6.1.177",
+  "kernel": {
+    "name": "vmlinux-6.1.177",
+    "digest": "sha256:..."
+  },
   "machine": { "vcpuCount": 4, "memoryMiB": 8192 },
+  "compatibility": {
+    "firecrackerVersion": "v1.16.1",
+    "architecture": "x86_64",
+    "cpuModel": "Intel(R) Xeon(R) Platinum 8163 CPU @ 2.50GHz",
+    "hostKernel": "5.10.134-18.al8.x86_64"
+  },
   "init": "/usr/local/sbin/guest-init",
   "files": { "rootfs": {"sha256": "...", "sizeBytes": 32212254720}, ... },
-  "validation": { "restored": true, "iterations": 3, "timing": {...} }
+  "validation": { "booted": true, "restored": true, "iterations": 3, "timing": {...} }
 }
 ```
 
 ### Notes/Constraints/Caveats
 
+- **Runtime consumer**: the Phase 1 consumer of the `ext4` artifact is the
+  Firecracker runtime driver in the fast-sandbox project, which already
+  maintains the content-addressed cache
+  (`<StateRoot>/images/<sha256(imageRef)>/rootfs.img`) and pulls artifacts
+  by digest. The template's `publish` target becomes the pull source; the
+  artifact contract (digest + manifest) is defined here and consumed there.
 - **execd injection boundary**: only the execd binary and fixed bootstrap
   skeleton are build-time injected. Per-sandbox configuration (infra.json,
   identity, component env) remains runtime-generated, written into the
   instance layer — the build cannot know the sandbox identity.
 - **init modes**: injected guest init (managed mode, execd started by PID 1),
   or no injection (image's own init; execd startup is then the image's
-  responsibility). A per-sandbox `init` override at runtime takes precedence
-  over the template value.
+  responsibility). A per-sandbox override takes precedence over the template
+  value and is carried by `CreateSandboxRequest.entrypoint`: in free-init
+  mode the request entrypoint becomes the guest PID 1 (`init=` argv); in
+  managed mode it replaces the business command executed under the injected
+  guest init, which stays the PID 1.
+- **entrypoint merging**: `spec.entrypoint` is an argv list. When empty it is
+  discovered from the OCI config (`Entrypoint` + `Cmd` concatenated); when
+  set, it fully replaces the discovered argv so the guest runs the intended
+  process with intact argument boundaries.
 - **Readiness precedence**: custom `probe` (`tcp://` or `cmd://`) → execd
   `/ping` (default) → `warmupSeconds` + `healthCheck` (fallback, e.g. when
   execd is not injected; empty healthcheck uses the image `CMD-SHELL`).
@@ -191,16 +229,17 @@ Every build emits a content-addressed `manifest.json`:
   snapshot. Snapshotting workloads with active connections is out of scope.
 - **Source image compatibility**: the converter applies layer ordering,
   compression, hard links, and whiteouts, but may skip device nodes and
-  timestamps/xattrs; the boot+restore validation is a mandatory
-  compatibility gate for the selected source image.
+  timestamps/xattrs; the boot (and restore, for snapshot formats)
+  validation is a mandatory compatibility gate for the selected source
+  image.
 
 ### Risks and Mitigations
 
 | Risk | Mitigation |
 |------|------------|
-| Converter fidelity (whiteout leftovers, missing device nodes) | `e2fsck -fy` repair + read-only re-check + mandatory boot/restore validation per build |
+| Converter fidelity (whiteout leftovers, missing device nodes) | `e2fsck -fy` repair + read-only re-check + mandatory boot validation per build (restore validation for snapshot formats) |
 | Snapshot captures an unready or half-initialized guest | Readiness gate before snapshot; warmup baseline; application-specific readiness preferred |
-| Snapshot portability (kernel/CPU features) | Manifest records kernel digest, host kernel, CPU model; snapshots pinned to compatible nodes |
+| Snapshot portability (kernel/CPU features) | Manifest records the compatibility tuple (kernel digest, host kernel, CPU model, Firecracker version); consumers match it against node labels before restore |
 | Artifact tampering or corruption in transit | Content-addressed manifest + `SHA256SUMS`; consumers verify digests |
 | Two executors drift (CLI vs controller) | Shared build engine library + shared schema validation; both consume the same template |
 | Build resource spikes (30 GiB rootfs, snapshot memory) | Phased disk usage (archive → layout → rootfs only), page-cache dropping during import, configurable machine size |
@@ -216,7 +255,8 @@ Every build emits a content-addressed `manifest.json`:
 ```go
 type SandboxTemplateSpec struct {
     Image      string         `json:"image"`                 // required
-    Entrypoint string         `json:"entrypoint,omitempty"`  // from OCI config when empty
+    // Argv list; when empty, discovered from OCI Config.Entrypoint+Cmd.
+    Entrypoint []string       `json:"entrypoint,omitempty"`
     Execd      string         `json:"execd,omitempty"`
     Kernel     string         `json:"kernel"`                // required
     Machine    MachineSpec    `json:"machine"`
@@ -273,11 +313,13 @@ type SandboxTemplateStatus struct {
 
 ### Build engine
 
-The three stages (convert / snapshot / package) are implemented as a shared
-library (`components/internal` or a dedicated package) invoked by both
-executors. External tools are dependencies, not embedded logic:
+The stages (convert / validate-boot / snapshot / package) are implemented as
+a shared library (`components/internal` or a dedicated package) invoked by
+both executors. External tools are dependencies, not embedded logic:
 `oci2rootfs` (or an equivalent layer-applier), `firecracker`, `e2fsprogs`,
 and the OverlayBD toolchain. The engine emits the manifest and `SHA256SUMS`.
+Every format runs the validate-boot gate; only `snapshot`/`overlaybd`
+continue into snapshot and package.
 
 ### Phase 1 — `osb image` CLI
 
@@ -323,7 +365,7 @@ The produced artifacts are consumed by the Firecracker runtime driver:
   support lands separately).
 
 The per-sandbox `init` override resolves as:
-`SandboxSpec.init > template manifest.init > kernel default`.
+`CreateSandboxRequest.entrypoint > template manifest.init > kernel default`.
 
 ## Test Plan
 
