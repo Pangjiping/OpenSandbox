@@ -139,7 +139,7 @@ spec:
     vcpu: "4"                        # Kubernetes resource quantity
     memory: "8Gi"                    # e.g. 512Mi / 2Gi / 8Gi
   guestInit: /usr/local/sbin/guest-init    # empty: no injection
-  environment:                             # merged into /etc/sandbox-init.env
+  envs:                             # merged into /etc/sandbox-init.env
     - name: FOO
       value: bar
   readiness:
@@ -161,7 +161,7 @@ The build pipeline has three stages, selected by `output.format`:
    image (e.g. with the `oci2rootfs` tool), repair with `e2fsck`, then
    loop-mount briefly to inject execd/bootstrap/prepare/bwrap, the optional
    guest init, and `/etc/sandbox-init.env` (OCI `Config.Env` merged with
-   `spec.environment`).
+   `spec.envs`).
 2. **validate-boot** — boot the rootfs on a KVM host with the embedded
    kernel and wait for guest readiness. For `ext4` this is the terminal
    validation gate (start, reach readiness, stop; no snapshot artifacts are
@@ -270,9 +270,9 @@ type SandboxTemplateSpec struct {
     // GuestInit is the injected PID 1 path inside the rootfs; empty means
     // no injection (the kernel default or the image's own init applies).
     GuestInit   string            `json:"guestInit,omitempty"`
-    // Environment is injected as /etc/sandbox-init.env, merged with the
+    // Envs is injected as /etc/sandbox-init.env, merged with the
     // OCI Config.Env.
-    Environment []corev1.EnvVar   `json:"environment,omitempty"`
+    Envs []corev1.EnvVar     `json:"envs,omitempty"`
     Machine     MachineSpec       `json:"machine"`
     Readiness   ReadinessSpec     `json:"readiness"`
     Output      OutputSpec        `json:"output"`
@@ -415,7 +415,7 @@ The per-sandbox `init` override resolves as:
   eliminate this.
 - Golden-image builds shift flexibility from runtime to build time:
   per-sandbox variance is constrained to what the template declares
-  (init override, environment, entrypoint).
+  (init override, envs, entrypoint).
 
 ## Alternatives
 
