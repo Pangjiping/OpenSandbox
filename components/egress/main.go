@@ -50,6 +50,14 @@ func main() {
 	ctx = withLogger(ctx)
 	defer log.Logger.Sync()
 
+	// Fleet profile (OSEP-0021): multi-sandbox control plane over the slot
+	// store and the proxy route. Sidecar stays the default; the two profiles
+	// are mutually exclusive deployment forms.
+	if strings.TrimSpace(os.Getenv(constants.EnvEgressProfile)) == constants.ProfileFleet {
+		runFleetProfile(ctx)
+		return
+	}
+
 	// Erase any stale mitmproxy CA left on the shared volume by a previous
 	// egress generation so the agent's bootstrap wait-loop blocks for this
 	// generation's export. See PurgeStaleExportedCA / upstream issue #1370.

@@ -22,6 +22,34 @@ import (
 
 const EnvCredentialVaultTrustedProxyCIDRs = "OPENSANDBOX_EGRESS_CREDENTIAL_VAULT_TRUSTED_PROXY_CIDRS"
 
+// Fleet profile (OSEP-0021): the egress control plane serves N sandboxes
+// sharing one host/network domain; sidecar remains the default profile.
+const (
+	EnvEgressProfile    = "OPENSANDBOX_EGRESS_PROFILE"
+	EnvSlotStoreDir     = "OPENSANDBOX_EGRESS_SLOT_STORE_DIR"
+	EnvSlotPollInterval = "OPENSANDBOX_EGRESS_SLOT_POLL_INTERVAL"
+	EnvPendingPushTTL   = "OPENSANDBOX_EGRESS_PENDING_PUSH_TTL"
+	EnvFleetDNSAddr     = "OPENSANDBOX_EGRESS_FLEET_DNS_ADDR"
+)
+
+const (
+	ProfileSidecar = "sidecar"
+	// ProfileFleet: one egress control plane serving N sandboxes sharing one
+	// host/network domain (fast-sandbox Fastlet Pod).
+	ProfileFleet = "fleet"
+)
+
+// Fleet-profile HTTP listener and trust model: the listener binds the Pod
+// netns loopback only; the fastlet proxy is the only peer and injects the
+// UID header that routes a push to its subject.
+const (
+	EgressSubjectUIDHeader         = "X-Fast-Sandbox-Uid"
+	EgressSubjectGenerationHeader  = "X-Fast-Sandbox-Generation"
+	DefaultSlotStoreDir            = "/run/fast-sandbox/network"
+	DefaultPendingPushTTL          = 30
+	DefaultSlotPollIntervalSeconds = 1
+)
+
 const (
 	EnvBlockDoH443               = "OPENSANDBOX_EGRESS_BLOCK_DOH_443"
 	EnvDoHBlocklist              = "OPENSANDBOX_EGRESS_DOH_BLOCKLIST"
@@ -67,13 +95,13 @@ const (
 
 const (
 	DefaultEgressServerAddr      = ":18080"
+	DefaultFleetServerAddr       = "127.0.0.1:18080"
 	DefaultMitmproxyPort         = 18081
 	DefaultCredentialProxySocket = "/run/opensandbox/credential-proxy/active.sock"
 	ResolvNameserverCap          = 10
 	DefaultMaxEgressRules        = 4096
 	DefaultDNSUpstreamTimeoutSec = 5
-
-	OpenSandboxRootDir = "/opt/opensandbox"
+	OpenSandboxRootDir           = "/opt/opensandbox"
 )
 
 func EnvIntOrDefault(key string, defaultVal int) int {

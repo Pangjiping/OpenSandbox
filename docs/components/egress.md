@@ -239,6 +239,44 @@ them. From inside the sandbox that is indistinguishable from a denial, while
 
 Full metric inventory and attribute semantics: [egress OpenTelemetry reference](https://github.com/opensandbox-group/OpenSandbox/blob/main/components/egress/docs/opentelemetry.md).
 
+## Fleet Profile (multi-sandbox control plane)
+
+> Experimental: design per [OSEP-0021](https://github.com/opensandbox-group/OpenSandbox/blob/main/oseps/0021-multi-sandbox-egress-control-plane.md).
+
+The default `sidecar` profile serves exactly one sandbox sharing one network
+namespace. The opt-in `fleet` profile (`OPENSANDBOX_EGRESS_PROFILE=fleet`)
+serves N sandboxes sharing one host/network domain (fast-sandbox Fastlet
+Pod): a single egress process hosts one **subject** per sandbox, each with its
+own policy, credentials, and kernel rules. The sidecar profile and its API are
+unchanged; both profiles are mutually exclusive deployment forms.
+
+- **Identity**: subjects are observed read-only from the fastlet slot store
+  (`OPENSANDBOX_EGRESS_SLOT_STORE_DIR`, default `/run/fast-sandbox/network`)
+  via polling (`OPENSANDBOX_EGRESS_SLOT_POLL_INTERVAL`, seconds). A subject is
+  deny-first from observation until its policy lands.
+- **Control surface**: the listener binds the Pod netns loopback only
+  (`OPENSANDBOX_EGRESS_HTTP_ADDR`, default `127.0.0.1:18080`). Policy and
+  credential pushes from the server are routed per subject by the
+  `X-Fast-Sandbox-Uid` header (added by fastlet-proxy, the only peer). A push
+  for a UID whose slot has not appeared is cached and applied on registration
+  (`OPENSANDBOX_EGRESS_PENDING_PUSH_TTL`, seconds, default `30`); a stale
+  push carrying a mismatched `X-Fast-Sandbox-Generation` is discarded.
+- **DNS**: one shared proxy, per-query policy dispatched by source IP
+  (`OPENSANDBOX_EGRESS_FLEET_DNS_ADDR`).
+- **Enforcement**: nftables `hook forward` in the Pod netns with a
+  drop-by-default master chain; per-subject chains and static sets are swapped
+  atomically. Dynamic DNS-learned sets carry bounded leases.
+- **Credentials**: memory-only, per subject; complete vault revisions are
+  pushed over the proxy route (OSEP-0012 model). No Secret volume, no egress
+  disk state.
+- **Recovery**: on restart, egress wipes stale rules, rescans the slot store
+  (every live subject re-enters `denying`), and the server re-pushes
+  policies.
+
+For how policy is applied, how outbound traffic flows through the nftables
+dispatch, and how the credential vault works in the fleet profile, see
+[policy, traffic flow, and credential vault](../../components/egress/docs/policy-traffic-vault-flow.md).
+
 ## Build & Run
 
 ### Build Docker Image

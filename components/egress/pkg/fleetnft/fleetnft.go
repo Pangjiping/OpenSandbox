@@ -1,0 +1,538 @@
+// Copyright 2026 Alibaba Group Holding Ltd.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package fleetnft builds and applies the per-subject nftables ruleset for the
+// fleet egress profile (OSEP-0021). It is a new layer on top of the egress
+// engines: pkg/nftables, pkg/dnsproxy, and pkg/credentialvault are untouched.
+//
+// Enforcement model (Pod netns):
+//
+//	table inet opensandbox-fleet
+//	  chain dispatch { hook forward, policy drop }   <- master chain, fail-closed
+//	    ct state established,related accept           <- return traffic of allowed flows
+//	    tcp/udp dport 853 drop                        <- DoT bypass blocked
+//	    ip saddr <ip> iifname <veth> jump subj_<id>   <- one rule per subject
+//	  chain subj_<id> (regular chain)            <- per-subject policy, reached via dispatch jump
+//	    ...deny/dyn/allow set verdicts...             <- policy content
+//
+// The master chain defaults to drop, so an unregistered sandbox source is
+// denied before its slot is ever observed (Codex review point on the OSEP).
+// Dispatch is one rule per subject keyed on source IP bound to the host veth
+// (iifname, defense in depth against UDP spoofing). Verdict maps cannot jump
+// to chains (nf_tables rejects `jump`/`goto` in map elements with EOPNOTSUPP),
+// so rule-based dispatch is used and Remove rebuilds the whole table in one
+// atomic transaction (rules are deletable only by handle, which we do not
+// track). Deny-first registration installs a subject chain with empty sets
+// and a drop policy; a policy push swaps the chain and static sets in one
+// atomic nft -f transaction. DNS-learned dynamic sets are separate and
+// survive the swap.
+package fleetnft
+
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/alibaba/opensandbox/egress/pkg/nftables"
+	"github.com/alibaba/opensandbox/egress/pkg/policy"
+	"github.com/alibaba/opensandbox/egress/pkg/slotsource"
+	"github.com/alibaba/opensandbox/egress/pkg/subject"
+)
+
+// TableName is the fleet-profile nftables table, kept distinct from the
+// sidecar profile's "opensandbox" table (the two profiles never run in the
+// same process, but distinct names make a stale leftover impossible to
+// confuse with live rules).
+const TableName = "opensandbox-fleet"
+
+const (
+	dispatchChain    = "dispatch"
+	dispatchPriority = 0
+	dynSetTimeoutS   = 360
+	// nftTTLSlackSec is added to the DNS TTL before clamping (mirrors
+	// pkg/nftables so both profiles behave identically).
+	nftTTLSlackSec = 60
+	minTTLSec      = 60
+	maxTTLSec      = 360
+)
+
+// Runner executes an nft script; the default invokes `nft -f -`.
+type Runner func(ctx context.Context, script string) ([]byte, error)
+
+// DefaultRunner runs the script through `nft -f -`.
+func DefaultRunner(ctx context.Context, script string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(script)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, fmt.Errorf("nft apply failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
+	}
+	return output, nil
+}
+
+// ErrUnknownSubject is returned when an operation targets a subject whose
+// deny-first rules have not been installed yet.
+var ErrUnknownSubject = fmt.Errorf("fleetnft: subject rules not installed")
+
+// installedSubject tracks the enforcement state the applier owns in memory;
+// it is the source for table rebuilds (subject removal) and the idempotency
+// guard for deny-first installs.
+type installedSubject struct {
+	slot slotsource.Slot
+	pol  *policy.NetworkPolicy // nil while denying
+}
+
+// Applier applies per-subject rules to table TableName. All methods are safe
+// for concurrent use; each operation is one atomic nft transaction.
+type Applier struct {
+	mu         sync.Mutex
+	run        Runner
+	tableReady bool
+	subjects   map[subject.Subject]installedSubject
+}
+
+// NewApplier returns an Applier using r (nil selects DefaultRunner).
+func NewApplier(r Runner) *Applier {
+	if r == nil {
+		r = DefaultRunner
+	}
+	return &Applier{run: r, subjects: make(map[subject.Subject]installedSubject)}
+}
+
+// ApplyReset deletes the whole table and forgets all in-memory state.
+// Recovery protocol: the caller must reset before rescanning the slot store
+// at startup, so stale rules from a previous egress generation can never
+// carry old policy into a new sandbox. A missing table is not an error.
+func (a *Applier) ApplyReset(ctx context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, err := a.run(ctx, fmt.Sprintf("delete table inet %s\n", TableName))
+	if err != nil && !missingTable(err) {
+		return err
+	}
+	a.tableReady = false
+	a.subjects = make(map[subject.Subject]installedSubject)
+	return nil
+}
+
+// ApplyDenyFirst registers a subject in deny-first state: empty static sets,
+// drop policy chain, and a dispatch rule keyed on the sandbox source IP bound
+// to its host veth (iifname, defense in depth against UDP spoofing). The
+// first call also installs the master dispatch chain.
+//
+// Re-registration (e.g. a fencing rebind, where the controller re-observes
+// the same subject): the subject is force-reset to deny-first — chain, static
+// sets, and DNS-learned dynamic leases are wiped — so a previous sandbox's
+// policy can never carry into a new sandbox. (Registry + DNS already fail
+// closed on rebind; this closes the nft layer, which keeps the old allow sets
+// otherwise.)
+func (a *Applier) ApplyDenyFirst(ctx context.Context, s subject.Subject, slot slotsource.Slot) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var b strings.Builder
+	if !a.tableReady {
+		writeTableHeader(&b)
+		a.tableReady = true
+	}
+	if _, ok := a.subjects[s]; ok {
+		if err := writeSubjectResetFragment(&b, s, slot); err != nil {
+			return err
+		}
+	} else {
+		if err := writeSubjectDenyFirstFragment(&b, s, slot); err != nil {
+			return err
+		}
+	}
+	if _, err := a.run(ctx, b.String()); err != nil {
+		// The batch is atomic: on failure nothing was installed, so keep the
+		// flag consistent (the controller retries).
+		//
+		// First install on a fresh table: `delete table` fails when the table
+		// does not exist (e.g. ApplyReset already removed it), which fails the
+		// whole batch. Retry without the delete line, mirroring the sidecar's
+		// nftables fallback.
+		if missingTable(err) {
+			if fallback := removeDeleteTableLine(b.String()); fallback != b.String() {
+				if _, retryErr := a.run(ctx, fallback); retryErr == nil {
+					a.subjects[s] = installedSubject{slot: slot}
+					return nil
+				}
+			}
+		}
+		return err
+	}
+	a.subjects[s] = installedSubject{slot: slot}
+	return nil
+}
+
+// ApplyPolicy swaps a subject's static sets and chain content atomically in
+// one transaction; dynamic DNS-learned sets are untouched. Deny-first
+// subjects move to active only via this call.
+func (a *Applier) ApplyPolicy(ctx context.Context, s subject.Subject, pol *policy.NetworkPolicy) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	inst, ok := a.subjects[s]
+	if !ok {
+		return ErrUnknownSubject
+	}
+	if pol == nil {
+		pol = policy.DefaultDenyPolicy()
+	}
+	var b strings.Builder
+	if err := writeSubjectPolicySwapFragment(&b, s, pol); err != nil {
+		return err
+	}
+	if _, err := a.run(ctx, b.String()); err != nil {
+		return err
+	}
+	inst.pol = pol
+	a.subjects[s] = inst
+	return nil
+}
+
+// AddResolvedIPs adds DNS-learned IPs to a subject's dynamic allow sets with
+// a bounded timeout (mirrors the sidecar profile's lease behavior).
+func (a *Applier) AddResolvedIPs(ctx context.Context, s subject.Subject, ips []nftables.ResolvedIP) error {
+	if len(ips) == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.subjects[s]; !ok {
+		return ErrUnknownSubject
+	}
+	var b strings.Builder
+	writeResolvedIPsFragment(&b, s, ips)
+	if b.Len() == 0 {
+		return nil
+	}
+	_, err := a.run(ctx, b.String())
+	return err
+}
+
+// Remove deletes a subject's enforcement. nftables deletes rules only by
+// handle (no handle-less match), and verdict maps cannot jump to chains
+// (EOPNOTSUPP on add element), so the master-chain dispatch rule cannot be
+// removed per subject. Instead the whole table is rebuilt from the remaining
+// in-memory state in one atomic transaction — deterministic and O(n), which
+// is fine at the target density (removals are rare). Deleting the last
+// subject deletes the whole table.
+func (a *Applier) Remove(ctx context.Context, s subject.Subject) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.subjects[s]; !ok {
+		return nil
+	}
+	delete(a.subjects, s)
+	if len(a.subjects) == 0 {
+		_, err := a.run(ctx, fmt.Sprintf("delete table inet %s\n", TableName))
+		if err != nil && !missingTable(err) {
+			return err
+		}
+		a.tableReady = false
+		return nil
+	}
+	var b strings.Builder
+	writeTableHeader(&b)
+	for subj, inst := range a.subjects {
+		var err error
+		if inst.pol == nil {
+			err = writeSubjectDenyFirstFragment(&b, subj, inst.slot)
+		} else {
+			err = writeSubjectInitialPolicyFragment(&b, subj, inst.slot, inst.pol)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if _, err := a.run(ctx, b.String()); err != nil {
+		return err
+	}
+	a.tableReady = true
+	return nil
+}
+
+// missingTable reports whether an nft error means the table does not exist.
+func missingTable(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such file") || strings.Contains(msg, "does not exist")
+}
+
+// removeDeleteTableLine strips the table-reset line from a failed script so
+// it can be retried on a fresh table (mirrors the sidecar manager).
+func removeDeleteTableLine(script string) string {
+	lines := strings.Split(script, "\n")
+	var filtered []string
+	for _, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "delete table inet "+TableName) {
+			continue
+		}
+		filtered = append(filtered, l)
+	}
+	return strings.Join(filtered, "\n")
+}
+
+// ---------------------------------------------------------------------------
+// Script builders (pure string generation, unit-testable).
+// ---------------------------------------------------------------------------
+
+// writeTableHeader writes the idempotent table + master dispatch chain
+// header. The chain policy is drop: unregistered sandbox sources are denied.
+func writeTableHeader(b *strings.Builder) {
+	fmt.Fprintf(b, "delete table inet %s\n", TableName)
+	fmt.Fprintf(b, "add table inet %s\n", TableName)
+	fmt.Fprintf(b, "add chain inet %s %s { type filter hook forward priority %d; policy drop; }\n",
+		TableName, dispatchChain, dispatchPriority)
+	fmt.Fprintf(b, "add rule inet %s %s ct state established,related accept\n", TableName, dispatchChain)
+	fmt.Fprintf(b, "add rule inet %s %s tcp dport 853 drop\n", TableName, dispatchChain)
+	fmt.Fprintf(b, "add rule inet %s %s udp dport 853 drop\n", TableName, dispatchChain)
+}
+
+// writeSubjectDenyFirstFragment installs a subject in deny-first state:
+// empty static sets, drop-policy chain, and a dispatch rule keyed on the
+// sandbox source IP + host veth (iifname binding: defense in depth against
+// UDP spoofing). Applies against an existing table (or right after the
+// header).
+func writeSubjectDenyFirstFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot) error {
+	if err := writeSubjectSets(b, s, nil); err != nil {
+		return err
+	}
+	writeSubjectChain(b, s, policy.ActionDeny)
+	writeDispatchRule(b, s, slot)
+	writeSubjectVerdictRules(b, s, policy.ActionDeny)
+	return nil
+}
+
+// writeSubjectInitialPolicyFragment installs a subject with full policy
+// content on a fresh table (used by rebuilds after Remove).
+func writeSubjectInitialPolicyFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot, pol *policy.NetworkPolicy) error {
+	if err := writeSubjectSets(b, s, pol); err != nil {
+		return err
+	}
+	writeSubjectChain(b, s, pol.DefaultAction)
+	writeDispatchRule(b, s, slot)
+	writeSubjectVerdictRules(b, s, pol.DefaultAction)
+	return nil
+}
+
+// writeSubjectResetFragment force-resets an already-installed subject back to
+// deny-first: chain and all sets (static + dynamic) are FLUSHED (not deleted —
+// the master-chain dispatch rule references the chain, and deleting a
+// referenced chain/set fails with EBUSY) and the deny-first content is
+// re-added, with the dispatch rule for the (possibly changed) slot. Used on
+// re-registration so a previous sandbox's policy and DNS leases never
+// survive. A dispatch rule from a previous slot key is harmless (a stale
+// source key never matches; the same key yields an identical duplicate rule
+// with the same verdict).
+func writeSubjectResetFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot) error {
+	fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChain(s))
+	for _, name := range allSetNames(s) {
+		fmt.Fprintf(b, "flush set inet %s %s\n", TableName, name)
+	}
+	writeDispatchRule(b, s, slot)
+	writeSubjectVerdictRules(b, s, policy.ActionDeny)
+	return nil
+}
+
+// writeSubjectPolicySwapFragment atomically replaces a subject's chain rules
+// and static set elements. The chain and set objects are FLUSHED, not
+// deleted: the master-chain dispatch rule references the chain (and the
+// verdict rules reference the sets), and deleting referenced objects fails
+// with EBUSY. Dynamic DNS-learned sets and the dispatch rule are untouched.
+// Chain policy is explicit (regular chain), so re-adding the verdict rules
+// after the flush is a complete swap.
+func writeSubjectPolicySwapFragment(b *strings.Builder, s subject.Subject, pol *policy.NetworkPolicy) error {
+	fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChain(s))
+	for _, name := range staticSetNames(s) {
+		fmt.Fprintf(b, "flush set inet %s %s\n", TableName, name)
+	}
+	allowV4, allowV6, denyV4, denyV6 := pol.StaticIPSets()
+	if err := writeSetElements(b, allowSetName(s, "v4"), allowV4); err != nil {
+		return err
+	}
+	if err := writeSetElements(b, allowSetName(s, "v6"), allowV6); err != nil {
+		return err
+	}
+	if err := writeSetElements(b, denySetName(s, "v4"), denyV4); err != nil {
+		return err
+	}
+	if err := writeSetElements(b, denySetName(s, "v6"), denyV6); err != nil {
+		return err
+	}
+	writeSubjectVerdictRules(b, s, pol.DefaultAction)
+	return nil
+}
+
+// writeSubjectSets creates the subject's static (interval) and dynamic
+// (timeout) sets; static sets are populated from the policy when non-nil.
+func writeSubjectSets(b *strings.Builder, s subject.Subject, pol *policy.NetworkPolicy) error {
+	for _, name := range staticSetNames(s) {
+		fmt.Fprintf(b, "add set inet %s %s { type %s; flags interval; }\n", TableName, name, ipSetType(name))
+	}
+	fmt.Fprintf(b, "add set inet %s %s { type ipv4_addr; timeout %ds; }\n", TableName, dynSetName(s, "v4"), dynSetTimeoutS)
+	fmt.Fprintf(b, "add set inet %s %s { type ipv6_addr; timeout %ds; }\n", TableName, dynSetName(s, "v6"), dynSetTimeoutS)
+	if pol == nil {
+		return nil
+	}
+	allowV4, allowV6, denyV4, denyV6 := pol.StaticIPSets()
+	if err := writeSetElements(b, allowSetName(s, "v4"), allowV4); err != nil {
+		return err
+	}
+	if err := writeSetElements(b, allowSetName(s, "v6"), allowV6); err != nil {
+		return err
+	}
+	if err := writeSetElements(b, denySetName(s, "v4"), denyV4); err != nil {
+		return err
+	}
+	if err := writeSetElements(b, denySetName(s, "v6"), denyV6); err != nil {
+		return err
+	}
+	return nil
+}
+
+// writeSetElements writes static set elements, normalized first: an interval
+// set rejects overlapping entries in one add element ("conflicting intervals
+// specified"), e.g. an always-deny host 10.99.0.9 inside a policy deny CIDR
+// 10.99.0.0/24. Normalization drops strict subnets (shared with the sidecar's
+// nftables manager semantics).
+func writeSetElements(b *strings.Builder, setName string, elems []string) error {
+	if len(elems) == 0 {
+		return nil
+	}
+	normalized, err := nftables.NormalizeIntervalSet(elems)
+	if err != nil {
+		return fmt.Errorf("normalize interval set %s: %w", setName, err)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	fmt.Fprintf(b, "add element inet %s %s { %s }\n", TableName, setName, strings.Join(normalized, ", "))
+	return nil
+}
+
+// writeSubjectChain creates the subject chain as a REGULAR (non-hook) chain:
+// nf_tables rejects `jump` to hook-bound chains (EOPNOTSUPP), and subject
+// chains are only ever entered through the master dispatch jump. The default
+// action is an explicit trailing verdict instead of a chain policy.
+func writeSubjectChain(b *strings.Builder, s subject.Subject, defaultAction string) {
+	fmt.Fprintf(b, "add chain inet %s %s\n", TableName, subjectChain(s))
+}
+
+// writeSubjectVerdictRules emits the set-based verdicts. The trailing rule
+// carries the default action: drop for default-deny (deny-first and
+// enforcing), accept for default-allow — a regular chain has no policy, so
+// the default must be explicit (matches the sidecar's chain-policy choice).
+func writeSubjectVerdictRules(b *strings.Builder, s subject.Subject, defaultAction string) {
+	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s drop\n", TableName, subjectChain(s), denySetName(s, "v4"))
+	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s drop\n", TableName, subjectChain(s), denySetName(s, "v6"))
+	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s accept\n", TableName, subjectChain(s), dynSetName(s, "v4"))
+	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s accept\n", TableName, subjectChain(s), dynSetName(s, "v6"))
+	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s accept\n", TableName, subjectChain(s), allowSetName(s, "v4"))
+	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s accept\n", TableName, subjectChain(s), allowSetName(s, "v6"))
+	if defaultAction == policy.ActionDeny {
+		fmt.Fprintf(b, "add rule inet %s %s drop\n", TableName, subjectChain(s))
+	} else {
+		fmt.Fprintf(b, "add rule inet %s %s accept\n", TableName, subjectChain(s))
+	}
+}
+
+// writeDispatchRule adds the master-chain dispatch jump for a subject,
+// matching source IP and host veth (defense in depth: a forged source IP from
+// another sandbox is rejected by the iifname bound to this sandbox's veth).
+// Verdict maps cannot jump to chains (EOPNOTSUPP on add element), so dispatch
+// is a plain rule per subject; removal rebuilds the table (see Remove).
+func writeDispatchRule(b *strings.Builder, s subject.Subject, slot slotsource.Slot) {
+	if slot.IP.Is4() {
+		fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" jump %s\n",
+			TableName, dispatchChain, slot.IP, slot.HostVeth, subjectChain(s))
+		return
+	}
+	fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" jump %s\n",
+		TableName, dispatchChain, slot.IP, slot.HostVeth, subjectChain(s))
+}
+
+// writeResolvedIPsFragment adds DNS-learned IPs to a subject's dynamic sets
+// with clamped TTLs (mirrors pkg/nftables lease behavior).
+func writeResolvedIPsFragment(b *strings.Builder, s subject.Subject, ips []nftables.ResolvedIP) {
+	var v4, v6 []string
+	for _, r := range ips {
+		addr := r.Addr.Unmap()
+		ttl := clampTTL(r.TTL)
+		value := fmt.Sprintf("%s timeout %ds", addr, int(ttl/time.Second))
+		if addr.Is4() {
+			v4 = append(v4, value)
+		} else if addr.Is6() {
+			v6 = append(v6, value)
+		}
+	}
+	if len(v4) > 0 {
+		fmt.Fprintf(b, "add element inet %s %s { %s }\n", TableName, dynSetName(s, "v4"), strings.Join(v4, ", "))
+	}
+	if len(v6) > 0 {
+		fmt.Fprintf(b, "add element inet %s %s { %s }\n", TableName, dynSetName(s, "v6"), strings.Join(v6, ", "))
+	}
+}
+
+func clampTTL(d time.Duration) time.Duration {
+	sec := int(d.Seconds()) + nftTTLSlackSec
+	sec = min(max(sec, minTTLSec), maxTTLSec)
+	return time.Duration(sec) * time.Second
+}
+
+// Subject names appear in nft identifiers: sanitize to [a-z0-9_].
+func subjectChain(s subject.Subject) string {
+	return "subj_" + sanitize(string(s))
+}
+
+func sanitize(id string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(id) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
+}
+
+func staticSetNames(s subject.Subject) []string {
+	return []string{
+		allowSetName(s, "v4"), allowSetName(s, "v6"),
+		denySetName(s, "v4"), denySetName(s, "v6"),
+	}
+}
+
+// allSetNames includes the dynamic DNS-learned sets; used by the reset
+// fragment so a rebind also drops the previous sandbox's leases.
+func allSetNames(s subject.Subject) []string {
+	return append(staticSetNames(s), dynSetName(s, "v4"), dynSetName(s, "v6"))
+}
+
+func allowSetName(s subject.Subject, fam string) string { return subjectChain(s) + "_allow_" + fam }
+func denySetName(s subject.Subject, fam string) string  { return subjectChain(s) + "_deny_" + fam }
+func dynSetName(s subject.Subject, fam string) string   { return subjectChain(s) + "_dyn_" + fam }
+
+func ipSetType(name string) string {
+	if strings.HasSuffix(name, "_v6") {
+		return "ipv6_addr"
+	}
+	return "ipv4_addr"
+}
