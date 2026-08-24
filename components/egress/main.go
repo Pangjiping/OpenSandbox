@@ -50,7 +50,7 @@ func main() {
 	ctx = withLogger(ctx)
 	defer log.Logger.Sync()
 
-	// Fleet profile (OSEP-0021): multi-sandbox control plane over the slot
+	// Fleet profile: multi-sandbox control plane over the slot
 	// store and the proxy route. Sidecar stays the default; the two profiles
 	// are mutually exclusive deployment forms.
 	if strings.TrimSpace(os.Getenv(constants.EnvEgressProfile)) == constants.ProfileFleet {

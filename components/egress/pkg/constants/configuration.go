@@ -22,7 +22,7 @@ import (
 
 const EnvCredentialVaultTrustedProxyCIDRs = "OPENSANDBOX_EGRESS_CREDENTIAL_VAULT_TRUSTED_PROXY_CIDRS"
 
-// Fleet profile (OSEP-0021): the egress control plane serves N sandboxes
+// Fleet profile: the egress control plane serves N sandboxes
 // sharing one host/network domain; sidecar remains the default profile.
 const (
 	EnvEgressProfile    = "OPENSANDBOX_EGRESS_PROFILE"

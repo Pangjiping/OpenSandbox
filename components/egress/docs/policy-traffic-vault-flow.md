@@ -1,7 +1,7 @@
 # Egress Policy, Traffic Flow, and Credential Vault (Fleet Profile)
 
 This document shows how a sandbox's outbound network policy, its traffic flow,
-and the credential vault work in the **fleet profile** (OSEP-0021): one egress
+and the credential vault work in the **fleet profile**: one egress
 control plane serving N sandboxes that share one host/network domain
 (fast-sandbox Fastlet Pod). Each sandbox is a **subject** with its own policy,
 kernel rules, and credentials.

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package subject implements the OSEP-0021 Subject abstraction: one opaque
+// Package subject implements the multi-sandbox egress Subject abstraction: one opaque
 // identifier per sandbox owning an isolated slice of policy, credentials, and
 // kernel rules, dispatched by platform-provided identity keys.
 //

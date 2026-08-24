@@ -290,7 +290,7 @@ func TestFleetServerHealthz(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
-// TestFleetCreateThenConfigureEndToEnd exercises the OSEP-0021 create-then-
+// TestFleetCreateThenConfigureEndToEnd exercises the create-then-
 // configure spine: policy pushed before the slot exists is cached pending,
 // and the controller applies it (deny-first -> active) once the slot appears.
 func TestFleetCreateThenConfigureEndToEnd(t *testing.T) {

@@ -25,7 +25,8 @@ import (
 	"time"
 )
 
-// FileParser parses a fastlet slot-store record as documented in OSEP-0021
+// FileParser parses a fastlet slot-store record ("Consumed slot fields" of the
+// multi-sandbox egress control plane proposal)
 // ("Consumed slot fields"). It is strict: any unknown phase, missing required
 // field, or unparseable address is an error. The consumer must fail closed on
 // parse errors — an unparsed slot is never treated as active. Fields outside
@@ -149,7 +150,7 @@ func parsePhase(raw string) (Phase, error) {
 const defaultPollInterval = time.Second
 
 // FileSource is a polling Source over a directory of slot-store JSON files.
-// Polling (rather than fsnotify) matches the OSEP-0021 scaling note (inotify
+// Polling (rather than fsnotify) matches the fleet profile scaling note (inotify
 // watch limits on shared hosts with polling fallback) and keeps the watcher
 // dependency-free; fsnotify can be swapped in later without touching the
 // Source contract.

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Fleet-profile control plane surface (OSEP-0021): one listener on the Pod
+// Fleet-profile control plane surface: one listener on the Pod
 // netns loopback, N subjects. Every policy/credential operation is routed to
 // a subject by the X-Fast-Sandbox-Uid header injected by fastlet-proxy (the
 // only peer: the listener binds 127.0.0.1 and sandbox netns cannot reach it).

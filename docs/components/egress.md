@@ -241,7 +241,7 @@ Full metric inventory and attribute semantics: [egress OpenTelemetry reference](
 
 ## Fleet Profile (multi-sandbox control plane)
 
-> Experimental: design per [OSEP-0021](https://github.com/opensandbox-group/OpenSandbox/blob/main/oseps/0021-multi-sandbox-egress-control-plane.md).
+> Experimental: design per [OSEP-0022](https://github.com/opensandbox-group/OpenSandbox/blob/main/oseps/0022-multi-sandbox-egress-control-plane.md).
 
 The default `sidecar` profile serves exactly one sandbox sharing one network
 namespace. The opt-in `fleet` profile (`OPENSANDBOX_EGRESS_PROFILE=fleet`)

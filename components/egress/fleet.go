@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Fleet-profile assembly (OSEP-0021): a single egress control plane serving N
+// Fleet-profile assembly: a single egress control plane serving N
 // sandboxes sharing one host/network domain. Activated by
 // OPENSANDBOX_EGRESS_PROFILE=fleet; the sidecar profile is unchanged.
 //

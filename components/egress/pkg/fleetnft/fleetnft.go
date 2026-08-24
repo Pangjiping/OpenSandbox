@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // Package fleetnft builds and applies the per-subject nftables ruleset for the
-// fleet egress profile (OSEP-0021). It is a new layer on top of the egress
+// fleet egress profile. It is a new layer on top of the egress
 // engines: pkg/nftables, pkg/dnsproxy, and pkg/credentialvault are untouched.
 //
 // Enforcement model (Pod netns):

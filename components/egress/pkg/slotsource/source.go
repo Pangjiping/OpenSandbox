@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Package slotsource defines the egress-side consumption contract for the
-// per-sandbox slot store observed by the egress control plane (fleet profile,
-// OSEP-0021). The package is a source, not a store: all slot data is owned by
+// per-sandbox slot store observed by the egress control plane (fleet profile).
+// The package is a source, not a store: all slot data is owned by
 // fastlet, and egress never persists any state of its own.
 //
 // Design notes:
@@ -22,7 +22,7 @@
 //   - The slot store is the single source of subject lifecycle (identity +
 //     fencing) and dispatch-key material. It never carries policy or
 //     credentials — those flow exclusively over the proxy route (see
-//     "Two Control Paths" in OSEP-0021).
+//     "Two Control Paths").
 //   - Consumers only ever see the normalized Slot/Event model, never a storage
 //     format. The current backend is fastlet's internal file store
 //     (/run/fast-sandbox/network/*.json); a future backend may be a read-only
