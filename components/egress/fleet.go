@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -80,13 +81,16 @@ func runFleetProfile(ctx context.Context) {
 	nftMgr := &fleetEnforcer{pod: podNft, sandbox: sandboxNft}
 	// Recovery: wipe stale rules from a previous egress generation BEFORE
 	// rescanning, so no dead subject's policy survives into a new sandbox.
-	// Pod-netns table only: per-sandbox netns tables die with their netns and
-	// are re-installed deny-first on re-registration (the authoritative Pod
-	// layer re-denies first, so no stale policy can ever be enforced alone).
 	if err := podNft.ApplyReset(ctx); err != nil {
 		log.Fatalf("fleet nftables reset failed: %v", err)
 	}
 	log.Infof("fleet nftables table reset (stale rules cleared)")
+	// The sandbox layer needs the same wipe: sandbox netns can outlive the
+	// egress process, and their OUTPUT tables are the ONLY enforcement for
+	// host-local traffic (never seen by the Pod forward hook). Reset every
+	// netns the previous generation could have installed into — from the
+	// slot store and from the shared netns mount dir.
+	wipeSandboxTables(ctx, src, sandboxNft)
 
 	reg := subject.NewRegistry(alwaysDeny, alwaysAllow)
 	pendingTTL := time.Duration(constants.EnvIntOrDefault(constants.EnvPendingPushTTL, constants.DefaultPendingPushTTL)) * time.Second
@@ -229,10 +233,15 @@ func (e *fleetEnforcer) ApplyPolicy(ctx context.Context, s subject.Subject, pol 
 	return e.sandbox.ApplyPolicy(ctx, s, pol)
 }
 
-// ApplyDispatchUpdate is Pod-netns only: the sandbox netns has no dispatch
-// (one subject per netns, no master chain).
+// ApplyDispatchUpdate is Pod-netns dispatch plus the sandbox-layer
+// reconciliation: an unchanged-fencing slot update that moved the netns path
+// or gateway must reinstall the subject's sandbox table (with its current
+// policy) so the defense-in-depth layer stays aligned.
 func (e *fleetEnforcer) ApplyDispatchUpdate(ctx context.Context, s subject.Subject, slot slotsource.Slot) error {
-	return e.pod.ApplyDispatchUpdate(ctx, s, slot)
+	if err := e.pod.ApplyDispatchUpdate(ctx, s, slot); err != nil {
+		return err
+	}
+	return e.sandbox.ApplySlotUpdate(ctx, s, slot)
 }
 
 func (e *fleetEnforcer) Remove(ctx context.Context, s subject.Subject) error {
@@ -255,4 +264,36 @@ func (e *fleetEnforcer) AddResolvedIPs(ctx context.Context, s subject.Subject, i
 // layer is refreshed in lockstep through the mirror callback.
 func (e *fleetEnforcer) StartConnectionRefresh(ctx context.Context) {
 	e.pod.StartConnectionRefresh(ctx, e.sandbox.AddResolvedIPs)
+}
+
+// wipeSandboxTables deletes the sandbox-layer table in every netns the
+// previous egress generation could have installed into: the slot store is the
+// authoritative list, and the shared netns mount dir covers slots whose files
+// are already gone. Best effort — a missing netns or table is expected.
+func wipeSandboxTables(ctx context.Context, src slotsource.Source, sandboxNft *sandboxnft.Applier) {
+	var paths []string
+	if slots, err := src.List(ctx); err == nil {
+		for _, slot := range slots {
+			paths = append(paths, slot.HostNetnsPath)
+		}
+	} else {
+		log.Warnf("slot store unreadable during recovery (slot-driven sandbox wipe skipped): %v", err)
+	}
+	paths = append(paths, netnsMountEntries()...)
+	sandboxNft.Reset(ctx, paths)
+	log.Infof("fleet sandbox tables reset (%d netns path(s))", len(paths))
+}
+
+// netnsMountEntries lists the shared netns mount dir (OSEP-0022 deployment
+// precondition: /var/run/netns or equivalent).
+func netnsMountEntries() []string {
+	entries, err := os.ReadDir(constants.DefaultNetnsMountDir)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, filepath.Join(constants.DefaultNetnsMountDir, e.Name()))
+	}
+	return out
 }

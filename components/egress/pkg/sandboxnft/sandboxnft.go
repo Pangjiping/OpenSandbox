@@ -24,7 +24,7 @@
 //	  chain output { type filter hook output priority 0; policy drop; }
 //	    ct state established,related accept   <- continuing flows stay up
 //	    oifname "lo" accept                   <- sandbox-internal loopback
-//	    udp/tcp dport 53 accept               <- DNS to the gateway proxy
+//	    udp/tcp dport 53 to slot.Gateway      <- DNS to the gateway proxy
 //	    tcp/udp dport 853 drop                <- DoT bypass blocked
 //	    [doh_block sets + tcp dport 443 drop] <- DoH (when enabled)
 //	    ip daddr @deny_v4 drop                <- per-subject policy
@@ -42,15 +42,17 @@
 //
 // DNS note: sandbox DNS is addressed to slot.Gateway:53 (rewritten resolv);
 // the gateway REDIRECT happens in the Pod netns prerouting, so the sandbox
-// OUTPUT chain sees the ORIGINAL gateway:53 destination. dport 53 is allowed
-// without a destination scope: DNS policy is enforced by the shared proxy in
-// the Pod netns (the authoritative layer), and the forward hook still drops
-// any direct DNS to foreign resolvers.
+// OUTPUT chain sees the ORIGINAL gateway:53 destination. The DNS exception
+// is scoped to slot.Gateway: a sandbox in deny state must not reach a
+// host-local resolver it was never configured to use — that path is exactly
+// what this layer covers, and an unscoped dport-53 allowance would bypass
+// the policy-aware proxy for INPUT-path traffic.
 package sandboxnft
 
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"strings"
 	"sync"
@@ -115,6 +117,7 @@ var ErrUnknownSubject = fmt.Errorf("sandboxnft: subject rules not installed")
 // installedSubject tracks the enforcement state the applier owns in memory.
 type installedSubject struct {
 	netnsPath string
+	gateway   netip.Addr            // DNS exception scope (slot.Gateway at install time)
 	pol       *policy.NetworkPolicy // nil while denying
 }
 
@@ -173,13 +176,18 @@ func (a *Applier) ApplyDenyFirst(ctx context.Context, s subject.Subject, slot sl
 	if err := writeSubjectSets(&b, nil); err != nil {
 		return err
 	}
+	if err := writeDoHSets(&b, a.opts); err != nil {
+		return err
+	}
 	writeChain(&b)
-	writeChainContent(&b, a.opts, policy.ActionDeny)
+	if err := writeChainContent(&b, a.opts, slot.Gateway, policy.ActionDeny); err != nil {
+		return err
+	}
 	if err := a.applyWithMissingTableFallback(ctx, slot.HostNetnsPath, b.String()); err != nil {
 		telemetry.RecordNftablesUpdateFailed(telemetry.NftOpDenyFirst)
 		return err
 	}
-	a.subjects[s] = installedSubject{netnsPath: slot.HostNetnsPath}
+	a.subjects[s] = installedSubject{netnsPath: slot.HostNetnsPath, gateway: slot.Gateway}
 	telemetry.RecordNftablesUpdate()
 	return nil
 }
@@ -200,7 +208,7 @@ func (a *Applier) ApplyPolicy(ctx context.Context, s subject.Subject, pol *polic
 	if err := writePolicySwap(&b, pol); err != nil {
 		return err
 	}
-	if err := writeChainContent(&b, a.opts, pol.DefaultAction); err != nil {
+	if err := writeChainContent(&b, a.opts, inst.gateway, pol.DefaultAction); err != nil {
 		return err
 	}
 	if _, err := a.run(ctx, inst.netnsPath, b.String()); err != nil {
@@ -211,6 +219,81 @@ func (a *Applier) ApplyPolicy(ctx context.Context, s subject.Subject, pol *polic
 	a.subjects[s] = inst
 	telemetry.RecordNftablesUpdate()
 	return nil
+}
+
+// ApplySlotUpdate reconciles the sandbox table after an unchanged-fencing
+// slot update (the controller's OnSlotUpdated): when the netns path or the
+// gateway moved, the table is rebuilt in the new netns (or in place for a
+// gateway-only change) with the CURRENT policy — deny-first when none —
+// keeping the defense-in-depth layer aligned with the dispatch layer. The
+// stale table in a previous netns is removed best effort. Unknown subjects
+// are a no-op (nothing to reconcile).
+func (a *Applier) ApplySlotUpdate(ctx context.Context, s subject.Subject, slot slotsource.Slot) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	inst, ok := a.subjects[s]
+	if !ok {
+		return nil
+	}
+	if inst.netnsPath == slot.HostNetnsPath && inst.gateway == slot.Gateway {
+		return nil // nothing moved
+	}
+	oldNetns := inst.netnsPath
+	pol := inst.pol
+
+	var b strings.Builder
+	writeTableHeader(&b)
+	if err := writeSubjectSets(&b, pol); err != nil {
+		return err
+	}
+	if err := writeDoHSets(&b, a.opts); err != nil {
+		return err
+	}
+	writeChain(&b)
+	if err := writeChainContent(&b, a.opts, slot.Gateway, defaultActionOf(pol)); err != nil {
+		return err
+	}
+	if err := a.applyWithMissingTableFallback(ctx, slot.HostNetnsPath, b.String()); err != nil {
+		telemetry.RecordNftablesUpdateFailed(telemetry.NftOpDispatch)
+		return err
+	}
+	a.subjects[s] = installedSubject{netnsPath: slot.HostNetnsPath, gateway: slot.Gateway, pol: pol}
+	if oldNetns != slot.HostNetnsPath {
+		// Best effort: the old netns may already be gone (the rules die
+		// with it); the new table is the enforcement of record.
+		if _, err := a.run(ctx, oldNetns, deleteTableScript()); err != nil {
+			log.Warnf("sandboxnft: slot update remove of old netns %s for subject %s failed, ignoring: %v", oldNetns, s, err)
+		}
+	}
+	telemetry.RecordNftablesUpdate()
+	return nil
+}
+
+// Reset deletes the enforcement table in every given netns path and clears
+// the applier state. Startup recovery protocol: called BEFORE the slot
+// rescan, so a sandbox netns that outlived the previous egress generation
+// can never keep enforcing its old policy — the sandbox layer is the only
+// enforcement for host-local traffic, which never crosses the Pod forward
+// hook. Best effort: a missing netns or table is expected and ignored.
+func (a *Applier) Reset(ctx context.Context, netnsPaths []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.subjects = make(map[subject.Subject]installedSubject)
+	for _, p := range netnsPaths {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		if _, err := a.run(ctx, p, deleteTableScript()); err != nil {
+			log.Warnf("sandboxnft: reset table in netns %s failed, ignoring: %v", p, err)
+		}
+	}
+}
+
+func defaultActionOf(pol *policy.NetworkPolicy) string {
+	if pol == nil {
+		return policy.ActionDeny
+	}
+	return pol.DefaultAction
 }
 
 // AddResolvedIPs adds DNS-learned IPs to the subject's sandbox-netns dynamic
@@ -252,8 +335,7 @@ func (a *Applier) Remove(ctx context.Context, s subject.Subject) error {
 		return nil
 	}
 	delete(a.subjects, s)
-	script := fmt.Sprintf("delete table inet %s\n", TableName)
-	if _, err := a.run(ctx, inst.netnsPath, script); err != nil {
+	if _, err := a.run(ctx, inst.netnsPath, deleteTableScript()); err != nil {
 		// Expected when the netns is already destroyed; the rules died with
 		// it. Never propagate: the Pod-netns layer (authoritative) already
 		// dropped the subject's enforcement.
@@ -299,6 +381,12 @@ func writeTableHeader(b *strings.Builder) {
 	fmt.Fprintf(b, "add table inet %s\n", TableName)
 }
 
+// deleteTableScript drops the whole sandbox table (per netns, one subject —
+// no rebuild needed).
+func deleteTableScript() string {
+	return fmt.Sprintf("delete table inet %s\n", TableName)
+}
+
 // writeSubjectSets creates the subject's static (interval) and dynamic
 // (timeout) sets; static sets are populated from the policy when non-nil.
 // Set names are fixed per netns: one sandbox per netns, one subject per
@@ -337,16 +425,24 @@ func writeChain(b *strings.Builder) {
 }
 
 // writeChainContent emits every rule of the OUTPUT chain: the structural
-// allowances (established return traffic, loopback, DNS), the encrypted-DNS
-// blocking mirror (DoT always, DoH when enabled), and the set-based policy
-// verdicts with the explicit default action. Used both for deny-first
-// installs and (after a chain flush) for policy swaps, so a swap can never
-// drop the structural rules.
-func writeChainContent(b *strings.Builder, opts Options, defaultAction string) error {
+// allowances (established return traffic, loopback, DNS to the slot gateway),
+// the encrypted-DNS blocking mirror (DoT always, DoH when enabled), and the
+// set-based policy verdicts with the explicit default action. Used both for
+// deny-first installs and (after a chain flush) for policy swaps, so a swap
+// can never drop the structural rules.
+func writeChainContent(b *strings.Builder, opts Options, gateway netip.Addr, defaultAction string) error {
 	fmt.Fprintf(b, "add rule inet %s %s ct state established,related accept\n", TableName, outputChain)
 	fmt.Fprintf(b, "add rule inet %s %s oifname \"lo\" accept\n", TableName, outputChain)
-	fmt.Fprintf(b, "add rule inet %s %s udp dport 53 accept\n", TableName, outputChain)
-	fmt.Fprintf(b, "add rule inet %s %s tcp dport 53 accept\n", TableName, outputChain)
+	// DNS exception scoped to the configured gateway: a sandbox must not
+	// reach a host-local resolver it was never configured to use (that
+	// INPUT-path traffic is exactly what this layer covers).
+	if gateway.Is4() {
+		fmt.Fprintf(b, "add rule inet %s %s ip daddr %s udp dport 53 accept\n", TableName, outputChain, gateway)
+		fmt.Fprintf(b, "add rule inet %s %s ip daddr %s tcp dport 53 accept\n", TableName, outputChain, gateway)
+	} else {
+		fmt.Fprintf(b, "add rule inet %s %s ip6 daddr %s udp dport 53 accept\n", TableName, outputChain, gateway)
+		fmt.Fprintf(b, "add rule inet %s %s ip6 daddr %s tcp dport 53 accept\n", TableName, outputChain, gateway)
+	}
 	fmt.Fprintf(b, "add rule inet %s %s tcp dport 853 drop\n", TableName, outputChain)
 	fmt.Fprintf(b, "add rule inet %s %s udp dport 853 drop\n", TableName, outputChain)
 	if err := writeDoHBlockRules(b, opts); err != nil {
@@ -366,9 +462,34 @@ func writeChainContent(b *strings.Builder, opts Options, defaultAction string) e
 	return nil
 }
 
-// writeDoHBlockRules emits the DoH-443 blocking rules mirroring the
-// Pod-netns master chain: with a blocklist, interval sets + per-family drop
-// rules; without one (strict mode), a bare drop of all tcp 443.
+// writeDoHSets creates the DoH-443 blocklist sets and elements. Called only
+// on fresh installs (deny-first / slot-update rebuild) where the table was
+// just (re)created — re-adding an existing set fails with "File exists", so
+// the policy-swap path must NOT emit them (see writeDoHBlockRules).
+func writeDoHSets(b *strings.Builder, opts Options) error {
+	if !opts.BlockDoH443 || (len(opts.DoHBlocklistV4) == 0 && len(opts.DoHBlocklistV6) == 0) {
+		return nil
+	}
+	if len(opts.DoHBlocklistV4) > 0 {
+		fmt.Fprintf(b, "add set inet %s %s { type ipv4_addr; flags interval; }\n", TableName, dohBlockV4Set)
+		if err := writeSetElements(b, dohBlockV4Set, opts.DoHBlocklistV4); err != nil {
+			return fmt.Errorf("doh blocklist v4: %w", err)
+		}
+	}
+	if len(opts.DoHBlocklistV6) > 0 {
+		fmt.Fprintf(b, "add set inet %s %s { type ipv6_addr; flags interval; }\n", TableName, dohBlockV6Set)
+		if err := writeSetElements(b, dohBlockV6Set, opts.DoHBlocklistV6); err != nil {
+			return fmt.Errorf("doh blocklist v6: %w", err)
+		}
+	}
+	return nil
+}
+
+// writeDoHBlockRules emits only the DoH-443 drop rules mirroring the
+// Pod-netns master chain: per-family drops against the (already existing)
+// blocklist sets, or a bare drop of all tcp 443 in strict mode. Never
+// re-creates sets — the swap path flushes only the chain, and the sets
+// survive from the install (a re-add would fail with "File exists").
 func writeDoHBlockRules(b *strings.Builder, opts Options) error {
 	if !opts.BlockDoH443 {
 		return nil
@@ -378,17 +499,9 @@ func writeDoHBlockRules(b *strings.Builder, opts Options) error {
 		return nil
 	}
 	if len(opts.DoHBlocklistV4) > 0 {
-		fmt.Fprintf(b, "add set inet %s %s { type ipv4_addr; flags interval; }\n", TableName, dohBlockV4Set)
-		if err := writeSetElements(b, dohBlockV4Set, opts.DoHBlocklistV4); err != nil {
-			return fmt.Errorf("doh blocklist v4: %w", err)
-		}
 		fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s tcp dport 443 drop\n", TableName, outputChain, dohBlockV4Set)
 	}
 	if len(opts.DoHBlocklistV6) > 0 {
-		fmt.Fprintf(b, "add set inet %s %s { type ipv6_addr; flags interval; }\n", TableName, dohBlockV6Set)
-		if err := writeSetElements(b, dohBlockV6Set, opts.DoHBlocklistV6); err != nil {
-			return fmt.Errorf("doh blocklist v6: %w", err)
-		}
 		fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s tcp dport 443 drop\n", TableName, outputChain, dohBlockV6Set)
 	}
 	return nil

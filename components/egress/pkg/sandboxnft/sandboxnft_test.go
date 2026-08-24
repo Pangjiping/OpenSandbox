@@ -102,12 +102,16 @@ func TestDenyFirstInstallShape(t *testing.T) {
 	script := call.script
 	require.Contains(t, script, "delete table inet opensandbox-fleet-ns")
 	require.Contains(t, script, "add chain inet opensandbox-fleet-ns output { type filter hook output priority 0; policy drop; }")
-	// structural allowances: established, loopback, DNS (sandbox DNS is
-	// addressed to the gateway:53 before the Pod-netns REDIRECT)
+	// structural allowances: established, loopback, DNS scoped to the
+	// gateway (sandbox DNS is addressed to the gateway:53 before the
+	// Pod-netns REDIRECT; an unscoped dport-53 allowance would let a
+	// denying sandbox reach any host-local resolver)
 	require.Contains(t, script, "ct state established,related accept")
 	require.Contains(t, script, `oifname "lo" accept`)
-	require.Contains(t, script, "udp dport 53 accept")
-	require.Contains(t, script, "tcp dport 53 accept")
+	require.Contains(t, script, "ip daddr 10.0.0.1 udp dport 53 accept")
+	require.Contains(t, script, "ip daddr 10.0.0.1 tcp dport 53 accept")
+	assert.NotContains(t, script, "add rule inet opensandbox-fleet-ns output udp dport 53 accept", "DNS exception must be gateway-scoped")
+	assert.NotContains(t, script, "add rule inet opensandbox-fleet-ns output tcp dport 53 accept", "DNS exception must be gateway-scoped")
 	// encrypted-DNS mirror: DoT always blocked
 	require.Contains(t, script, "tcp dport 853 drop")
 	require.Contains(t, script, "udp dport 853 drop")
@@ -137,7 +141,7 @@ func TestPolicySwapPreservesStructuralRules(t *testing.T) {
 	require.Contains(t, script, "add element inet opensandbox-fleet-ns deny_v4 { 1.2.3.4 }")
 	// structural rules must survive the swap (the chain was flushed)
 	require.Contains(t, script, "ct state established,related accept")
-	require.Contains(t, script, "udp dport 53 accept")
+	require.Contains(t, script, "ip daddr 10.0.0.1 udp dport 53 accept")
 	require.Contains(t, script, "tcp dport 853 drop")
 	// dynamic sets are untouched by the swap
 	assert.NotContains(t, script, "flush set inet opensandbox-fleet-ns dyn")
@@ -256,6 +260,137 @@ func TestDoHBlockMirror(t *testing.T) {
 	a2 := NewApplier(runner2.Run, Options{BlockDoH443: true})
 	require.NoError(t, a2.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
 	require.Contains(t, runner2.last().script, "add rule inet opensandbox-fleet-ns output tcp dport 443 drop")
+}
+
+// TestDoHPolicySwapDoesNotReaddSets: the DoH blocklist sets are created only
+// on fresh installs — a policy swap must re-add the RULES (the chain was
+// flushed) but never the sets or elements (a re-add fails with "File
+// exists", which would block activation under a blocklist configuration).
+func TestDoHPolicySwapDoesNotReaddSets(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{
+		BlockDoH443:    true,
+		DoHBlocklistV4: []string{"203.0.113.0/24"},
+	})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+
+	pol, err := policy.ParsePolicy(`{"defaultAction":"deny","egress":[{"action":"allow","target":"8.8.8.8"}]}`)
+	require.NoError(t, err)
+	require.NoError(t, a.ApplyPolicy(ctx, s, pol))
+
+	script := runner.last().script
+	require.Contains(t, script, "ip daddr @doh_block_v4 tcp dport 443 drop", "DoH rule must survive the swap")
+	assert.NotContains(t, script, "add set inet opensandbox-fleet-ns doh_block", "set must not be re-created on swap")
+	assert.NotContains(t, script, "add element inet opensandbox-fleet-ns doh_block", "elements must not be re-added on swap")
+}
+
+func TestApplySlotUpdateNetnsMove(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+	pol, err := policy.ParsePolicy(`{"defaultAction":"deny","egress":[{"action":"allow","target":"8.8.8.8"}]}`)
+	require.NoError(t, err)
+	require.NoError(t, a.ApplyPolicy(ctx, s, pol))
+
+	// unchanged fencing, netns path moved: reinstall in the new netns WITH
+	// the current policy, remove the old table best effort
+	runner.mu.Lock()
+	runner.calls = nil
+	runner.mu.Unlock()
+
+	newSlot := testSlot("u-1", "10.0.0.5")
+	newSlot.HostNetnsPath = "/var/run/netns/ns-u-1-new"
+	require.NoError(t, a.ApplySlotUpdate(ctx, s, newSlot))
+
+	runner.mu.Lock()
+	calls := append([]runCall(nil), runner.calls...)
+	runner.mu.Unlock()
+	require.Len(t, calls, 2, "install into the new netns + best-effort delete of the old")
+	require.Equal(t, "/var/run/netns/ns-u-1-new", calls[0].netnsPath)
+	require.Contains(t, calls[0].script, "8.8.8.8", "policy must be preserved across the move")
+	require.Contains(t, calls[0].script, "ip daddr 10.0.0.1 udp dport 53 accept", "gateway-scoped DNS from the new slot")
+	require.Equal(t, "/var/run/netns/ns-u-1", calls[1].netnsPath)
+	require.Contains(t, calls[1].script, "delete table")
+
+	// the subject stays usable in the new netns
+	require.NoError(t, a.ApplyPolicy(ctx, s, pol))
+	runner.mu.Lock()
+	last := runner.calls[len(runner.calls)-1]
+	runner.mu.Unlock()
+	require.Equal(t, "/var/run/netns/ns-u-1-new", last.netnsPath)
+}
+
+func TestApplySlotUpdateGatewayOnly(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+
+	newSlot := testSlot("u-1", "10.0.0.5")
+	newSlot.Gateway = netip.MustParseAddr("10.0.0.254")
+	require.NoError(t, a.ApplySlotUpdate(ctx, s, newSlot))
+
+	script := runner.last().script
+	require.Contains(t, script, "ip daddr 10.0.0.254 udp dport 53 accept", "DNS exception must follow the moved gateway")
+	assert.NotContains(t, script, "10.0.0.1 udp dport 53", "old gateway must not survive")
+}
+
+func TestApplySlotUpdateUnchangedIsNoop(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+	count := runner.count()
+
+	require.NoError(t, a.ApplySlotUpdate(ctx, s, testSlot("u-1", "10.0.0.5")))
+	require.Equal(t, count, runner.count(), "nothing moved -> no nft transaction")
+
+	// unknown subject is a no-op too
+	require.NoError(t, a.ApplySlotUpdate(ctx, subject.FromSandboxUID("ghost"), testSlot("g", "10.0.0.9")))
+	require.Equal(t, count, runner.count())
+}
+
+func TestResetWipesTables(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+
+	runner.mu.Lock()
+	runner.calls = nil
+	runner.mu.Unlock()
+
+	// a gone netns must not abort the wipe of the others
+	runner.netnsOf = func(path string) error {
+		if strings.Contains(path, "gone") {
+			return fmt.Errorf("nsenter: cannot open netns: No such file or directory")
+		}
+		return nil
+	}
+	a.Reset(ctx, []string{"/var/run/netns/ns-a", "/var/run/netns/gone", "/var/run/netns/ns-b", "  "})
+
+	runner.mu.Lock()
+	calls := append([]runCall(nil), runner.calls...)
+	runner.mu.Unlock()
+	require.Len(t, calls, 3, "every non-blank path is attempted; blank paths are skipped")
+	for _, call := range calls {
+		require.Contains(t, call.script, "delete table")
+	}
+	// the unreachable netns ("gone") returned an error that Reset logged and
+	// swallowed — reaching the state assertion below proves the wipe did not
+	// abort on a missing netns.
+
+	// state cleared: a subsequent policy apply is rejected, not applied
+	pol, err := policy.ParsePolicy(`{"defaultAction":"deny"}`)
+	require.NoError(t, err)
+	require.ErrorIs(t, a.ApplyPolicy(ctx, s, pol), ErrUnknownSubject)
 }
 
 func TestApplyDenyFirstMissingTableFallback(t *testing.T) {

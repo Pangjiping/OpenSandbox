@@ -321,11 +321,14 @@ func (a *Applier) trackDynamicIPs(s subject.Subject, ips []nftables.ResolvedIP) 
 // host veth moved on an EventUpdated with unchanged fencing) WITHOUT touching
 // the subject's policy content. A stale rule from the previous slot key never
 // matches (the iifname is bound), and duplicates are cleared by the next
-// table rebuild (rebind reset, remove, or ApplyReset).
+// table rebuild (rebind reset, remove, or ApplyReset). The stored slot is
+// replaced with the updated one so the connection-refresh bucketing keeps
+// matching the subject's (possibly moved) source IP.
 func (a *Applier) ApplyDispatchUpdate(ctx context.Context, s subject.Subject, slot slotsource.Slot) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, ok := a.subjects[s]; !ok {
+	inst, ok := a.subjects[s]
+	if !ok {
 		return ErrUnknownSubject
 	}
 	var b strings.Builder
@@ -334,6 +337,8 @@ func (a *Applier) ApplyDispatchUpdate(ctx context.Context, s subject.Subject, sl
 		telemetry.RecordNftablesUpdateFailed(telemetry.NftOpDispatch)
 		return err
 	}
+	inst.slot = slot
+	a.subjects[s] = inst
 	telemetry.RecordNftablesUpdate()
 	return nil
 }

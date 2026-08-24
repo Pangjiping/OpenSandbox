@@ -65,12 +65,12 @@ server's reconciliation re-pushes policies.
 Two enforcement layers per sandbox: the authoritative Pod netns `forward`
 hook (below), plus a per-sandbox netns OUTPUT chain mirroring the same policy
 as defense in depth (`nsenter` from the host, table `opensandbox-fleet-ns`).
-The sandbox layer allows loopback, DNS (dport 53 — the Pod layer enforces DNS
-policy via the proxy), and the mirrored deny/dyn/allow verdicts; it catches
-traffic the forward hook never sees (sandbox → host-local destinations take
-the INPUT path). DNS-learned leases are refreshed in lockstep between both
-layers by the per-subject connection refresh loop (Pod netns conntrack,
-bucketed by source IP).
+The sandbox layer allows loopback, DNS to the slot gateway only (dport 53,
+gateway-scoped — the Pod layer enforces DNS policy via the proxy), and the
+mirrored deny/dyn/allow verdicts; it catches traffic the forward hook never
+sees (sandbox → host-local destinations take the INPUT path). DNS-learned
+leases are refreshed in lockstep between both layers by the per-subject
+connection refresh loop (Pod netns conntrack, bucketed by source IP).
 
 Dispatch is a verdict map keyed by
 `ip saddr . iifname` (the host veth binding is defense in depth against UDP
