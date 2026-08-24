@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +45,9 @@ type fakeNft struct {
 	policyApplied []subject.Subject
 	lastPolicy    *policy.NetworkPolicy
 	removed       []subject.Subject
+	dispatchUpd   []subject.Subject
 	denyFirstErr  error
+	policyErr     error
 }
 
 func (f *fakeNft) ApplyDenyFirst(_ context.Context, s subject.Subject, _ slotsource.Slot) error {
@@ -60,8 +63,18 @@ func (f *fakeNft) ApplyDenyFirst(_ context.Context, s subject.Subject, _ slotsou
 func (f *fakeNft) ApplyPolicy(_ context.Context, s subject.Subject, pol *policy.NetworkPolicy) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.policyErr != nil {
+		return f.policyErr
+	}
 	f.policyApplied = append(f.policyApplied, s)
 	f.lastPolicy = pol
+	return nil
+}
+
+func (f *fakeNft) ApplyDispatchUpdate(_ context.Context, s subject.Subject, _ slotsource.Slot) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dispatchUpd = append(f.dispatchUpd, s)
 	return nil
 }
 
@@ -179,9 +192,9 @@ func TestFleetServerPendingGenerationMismatchDropped(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, rec.Code)
 	// header generation 2 set on the cached request
 	srv.mu.Lock()
-	if p, ok := srv.pending[s]; ok {
-		p.hasGen = true
-		p.gen = 2
+	if qs, ok := srv.pending[s]; ok && len(qs) > 0 {
+		qs[0].hasGen = true
+		qs[0].gen = 2
 	}
 	srv.mu.Unlock()
 
@@ -362,4 +375,109 @@ func TestFleetServerAlwaysRulesReachNft(t *testing.T) {
 	allowV4, _, denyV4, _ := applied.StaticIPSets()
 	require.Contains(t, denyV4, "203.0.113.0/24", "always-deny CIDR must reach the nft deny set")
 	require.Contains(t, allowV4, "198.51.100.7", "always-allow IP must reach the nft allow set")
+}
+
+// TestFleetServerNftFailureKeepsRegistryState (Fix 4): a failed nft apply
+// must leave the registry (DNS/GET) on the PREVIOUS policy — nft commits
+// before registry state.
+func TestFleetServerNftFailureKeepsRegistryState(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	s := subject.FromSandboxUID("u-1")
+	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
+		subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1})
+
+	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1", `{"defaultAction":"deny"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState2(reg.Get(s)))
+
+	// second push fails at nft: registry must stay on the FIRST policy
+	nft.mu.Lock()
+	nft.policyErr = errors.New("nft busy")
+	nft.mu.Unlock()
+	rec = doRequest(t, srv, http.MethodPut, "/policy", "u-1",
+		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+
+	eff := reg.EffectivePolicy(s)
+	require.NotNil(t, eff)
+	assert.Equal(t, "deny", eff.Evaluate("example.com"), "failed nft apply must not publish the new policy")
+}
+
+// TestFleetServerPendingQueueReplaysBothPushes (Fix 6): policy AND vault
+// pushes arriving before the slot must BOTH be replayed in order.
+func TestFleetServerPendingQueueReplaysBothPushes(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	s := subject.FromSandboxUID("u-1")
+
+	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1",
+		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	rec = doRequest(t, srv, http.MethodPost, "/credential-vault", "u-1", `{"credentials":[],"bindings":[]}`)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+
+	// slot appears: both pushes flush in order
+	dir := t.TempDir()
+	dnsPath := filepath.Join(dir, "resolv.conf")
+	require.NoError(t, os.WriteFile(dnsPath, []byte("nameserver 10.96.0.10\n"), 0o644))
+	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
+		subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1})
+	slot := slotsource.Slot{
+		ID: "slot-1", Phase: slotsource.PhaseBound,
+		Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1},
+		IP:    netip.MustParseAddr("10.0.0.5"), HostNetnsPath: "/n", HostVeth: "v",
+		Gateway: netip.MustParseAddr("10.0.0.1"), DNSPath: dnsPath,
+	}
+	require.NoError(t, srv.OnRegistered(s, slot))
+	srv.OnRegisteredComplete(s, slot)
+
+	// policy applied with its exact content, and the vault was created
+	eff := reg.EffectivePolicy(s)
+	require.NotNil(t, eff)
+	assert.Equal(t, "allow", eff.Evaluate("example.com"))
+	rec = doRequest(t, srv, http.MethodGet, "/credential-vault", "u-1", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"revision":1`)
+	require.Equal(t, 1, nft.appliedCount())
+}
+
+// TestFleetServerOnSlotUpdatedReconciles (Fix 5): an EventUpdated with
+// unchanged fencing must rewrite resolv and update the dispatch rule without
+// resetting the policy.
+func TestFleetServerOnSlotUpdatedReconciles(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	s := subject.FromSandboxUID("u-1")
+	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
+		subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1})
+	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1",
+		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	dir := t.TempDir()
+	dnsPath := filepath.Join(dir, "resolv.conf")
+	require.NoError(t, os.WriteFile(dnsPath, []byte("nameserver 10.96.0.10\n"), 0o644))
+	slot := slotsource.Slot{
+		ID: "slot-1", Phase: slotsource.PhaseBound,
+		Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1},
+		IP:    netip.MustParseAddr("10.0.0.5"), HostNetnsPath: "/n", HostVeth: "veth-new",
+		Gateway: netip.MustParseAddr("10.0.0.1"), DNSPath: dnsPath,
+	}
+	require.NoError(t, srv.OnSlotUpdated(s, slot))
+
+	content, err := os.ReadFile(dnsPath)
+	require.NoError(t, err)
+	require.Contains(t, string(content), "nameserver 10.0.0.1")
+	nft.mu.Lock()
+	require.Len(t, nft.dispatchUpd, 1)
+	nft.mu.Unlock()
+	// policy untouched
+	eff := reg.EffectivePolicy(s)
+	require.NotNil(t, eff)
+	assert.Equal(t, "allow", eff.Evaluate("example.com"))
+}
+
+func mustState2(st subject.State, ok bool) subject.State {
+	if !ok {
+		panic("subject absent")
+	}
+	return st
 }

@@ -101,14 +101,41 @@ func TestFileSourceListBoundOnly(t *testing.T) {
 	assert.Equal(t, "a", slots[0].ID)
 }
 
-func TestFileSourceListFailsOnBadRecord(t *testing.T) {
+func TestFileSourceListSkipsBadRecord(t *testing.T) {
 	dir := t.TempDir()
 	writeSlot(t, dir, "a.json", `{"id":"a","phase":"Bound","owner":{"sandboxUid":"u-a"},"ip":"10.0.0.5","hostNetnsPath":"/n","hostVeth":"v","gateway":"10.0.0.1","dnsPath":"/d"}`)
 	writeSlot(t, dir, "broken.json", `{oops`)
 
 	src := NewFileSource(dir, 0)
-	_, err := src.List(context.Background())
-	require.Error(t, err)
+	slots, err := src.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, slots, 1, "unparseable records must be excluded, not fail the snapshot")
+	assert.Equal(t, "a", slots[0].ID)
+}
+
+// TestFileSourceBadRecordFailsClosedForActiveSubject: a record that was bound
+// and then becomes unparseable must be treated as absent — the controller
+// unloads the subject (Deleted) instead of keeping stale enforcement alive.
+func TestFileSourceBadRecordFailsClosedForActiveSubject(t *testing.T) {
+	dir := t.TempDir()
+	src := NewFileSource(dir, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, err := src.Watch(ctx)
+	require.NoError(t, err)
+
+	writeSlot(t, dir, "a.json", `{"id":"a","phase":"Bound","owner":{"sandboxUid":"u-a","instanceGeneration":1,"assignmentAttempt":1},"ip":"10.0.0.5","hostNetnsPath":"/n","hostVeth":"v","gateway":"10.0.0.1","dnsPath":"/d"}`)
+	assertEvent(t, events, EventBound)
+
+	// corrupt the record in place: the next poll must NOT emit Bound/Updated;
+	// the file drops out of the view -> Deleted (fail closed), plus EventError
+	writeSlot(t, dir, "a.json", `{oops`)
+	ev := waitEvent(t, events)
+	require.Equal(t, EventError, ev.Type, "first event after corruption is the parse failure")
+	ev = waitEvent(t, events)
+	require.Equal(t, EventDeleted, ev.Type, "unparseable record must be treated as gone")
+	require.Equal(t, "a", ev.Slot.ID)
 }
 
 func TestFileSourceWatchLifecycle(t *testing.T) {

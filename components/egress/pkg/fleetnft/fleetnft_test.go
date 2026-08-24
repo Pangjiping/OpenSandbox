@@ -206,6 +206,12 @@ func TestRemoveRebuildsTable(t *testing.T) {
 	assert.NotContains(t, script, "subj_s_u_1", "removed subject must not reappear in the rebuild")
 	assert.NotContains(t, script, "10.0.0.5", "removed subject's dispatch must not reappear")
 
+	// last subject removed: swap in the empty master drop chain (fail closed)
+	require.NoError(t, a.Remove(ctx, s2))
+	script = runner.last()
+	require.Contains(t, script, "add chain inet opensandbox-fleet dispatch { type filter hook forward priority 0; policy drop; }")
+	assert.NotContains(t, script, "subj_s_u_2", "no subjects may remain after removing the last one")
+
 	// last subject removed: whole table deleted
 	require.NoError(t, a.Remove(ctx, s2))
 	script = runner.last()
@@ -245,19 +251,54 @@ func TestDenyFirstResetsOnReRegistration(t *testing.T) {
 	require.Contains(t, script, "delete table inet opensandbox-fleet")
 }
 
-func TestApplyReset(t *testing.T) {
+func TestApplyResetKeepsEmptyMasterDropChain(t *testing.T) {
 	runner := &fakeRunner{}
 	a := NewApplier(runner.Run)
 	ctx := context.Background()
 	s := subject.FromSandboxUID("u-1")
 	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
 	require.NoError(t, a.ApplyReset(ctx))
-	require.Equal(t, 2, runner.count())
-	require.Contains(t, runner.last(), "delete table inet opensandbox-fleet")
 
-	// after reset a subject can re-register (fresh deny-first, header included)
+	// Reset swaps in an EMPTY master drop chain — the fail-closed guarantee
+	// must not have a window where the drop hook is gone.
+	script := runner.last()
+	require.Contains(t, script, "delete table inet opensandbox-fleet")
+	require.Contains(t, script, "add chain inet opensandbox-fleet dispatch { type filter hook forward priority 0; policy drop; }")
+	assert.NotContains(t, script, "subj_s_u_1", "reset must not carry subjects")
+	assert.NotContains(t, script, "10.0.0.5", "reset must not carry dispatch rules")
+
+	// after reset the table already exists: re-registration adds only the
+	// subject fragment (no delete-table header, no dispatch chain rebuild)
+	runner.mu.Lock()
+	runner.scripts = nil
+	runner.mu.Unlock()
 	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
-	require.Contains(t, runner.last(), "delete table inet opensandbox-fleet")
+	assert.NotContains(t, runner.last(), "delete table", "table must not be recreated after reset")
+	assert.NotContains(t, runner.last(), "add chain inet opensandbox-fleet dispatch", "dispatch chain already exists after reset")
+	require.Contains(t, runner.last(), "add chain inet opensandbox-fleet subj_s_u_1")
+}
+
+func TestApplyDispatchUpdate(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run)
+	ctx := context.Background()
+	s := subject.FromSandboxUID("u-1")
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+
+	runner.mu.Lock()
+	runner.scripts = nil
+	runner.mu.Unlock()
+
+	// slot updated with a new veth: only the dispatch rule is appended, the
+	// subject's policy content is untouched
+	require.NoError(t, a.ApplyDispatchUpdate(ctx, s, testSlot("u-1", "10.0.0.5")))
+	script := runner.last()
+	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 iifname "vethu-1" jump subj_s_u_1`)
+	assert.NotContains(t, script, "flush", "dispatch update must not touch the subject chain")
+	assert.NotContains(t, script, "subj_s_u_1 ip daddr", "dispatch update must not re-add policy rules")
+
+	// unknown subject rejected
+	require.ErrorIs(t, a.ApplyDispatchUpdate(ctx, subject.FromSandboxUID("ghost"), testSlot("g", "10.0.0.9")), ErrUnknownSubject)
 }
 
 func TestSanitize(t *testing.T) {

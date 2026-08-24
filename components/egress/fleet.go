@@ -73,7 +73,10 @@ func runFleetProfile(ctx context.Context) {
 	controller := subject.NewController(reg, fleetSrv)
 
 	// DNS: one shared listener, per-query policy dispatched by source IP.
-	dnsAddr := envOrDefault(constants.EnvFleetDNSAddr, "127.0.0.1:15353")
+	// Default :53 so the default config matches the resolv.conf rewrite
+	// (sandboxes are pointed at slot.Gateway:53); an explicit addr (e.g. the
+	// gateway IP) is honored when set.
+	dnsAddr := envOrDefault(constants.EnvFleetDNSAddr, ":53")
 	proxy, err := dnsproxy.New(nil, dnsAddr, alwaysDeny, alwaysAllow)
 	if err != nil {
 		log.Fatalf("failed to init dns proxy: %v", err)

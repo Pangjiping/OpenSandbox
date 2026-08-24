@@ -31,12 +31,13 @@ import (
 
 // fakeHooks: records transitions; optionally fails deny-first installs.
 type fakeHooks struct {
-	mu         sync.Mutex
-	registered []slotsource.Slot
-	unloaded   []Subject
-	denyErr    error        // when set, every OnRegistered fails
-	failFirstN atomic.Int32 // fail while >0 (decremented per attempt)
-	attempts   atomic.Int32
+	mu          sync.Mutex
+	registered  []slotsource.Slot
+	unloaded    []Subject
+	slotUpdated []Subject
+	denyErr     error        // when set, every OnRegistered fails
+	failFirstN  atomic.Int32 // fail while >0 (decremented per attempt)
+	attempts    atomic.Int32
 }
 
 func (h *fakeHooks) OnRegistered(_ Subject, slot slotsource.Slot) error {
@@ -55,6 +56,13 @@ func (h *fakeHooks) OnRegistered(_ Subject, slot slotsource.Slot) error {
 }
 
 func (h *fakeHooks) OnRegisteredComplete(_ Subject, _ slotsource.Slot) {}
+
+func (h *fakeHooks) OnSlotUpdated(s Subject, slot slotsource.Slot) error {
+	h.mu.Lock()
+	h.slotUpdated = append(h.slotUpdated, s)
+	h.mu.Unlock()
+	return nil
+}
 
 func (h *fakeHooks) OnUnloaded(s Subject) error {
 	h.mu.Lock()

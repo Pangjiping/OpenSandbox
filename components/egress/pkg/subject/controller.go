@@ -71,9 +71,23 @@ func (c *Controller) Run(ctx context.Context, src slotsource.Source) error {
 func (c *Controller) applyEvent(ctx context.Context, ev slotsource.Event) error {
 	switch ev.Type {
 	case slotsource.EventBound:
-		return c.registerSubject(ctx, ev.Slot)
+		_, err := c.registerSubject(ctx, ev.Slot)
+		return err
 	case slotsource.EventUpdated:
-		return c.registerSubject(ctx, ev.Slot)
+		state, err := c.registerSubject(ctx, ev.Slot)
+		if err != nil {
+			return err
+		}
+		if state == StateActive && c.hooks != nil {
+			// Fencing unchanged and the subject is active: dispatch-relevant
+			// slot fields (veth/gateway/DNS path) may have moved. Reconcile
+			// enforcement without resetting the policy.
+			s := FromSandboxUID(ev.Slot.Owner.SandboxUID)
+			if err := c.hooks.OnSlotUpdated(s, ev.Slot); err != nil {
+				return err
+			}
+		}
+		return nil
 	case slotsource.EventDeleted:
 		s := FromSandboxUID(ev.Slot.Owner.SandboxUID)
 		prev := c.reg.Unregister(s)
@@ -102,45 +116,48 @@ func (c *Controller) applyEvent(ctx context.Context, ev slotsource.Event) error 
 // happens via Registry.ApplyPolicy once a policy push lands. Registration and
 // enforcement are atomic with respect to ApplyPolicy (see
 // Registry.RegisterAndEnforce), so a retried deny-first install can never
-// clobber an already-applied policy.
-func (c *Controller) registerSubject(ctx context.Context, slot slotsource.Slot) error {
+// clobber an already-applied policy. Returns the subject state after
+// registration (StateDenying for fresh/rebound, StateActive when the subject
+// was already active under the same fencing).
+func (c *Controller) registerSubject(ctx context.Context, slot slotsource.Slot) (State, error) {
 	if slot.Phase != slotsource.PhaseBound {
 		// The source filters non-bound phases, but a stale event must not
 		// open a subject either.
-		return nil
+		return StateAbsent, nil
 	}
 	s := FromSandboxUID(slot.Owner.SandboxUID)
 	key := SubjectKey{NetNSPath: slot.HostNetnsPath, SourceIP: slot.IP}
 	fence := FromSlotOwner(slot.Owner)
 	if c.hooks == nil {
-		c.reg.Register(s, key, fence)
-		return nil
+		return c.reg.Register(s, key, fence), nil
 	}
 	// Deny-first install is the fail-closed guarantee: retry until it
 	// succeeds, so a subject can never activate without enforcement.
+	var state State
 	if err := wait.ExponentialBackoffWithContext(ctx, wait.Backoff{
 		Duration: 100 * time.Millisecond,
 		Factor:   2,
 		Steps:    6,
 		Cap:      2 * time.Second,
 	}, func(ctx context.Context) (bool, error) {
-		state, err := c.reg.RegisterAndEnforce(s, key, fence, func() error {
+		st, err := c.reg.RegisterAndEnforce(s, key, fence, func() error {
 			return c.hooks.OnRegistered(s, slot)
 		})
+		state = st
 		if err != nil {
 			log.Warnf("subject %s: deny-first install failed (retrying): %v", s, err)
 			return false, nil
 		}
-		log.Infof("subject %s registered, state=%s", s, state)
+		log.Infof("subject %s registered, state=%s", s, st)
 		return true, nil
 	}); err != nil {
-		return err
+		return StateAbsent, err
 	}
 	// Registry lock released: best-effort follow-up (pending push flush).
 	if c.hooks != nil {
 		c.hooks.OnRegisteredComplete(s, slot)
 	}
-	return nil
+	return state, nil
 }
 
 // StartWatch is a convenience wrapper running Run in the background with

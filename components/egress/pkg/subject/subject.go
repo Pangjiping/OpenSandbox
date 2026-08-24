@@ -129,6 +129,9 @@ type Registry interface {
 	// ApplyPolicy stores the user policy and moves the subject to active.
 	// Returns ErrUnknownSubject when the slot has not been observed.
 	ApplyPolicy(s Subject, pol *policy.NetworkPolicy) error
+	// EffectiveOf merges the always rules into pol without committing it
+	// (used to apply nft before the registry state changes).
+	EffectiveOf(pol *policy.NetworkPolicy) *policy.NetworkPolicy
 	// UserPolicy returns the stored user policy (without the always overlay),
 	// or nil for unknown subjects.
 	UserPolicy(s Subject) *policy.NetworkPolicy
@@ -158,6 +161,12 @@ type LifecycleHooks interface {
 	// best-effort follow-ups that would deadlock inside OnRegistered, e.g.
 	// flushing a cached pending policy push for this subject.
 	OnRegisteredComplete(s Subject, slot slotsource.Slot)
+	// OnSlotUpdated fires when an already-active subject's slot changed with
+	// UNCHANGED fencing (dispatch-relevant fields like host veth, gateway, or
+	// DNS path moved). It must reconcile enforcement WITHOUT resetting the
+	// subject's policy (OnRegistered would force deny-first). Runs after the
+	// registry lock is released.
+	OnSlotUpdated(s Subject, slot slotsource.Slot) error
 	// OnUnloaded fires when the slot disappears. Enforcement must be removed.
 	OnUnloaded(s Subject) error
 }

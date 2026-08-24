@@ -177,7 +177,7 @@ var _ Source = (*FileSource)(nil)
 // the whole snapshot (fail closed): starting with a partial view would leave
 // the remaining sandboxes without enforcement.
 func (s *FileSource) List(ctx context.Context) ([]Slot, error) {
-	slots, err := s.readDir()
+	slots, _, err := s.readDir()
 	if err != nil {
 		return nil, err
 	}
@@ -200,9 +200,9 @@ func (s *FileSource) List(ctx context.Context) ([]Slot, error) {
 // watch is the single source of truth for restart recovery and no
 // List-then-Watch handoff race exists.
 func (s *FileSource) Watch(ctx context.Context) (<-chan Event, error) {
-	initial, err := s.snapshot()
-	if err != nil {
-		return nil, err
+	initial, badFiles := s.snapshot()
+	if len(badFiles) > 0 {
+		return nil, fmt.Errorf("slot store unreadable at watch start (fail closed): %v", badFiles)
 	}
 	ch := make(chan Event, 16)
 	go s.pollLoop(ctx, ch, initial)
@@ -226,13 +226,17 @@ func (s *FileSource) pollLoop(ctx context.Context, ch chan<- Event, initial map[
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			current, err := s.snapshot()
-			if err != nil {
+			current, badFiles := s.snapshot()
+			// Fail closed: a slot record that can no longer be parsed is
+			// REMOVED from the view (like a deletion), so the controller
+			// unloads its subject — a malformed record must never keep an
+			// active subject's registry entry and nft allow rules alive.
+			for name, err := range badFiles {
 				select {
-				case ch <- Event{Type: EventError, Err: err}:
+				case ch <- Event{Type: EventError, Err: fmt.Errorf("slot file %s unparseable: %w", name, err)}:
 				case <-ctx.Done():
+					return
 				}
-				continue
 			}
 			s.emitDiffs(ctx, ch, state, current)
 			state = current
@@ -272,43 +276,51 @@ func (s *FileSource) send(ctx context.Context, ch chan<- Event, ev Event) {
 
 // snapshot returns the current slot view keyed by slot ID, all phases, so
 // the diff can observe an in-place Bound -> Clean/Destroying transition and
-// emit Deleted. A single bad record fails the snapshot (fail closed; see
-// List).
-func (s *FileSource) snapshot() (map[string]Slot, error) {
-	slots, err := s.readDir()
+// emit Deleted. Records that can no longer be parsed are EXCLUDED from the
+// view and returned as badFiles: the caller (Watch) treats them as absent —
+// a malformed record must fail closed (the controller unloads the subject)
+// instead of keeping stale enforcement alive. A directory-level error (the
+// store itself is unreadable) is fail-closed at the caller.
+func (s *FileSource) snapshot() (map[string]Slot, map[string]error) {
+	slots, badFiles, err := s.readDir()
 	if err != nil {
-		return nil, err
+		return nil, map[string]error{"<dir>": err}
 	}
 	out := make(map[string]Slot, len(slots))
 	for _, slot := range slots {
 		out[slot.ID] = slot
 	}
-	return out, nil
+	return out, badFiles
 }
 
-// readDir parses every *.json file in the slot store directory.
-func (s *FileSource) readDir() ([]Slot, error) {
+// readDir parses every *.json file in the slot store directory. Unreadable or
+// unparseable records are collected per file (the healthy remainder is
+// returned); only a directory-level failure is an error.
+func (s *FileSource) readDir() ([]Slot, map[string]error, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
-		return nil, fmt.Errorf("slot store dir %s: %w", s.dir, err)
+		return nil, nil, fmt.Errorf("slot store dir %s: %w", s.dir, err)
 	}
 	var parser FileParser
 	var out []Slot
+	bad := make(map[string]error)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(s.dir, e.Name()))
 		if err != nil {
-			return nil, fmt.Errorf("read slot file %s: %w", e.Name(), err)
+			bad[e.Name()] = err
+			continue
 		}
 		slot, err := parser.Parse(raw)
 		if err != nil {
-			return nil, fmt.Errorf("parse slot file %s: %w", e.Name(), err)
+			bad[e.Name()] = err
+			continue
 		}
 		out = append(out, slot)
 	}
-	return out, nil
+	return out, bad, nil
 }
 
 // slotEqual reports whether two snapshots of the same file are identical in

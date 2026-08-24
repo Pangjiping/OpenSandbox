@@ -113,20 +113,44 @@ func NewApplier(r Runner) *Applier {
 	return &Applier{run: r, subjects: make(map[subject.Subject]installedSubject)}
 }
 
-// ApplyReset deletes the whole table and forgets all in-memory state.
-// Recovery protocol: the caller must reset before rescanning the slot store
-// at startup, so stale rules from a previous egress generation can never
-// carry old policy into a new sandbox. A missing table is not an error.
+// ApplyReset atomically swaps the ruleset for an EMPTY master drop chain:
+// the drop-by-default dispatch chain (with its established/DoT rules) stays
+// installed with no subjects, so unregistered sources remain denied while
+// the slot store is rescanned — the fail-closed guarantee must not have a
+// window where the hook is gone. Recovery protocol: the caller must reset
+// before rescanning the slot store at startup, so stale rules from a
+// previous egress generation can never carry old policy into a new sandbox.
+// A missing table is not an error (fallback retry without the delete line).
 func (a *Applier) ApplyReset(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, err := a.run(ctx, fmt.Sprintf("delete table inet %s\n", TableName))
-	if err != nil && !missingTable(err) {
+	var b strings.Builder
+	writeTableHeader(&b)
+	if err := a.applyWithMissingTableFallback(ctx, b.String()); err != nil {
 		return err
 	}
-	a.tableReady = false
+	a.tableReady = true
 	a.subjects = make(map[subject.Subject]installedSubject)
 	return nil
+}
+
+// applyWithMissingTableFallback runs the script; if the batch fails because
+// `delete table` targets a missing table (e.g. first boot, or a prior reset
+// already removed it), retry without the delete line. Mirrors the sidecar
+// manager's fallback.
+func (a *Applier) applyWithMissingTableFallback(ctx context.Context, script string) error {
+	if _, err := a.run(ctx, script); err == nil {
+		return nil
+	} else if missingTable(err) {
+		if fallback := removeDeleteTableLine(script); fallback != script {
+			if _, retryErr := a.run(ctx, fallback); retryErr == nil {
+				return nil
+			}
+		}
+		return err
+	} else {
+		return err
+	}
 }
 
 // ApplyDenyFirst registers a subject in deny-first state: empty static sets,
@@ -157,22 +181,9 @@ func (a *Applier) ApplyDenyFirst(ctx context.Context, s subject.Subject, slot sl
 			return err
 		}
 	}
-	if _, err := a.run(ctx, b.String()); err != nil {
+	if err := a.applyWithMissingTableFallback(ctx, b.String()); err != nil {
 		// The batch is atomic: on failure nothing was installed, so keep the
 		// flag consistent (the controller retries).
-		//
-		// First install on a fresh table: `delete table` fails when the table
-		// does not exist (e.g. ApplyReset already removed it), which fails the
-		// whole batch. Retry without the delete line, mirroring the sidecar's
-		// nftables fallback.
-		if missingTable(err) {
-			if fallback := removeDeleteTableLine(b.String()); fallback != b.String() {
-				if _, retryErr := a.run(ctx, fallback); retryErr == nil {
-					a.subjects[s] = installedSubject{slot: slot}
-					return nil
-				}
-			}
-		}
 		return err
 	}
 	a.subjects[s] = installedSubject{slot: slot}
@@ -224,13 +235,31 @@ func (a *Applier) AddResolvedIPs(ctx context.Context, s subject.Subject, ips []n
 	return err
 }
 
+// ApplyDispatchUpdate re-adds the dispatch rule for a changed slot (e.g. the
+// host veth moved on an EventUpdated with unchanged fencing) WITHOUT touching
+// the subject's policy content. A stale rule from the previous slot key never
+// matches (the iifname is bound), and duplicates are cleared by the next
+// table rebuild (rebind reset, remove, or ApplyReset).
+func (a *Applier) ApplyDispatchUpdate(ctx context.Context, s subject.Subject, slot slotsource.Slot) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.subjects[s]; !ok {
+		return ErrUnknownSubject
+	}
+	var b strings.Builder
+	writeDispatchRule(&b, s, slot)
+	_, err := a.run(ctx, b.String())
+	return err
+}
+
 // Remove deletes a subject's enforcement. nftables deletes rules only by
 // handle (no handle-less match), and verdict maps cannot jump to chains
 // (EOPNOTSUPP on add element), so the master-chain dispatch rule cannot be
 // removed per subject. Instead the whole table is rebuilt from the remaining
 // in-memory state in one atomic transaction — deterministic and O(n), which
-// is fine at the target density (removals are rare). Deleting the last
-// subject deletes the whole table.
+// is fine at the target density (removals are rare). Removing the last
+// subject swaps in the empty master drop chain (fail-closed, never a bare
+// table).
 func (a *Applier) Remove(ctx context.Context, s subject.Subject) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -239,11 +268,12 @@ func (a *Applier) Remove(ctx context.Context, s subject.Subject) error {
 	}
 	delete(a.subjects, s)
 	if len(a.subjects) == 0 {
-		_, err := a.run(ctx, fmt.Sprintf("delete table inet %s\n", TableName))
-		if err != nil && !missingTable(err) {
+		var b strings.Builder
+		writeTableHeader(&b)
+		if err := a.applyWithMissingTableFallback(ctx, b.String()); err != nil {
 			return err
 		}
-		a.tableReady = false
+		a.tableReady = true
 		return nil
 	}
 	var b strings.Builder

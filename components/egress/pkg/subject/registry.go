@@ -205,6 +205,18 @@ func (r *MemoryRegistry) ApplyPolicy(s Subject, pol *policy.NetworkPolicy) error
 	return nil
 }
 
+// EffectiveOf merges the always rules into pol WITHOUT committing it to the
+// subject. Used to apply the nft transaction before the registry state
+// changes, so a failed kernel apply leaves DNS/GET on the previous policy.
+func (r *MemoryRegistry) EffectiveOf(pol *policy.NetworkPolicy) *policy.NetworkPolicy {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if pol == nil {
+		pol = policy.DefaultDenyPolicy()
+	}
+	return policy.MergeAlwaysOverlay(pol, r.alwaysDeny, r.alwaysAllow)
+}
+
 func (r *MemoryRegistry) UserPolicy(s Subject) *policy.NetworkPolicy {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

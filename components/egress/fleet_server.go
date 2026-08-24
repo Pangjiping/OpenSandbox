@@ -76,6 +76,7 @@ type pendingRequest struct {
 type fleetNftApplier interface {
 	ApplyDenyFirst(ctx context.Context, s subject.Subject, slot slotsource.Slot) error
 	ApplyPolicy(ctx context.Context, s subject.Subject, pol *policy.NetworkPolicy) error
+	ApplyDispatchUpdate(ctx context.Context, s subject.Subject, slot slotsource.Slot) error
 	Remove(ctx context.Context, s subject.Subject) error
 }
 
@@ -90,7 +91,7 @@ type fleetPolicyServer struct {
 	pendingTTL time.Duration
 
 	mu      sync.Mutex
-	pending map[subject.Subject]*pendingRequest
+	pending map[subject.Subject][]*pendingRequest
 	vaults  map[subject.Subject]*credentialvault.Store
 
 	policyMu sync.Mutex // serializes policy applies (registry + nft stay ordered)
@@ -105,7 +106,7 @@ func newFleetPolicyServer(ctx context.Context, reg *subject.MemoryRegistry, nft 
 		reg:        reg,
 		nft:        nft,
 		pendingTTL: pendingTTL,
-		pending:    make(map[subject.Subject]*pendingRequest),
+		pending:    make(map[subject.Subject][]*pendingRequest),
 		vaults:     make(map[subject.Subject]*credentialvault.Store),
 	}
 }
@@ -181,30 +182,27 @@ func (s *fleetPolicyServer) handlePolicyGet(w http.ResponseWriter, subj subject.
 	})
 }
 
-// applyPolicy stores the policy in the registry and swaps the subject's nft
-// rules. Ordering: registry first, then nft. If the nft swap fails the
-// subject stays on its previous (deny-first or older) rules — the fail-closed
-// direction; the server retries the push.
-//
-// The nft swap applies the always-rule MERGED policy (reg.EffectivePolicy),
-// not the raw user policy, so allow.always/deny.always are enforced at the
-// IP layer too — matching the sidecar profile's commitPolicy behavior. The
-// always files are loaded once at startup; runtime file changes are not
-// picked up (sidecar reloads them every minute).
+// applyPolicy applies a policy to a subject. Ordering: nft FIRST, registry
+// AFTER — a failed kernel apply leaves the registry (and therefore DNS and
+// GET /policy) on the previous policy, so the documented atomic transition
+// stays fail-closed: a failed tightening update never leaves the API
+// reporting the new policy while the kernel still enforces the old one.
+// The nft swap uses the always-rule MERGED policy (reg.EffectiveOf), so
+// allow.always/deny.always are enforced at the IP layer too — matching the
+// sidecar profile's commitPolicy behavior. The always files are loaded once
+// at startup; runtime file changes are not picked up (sidecar reloads them
+// every minute).
 func (s *fleetPolicyServer) applyPolicy(r *http.Request, subj subject.Subject, pol *policy.NetworkPolicy) error {
 	s.policyMu.Lock()
 	defer s.policyMu.Unlock()
-	if err := s.reg.ApplyPolicy(subj, pol); err != nil {
-		return err
-	}
-	// Effective (always-merged) policy is what DNS dispatch and nft both use.
-	if eff := s.reg.EffectivePolicy(subj); eff != nil {
-		pol = eff
-	}
+	eff := s.reg.EffectiveOf(pol)
 	nftCtx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
-	if err := s.nft.ApplyPolicy(nftCtx, subj, pol); err != nil {
+	if err := s.nft.ApplyPolicy(nftCtx, subj, eff); err != nil {
 		return fmt.Errorf("nft policy apply: %w", err)
+	}
+	if err := s.reg.ApplyPolicy(subj, pol); err != nil {
+		return err
 	}
 	return nil
 }
@@ -395,14 +393,14 @@ func (s *fleetPolicyServer) cachePending(r *http.Request, subj subject.Subject, 
 	gen, hasGen := pendingGeneration(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pending[subj] = &pendingRequest{
+	s.pending[subj] = append(s.pending[subj], &pendingRequest{
 		method:   r.Method,
 		path:     r.URL.Path,
 		body:     body,
 		gen:      gen,
 		hasGen:   hasGen,
 		deadline: time.Now().Add(s.pendingTTL),
-	}
+	})
 }
 
 // OnRegistered implements subject.LifecycleHooks: deny-first enforcement
@@ -424,41 +422,42 @@ func (s *fleetPolicyServer) OnRegistered(subj subject.Subject, slot slotsource.S
 }
 
 // OnRegisteredComplete implements subject.LifecycleHooks: after the registry
-// lock is released, flush a cached pending push for the subject. Best effort:
-// a failure leaves the subject denying and the server re-pushes (idempotent).
+// lock is released, flush every cached pending push for the subject IN
+// ORDER (policy and vault pushes are kept independently, so create-then-
+// configure replays both). Best effort: a failure leaves the affected
+// operation unapplied and the server re-pushes (idempotent).
 func (s *fleetPolicyServer) OnRegisteredComplete(subj subject.Subject, slot slotsource.Slot) {
-	p := s.takePending(subj, slot)
-	if p == nil {
-		return
-	}
-	if err := s.replayPending(p, subj); err != nil {
-		logEgressUpdateFailedError(fmt.Sprintf("pending push flush for %s failed: %v", subj, err))
+	for _, p := range s.takePendingAll(subj, slot) {
+		if err := s.replayPending(p, subj); err != nil {
+			logEgressUpdateFailedError(fmt.Sprintf("pending push flush for %s failed: %v", subj, err))
+		}
 	}
 }
 
-// takePending atomically removes and returns the pending request if present
-// and unexpired. When the push carried a generation header, a mismatch with
-// the slot's instance generation drops the entry instead — a delayed push
-// from a previous sandbox of the same UID can never carry old policy into a
-// new sandbox.
-func (s *fleetPolicyServer) takePending(subj subject.Subject, slot slotsource.Slot) *pendingRequest {
+// takePendingAll atomically removes and returns every pending request for the
+// subject, in arrival order. When a push carried a generation header, a
+// mismatch with the slot's instance generation drops that entry instead — a
+// delayed push from a previous sandbox of the same UID can never carry old
+// policy into a new sandbox.
+func (s *fleetPolicyServer) takePendingAll(subj subject.Subject, slot slotsource.Slot) []*pendingRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p, ok := s.pending[subj]
-	if !ok {
-		return nil
-	}
+	qs := s.pending[subj]
 	delete(s.pending, subj)
-	if p.hasGen && p.gen != slot.Owner.InstanceGeneration {
-		log.Infof("subject %s: dropped pending push (generation %d != slot generation %d)",
-			subj, p.gen, slot.Owner.InstanceGeneration)
-		return nil
+	out := qs[:0]
+	for _, p := range qs {
+		if p.hasGen && p.gen != slot.Owner.InstanceGeneration {
+			log.Infof("subject %s: dropped pending push (generation %d != slot generation %d)",
+				subj, p.gen, slot.Owner.InstanceGeneration)
+			continue
+		}
+		if time.Now().After(p.deadline) {
+			log.Infof("subject %s: dropped expired pending push (%s %s)", subj, p.method, p.path)
+			continue
+		}
+		out = append(out, p)
 	}
-	if time.Now().After(p.deadline) {
-		log.Infof("subject %s: dropped expired pending push (%s %s)", subj, p.method, p.path)
-		return nil
-	}
-	return p
+	return out
 }
 
 // replayPending dispatches a cached push through the normal handler path.
@@ -491,15 +490,42 @@ func (s *fleetPolicyServer) StartPendingSweep(ctx context.Context) {
 			case <-ticker.C:
 				now := time.Now()
 				s.mu.Lock()
-				for subj, p := range s.pending {
-					if now.After(p.deadline) {
+				for subj, qs := range s.pending {
+					kept := qs[:0]
+					for _, p := range qs {
+						if now.After(p.deadline) {
+							continue
+						}
+						kept = append(kept, p)
+					}
+					if len(kept) == 0 {
 						delete(s.pending, subj)
+					} else {
+						s.pending[subj] = kept
 					}
 				}
 				s.mu.Unlock()
 			}
 		}
 	})
+}
+
+// OnSlotUpdated implements subject.LifecycleHooks: an active subject's slot
+// changed with unchanged fencing (e.g. host veth or DNS path moved). Reconcile
+// enforcement WITHOUT resetting the policy: rewrite resolv.conf for the new
+// gateway/path and re-add the dispatch rule for the new veth (a stale rule
+// never matches — the iifname is bound; cleared by the next rebuild).
+func (s *fleetPolicyServer) OnSlotUpdated(subj subject.Subject, slot slotsource.Slot) error {
+	if err := resolvrewrite.RewriteFile(slot.DNSPath, slot.Gateway); err != nil {
+		return err
+	}
+	nftCtx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
+	defer cancel()
+	if err := s.nft.ApplyDispatchUpdate(nftCtx, subj, slot); err != nil {
+		return err
+	}
+	log.Infof("subject %s slot updated (resolv + dispatch reconciled)", subj)
+	return nil
 }
 
 // OnUnloaded implements subject.LifecycleHooks: remove enforcement and drop
