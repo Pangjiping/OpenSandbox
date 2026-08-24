@@ -32,6 +32,7 @@ from opensandbox_cli.commands.egress import egress_group
 from opensandbox_cli.commands.file import file_group
 from opensandbox_cli.commands.sandbox import sandbox_group
 from opensandbox_cli.commands.skills import skills_group
+from opensandbox_cli.commands.template import template_group
 from opensandbox_cli.config import resolve_config
 
 # ---------------------------------------------------------------------------
@@ -140,3 +141,4 @@ cli.add_command(config_group)
 cli.add_command(diagnostics_group)
 cli.add_command(devops_group)
 cli.add_command(skills_group)
+cli.add_command(template_group)

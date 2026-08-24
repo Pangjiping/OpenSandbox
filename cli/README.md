@@ -240,6 +240,42 @@ If you are debugging connectivity, verify behavior with an actual command:
 osb command run <sandbox-id> -o raw -- curl -I https://pypi.org
 ```
 
+### Build golden images with SandboxTemplate (OSEP-0023)
+
+Generate, validate, and build a declarative golden-image template for
+Firecracker sandboxes. Builds run locally with the external toolchain
+(`oci2rootfs`, `firecracker`, `e2fsprogs`, `overlaybd-import-raw`) and
+publish content-addressed artifacts to an S3-compatible object store.
+
+Generate a template skeleton:
+
+```bash
+osb template init -n my-sandbox -o sandboxtemplate.yaml
+```
+
+Validate it:
+
+```bash
+osb template validate -f sandboxtemplate.yaml
+```
+
+Build the `ext4` rootfs from a local OCI archive (requires root for the loop
+mount; `snapshot`/`overlaybd` formats additionally require `/dev/kvm`):
+
+```bash
+osb template build -f sandboxtemplate.yaml \
+    --oci-archive ./source-image.oci.tar \
+    --execd-dir ./execd-injection \
+    --kernel ./vmlinux
+```
+
+Publish the build output to the template's `publish` target (uses the `aws`
+CLI):
+
+```bash
+osb template push --artifacts ./osb-template-xxxx
+```
+
 ### Manage Credential Vault
 
 Credential Vault operations call the sandbox egress sidecar through the Python SDK.
