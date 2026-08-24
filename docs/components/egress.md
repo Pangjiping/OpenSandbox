@@ -267,7 +267,20 @@ unchanged; both profiles are mutually exclusive deployment forms.
   source IP, and per-query policy is dispatched by source IP.
 - **Enforcement**: nftables `hook forward` in the Pod netns with a
   drop-by-default master chain; per-subject chains and static sets are swapped
-  atomically. Dynamic DNS-learned sets carry bounded leases.
+  atomically. Dynamic DNS-learned sets carry bounded leases. A second,
+  per-sandbox netns OUTPUT chain mirrors each subject's policy as defense in
+  depth (installed from the host via `nsenter --net=<slot.hostNetnsPath>`),
+  and a per-subject connection refresh loop (Pod netns conntrack, bucketed by
+  source IP, every 30s) keeps the dynamic leases of active TCP connections
+  alive in both layers.
+- **Encrypted-DNS blocking**: DoT 853 is always dropped in the master chain.
+  With `OPENSANDBOX_EGRESS_BLOCK_DOH_443=true`, TCP 443 to the
+  `OPENSANDBOX_EGRESS_DOH_BLOCKLIST` IP/CIDR list is dropped too (or all TCP
+  443 in strict mode, when the blocklist is empty) — same semantics as the
+  sidecar profile, applied globally to every subject.
+- **Telemetry**: OpenTelemetry metrics are exported exactly as in the sidecar
+  profile; nft updates are attributed per fleet operation (`deny_first`,
+  `static_apply`, `dynamic_add`, `dispatch_update`, `reset`, `remove`).
 - **Credentials**: memory-only, per subject; complete vault revisions are
   pushed over the proxy route (OSEP-0012 model). No Secret volume, no egress
   disk state.

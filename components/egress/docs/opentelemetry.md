@@ -65,7 +65,8 @@ queried name nor the error text is ever attached:
 | `rcode` | The last resolver answered with a failover-worthy rcode, e.g. `SERVFAIL`. |
 
 `egress.nftables.updates.failed_total` covers the other silent failure. Its `operation`
-attribute is one of `static_apply`, `dynamic_add` or `remove`; `dynamic_add` is the one to
+attribute is one of `static_apply`, `dynamic_add`, `remove`, or — in the fleet profile
+(OSEP-0022) — `deny_first`, `dispatch_update`, `reset`; `dynamic_add` is the one to
 alert on, because a failed add means the kernel never learned about IPs the policy allows,
 so the chain drops traffic that should pass — which looks exactly like a policy denial from
 inside the sandbox while `egress.policy.denied_total` stays flat.
