@@ -267,7 +267,9 @@ pass "deny CIDR enforced (atomic swap)"
 
 ###############################################################################
 info "Test 5: unknown source is fail-closed"
-expect_rcode host allow.test 3
+# Query from the "ext" netns (10.99.0.2): a real external unknown source that
+# traverses the gateway REDIRECT — must be denied (NXDOMAIN), never served.
+expect_rcode osb-ext allow.test 3
 pass "DNS from unknown source -> NXDOMAIN"
 
 ###############################################################################
