@@ -151,6 +151,9 @@ spec:
     rootfsSizeGiB: 30
     format: overlaybd                        # ext4 | snapshot | overlaybd
     publish: s3://bucket/sandbox-images/     # optional, digest-addressed
+    prewarm:                                 # optional seed-node prewarm
+      nodeSelector:                          # best-effort, never blocks the build
+        node-role.open-sandbox.io/agent: "true"
 ```
 
 The build pipeline has three stages, selected by `output.format`:
@@ -205,6 +208,11 @@ Every build emits a content-addressed `manifest.json`:
   (`<StateRoot>/images/<sha256(imageRef)>/rootfs.img`) and pulls artifacts
   by digest. The template's `publish` target becomes the pull source; the
   artifact contract (digest + manifest) is defined here and consumed there.
+- **Seed prewarm is best-effort**: `output.prewarm` optionally selects seed
+  nodes (by label selector) whose agent warms the local cache after a
+  successful build, so P2P spread and cold-start storms start from warm
+  seeds. Prewarm never blocks or fails the build; unreachable nodes are
+  skipped and the object store remains the authoritative source.
 - **execd injection boundary**: only the execd binary and fixed bootstrap
   skeleton are build-time injected. Per-sandbox configuration (infra.json,
   identity, component env) remains runtime-generated, written into the
@@ -299,6 +307,17 @@ type OutputSpec struct {
     RootfsSizeGiB int32          `json:"rootfsSizeGiB"`
     Format        ArtifactFormat `json:"format"`
     Publish       string         `json:"publish,omitempty"`
+    // Prewarm optionally selects seed nodes (by label selector) whose agent
+    // warms the local cache after a successful build. Always best-effort:
+    // it never blocks or fails the build, and the object store stays the
+    // authoritative source.
+    // +optional
+    Prewarm *PrewarmSpec `json:"prewarm,omitempty"`
+}
+
+type PrewarmSpec struct {
+    // +kubebuilder:validation:MinProperties=1
+    NodeSelector map[string]string `json:"nodeSelector"`
 }
 
 type SandboxTemplateStatus struct {
@@ -346,6 +365,9 @@ reconcile(template):
     decides pipeline depth; /dev/kvm device for snapshot/overlaybd)
   → wait for completion → read manifest (digest verified)
   → publish to spec.output.publish (digest-addressed)
+  → if output.prewarm set: notify the agent pods on matching seed nodes
+    (best-effort; failures are logged, never failing the build) so they
+    warm their local caches for P2P spread
   → update status {phase, artifactDigest, manifestRef, lastBuildTime,
     observedGeneration}
 ```
