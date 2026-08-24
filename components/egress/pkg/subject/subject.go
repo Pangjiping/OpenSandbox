@@ -167,6 +167,8 @@ type LifecycleHooks interface {
 	// subject's policy (OnRegistered would force deny-first). Runs after the
 	// registry lock is released.
 	OnSlotUpdated(s Subject, slot slotsource.Slot) error
-	// OnUnloaded fires when the slot disappears. Enforcement must be removed.
-	OnUnloaded(s Subject) error
+	// OnUnloaded fires when the slot disappears (the last observed slot is
+	// passed for platform cleanup like gateway refcounts). Enforcement must
+	// be removed.
+	OnUnloaded(s Subject, slot slotsource.Slot) error
 }

@@ -95,7 +95,7 @@ func (c *Controller) applyEvent(ctx context.Context, ev slotsource.Event) error 
 			return nil
 		}
 		if c.hooks != nil {
-			if err := c.hooks.OnUnloaded(s); err != nil {
+			if err := c.hooks.OnUnloaded(s, ev.Slot); err != nil {
 				return err
 			}
 		}

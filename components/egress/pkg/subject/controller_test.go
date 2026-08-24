@@ -64,7 +64,7 @@ func (h *fakeHooks) OnSlotUpdated(s Subject, slot slotsource.Slot) error {
 	return nil
 }
 
-func (h *fakeHooks) OnUnloaded(s Subject) error {
+func (h *fakeHooks) OnUnloaded(s Subject, _ slotsource.Slot) error {
 	h.mu.Lock()
 	h.unloaded = append(h.unloaded, s)
 	h.mu.Unlock()
