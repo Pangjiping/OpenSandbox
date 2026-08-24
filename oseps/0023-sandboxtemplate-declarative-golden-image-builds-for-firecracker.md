@@ -131,7 +131,7 @@ metadata:
   name: ai-office-sandbox
 spec:
   image: registry.example.com/sandbox:v1.0.21
-  entrypoint:                              # empty: discovered from OCI config
+  entrypoint:                              # empty: defaults to ["tail","-f","/dev/null"]
     - /opt/gem/run.sh
   execd: registry.example.com/execd:v1.0.21
   kernel: vmlinux-6.1.177
@@ -190,6 +190,7 @@ Every build emits a content-addressed `manifest.json`:
     "cpuModel": "Intel(R) Xeon(R) Platinum 8163 CPU @ 2.50GHz",
     "hostKernel": "5.10.134-18.al8.x86_64"
   },
+  "entrypoint": ["tail", "-f", "/dev/null"],
   "init": "/usr/local/sbin/guest-init",
   "files": { "rootfs": {"sha256": "...", "sizeBytes": 32212254720}, ... },
   "validation": { "booted": true, "restored": true, "iterations": 3, "timing": {...} }
@@ -215,10 +216,10 @@ Every build emits a content-addressed `manifest.json`:
   mode the request entrypoint becomes the guest PID 1 (`init=` argv); in
   managed mode it replaces the business command executed under the injected
   guest init, which stays the PID 1.
-- **entrypoint merging**: `spec.entrypoint` is an argv list. When empty it is
-  discovered from the OCI config (`Entrypoint` + `Cmd` concatenated); when
-  set, it fully replaces the discovered argv so the guest runs the intended
-  process with intact argument boundaries.
+- **entrypoint semantics**: `spec.entrypoint` is an argv list with a fixed
+  default of `["tail", "-f", "/dev/null"]` when empty — the sandbox stays
+  alive as an environment and work is driven through execd or the SDK. An
+  explicit value fully replaces the default with intact argument boundaries.
 - **Readiness precedence**: custom `probe` (`tcp://` or `cmd://`) → execd
   `/ping` (default) → `warmupSeconds` + `healthCheck` (fallback, e.g. when
   execd is not injected; empty healthcheck uses the image `CMD-SHELL`).
@@ -255,7 +256,7 @@ Every build emits a content-addressed `manifest.json`:
 ```go
 type SandboxTemplateSpec struct {
     Image      string         `json:"image"`                 // required
-    // Argv list; when empty, discovered from OCI Config.Entrypoint+Cmd.
+    // Argv list; empty defaults to ["tail","-f","/dev/null"].
     Entrypoint []string       `json:"entrypoint,omitempty"`
     Execd      string         `json:"execd,omitempty"`
     Kernel     string         `json:"kernel"`                // required
