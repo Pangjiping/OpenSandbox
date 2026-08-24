@@ -136,8 +136,8 @@ spec:
   execd: registry.example.com/execd:v1.0.21
   kernel: vmlinux-6.1.177
   machine:
-    vcpuCount: 4
-    memoryMiB: 8192
+    vcpu: "4"                        # Kubernetes resource quantity
+    memory: "8Gi"                    # e.g. 512Mi / 2Gi / 8Gi
   init:
     guestInit: /usr/local/sbin/guest-init    # empty: no injection
     environment:                             # merged into /etc/sandbox-init.env
@@ -186,7 +186,7 @@ Every build emits a content-addressed `manifest.json`:
     "name": "vmlinux-6.1.177",
     "digest": "sha256:..."
   },
-  "machine": { "vcpuCount": 4, "memoryMiB": 8192 },
+  "machine": { "vcpuCount": 4, "memoryMiB": 8192 },   // parsed from spec.machine (vcpu/memory quantities)
   "compatibility": {
     "firecrackerVersion": "v1.16.1",
     "architecture": "x86_64",
@@ -275,12 +275,12 @@ type SandboxTemplateSpec struct {
 }
 
 type MachineSpec struct {
-    // +kubebuilder:validation:Minimum=1
-    // +kubebuilder:default=1
-    VCPUCount int32 `json:"vcpuCount"`
-    // +kubebuilder:validation:Minimum=512
-    // +kubebuilder:default=2048
-    MemoryMiB int64 `json:"memoryMiB"`
+    // Kubernetes resource quantity (e.g. "1", "4000m").
+    // +kubebuilder:default="1"
+    VCPU string `json:"vcpu"`
+    // Kubernetes resource quantity (e.g. "512Mi", "2Gi", "8Gi").
+    // +kubebuilder:default="2Gi"
+    Memory string `json:"memory"`
 }
 
 type InitSpec struct {
