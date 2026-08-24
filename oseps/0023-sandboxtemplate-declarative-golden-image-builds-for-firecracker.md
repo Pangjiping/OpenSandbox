@@ -185,7 +185,7 @@ Every build emits a content-addressed `manifest.json`:
     "name": "vmlinux-6.1.177",
     "digest": "sha256:..."
   },
-  "machine": { "vcpuCount": 4, "memoryMiB": 8192 },   // parsed from spec.machine (vcpu/memory quantities)
+  "machine": { "vcpu": "4", "memory": "8Gi" },          // parsed into vcpuCount/memoryMiB by the engine
   "compatibility": {
     "firecrackerVersion": "v1.16.1",
     "architecture": "x86_64",
@@ -193,7 +193,8 @@ Every build emits a content-addressed `manifest.json`:
     "hostKernel": "5.10.134-18.al8.x86_64"
   },
   "entrypoint": ["tail", "-f", "/dev/null"],
-  "init": "/usr/local/sbin/guest-init",
+  "guestInit": "/usr/local/sbin/guest-init",            // empty: no injection
+  "envs": [{"name": "FOO", "value": "bar"}],            // effective envs (OCI Config.Env + spec.envs)
   "files": { "rootfs": {"sha256": "...", "sizeBytes": 32212254720}, ... },
   "validation": { "booted": true, "restored": true, "iterations": 3, "timing": {...} }
 }
