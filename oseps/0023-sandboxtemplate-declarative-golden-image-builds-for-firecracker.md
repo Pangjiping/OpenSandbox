@@ -147,7 +147,7 @@ spec:
     warmupSeconds: 60                        # fallback baseline
     healthCheck: ""                           # empty: image CMD-SHELL
   output:
-    rootfsSizeGiB: 30
+    rootfsSize: "30Gi"
     format: overlaybd                        # ext4 | snapshot | overlaybd
     publish: s3://bucket/sandbox-images/     # optional, digest-addressed
     prime:                                 # optional seed-node prime
@@ -302,8 +302,9 @@ type ReadinessSpec struct {
 type ArtifactFormat string
 
 type OutputSpec struct {
-    // +kubebuilder:default=30
-    RootfsSizeGiB int32          `json:"rootfsSizeGiB"`
+    // Kubernetes resource quantity (e.g. "10Gi", "30Gi").
+    // +kubebuilder:default="30Gi"
+    RootfsSize string          `json:"rootfsSize"`
     Format        ArtifactFormat `json:"format"`
     Publish       string         `json:"publish,omitempty"`
     // Prime optionally selects seed nodes (by label selector) whose agent
