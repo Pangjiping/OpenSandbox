@@ -72,11 +72,11 @@ func runFleetProfile(ctx context.Context) {
 	fleetSrv := newFleetPolicyServer(ctx, reg, nftMgr, pendingTTL)
 	controller := subject.NewController(reg, fleetSrv)
 
-	// DNS: one shared listener, per-query policy dispatched by source IP.
-	// Bound on :53 (all interfaces) so the default config matches the
-	// resolv.conf rewrite (sandboxes are pointed at slot.Gateway:53); the
-	// per-query policy selector keeps unknown sources fail-closed.
-	dnsAddr := ":53"
+	// DNS: one shared listener on loopback (127.0.0.1:15353 — never collides
+	// with a host DNS service on :53); per-subject gateway REDIRECTs (see
+	// fleet server's installGatewayDNSRedirect) forward sandbox DNS addressed
+	// to slot.Gateway:53 here. Per-query policy is dispatched by source IP.
+	dnsAddr := "127.0.0.1:15353"
 	proxy, err := dnsproxy.New(nil, dnsAddr, alwaysDeny, alwaysAllow)
 	if err != nil {
 		log.Fatalf("failed to init dns proxy: %v", err)

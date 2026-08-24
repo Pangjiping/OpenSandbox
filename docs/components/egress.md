@@ -261,8 +261,10 @@ unchanged; both profiles are mutually exclusive deployment forms.
   for a UID whose slot has not appeared is cached and applied on registration
   (`OPENSANDBOX_EGRESS_PENDING_PUSH_TTL`, seconds, default `30`); a stale
   push carrying a mismatched `X-Fast-Sandbox-Generation` is discarded.
-- **DNS**: one shared proxy on `:53` (matches the resolv.conf rewrite
-  target `slot.Gateway:53`), per-query policy dispatched by source IP.
+- **DNS**: one shared proxy on loopback `127.0.0.1:15353` (never collides
+  with a host DNS service on `:53`); per-subject prerouting REDIRECTs
+  forward sandbox DNS addressed to `slot.Gateway:53` to it, preserving the
+  source IP, and per-query policy is dispatched by source IP.
 - **Enforcement**: nftables `hook forward` in the Pod netns with a
   drop-by-default master chain; per-subject chains and static sets are swapped
   atomically. Dynamic DNS-learned sets carry bounded leases.

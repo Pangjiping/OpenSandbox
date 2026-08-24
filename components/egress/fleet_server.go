@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ import (
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/credentialvault"
+	"github.com/alibaba/opensandbox/egress/pkg/iptables"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/alibaba/opensandbox/egress/pkg/resolvrewrite"
@@ -94,6 +96,15 @@ type fleetPolicyServer struct {
 	pending map[subject.Subject][]*pendingRequest
 	vaults  map[subject.Subject]*credentialvault.Store
 
+	// gatewayDNSRefs refcounts subjects per gateway so the shared prerouting
+	// REDIRECT (sandbox DNS -> loopback proxy) is installed once and removed
+	// when the last subject using that gateway is gone. Injected fns keep the
+	// hooks testable without iptables.
+	gwMu               sync.Mutex
+	gatewayDNSRefs     map[netip.Addr]int
+	dnsRedirectInstall func(gateway netip.Addr, port int) error
+	dnsRedirectRemove  func() error
+
 	policyMu sync.Mutex // serializes policy applies (registry + nft stay ordered)
 }
 
@@ -102,12 +113,59 @@ func newFleetPolicyServer(ctx context.Context, reg *subject.MemoryRegistry, nft 
 		pendingTTL = time.Duration(constants.DefaultPendingPushTTL) * time.Second
 	}
 	return &fleetPolicyServer{
-		ctx:        ctx,
-		reg:        reg,
-		nft:        nft,
-		pendingTTL: pendingTTL,
-		pending:    make(map[subject.Subject][]*pendingRequest),
-		vaults:     make(map[subject.Subject]*credentialvault.Store),
+		ctx:                ctx,
+		reg:                reg,
+		nft:                nft,
+		pendingTTL:         pendingTTL,
+		pending:            make(map[subject.Subject][]*pendingRequest),
+		vaults:             make(map[subject.Subject]*credentialvault.Store),
+		gatewayDNSRefs:     make(map[netip.Addr]int),
+		dnsRedirectInstall: iptables.SetupGatewayDNSRedirect,
+		dnsRedirectRemove:  iptables.RemoveGatewayDNSRedirect,
+	}
+}
+
+// fleetDNSProxyPort is where the shared DNS proxy listens on loopback; the
+// per-subject gateway REDIRECT forwards sandbox DNS here.
+const fleetDNSProxyPort = 15353
+
+// installGatewayDNSRedirect refcounts a gateway and installs (once) the
+// prerouting REDIRECT for it. Fails closed: a subject whose DNS cannot reach
+// the proxy must not register as usable.
+func (s *fleetPolicyServer) installGatewayDNSRedirect(gateway netip.Addr) error {
+	s.gwMu.Lock()
+	defer s.gwMu.Unlock()
+	s.gatewayDNSRefs[gateway]++
+	if s.gatewayDNSRefs[gateway] > 1 {
+		return nil // already installed
+	}
+	if s.dnsRedirectInstall == nil {
+		return nil
+	}
+	if err := s.dnsRedirectInstall(gateway, fleetDNSProxyPort); err != nil {
+		s.gatewayDNSRefs[gateway]--
+		if s.gatewayDNSRefs[gateway] <= 0 {
+			delete(s.gatewayDNSRefs, gateway)
+		}
+		return err
+	}
+	return nil
+}
+
+// releaseGatewayDNSRedirect decrements the gateway refcount and removes the
+// shared REDIRECT table when the last subject using it is gone.
+func (s *fleetPolicyServer) releaseGatewayDNSRedirect(gateway netip.Addr) {
+	s.gwMu.Lock()
+	defer s.gwMu.Unlock()
+	s.gatewayDNSRefs[gateway]--
+	if s.gatewayDNSRefs[gateway] > 0 {
+		return
+	}
+	delete(s.gatewayDNSRefs, gateway)
+	if s.dnsRedirectRemove != nil {
+		if err := s.dnsRedirectRemove(); err != nil {
+			log.Warnf("gateway DNS redirect remove (ignored): %v", err)
+		}
 	}
 }
 
@@ -404,8 +462,8 @@ func (s *fleetPolicyServer) cachePending(r *http.Request, subj subject.Subject, 
 }
 
 // OnRegistered implements subject.LifecycleHooks: deny-first enforcement
-// (nft rules + resolv.conf rewrite). Runs under the registry write lock, so
-// no registry calls here.
+// (nft rules + resolv.conf rewrite + gateway DNS redirect). Runs under the
+// registry write lock, so no registry calls here.
 func (s *fleetPolicyServer) OnRegistered(subj subject.Subject, slot slotsource.Slot) error {
 	nftCtx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
@@ -417,7 +475,13 @@ func (s *fleetPolicyServer) OnRegistered(subj subject.Subject, slot slotsource.S
 		// policy. The controller retries; the subject stays denying.
 		return err
 	}
-	log.Infof("subject %s deny-first enforced (nft + resolv)", subj)
+	if err := s.installGatewayDNSRedirect(slot.Gateway); err != nil {
+		// Fail closed: sandbox DNS addressed to gateway:53 must reach the
+		// proxy; without the redirect the sandbox would fall back to a
+		// resolver the policy cannot see.
+		return err
+	}
+	log.Infof("subject %s deny-first enforced (nft + resolv + gateway redirect)", subj)
 	return nil
 }
 
@@ -513,10 +577,14 @@ func (s *fleetPolicyServer) StartPendingSweep(ctx context.Context) {
 // OnSlotUpdated implements subject.LifecycleHooks: an active subject's slot
 // changed with unchanged fencing (e.g. host veth or DNS path moved). Reconcile
 // enforcement WITHOUT resetting the policy: rewrite resolv.conf for the new
-// gateway/path and re-add the dispatch rule for the new veth (a stale rule
-// never matches — the iifname is bound; cleared by the next rebuild).
+// gateway/path, install the gateway redirect for a new gateway (idempotent),
+// and re-add the dispatch rule for the new veth (a stale rule never matches —
+// the iifname is bound; cleared by the next rebuild).
 func (s *fleetPolicyServer) OnSlotUpdated(subj subject.Subject, slot slotsource.Slot) error {
 	if err := resolvrewrite.RewriteFile(slot.DNSPath, slot.Gateway); err != nil {
+		return err
+	}
+	if err := s.installGatewayDNSRedirect(slot.Gateway); err != nil {
 		return err
 	}
 	nftCtx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
@@ -524,17 +592,19 @@ func (s *fleetPolicyServer) OnSlotUpdated(subj subject.Subject, slot slotsource.
 	if err := s.nft.ApplyDispatchUpdate(nftCtx, subj, slot); err != nil {
 		return err
 	}
-	log.Infof("subject %s slot updated (resolv + dispatch reconciled)", subj)
+	log.Infof("subject %s slot updated (resolv + redirect + dispatch reconciled)", subj)
 	return nil
 }
 
 // OnUnloaded implements subject.LifecycleHooks: remove enforcement and drop
-// any cached push (stale for a new sandbox of the same UID).
-func (s *fleetPolicyServer) OnUnloaded(subj subject.Subject) error {
+// any cached push (stale for a new sandbox of the same UID). The gateway
+// refcount is released when the last subject using it goes away.
+func (s *fleetPolicyServer) OnUnloaded(subj subject.Subject, slot slotsource.Slot) error {
 	s.mu.Lock()
 	delete(s.pending, subj)
 	delete(s.vaults, subj)
 	s.mu.Unlock()
+	s.releaseGatewayDNSRedirect(slot.Gateway)
 	nftCtx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
 	if err := s.nft.Remove(nftCtx, subj); err != nil {

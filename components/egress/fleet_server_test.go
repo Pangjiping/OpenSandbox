@@ -96,6 +96,9 @@ func fleetTestServer(t *testing.T) (*fleetPolicyServer, *subject.MemoryRegistry,
 	reg := subject.NewRegistry(nil, nil)
 	nft := &fakeNft{}
 	srv := newFleetPolicyServer(context.Background(), reg, nft, time.Minute)
+	// no-op the gateway DNS redirect (no iptables/nft in unit tests)
+	srv.dnsRedirectInstall = func(netip.Addr, int) error { return nil }
+	srv.dnsRedirectRemove = func() error { return nil }
 	return srv, reg, nft
 }
 
@@ -271,7 +274,7 @@ func TestFleetServerOnUnloadedDropsPending(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, rec.Code)
 
 	reg.Register(s, subject.SubjectKey{}, subject.Fencing{SandboxUID: "u-1"})
-	require.NoError(t, srv.OnUnloaded(s))
+	require.NoError(t, srv.OnUnloaded(s, slotsource.Slot{Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1}}))
 	require.Len(t, nft.removed, 1)
 
 	// pending was dropped; a later registration must NOT flush stale policy
@@ -299,6 +302,8 @@ func TestFleetCreateThenConfigureEndToEnd(t *testing.T) {
 	reg := subject.NewRegistry(nil, nil)
 	nft := &fakeNft{}
 	srv := newFleetPolicyServer(context.Background(), reg, nft, time.Minute)
+	srv.dnsRedirectInstall = func(netip.Addr, int) error { return nil }
+	srv.dnsRedirectRemove = func() error { return nil }
 	controller := subject.NewController(reg, srv)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -480,4 +485,38 @@ func mustState2(st subject.State, ok bool) subject.State {
 		panic("subject absent")
 	}
 	return st
+}
+
+// TestFleetServerGatewayRedirectRefcounted: the shared prerouting REDIRECT
+// installs once per gateway and is removed when the last subject using it is
+// unloaded.
+func TestFleetServerGatewayRedirectRefcounted(t *testing.T) {
+	reg := subject.NewRegistry(nil, nil)
+	nft := &fakeNft{}
+	srv := newFleetPolicyServer(context.Background(), reg, nft, time.Minute)
+	var installs, removes int
+	srv.dnsRedirectInstall = func(netip.Addr, int) error { installs++; return nil }
+	srv.dnsRedirectRemove = func() error { removes++; return nil }
+
+	dir := t.TempDir()
+	mkResolv := func(name string) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, []byte("nameserver 10.96.0.10\n"), 0o644))
+		return p
+	}
+	slotA := slotsource.Slot{Owner: slotsource.Owner{SandboxUID: "a"}, Gateway: netip.MustParseAddr("10.10.0.1"), DNSPath: mkResolv("a.conf")}
+	slotB := slotsource.Slot{Owner: slotsource.Owner{SandboxUID: "b"}, Gateway: netip.MustParseAddr("10.10.0.1"), DNSPath: mkResolv("b.conf")}
+	slotC := slotsource.Slot{Owner: slotsource.Owner{SandboxUID: "c"}, Gateway: netip.MustParseAddr("10.20.0.1"), DNSPath: mkResolv("c.conf")}
+
+	require.NoError(t, srv.OnRegistered(subject.FromSandboxUID("a"), slotA))
+	require.NoError(t, srv.OnRegistered(subject.FromSandboxUID("b"), slotB))
+	require.NoError(t, srv.OnRegistered(subject.FromSandboxUID("c"), slotC))
+	assert.Equal(t, 2, installs, "shared gateway installs once; distinct gateway installs again")
+
+	require.NoError(t, srv.OnUnloaded(subject.FromSandboxUID("a"), slotA))
+	require.NoError(t, srv.OnUnloaded(subject.FromSandboxUID("b"), slotB))
+	assert.Equal(t, 1, removes, "remove only when the LAST subject of the shared gateway unloads")
+
+	require.NoError(t, srv.OnUnloaded(subject.FromSandboxUID("c"), slotC))
+	assert.Equal(t, 2, removes)
 }
