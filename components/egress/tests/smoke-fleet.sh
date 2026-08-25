@@ -140,9 +140,11 @@ ns_nft_has() {
 start_egress() {
   info "Starting fleet egress"
   # DoH env overridable per-test (Test 10 exercises strict mode with an
-  # empty blocklist).
-  local block_doh="${EGRESS_BLOCK_DOH_443:-true}"
-  local doh_blocklist="${EGRESS_DOH_BLOCKLIST:-203.0.113.1}"
+  # empty blocklist). `${VAR-default}` (no colon) keeps a set-but-empty
+  # value empty, so Test 10's `EGRESS_DOH_BLOCKLIST=""` really disables the
+  # blocklist instead of falling back to the default.
+  local block_doh="${EGRESS_BLOCK_DOH_443-true}"
+  local doh_blocklist="${EGRESS_DOH_BLOCKLIST-203.0.113.1}"
   OPENSANDBOX_EGRESS_PROFILE=fleet \
   OPENSANDBOX_EGRESS_SLOT_STORE_DIR="${SLOT_DIR}" \
   OPENSANDBOX_EGRESS_SLOT_POLL_INTERVAL=1 \
