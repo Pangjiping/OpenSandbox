@@ -24,6 +24,7 @@ import yaml
 from click.testing import CliRunner
 
 from opensandbox_cli.commands.template import (
+    guest_init_script,
     template_build,
     template_group,
     template_init,
@@ -147,6 +148,38 @@ def test_template_group_help() -> None:
     assert result.exit_code == 0
     for command in ("init", "validate", "build", "push"):
         assert command in result.output
+
+
+def test_build_manifest_format_override(template_file: Path) -> None:
+    """A --format override must be reflected in the manifest, not the
+    template's original format."""
+    spec = TEMPLATE["spec"]
+    result = BuildResult(directory=Path("/tmp"), files={})
+    manifest = build_manifest(spec, result, kernel_digest="", source_digest="", format_override="snapshot")
+    assert manifest["format"] == "snapshot"
+    assert manifest["publish"] == "s3://bucket/sandbox-images/"
+
+
+def test_guest_init_readiness_rendering() -> None:
+    """The guest init script must encode the template's readiness settings:
+    probe first, execd /ping default, warmup+healthcheck fallback."""
+    spec = TEMPLATE["spec"]
+    script = guest_init_script(spec)
+    assert "READINESS_PROBE='tcp://127.0.0.1:44772'" in script
+    assert "ready_tcp" in script
+
+    no_probe = dict(spec)
+    no_probe["readiness"] = {"warmupSeconds": 90}
+    script = guest_init_script(no_probe)
+    assert "READINESS_PROBE=" not in script
+    assert "WARMUP_SECONDS=90" in script
+    assert "ready_execd_ping" in script
+
+    free_init = dict(no_probe)
+    free_init["init"] = ""
+    free_init["readiness"] = {"warmupSeconds": 30, "healthCheck": "true"}
+    script = guest_init_script(free_init)
+    assert "HEALTHCHECK='true'" in script
 
 
 def test_template_build_requires_tools(template_file: Path, tmp_path: Path) -> None:

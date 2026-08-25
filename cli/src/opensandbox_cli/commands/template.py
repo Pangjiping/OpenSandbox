@@ -49,8 +49,10 @@ from opensandbox_cli.template_builder import (
 
 # The guest init skeleton injected as PID 1 in managed mode: mounts the base
 # filesystems, brings loopback up, sources the sandbox env, starts execd via
-# the bootstrap script, and signals SANDBOX_READY once the entrypoint is up.
-GUEST_INIT = """#!/bin/sh
+# the bootstrap script and the entrypoint, then gates SANDBOX_READY on the
+# template's readiness precedence (custom probe → execd /ping → warmup +
+# healthcheck).
+GUEST_INIT_HEAD = """#!/bin/sh
 set -eu
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 mountpoint -q /proc || mount -t proc proc /proc
@@ -64,17 +66,56 @@ ip link set lo up 2>/dev/null || true
 exec </dev/console >/dev/console 2>&1
 hostname sandbox
 [ -f /etc/sandbox-init.env ] && . /etc/sandbox-init.env
-# Managed mode: the injected init starts execd through the bootstrap script
-# and then runs the entrypoint. execd reports readiness via /ping.
 if [ -x /opt/opensandbox/bootstrap.sh ]; then
   setsid /bin/sh /opt/opensandbox/bootstrap.sh &
 fi
 if [ -n "${ENTRYPOINT:-}" ]; then
   setsid /bin/sh -c "$ENTRYPOINT" &
 fi
+"""
+
+# Readiness probe implementations (one per priority tier).
+GUEST_INIT_READY = """
+ready_tcp() {
+  host=${1#tcp://}; host=${host%%:*}; port=${1##*:}
+  (exec 3<>/dev/tcp/"$host"/"$port") 2>/dev/null
+}
+ready_cmd() { /bin/sh -c "${1#cmd://}" >/dev/null 2>&1; }
+ready_execd_ping() { (exec 3<>/dev/tcp/127.0.0.1/44772) 2>/dev/null; }
+
+if [ -n "${READINESS_PROBE:-}" ]; then
+  case "$READINESS_PROBE" in
+    tcp://*) until ready_tcp "$READINESS_PROBE"; do sleep 1; done ;;
+    cmd://*) until ready_cmd "$READINESS_PROBE"; do sleep 1; done ;;
+    *) echo "SANDBOX_STARTUP_FAILED invalid_probe"; exit 1 ;;
+  esac
+elif [ -x /opt/opensandbox/execd ]; then
+  # Default readiness: execd HTTP /ping.
+  until ready_execd_ping; do sleep 1; done
+else
+  # Fallback: time-based warmup plus the template healthcheck (the image
+  # CMD-SHELL is used when no healthcheck is declared).
+  sleep "${WARMUP_SECONDS:-60}"
+  if [ -n "${HEALTHCHECK:-}" ]; then
+    until /bin/sh -c "$HEALTHCHECK" >/dev/null 2>&1; do sleep 1; done
+  fi
+fi
 echo SANDBOX_READY
 while true; do sleep 3600; done
 """
+
+
+def guest_init_script(spec: dict) -> str:
+    """Render the guest init script with the template's readiness settings."""
+    readiness = spec.get("readiness", {})
+    env_lines = []
+    if readiness.get("probe"):
+        env_lines.append(f"export READINESS_PROBE={readiness['probe']!r}")
+    if readiness.get("warmupSeconds") is not None:
+        env_lines.append(f"export WARMUP_SECONDS={int(readiness['warmupSeconds'])}")
+    if readiness.get("healthCheck"):
+        env_lines.append(f"export HEALTHCHECK={readiness['healthCheck']!r}")
+    return GUEST_INIT_HEAD + "\n".join(env_lines) + "\n" + GUEST_INIT_READY
 
 
 @click.group("template", invoke_without_command=True)
@@ -174,7 +215,7 @@ def template_build(
     overlaybd_bin = overlaybd_import or os.environ.get("OSB_OVERLAYBD_IMPORT") or _require("overlaybd-import-raw")
     kernel_path = kernel or _resolve_kernel(spec)
 
-    guest_init_file = _guest_init_file()
+    guest_init_file = _guest_init_file(spec)
     source_digest = sha256_file(oci_archive)
     created = tempfile.mkdtemp(prefix="osb-template-", dir=str(workdir) if workdir else None)
     directory = Path(created)
@@ -188,8 +229,11 @@ def template_build(
         if fmt in ("snapshot", "overlaybd"):
             api_socket = directory / "boot.sock"
             console_log = directory / "boot.console.log"
-            stage_validate_boot(spec, directory, kernel_path, firecracker_bin, api_socket, console_log, ready_timeout)
-            vmstate, memory = stage_snapshot(spec, directory, api_socket, ready_timeout)
+            vmm = stage_validate_boot(spec, directory, kernel_path, firecracker_bin, api_socket, console_log, ready_timeout)
+            try:
+                vmstate, memory = stage_snapshot(spec, directory, vmm, ready_timeout)
+            finally:
+                vmm.stop()
             result.files["vmstate.snap"] = vmstate
             result.files["memory.snap"] = memory
             result.restored = True
@@ -200,7 +244,8 @@ def template_build(
             # Boot-only validation gate for the ext4 format.
             api_socket = directory / "boot.sock"
             console_log = directory / "boot.console.log"
-            stage_validate_boot(spec, directory, kernel_path, firecracker_bin, api_socket, console_log, ready_timeout)
+            vmm = stage_validate_boot(spec, directory, kernel_path, firecracker_bin, api_socket, console_log, ready_timeout)
+            vmm.stop()
             result.files["vmlinux"] = kernel_path
             result.timing["bootMs"] = round((time.monotonic() - started) * 1000)
 
@@ -215,6 +260,7 @@ def template_build(
             spec, result,
             kernel_digest=sha256_file(kernel_path) if kernel_path.exists() else "",
             source_digest=source_digest,
+            format_override=fmt,
         )
         manifest_path = directory / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -239,10 +285,16 @@ def template_build(
 def template_push(artifacts: Path, publish_target: str | None) -> None:
     """Publish a build output directory to an S3-compatible object store.
 
-    Uses the `aws` CLI (or `rclone`) found on PATH; artifacts are uploaded
-    content-addressed, then manifest.json is uploaded last.
+    Uses the `aws` CLI found on PATH; artifacts are uploaded under a digest
+    namespace with relative paths preserved, then manifest.json is uploaded
+    last.
     """
-    _push(artifacts, {"output": {"publish": publish_target}} if publish_target else {})
+    publish = publish_target
+    if not publish:
+        manifest_path = artifacts / "manifest.json"
+        if manifest_path.exists():
+            publish = json.loads(manifest_path.read_text(encoding="utf-8")).get("publish")
+    _push(artifacts, {"output": {"publish": publish}} if publish else {})
 
 
 def _push(directory: Path, spec: dict) -> None:
@@ -260,21 +312,23 @@ def _push(directory: Path, spec: dict) -> None:
     if not manifest_path.exists():
         raise click.ClickException(f"no manifest.json in {directory}; run `osb template build` first")
 
-    # Layers are content-addressed by name; upload them first, the manifest
-    # last so consumers never observe a half-published artifact set.
-    for entry in sorted(directory.iterdir()):
-        if entry.is_file() and entry.name != "manifest.json":
-            _run_sync(aws, entry, publish)
-    for entry in sorted((directory / "overlaybd").rglob("*")) if (directory / "overlaybd").exists() else []:
-        if entry.is_file():
-            _run_sync(aws, entry, publish)
-    _run_sync(aws, manifest_path, publish)
-    click.echo(f"published to {publish}")
+    # Artifacts are published under a digest namespace (one namespace per
+    # build), preserving relative paths so overlaybd layers do not collide.
+    # The manifest is uploaded last so consumers never observe a
+    # half-published artifact set.
+    namespace = sha256_file(manifest_path)[:16]
+    base = f"{publish.rstrip('/')}/{namespace}"
+    for path in sorted(directory.rglob("*")):
+        if not path.is_file() or path == manifest_path:
+            continue
+        _run_sync(aws, path, f"{base}/{path.relative_to(directory)}")
+    _run_sync(aws, manifest_path, f"{base}/manifest.json")
+    click.echo(f"published to {base}")
 
 
-def _run_sync(aws: str, path: Path, publish: str) -> None:
+def _run_sync(aws: str, path: Path, destination: str) -> None:
     subprocess.run(
-        [aws, "s3", "cp", str(path), f"{publish}/{path.name}"],
+        [aws, "s3", "cp", str(path), destination],
         check=True,
         capture_output=True,
     )
@@ -304,14 +358,15 @@ def _resolve_kernel(spec: dict) -> Path:
     )
 
 
-def _guest_init_file() -> Path:
-    """Materialize the built-in guest init skeleton for injection."""
+def _guest_init_file(spec: dict) -> Path:
+    """Materialize the guest init skeleton (with the template's readiness
+    settings) for injection."""
     import tempfile as _tempfile
 
     handle = _tempfile.NamedTemporaryFile(
         mode="w", prefix="osb-guest-init-", suffix=".sh", delete=False
     )
-    handle.write(GUEST_INIT)
+    handle.write(guest_init_script(spec))
     handle.close()
     os.chmod(handle.name, 0o755)
     return Path(handle.name)

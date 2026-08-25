@@ -193,7 +193,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def build_manifest(spec: dict, result: BuildResult, kernel_digest: str, source_digest: str) -> dict:
+def build_manifest(
+    spec: dict,
+    result: BuildResult,
+    kernel_digest: str,
+    source_digest: str,
+    format_override: str | None = None,
+) -> dict:
     """Assemble the content-addressed manifest schema."""
     files: dict[str, dict] = {}
     for name, path in result.files.items():
@@ -231,7 +237,8 @@ def build_manifest(spec: dict, result: BuildResult, kernel_digest: str, source_d
         "init": spec.get("init", ""),
         "envs": spec.get("envs") or [],
         "rootfsSize": output.get("rootfsSize", "30Gi"),
-        "format": output.get("format", "ext4"),
+        "format": format_override or output.get("format", "ext4"),
+        "publish": output.get("publish", ""),
         "files": files,
         "validation": validation,
     }
@@ -377,13 +384,52 @@ def _inject_runtime(
     for entry in spec.get("envs") or []:
         lines.append(f"export {entry['name']}={entry.get('value', '')!r}")
     entrypoint = spec.get("entrypoint") or ["tail", "-f", "/dev/null"]
-    lines.append(f"export ENTRYPOINT={' '.join(entrypoint)!r}")
+    lines.append(f"export ENTRYPOINT={' '.join(_shell_quote(arg) for arg in entrypoint)}")
     env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     os.chmod(env_file, 0o600)
 
     hosts = mount_point / "etc" / "hosts"
     if not hosts.exists():
         hosts.write_text("127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n")
+
+
+def _shell_quote(argument: str) -> str:
+    """Shell-safe quoting preserving argv boundaries for `sh -c` execution."""
+    import shlex
+
+    return shlex.quote(argument)
+
+
+@dataclass
+class VMM:
+    """A managed Firecracker process and its API socket."""
+
+    process: subprocess.Popen
+    api_socket: Path
+    console_log: Path
+
+    def stop(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5)
+
+
+def start_vmm(firecracker: str, workdir: Path, api_socket: Path, console_log: Path) -> VMM:
+    """Launch Firecracker in the background with its serial output captured in
+    console_log, and wait for the API socket to appear."""
+    with console_log.open("ab") as serial:
+        process = subprocess.Popen(
+            [firecracker, "--api-sock", str(api_socket)],
+            cwd=workdir,
+            stdout=serial,
+            stderr=subprocess.STDOUT,
+        )
+    _wait_for_file(api_socket, 15)
+    return VMM(process=process, api_socket=api_socket, console_log=console_log)
 
 
 def stage_validate_boot(
@@ -394,16 +440,15 @@ def stage_validate_boot(
     api_socket: Path,
     console_log: Path,
     timeout_seconds: float,
-) -> None:
-    """Boot the rootfs, wait for guest readiness, and stop. This is the
+) -> VMM:
+    """Boot the rootfs, wait for guest readiness, and pause. This is the
     terminal validation gate for the ext4 format."""
-    _run([firecracker, "--api-sock", str(api_socket)], cwd=workdir)
-    _wait_for_file(api_socket, 15)
+    vmm = start_vmm(firecracker, workdir, api_socket, console_log)
 
     rootfs = workdir / "rootfs.ext4"
     machine = spec.get("machine", _default_machine())
-    vcpu = max(1, parse_quantity(machine.get("vcpu", "1")) // 1000 or 1)
-    memory_mib = parse_quantity(machine.get("memory", "2Gi")) // (1024**2)
+    vcpu = max(1, parse_quantity(machine.get("vcpu", "1")))
+    memory_mib = max(128, parse_quantity(machine.get("memory", "2Gi")) // (1024**2))
 
     boot_args = (
         "console=ttyS0 reboot=k panic=1 pci=off nomodules "
@@ -416,39 +461,44 @@ def stage_validate_boot(
         {"vcpu_count": vcpu, "mem_size_mib": memory_mib, "smt": False})
     api(api_socket, "PUT", "/boot-source",
         {"kernel_image_path": str(kernel), "boot_args": boot_args})
-    api(api_socket, "PUT", f"/drives/{'rootfs'}",
+    api(api_socket, "PUT", "/drives/rootfs",
         {"drive_id": "rootfs", "path_on_host": str(rootfs),
          "is_root_device": True, "is_read_only": False})
     api(api_socket, "PUT", "/actions", {"action_type": "InstanceStart"})
 
     _wait_for_log(console_log, "SANDBOX_READY", timeout_seconds)
     api(api_socket, "PATCH", "/vm", {"state": "Paused"})
-    api(api_socket, "PUT", "/actions", {"action_type": "SendCtrlAltDel"})
+    return vmm
 
 
 def stage_snapshot(
-    spec: dict, workdir: Path, api_socket: Path, timeout_seconds: float
+    spec: dict, workdir: Path, vmm: VMM, timeout_seconds: float
 ) -> tuple[Path, Path]:
     """Create a full snapshot from the paused VM and restore once for
     validation."""
     vmstate = workdir / "vmstate.snap"
     memory = workdir / "memory.snap"
-    api(api_socket, "PUT", "/snapshot/create",
+    api(vmm.api_socket, "PUT", "/snapshot/create",
         {"snapshot_type": "Full", "snapshot_path": str(vmstate),
          "mem_file_path": str(memory)})
-    api(api_socket, "PUT", "/actions", {"action_type": "FlushMetrics"})
+    vmm.stop()
 
     restore_socket = workdir / "restore.sock"
     restore_log = workdir / "restore.console.log"
-    _run(["pkill", "-f", "firecracker.*sandbox-init"], cwd=workdir)
-    time.sleep(0.5)
-    _run(["firecracker", "--api-sock", str(restore_socket)], cwd=workdir)
-    _wait_for_file(restore_socket, 15)
-    api(restore_socket, "PUT", "/snapshot/load",
-        {"snapshot_path": str(vmstate),
-         "mem_backend": {"backend_type": "File", "backend_path": str(memory)},
-         "resume_vm": True})
-    _wait_for_log(restore_log, "SANDBOX_READY", timeout_seconds)
+    restored = start_vmm(
+        _require_tool("firecracker", "OSB_FIRECRACKER", None),
+        workdir,
+        restore_socket,
+        restore_log,
+    )
+    try:
+        api(restore_socket, "PUT", "/snapshot/load",
+            {"snapshot_path": str(vmstate),
+             "mem_backend": {"backend_type": "File", "backend_path": str(memory)},
+             "resume_vm": True})
+        _wait_for_log(restore_log, "SANDBOX_READY", timeout_seconds)
+    finally:
+        restored.stop()
     return vmstate, memory
 
 
@@ -476,23 +526,28 @@ def stage_package(
 # ---------------------------------------------------------------------------
 
 
-def api(socket: Path, method: str, path: str, body: dict | None = None) -> str:
-    import urllib.error
-    import urllib.request
+def api(socket_path: Path, method: str, path: str, body: dict | None = None) -> str:
+    """Call the Firecracker API over its Unix domain socket."""
+    import http.client
+    import socket
 
-    url = f"http://localhost{path}"
-    request = urllib.request.Request(url, method=method)
-    if body is not None:
-        payload = json.dumps(body).encode()
-        request.add_header("Content-Type", "application/json")
-        request.data = payload
+    connection = http.client.HTTPConnection("localhost", timeout=30)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect(str(socket_path))
+    connection.sock = sock
     try:
-        with urllib.request.urlopen(request) as response:
-            return response.read().decode()
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(
-            f"firecracker API failed: {method} {path} -> {exc.code}: {exc.read().decode()}"
-        ) from exc
+        payload = json.dumps(body).encode() if body is not None else None
+        connection.request(method, path, body=payload,
+                           headers={"Content-Type": "application/json"} if payload else {})
+        response = connection.getresponse()
+        content = response.read().decode()
+        if response.status >= 400:
+            raise RuntimeError(
+                f"firecracker API failed: {method} {path} -> {response.status}: {content}"
+            )
+        return content
+    finally:
+        connection.close()
 
 
 def _wait_for_file(path: Path, timeout_seconds: float) -> None:
