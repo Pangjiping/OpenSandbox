@@ -13,7 +13,7 @@ This page lists the OpenTelemetry metrics currently implemented in egress.
 | `egress.dns.query.duration` | Histogram | `s` | Upstream DNS forward latency (recorded for allowed queries). |
 | `egress.dns.query.failed_total` | Counter | - | Queries the proxy could not resolve, by `reason`. |
 | `egress.policy.denied_total` | Counter | - | Number of DNS queries denied by policy. |
-| `egress.nftables.rules.count` | Observable Gauge | `{element}` | Approximate policy size after last successful static apply. |
+| `egress.nftables.rules.count` | Observable Gauge | `{element}` | Approximate policy size after last successful static apply (fleet profile: summed across every installed subject's policy, 0 while deny-first). |
 | `egress.nftables.updates.count` | Counter | - | Number of successful nftables updates (static apply + dynamic IP add). |
 | `egress.nftables.updates.failed_total` | Counter | - | nftables updates that failed, by `operation`. |
 | `egress.system.memory.usage_bytes` | Observable Gauge | `By` | System memory used bytes (Linux: gopsutil; non-Linux build: `0`). |
@@ -70,6 +70,11 @@ attribute is one of `static_apply`, `dynamic_add`, `remove`, or — in the fleet
 alert on, because a failed add means the kernel never learned about IPs the policy allows,
 so the chain drops traffic that should pass — which looks exactly like a policy denial from
 inside the sandbox while `egress.policy.denied_total` stays flat.
+
+The per-sandbox netns layer (fleet profile) counts its updates under the same operations;
+two expected cases are deliberately NOT counted as failures: a sandbox-layer removal whose
+netns is already destroyed (the rules died with it), and the startup recovery sweep of
+netns that never had a table installed.
 
 A `static_apply` failure happens during startup, where the sidecar logs and exits. Metrics
 leave through a periodic reader and `os.Exit` skips the deferred shutdown, so that path

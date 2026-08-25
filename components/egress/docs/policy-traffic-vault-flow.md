@@ -70,7 +70,10 @@ gateway-scoped — the Pod layer enforces DNS policy via the proxy), and the
 mirrored deny/dyn/allow verdicts; it catches traffic the forward hook never
 sees (sandbox → host-local destinations take the INPUT path). DNS-learned
 leases are refreshed in lockstep between both layers by the per-subject
-connection refresh loop (Pod netns conntrack, bucketed by source IP).
+connection refresh loop (Pod netns conntrack, bucketed by source IP, one
+batched transaction per tick). Only TCP sessions are renewed — UDP/QUIC
+(HTTP/3) relies on DNS lease TTLs; a sandbox-layer mirror miss marks the IPs
+pending and redelivers them on the next tick.
 
 Dispatch is a verdict map keyed by
 `ip saddr . iifname` (the host veth binding is defense in depth against UDP

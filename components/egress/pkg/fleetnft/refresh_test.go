@@ -17,7 +17,6 @@ package fleetnft
 import (
 	"context"
 	"net/netip"
-	"strings"
 	"testing"
 	"time"
 
@@ -146,16 +145,71 @@ func TestRefreshTickBucketsAndApplies(t *testing.T) {
 	a.refreshTick(ctx)
 
 	scripts := runner.scripts
-	require.Len(t, scripts, 2, "one refresh fragment per subject with active connections")
-	joined := strings.Join(scripts, "\n")
+	require.Len(t, scripts, 1, "all subjects' refreshes are batched into ONE nft transaction")
+	joined := scripts[0]
 	require.Contains(t, joined, "1.1.1.1 timeout 360s")
 	require.Contains(t, joined, "2.2.2.2 timeout 360s")
 	assert.NotContains(t, joined, "8.8.8.8", "inactive connections must not refresh")
 	assert.NotContains(t, joined, "9.9.9.9", "unknown sources must not refresh")
-	assert.Contains(t, joined, "subj_s_u_1_dyn_v4", "refresh must target the subject's dynamic sets")
-	assert.Contains(t, joined, "subj_s_u_2_dyn_v4")
+	require.Contains(t, joined, "subj_s_u_1_dyn_v4", "refresh must target the subject's dynamic sets")
+	require.Contains(t, joined, "subj_s_u_2_dyn_v4")
 
 	require.ElementsMatch(t, []string{"s-u-1=1.1.1.1", "s-u-2=2.2.2.2"}, mirrored, "sandbox mirror must receive the same refreshed IPs")
+}
+
+// TestRefreshTickPendingRedelivery: when the Pod apply succeeds but the
+// sandbox mirror fails, the IPs become pending and the next tick redelivers
+// them UNCONDITIONALLY (no conntrack activity required), so a transient
+// mirror miss never leaves the subject self-locked until re-resolution.
+func TestRefreshTickPendingRedelivery(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run)
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+	require.NoError(t, a.AddResolvedIPs(ctx, s, []nftables.ResolvedIP{{Addr: netip.MustParseAddr("1.1.1.1"), TTL: time.Minute}}))
+
+	a.conntrack = func(context.Context) ([]conntrackEntry, error) { return nil, nil }
+	mirrorFail := true
+	a.sandboxMir = func(context.Context, subject.Subject, []nftables.ResolvedIP) error {
+		if mirrorFail {
+			return context.DeadlineExceeded
+		}
+		return nil
+	}
+
+	// tick 1: no active connections, nothing to refresh yet
+	runner.mu.Lock()
+	runner.scripts = nil
+	runner.mu.Unlock()
+	a.refreshTick(ctx)
+	assert.Empty(t, runner.scripts, "no activity and no pending -> no refresh")
+
+	// tick 2: an active connection appears; the mirror fails -> pending
+	a.conntrack = func(context.Context) ([]conntrackEntry, error) {
+		return []conntrackEntry{{src: netip.MustParseAddr("10.0.0.5"), dst: netip.MustParseAddr("1.1.1.1"), state: "ESTABLISHED"}}, nil
+	}
+	a.refreshTick(ctx)
+	require.Len(t, runner.scripts, 1, "active connection refreshed")
+	require.NotNil(t, a.states[s].pending, "failed mirror delivery must mark the IPs pending")
+
+	// tick 3: connection gone, conntrack empty — pending forces redelivery
+	runner.mu.Lock()
+	runner.scripts = nil
+	runner.mu.Unlock()
+	a.conntrack = func(context.Context) ([]conntrackEntry, error) { return nil, nil }
+	mirrorFail = false
+	a.refreshTick(ctx)
+	require.Len(t, runner.scripts, 1, "pending IPs must be redelivered without conntrack activity")
+	require.Contains(t, runner.scripts[0], "1.1.1.1 timeout 360s")
+	assert.Empty(t, a.states[s].pending, "successful redelivery clears the pending set")
+
+	// tick 4: nothing owed anymore
+	runner.mu.Lock()
+	runner.scripts = nil
+	runner.mu.Unlock()
+	a.refreshTick(ctx)
+	assert.Empty(t, runner.scripts)
 }
 
 func TestRefreshTickConntrackErrorClearsPrev(t *testing.T) {

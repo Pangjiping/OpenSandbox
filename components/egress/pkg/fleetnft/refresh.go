@@ -42,10 +42,12 @@ type conntrackEntry struct {
 
 // refreshState is the per-subject lease mirror: which dynamic-set IPs the
 // subject currently carries and when they expire, plus the previous tick's
-// active set (used for the end-of-activity final refresh).
+// active set (used for the end-of-activity final refresh) and a pending
+// set of IPs whose redelivery to the sandbox layer is still owed.
 type refreshState struct {
-	dyn  map[netip.Addr]time.Time
-	prev map[netip.Addr]struct{}
+	dyn     map[netip.Addr]time.Time
+	prev    map[netip.Addr]struct{}
+	pending map[netip.Addr]struct{}
 }
 
 // readConntrack reads the Pod netns conntrack table. The forward hook
@@ -116,9 +118,17 @@ func activeConntrackTCPState(state string) bool {
 // between polls is never observed (needs a later DNS lookup), an entry that
 // expired before its first observation is restored on the next poll, and an
 // nft failure extends the gap (existing connections survive through the
-// `ct state established` rule). Renewal is a background goroutine; a
+// `ct state established` rule). Only TCP is tracked — UDP/QUIC (HTTP/3,
+// DoH-over-UDP) sessions are never renewed and rely on their DNS lease
+// TTLs (sidecar parity). Renewal runs as a background goroutine; a
 // conntrack read failure clears the previous-activity state and skips the
 // tick.
+//
+// A refresh whose Pod-netns apply succeeds but whose sandbox mirror fails
+// marks the IPs as pending redelivery: the next tick re-adds them
+// unconditionally (even without conntrack activity), so a transient
+// sandbox-layer miss never leaves the subject self-locked until the lease
+// expires and the client re-resolves.
 func (a *Applier) StartConnectionRefresh(ctx context.Context, sandboxMir func(context.Context, subject.Subject, []nftables.ResolvedIP) error) {
 	a.mu.Lock()
 	a.sandboxMir = sandboxMir
@@ -138,13 +148,19 @@ func (a *Applier) StartConnectionRefresh(ctx context.Context, sandboxMir func(co
 }
 
 // refreshTick performs one refresh pass: bucket the Pod-netns conntrack table
-// by source IP, then per subject renew the leases of active connections and
-// issue the end-of-activity final refresh. Runs under the applier lock so a
-// concurrent AddResolvedIPs or policy operation can never interleave.
+// by source IP, compute each subject's refresh plan, and apply ALL subjects
+// in ONE nft transaction — the applier lock is held only for the planning
+// (one conntrack read + one exec), never across per-subject exec chains, so
+// a slow tick cannot stall policy operations. The sandbox mirror runs after
+// the lock is released; a mirror failure marks the IPs pending redelivery.
 func (a *Applier) refreshTick(ctx context.Context) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	type subjectPlan struct {
+		s   subject.Subject
+		ips []nftables.ResolvedIP
+	}
+	var plans []subjectPlan
 
+	a.mu.Lock()
 	entries, err := a.conntrack(ctx)
 	if err != nil {
 		// No trustworthy activity data: drop the previous-activity set so no
@@ -152,42 +168,71 @@ func (a *Applier) refreshTick(ctx context.Context) {
 		for _, st := range a.states {
 			st.prev = make(map[netip.Addr]struct{})
 		}
+		a.mu.Unlock()
 		log.Warnf("fleetnft: conntrack read failed, skipping refresh: %v", err)
 		return
 	}
-
-	activeBySubject := a.bucketActive(entries)
+	srcIdx := a.buildSrcIndexLocked()
+	activeBySubject := bucketActive(entries, srcIdx)
+	var b strings.Builder
 	for s, st := range a.states {
 		ips := st.plan(activeBySubject[s], a.now())
 		if len(ips) == 0 {
 			continue
 		}
-		var b strings.Builder
+		plans = append(plans, subjectPlan{s: s, ips: ips})
 		writeResolvedIPsFragment(&b, s, ips)
+	}
+	if b.Len() > 0 {
 		if _, err := a.run(ctx, b.String()); err != nil {
+			// The lease mirror was already extended in the plan phase: mark
+			// every planned IP pending so the next tick redelivers
+			// unconditionally (self-healing, no self-lock).
+			for _, p := range plans {
+				a.markPendingLocked(p.s, p.ips)
+			}
+			a.mu.Unlock()
 			telemetry.RecordNftablesUpdateFailed(telemetry.NftOpDynamicAdd)
-			log.Warnf("fleetnft: refresh dynamic sets for subject %s failed: %v", s, err)
-			continue
+			log.Warnf("fleetnft: refresh dynamic sets failed: %v", err)
+			return
 		}
 		telemetry.RecordNftablesUpdate()
-		if a.sandboxMir != nil {
-			if err := a.sandboxMir(ctx, s, ips); err != nil {
-				log.Warnf("fleetnft: sandbox mirror refresh for subject %s failed: %v", s, err)
-			}
-		}
 	}
+	a.mu.Unlock()
+
+	for _, p := range plans {
+		if a.sandboxMir == nil {
+			continue
+		}
+		if err := a.sandboxMir(ctx, p.s, p.ips); err != nil {
+			log.Warnf("fleetnft: sandbox mirror refresh for subject %s failed: %v", p.s, err)
+			a.markPendingRedelivery(p.s, p.ips)
+			continue
+		}
+		a.clearPending(p.s, p.ips)
+	}
+}
+
+// buildSrcIndexLocked maps each installed subject's source IP to its subject
+// (built once per tick instead of scanning the subject map per conntrack
+// entry).
+func (a *Applier) buildSrcIndexLocked() map[netip.Addr]subject.Subject {
+	idx := make(map[netip.Addr]subject.Subject, len(a.subjects))
+	for s, inst := range a.subjects {
+		idx[inst.slot.IP] = s
+	}
+	return idx
 }
 
 // bucketActive groups the active conntrack flows by subject, keyed on the
 // source IP (the dispatch key; REDIRECT preserves it).
-func (a *Applier) bucketActive(entries []conntrackEntry) map[subject.Subject]map[netip.Addr]struct{} {
+func bucketActive(entries []conntrackEntry, srcIdx map[netip.Addr]subject.Subject) map[subject.Subject]map[netip.Addr]struct{} {
 	out := make(map[subject.Subject]map[netip.Addr]struct{})
 	for _, e := range entries {
 		if !activeConntrackTCPState(e.state) {
 			continue
 		}
-		src := e.src.Unmap()
-		s, ok := a.subjectForSrc(src)
+		s, ok := srcIdx[e.src.Unmap()]
 		if !ok {
 			continue
 		}
@@ -201,20 +246,52 @@ func (a *Applier) bucketActive(entries []conntrackEntry) map[subject.Subject]map
 	return out
 }
 
-func (a *Applier) subjectForSrc(src netip.Addr) (subject.Subject, bool) {
-	for s, inst := range a.subjects {
-		if inst.slot.IP == src {
-			return s, true
-		}
+// markPendingRedelivery records IPs whose sandbox mirror delivery failed, so
+// the next tick re-adds them unconditionally.
+func (a *Applier) markPendingRedelivery(s subject.Subject, ips []nftables.ResolvedIP) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.markPendingLocked(s, ips)
+}
+
+func (a *Applier) markPendingLocked(s subject.Subject, ips []nftables.ResolvedIP) {
+	if _, ok := a.subjects[s]; !ok {
+		return // subject unloaded meanwhile: nothing to redeliver
 	}
-	return "", false
+	st := a.states[s]
+	if st == nil {
+		st = &refreshState{}
+		a.states[s] = st
+	}
+	if st.pending == nil {
+		st.pending = make(map[netip.Addr]struct{})
+	}
+	for _, r := range ips {
+		st.pending[r.Addr.Unmap()] = struct{}{}
+	}
+}
+
+// clearPending drops IPs from the pending set after their mirror delivery
+// succeeded.
+func (a *Applier) clearPending(s subject.Subject, ips []nftables.ResolvedIP) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	st := a.states[s]
+	if st == nil || len(st.pending) == 0 {
+		return
+	}
+	for _, r := range ips {
+		delete(st.pending, r.Addr.Unmap())
+	}
 }
 
 // plan computes the refresh for one subject given its currently active
 // remote IPs: renew active leases, drop expired leases that are neither
-// active nor ending, and issue one final refresh when activity ends so the
+// active nor ending, issue one final refresh when activity ends so the
 // re-added timeout becomes the bounded reconnect grace period (sidecar
-// parity). Mutates the state's dyn/prev mirrors.
+// parity), and redeliver any pending IPs unconditionally (a previous
+// sandbox-mirror failure must not leave the subject self-locked). Mutates
+// the state's dyn/prev mirrors.
 func (st *refreshState) plan(active map[netip.Addr]struct{}, now time.Time) []nftables.ResolvedIP {
 	if st.dyn == nil {
 		st.dyn = make(map[netip.Addr]time.Time)
@@ -253,6 +330,10 @@ func (st *refreshState) plan(active map[netip.Addr]struct{}, now time.Time) []nf
 		if _, known := st.dyn[addr]; known {
 			refresh[addr] = struct{}{}
 		}
+	}
+	// Pending redelivery: owed regardless of conntrack activity.
+	for addr := range st.pending {
+		refresh[addr] = struct{}{}
 	}
 
 	ips := make([]nftables.ResolvedIP, 0, len(refresh))

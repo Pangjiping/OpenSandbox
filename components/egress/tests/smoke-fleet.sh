@@ -139,14 +139,18 @@ ns_nft_has() {
 
 start_egress() {
   info "Starting fleet egress"
+  # DoH env overridable per-test (Test 10 exercises strict mode with an
+  # empty blocklist).
+  local block_doh="${EGRESS_BLOCK_DOH_443:-true}"
+  local doh_blocklist="${EGRESS_DOH_BLOCKLIST:-203.0.113.1}"
   OPENSANDBOX_EGRESS_PROFILE=fleet \
   OPENSANDBOX_EGRESS_SLOT_STORE_DIR="${SLOT_DIR}" \
   OPENSANDBOX_EGRESS_SLOT_POLL_INTERVAL=1 \
   OPENSANDBOX_EGRESS_DNS_UPSTREAM="${UPSTREAM_ADDR}" \
   OPENSANDBOX_EGRESS_DNS_UPSTREAM_PROBE=allow.test \
   OPENSANDBOX_EGRESS_HTTP_ADDR="127.0.0.1:${POLICY_PORT}" \
-  OPENSANDBOX_EGRESS_BLOCK_DOH_443=true \
-  OPENSANDBOX_EGRESS_DOH_BLOCKLIST="203.0.113.1" \
+  OPENSANDBOX_EGRESS_BLOCK_DOH_443="${block_doh}" \
+  OPENSANDBOX_EGRESS_DOH_BLOCKLIST="${doh_blocklist}" \
   "${EGRESS_BIN}" >"${EGRESS_LOG}" 2>&1 &
   EGRESS_PID=$!
   wait_for 30 "egress healthz" curl -sf "http://127.0.0.1:${POLICY_PORT}/healthz"
@@ -332,18 +336,35 @@ pass "unload removed chain/map element/sets"
 
 ###############################################################################
 info "Test 9: restart recovery (reset -> rescan -> denying -> re-push)"
+# Refresh the DNS-learned dyn lease (1.1.1.1) in BOTH layers right before the
+# restart, so the post-restart "stale wiped" assertions are meaningful (the
+# static allow 10.99.0.2 is already gone since Test 7's re-push).
+expect_answers osb-sandbox-a allow.test 1.1.1.1
+wait_for 10 "dyn lease present in sandbox netns before restart" ns_nft_has osb-sandbox-a '1.1.1.1'
 kill "${EGRESS_PID}" 2>/dev/null
 wait "${EGRESS_PID}" 2>/dev/null || true
 EGRESS_PID=""
 start_egress
 wait_for 15 "subject a re-registered denying after restart" bash -c "curl -s -H 'X-Fast-Sandbox-Uid: a' http://127.0.0.1:${POLICY_PORT}/policy | grep -q denying"
-nft_has '10.99.0.2' && fail "stale rules must be wiped on restart"
+nft_has '1.1.1.1' && fail "stale dyn leases must be wiped on restart (Pod table)"
 wait_for 15 "sandbox netns re-installed deny-first after restart" ns_nft_has osb-sandbox-a 'hook output'
-ns_nft_has osb-sandbox-a '10.99.0.2' && fail "stale sandbox policy must be wiped on restart"
+ns_nft_has osb-sandbox-a '1.1.1.1' && fail "stale dyn leases must be wiped on restart (sandbox netns)"
 expect_rcode osb-sandbox-a allow.test 3
 push_policy a '{"defaultAction":"deny","egress":[{"action":"allow","target":"*.test"}]}'
 expect_answers osb-sandbox-a allow.test 1.1.1.1
 pass "restart recovery (stale wiped, re-push reactivates)"
+
+###############################################################################
+info "Test 10: strict DoH mode (no blocklist) drops all tcp 443 globally"
+kill "${EGRESS_PID}" 2>/dev/null
+wait "${EGRESS_PID}" 2>/dev/null || true
+EGRESS_PID=""
+EGRESS_DOH_BLOCKLIST="" start_egress
+wait_for 15 "subject a re-registered after strict-mode restart" bash -c "curl -s -H 'X-Fast-Sandbox-Uid: a' http://127.0.0.1:${POLICY_PORT}/policy | grep -q denying"
+nft_has 'tcp dport 443 drop' || fail "strict mode must install a bare tcp 443 drop"
+nft_has 'doh_block_v4' && fail "strict mode must not create blocklist sets"
+ns_nft_has osb-sandbox-a 'tcp dport 443 drop' || fail "strict mode must mirror the bare 443 drop into the sandbox netns"
+pass "strict DoH mode enforced (bare 443 drop, no blocklist sets)"
 
 ###############################################################################
 info "All fleet smoke tests passed."

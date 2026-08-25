@@ -176,9 +176,23 @@ func (a *Applier) ApplyReset(ctx context.Context) error {
 	a.tableReady = true
 	a.subjects = make(map[subject.Subject]installedSubject)
 	a.states = make(map[subject.Subject]*refreshState)
-	telemetry.SetNftablesRuleCount(0)
+	a.recordRuleCountLocked()
 	telemetry.RecordNftablesUpdate()
 	return nil
+}
+
+// recordRuleCountLocked refreshes the egress.nftables.rules.count gauge:
+// summed across every installed subject's policy (0 for deny-first), so
+// deny-first installs, dispatch updates, and rebuilds never leave the gauge
+// drifting from the real rule count.
+func (a *Applier) recordRuleCountLocked() {
+	var total int64
+	for _, inst := range a.subjects {
+		if inst.pol != nil {
+			total += telemetry.NftRuleCountFromPolicy(inst.pol)
+		}
+	}
+	telemetry.SetNftablesRuleCount(total)
 }
 
 // applyWithMissingTableFallback runs the script; if the batch fails because
@@ -238,6 +252,7 @@ func (a *Applier) ApplyDenyFirst(ctx context.Context, s subject.Subject, slot sl
 	}
 	a.subjects[s] = installedSubject{slot: slot}
 	delete(a.states, s) // deny-first: no policy, no leases (nft dyn sets were flushed)
+	a.recordRuleCountLocked()
 	telemetry.RecordNftablesUpdate()
 	return nil
 }
@@ -265,7 +280,7 @@ func (a *Applier) ApplyPolicy(ctx context.Context, s subject.Subject, pol *polic
 	}
 	inst.pol = pol
 	a.subjects[s] = inst
-	telemetry.SetNftablesRuleCount(telemetry.NftRuleCountFromPolicy(pol))
+	a.recordRuleCountLocked()
 	telemetry.RecordNftablesUpdate()
 	return nil
 }
@@ -369,7 +384,7 @@ func (a *Applier) Remove(ctx context.Context, s subject.Subject) error {
 			return err
 		}
 		a.tableReady = true
-		telemetry.SetNftablesRuleCount(0)
+		a.recordRuleCountLocked()
 		telemetry.RecordNftablesUpdate()
 		return nil
 	}
@@ -393,6 +408,7 @@ func (a *Applier) Remove(ctx context.Context, s subject.Subject) error {
 		return err
 	}
 	a.tableReady = true
+	a.recordRuleCountLocked()
 	telemetry.RecordNftablesUpdate()
 	return nil
 }

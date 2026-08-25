@@ -274,7 +274,9 @@ func (a *Applier) ApplySlotUpdate(ctx context.Context, s subject.Subject, slot s
 // rescan, so a sandbox netns that outlived the previous egress generation
 // can never keep enforcing its old policy — the sandbox layer is the only
 // enforcement for host-local traffic, which never crosses the Pod forward
-// hook. Best effort: a missing netns or table is expected and ignored.
+// hook. Best effort: a missing netns or table is expected and only logged
+// at debug level (it is the common case on a fresh netns), while successful
+// deletions are counted as nft updates.
 func (a *Applier) Reset(ctx context.Context, netnsPaths []string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -284,8 +286,10 @@ func (a *Applier) Reset(ctx context.Context, netnsPaths []string) {
 			continue
 		}
 		if _, err := a.run(ctx, p, deleteTableScript()); err != nil {
-			log.Warnf("sandboxnft: reset table in netns %s failed, ignoring: %v", p, err)
+			log.Debugf("sandboxnft: reset table in netns %s skipped: %v", p, err)
+			continue
 		}
+		telemetry.RecordNftablesUpdate()
 	}
 }
 
