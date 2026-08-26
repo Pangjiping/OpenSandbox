@@ -115,7 +115,15 @@ jobs:
       - name: Install nftables
         run: sudo apt-get update && sudo apt-get install -y nftables
 
-      - name: Run fleet profile smoke test (dns+nft)
+      - name: Install mitmproxy (MITM smoke phase, mirrors the egress image)
+        run: |
+          sudo apt-get install -y python3-venv
+          sudo useradd -r -u 10042 -d /var/lib/mitmproxy -s /usr/sbin/nologin mitmproxy
+          sudo python3 -m venv /opt/mitmproxy
+          sudo /opt/mitmproxy/bin/pip install --no-cache-dir 'mitmproxy==11.0.2'
+          sudo ln -sf /opt/mitmproxy/bin/mitmdump /usr/local/bin/mitmdump
+
+      - name: Run fleet profile smoke test (dns+nft+mitm)
         working-directory: components/egress
         run: |
           chmod +x tests/smoke-fleet.sh

@@ -56,7 +56,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 require() {
   [ "$(id -u)" = "0" ] || fail "fleet smoke requires root (ip netns + nft)"
-  for c in go nft ip python3 curl; do
+  for c in go nft ip python3 curl openssl; do
     command -v "${c}" >/dev/null || fail "missing required command: ${c}"
   done
 }
@@ -78,6 +78,7 @@ cleanup() {
     [ "${SAVED_FORWARD_POLICY}" = "-P FORWARD ACCEPT" ] || iptables -t filter -P FORWARD DROP >/dev/null 2>&1 || true
   fi
   rm -rf "${SLOT_DIR}" "${RESOLV_A}" 2>/dev/null
+  [ -n "${SSL_DIR:-}" ] && rm -rf "${SSL_DIR}" 2>/dev/null
   nft delete table inet opensandbox-fleet 2>/dev/null
 }
 trap cleanup EXIT
@@ -145,6 +146,20 @@ start_egress() {
   # blocklist instead of falling back to the default.
   local block_doh="${EGRESS_BLOCK_DOH_443-true}"
   local doh_blocklist="${EGRESS_DOH_BLOCKLIST-203.0.113.1}"
+  local mitm="${EGRESS_MITM-}"
+  local mitm_env=()
+  if [ "${mitm}" = "1" ]; then
+    # ssl_insecure: the ext upstream serves a self-signed cert (curl -k on
+    # the client side skips its own validation; the trust stack itself is a
+    # fast-sandbox CA delivery, issue #19)
+    mitm_env=(
+      OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT=true
+      OPENSANDBOX_EGRESS_MITMPROXY_SSL_INSECURE=true
+    )
+  fi
+  # env(1) is required: words produced by "${mitm_env[@]}" expansion are NOT
+  # treated as environment assignments by bash (they'd be executed as commands).
+  env \
   OPENSANDBOX_EGRESS_PROFILE=fleet \
   OPENSANDBOX_EGRESS_SLOT_STORE_DIR="${SLOT_DIR}" \
   OPENSANDBOX_EGRESS_SLOT_POLL_INTERVAL=1 \
@@ -153,6 +168,7 @@ start_egress() {
   OPENSANDBOX_EGRESS_HTTP_ADDR="127.0.0.1:${POLICY_PORT}" \
   OPENSANDBOX_EGRESS_BLOCK_DOH_443="${block_doh}" \
   OPENSANDBOX_EGRESS_DOH_BLOCKLIST="${doh_blocklist}" \
+  "${mitm_env[@]}" \
   "${EGRESS_BIN}" >"${EGRESS_LOG}" 2>&1 &
   EGRESS_PID=$!
   wait_for 30 "egress healthz" curl -sf "http://127.0.0.1:${POLICY_PORT}/healthz"
@@ -162,6 +178,17 @@ push_policy() {
   # push_policy <uid> <json>
   curl -sSf -H "X-Fast-Sandbox-Uid: $1" -XPUT \
     "http://127.0.0.1:${POLICY_PORT}/policy" -d "$2" >/dev/null
+}
+
+push_vault() {
+  # push_vault <uid> <json>: POST the vault; on failure print the server's
+  # rejection body (the fleet handler reports validation errors there).
+  local uid="$1" json="$2" resp code body
+  resp="$(curl -s -w '\n%{http_code}' -H "X-Fast-Sandbox-Uid: ${uid}" \
+    -XPOST "http://127.0.0.1:${POLICY_PORT}/credential-vault" -d "${json}")"
+  code="$(printf '%s' "${resp}" | tail -1)"
+  body="$(printf '%s' "${resp}" | sed '$d')"
+  [ "${code}" = "201" ] || fail "vault push for ${uid}: HTTP ${code}: ${body}"
 }
 
 set_up_netns() {
@@ -219,11 +246,17 @@ ip addr add 10.99.0.1/24 dev veth-ext-p
 ip -n osb-ext route add default via 10.99.0.1
 
 info "Starting helper servers"
+# Self-signed cert for the ext HTTPS :443 echo (TLS interception smoke).
+SSL_DIR="$(mktemp -d -t fleet-ssl.XXXXXX)"
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "${SSL_DIR}/key.pem" \
+  -out "${SSL_DIR}/cert.pem" -days 1 -subj "/CN=ext.test" >/dev/null 2>&1
 python3 "${SCRIPT_DIR}/fleet_upstream.py" dns >/dev/null 2>&1 &
 UPSTREAM_PID=$!
-ip netns exec osb-ext python3 "${SCRIPT_DIR}/fleet_upstream.py" ext >/dev/null 2>&1 &
+EXT_SSL_CERT="${SSL_DIR}/cert.pem" EXT_SSL_KEY="${SSL_DIR}/key.pem" \
+  ip netns exec osb-ext python3 "${SCRIPT_DIR}/fleet_upstream.py" ext >/dev/null 2>&1 &
 EXT_PID=$!
 wait_for 5 "ext http server up" ip netns exec osb-ext curl -s -m 2 -o /dev/null http://127.0.0.1:8080/
+wait_for 5 "ext https server up" ip netns exec osb-ext curl -sk -m 2 -o /dev/null https://127.0.0.1:443/
 
 write_slot a a 1 10.10.0.5 veth-a-p "${RESOLV_A}"
 start_egress
@@ -367,6 +400,242 @@ nft_has 'tcp dport 443 drop' || fail "strict mode must install a bare tcp 443 dr
 nft_has 'doh_block_v4' && fail "strict mode must not create blocklist sets"
 ns_nft_has osb-sandbox-a 'tcp dport 443 drop' || fail "strict mode must mirror the bare 443 drop into the sandbox netns"
 pass "strict DoH mode enforced (bare 443 drop, no blocklist sets)"
+
+###############################################################################
+info "Test 11: MITM data plane — shared mitmdump + per-subject DNAT + subject-aware active vault"
+if ! command -v mitmdump >/dev/null 2>&1 || ! id mitmproxy >/dev/null 2>&1; then
+  info "SKIP MITM phase: mitmdump and/or the 'mitmproxy' user are not installed."
+  info "  Install to match the egress image (CI does this in .github/workflows/egress-test.yml):"
+  info "    apt-get install -y python3-venv"
+  info "    useradd -r -u 10042 -d /var/lib/mitmproxy -s /usr/sbin/nologin mitmproxy"
+  info "    python3 -m venv /opt/mitmproxy && /opt/mitmproxy/bin/pip install 'mitmproxy==11.0.2'"
+  info "    ln -s /opt/mitmproxy/bin/mitmdump /usr/local/bin/mitmdump"
+  info "  then re-run ./tests/smoke-fleet.sh (Test 11 runs last)."
+else
+  # Ship the baked-in mitm config AND the system addon (the egress image
+  # carries both under /var/lib/mitmproxy and /var/egress; a bare host may
+  # not — the addon path is a hard requirement of the mitmdump launch).
+  mkdir -p /var/lib/mitmproxy/.mitmproxy
+  cp -f "${SCRIPT_DIR}/../mitmproxy/config.yaml" /var/lib/mitmproxy/.mitmproxy/config.yaml
+  mkdir -p /var/egress/mitmscripts
+  cp -f "${SCRIPT_DIR}/../mitmscripts/system.py" /var/egress/mitmscripts/system.py
+  chown -R mitmproxy:mitmproxy /var/lib/mitmproxy
+
+  kill "${EGRESS_PID}" 2>/dev/null
+  wait "${EGRESS_PID}" 2>/dev/null || true
+  EGRESS_PID=""
+  EGRESS_MITM=1 start_egress
+
+  # CA exported into the dedicated fleet subdir (the fastlet mount point).
+  wait_for 20 "fleet CA export" test -s /opt/opensandbox/mitm-ca/mitmproxy-ca-cert.pem
+  pass "CA exported to /opt/opensandbox/mitm-ca/mitmproxy-ca-cert.pem"
+
+  # Per-subject Pod-netns prerouting DNAT + management-dst exception.
+  # (nft's canonical `list` output renders port sets with spaces { 80, 443 }
+  # and prefixes the dnat address family: `dnat ip to`.)
+  # the rules are veth-bound (iifname) so a forged source IP from another
+  # sandbox's veth is not intercepted
+  wait_for 15 "per-subject DNAT" bash -c "nft list table inet opensandbox_gateway_mitm 2>/dev/null | grep -q 'ip saddr 10.10.0.5 iifname \"veth-a-p\" tcp dport { 80, 443 } dnat'"
+  nft list table inet opensandbox_gateway_mitm 2>/dev/null | grep -q 'ip saddr 10.10.0.5 iifname \"veth-a-p\" ip daddr 10.10.0.1 tcp dport { 80, 443 } return' \
+    || fail "management-dst exception missing"
+  pass "per-subject DNAT installed (10.10.0.5 -> 10.10.0.1:18081; gateway dst excluded)"
+
+  # Subject-aware active vault API over the shared unix socket.
+  ACTIVE_SOCK="/run/opensandbox/credential-proxy/active.sock"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "${ACTIVE_SOCK}" 'http://localhost/credential-vault/_active?clientIp=10.10.0.5')"
+  [ "${code}" = "404" ] || fail "active API: subject without vault must 404, got ${code}"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "${ACTIVE_SOCK}" 'http://localhost/credential-vault/_active?clientIp=10.10.0.99')"
+  [ "${code}" = "404" ] || fail "active API: unknown IP must 404, got ${code}"
+  pass "active API dispatch (unknown IP 404, no-vault 404)"
+
+  # Deny-first: 80/443 is DNATed to the shared mitm and delivered locally,
+  # so the Pod-netns INPUT enforcement chain (ct-original policy) is the
+  # authoritative layer even before any policy is pushed.
+  if ip netns exec osb-sandbox-a curl -s -m 3 -o /dev/null -H 'Host: ext.test' http://10.99.0.2/ 2>/dev/null; then
+    fail "deny-first must block MITM 80/443 via the Pod INPUT chain"
+  fi
+  pass "deny-first blocks MITM 80/443 at the Pod INPUT chain"
+
+  # Subject a: policy + vault, then a real HTTP request through the shared
+  # mitm; the upstream must see the injected credential (proves interception
+  # AND clientIp -> subject -> vault dispatch). Binding hosts must be FQDNs
+  # (IP binding hosts are rejected), so the sandbox curls the ext netns with
+  # an explicit Host header; the policy keeps allowing the real daddr
+  # 10.99.0.2 so the nft layers pass the packet.
+  push_policy a '{"defaultAction":"deny","egress":[{"action":"allow","target":"10.99.0.2"},{"action":"allow","target":"ext.test"}]}'
+  push_vault a '{"credentials":[{"name":"k","source":{"type":"inline","value":"secret-v1"}}],"bindings":[{"name":"b","match":{"schemes":["http","https"],"hosts":["ext.test"]},"auth":{"type":"apiKey","name":"X-Api-Key","credential":"k"}}]}'
+  code="$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "${ACTIVE_SOCK}" 'http://localhost/credential-vault/_active?clientIp=10.10.0.5')"
+  [ "${code}" = "200" ] || fail "active API: subject a vault must resolve, got ${code}"
+  out="$(ip netns exec osb-sandbox-a curl -s -m 5 -H 'Host: ext.test' http://10.99.0.2/)"
+  echo "${out}" | grep -qi "client=10.99.0.1" || fail "request did not traverse the shared mitm (direct path?); got: ${out}"
+  echo "${out}" | grep -qi "x-api-key: secret-v1" || fail "mitm must inject subject a's credential; got: ${out}"
+  pass "real HTTP through shared mitm with credential injection (clientIp dispatch)"
+
+  # Subject b (re-observed after Test 8's unload): a second sandbox with a
+  # DIFFERENT policy (allows alt.test, not ext.test) and its own vault; each
+  # sandbox's rules and credentials stay strictly isolated.
+  write_slot b b 1 10.10.0.6 veth-b-p "${RESOLV_A}"
+  wait_for 15 "subject b re-registered with DNAT" bash -c "nft list table inet opensandbox_gateway_mitm 2>/dev/null | grep -q 'ip saddr 10.10.0.6 '"
+  push_policy b '{"defaultAction":"deny","egress":[{"action":"allow","target":"10.99.0.2"},{"action":"allow","target":"alt.test"}]}'
+
+  # b's vault must reject a binding for a host its own policy does not allow
+  # (ext.test belongs to subject a's policy) — per-subject rule isolation at
+  # the vault validation layer.
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H "X-Fast-Sandbox-Uid: b" -XPOST \
+    "http://127.0.0.1:${POLICY_PORT}/credential-vault" \
+    -d '{"credentials":[{"name":"k","source":{"type":"inline","value":"leak"}}],"bindings":[{"name":"b","match":{"schemes":["http","https"],"hosts":["ext.test"]},"auth":{"type":"apiKey","name":"X-Api-Key","credential":"k"}}]}')"
+  [ "${code}" = "400" ] || fail "b's vault must reject a binding outside its policy (ext.test), got ${code}"
+
+  push_vault b '{"credentials":[{"name":"k","source":{"type":"inline","value":"secret-v2"}}],"bindings":[{"name":"b","match":{"schemes":["http","https"],"hosts":["alt.test"]},"auth":{"type":"apiKey","name":"X-Api-Key","credential":"k"}}]}'
+  out="$(ip netns exec osb-sandbox-b curl -s -m 5 -H 'Host: alt.test' http://10.99.0.2/)"
+  echo "${out}" | grep -qi "client=10.99.0.1" || fail "subject b request did not traverse the shared mitm; got: ${out}"
+  echo "${out}" | grep -qi "x-api-key: secret-v2" || fail "mitm must inject subject b's credential; got: ${out}"
+  out="$(ip netns exec osb-sandbox-a curl -s -m 5 -H 'Host: ext.test' http://10.99.0.2/)"
+  echo "${out}" | grep -qi "client=10.99.0.1" || fail "subject a request did not traverse the shared mitm; got: ${out}"
+  echo "${out}" | grep -qi "x-api-key: secret-v1" || fail "subject a's credential must survive subject b's registration; got: ${out}"
+
+  # Cross-policy isolation: b has no binding for ext.test and a has none for
+  # alt.test — neither sandbox may receive the other's credential, even
+  # though both can reach the same upstream IP.
+  out="$(ip netns exec osb-sandbox-b curl -s -m 5 -H 'Host: ext.test' http://10.99.0.2/)"
+  echo "${out}" | grep -qi "client=10.99.0.1" || fail "subject b request did not traverse the shared mitm; got: ${out}"
+  echo "${out}" | grep -qi "x-api-key" && fail "b must NOT receive a credential for ext.test (a's host); got: ${out}"
+  out="$(ip netns exec osb-sandbox-a curl -s -m 5 -H 'Host: alt.test' http://10.99.0.2/)"
+  echo "${out}" | grep -qi "client=10.99.0.1" || fail "subject a request did not traverse the shared mitm; got: ${out}"
+  echo "${out}" | grep -qi "x-api-key" && fail "a must NOT receive a credential for alt.test (b's host); got: ${out}"
+  pass "per-subject policy + vault isolation (two sandboxes, distinct rules and credentials)"
+
+  # HTTPS data plane: TLS interception + SO_ORIGINAL_DST(443) + credential
+  # injection on the encrypted path. curl -k skips the sandbox-side trust
+  # check (the CA delivery into sandboxes is fast-sandbox issue #19); the
+  # mitm's own upstream validation is disabled via ssl_insecure (self-signed
+  # ext cert). The client=10.99.0.1 oracle still proves the mitm proxied it.
+  out="$(ip netns exec osb-sandbox-a curl -sk -m 5 -H 'Host: ext.test' https://10.99.0.2/)"
+  echo "${out}" | grep -qi "client=10.99.0.1" || fail "https request did not traverse the shared mitm; got: ${out}"
+  echo "${out}" | grep -qi "x-api-key: secret-v1" || fail "mitm must inject subject a's credential over TLS; got: ${out}"
+  out="$(ip netns exec osb-sandbox-b curl -sk -m 5 -H 'Host: alt.test' https://10.99.0.2/)"
+  echo "${out}" | grep -qi "client=10.99.0.1" || fail "subject b https request did not traverse the shared mitm; got: ${out}"
+  echo "${out}" | grep -qi "x-api-key: secret-v2" || fail "mitm must inject subject b's credential over TLS; got: ${out}"
+  pass "HTTPS data plane (TLS interception + per-subject injection)"
+
+  # Vault revision update reaches the data plane: PATCH the credential, wait
+  # out the addon's 0.5s cache TTL, and assert the NEW value is injected.
+  code="$(curl -s -o /dev/null -w '%{http_code}' -H "X-Fast-Sandbox-Uid: a" -XPATCH \
+    "http://127.0.0.1:${POLICY_PORT}/credential-vault" \
+    -d '{"credentials":{"replace":[{"name":"k","source":{"type":"inline","value":"secret-v1-new"}}]}}')"
+  [ "${code}" = "200" ] || fail "vault PATCH must succeed, got ${code}"
+  sleep 1  # the addon vault cache TTL is 0.5s
+  out="$(ip netns exec osb-sandbox-a curl -s -m 5 -H 'Host: ext.test' http://10.99.0.2/)"
+  echo "${out}" | grep -qi "x-api-key: secret-v1-new" || fail "PATCHed credential must be injected after TTL; got: ${out}"
+  pass "vault revision update reaches the data plane (PATCH -> injected)"
+
+  # Interception-set precision: :8080 is outside {80,443}, so it must go
+  # DIRECT (client=10.10.0.5, the sandbox IP) with no credential injection.
+  out="$(ip netns exec osb-sandbox-a curl -s -m 5 -H 'Host: ext.test' http://10.99.0.2:8080/)"
+  echo "${out}" | grep -qi "client=10.10.0.5" || fail ":8080 must NOT be intercepted (direct path); got: ${out}"
+  echo "${out}" | grep -qi "x-api-key" && fail ":8080 must not receive credentials; got: ${out}"
+  pass "interception set precision (:8080 direct, no injection)"
+
+  # DoH-443 blocking under MITM: the DNAT happens in the Pod netns prerouting
+  # (AFTER the sandbox OUTPUT hook), so the sandbox-layer DoH rules still see
+  # the real daddr/dport and keep dropping blocklisted 443 endpoints before
+  # they can even reach the interceptor — while non-blocklisted 443 (the
+  # HTTPS assertions above) is intercepted normally. Assert both rule layers
+  # are present and a blocklisted endpoint stays unreachable.
+  nft list table inet opensandbox-fleet 2>/dev/null | grep -q 'doh_block_v4 tcp dport 443 drop' \
+    || fail "Pod-layer DoH-443 drop missing under MITM"
+  ip netns exec osb-sandbox-a nft list table inet opensandbox-fleet-ns 2>/dev/null | grep -q 'doh_block_v4 tcp dport 443 drop' \
+    || fail "sandbox-layer DoH-443 drop missing under MITM"
+  ip netns exec osb-sandbox-a nft list table inet opensandbox-fleet-ns 2>/dev/null | grep -q '203.0.113.1' \
+    || fail "doh blocklist element missing in the sandbox layer under MITM"
+  if ip netns exec osb-sandbox-a curl -sk -m 2 -o /dev/null https://203.0.113.1/ 2>/dev/null; then
+    fail "blocklisted DoH endpoint 203.0.113.1 must be unreachable under MITM"
+  fi
+  pass "DoH-443 blocking under MITM (both layers; blocklist still enforced)"
+  # Compromised-sandbox scenario: DELETE the sandbox's own OUTPUT table
+  # (not flush — a flushed hook chain keeps its drop policy, so flushing
+  # would block everything and prove nothing). With the table gone the
+  # sandbox has zero local enforcement; the Pod-netns authoritative layers
+  # must still hold — the forward hook for non-MITM traffic, the INPUT
+  # enforcement chain (ct-original policy) for the DNATed 80/443.
+  ip netns exec osb-sandbox-a nft delete table inet opensandbox-fleet-ns
+  if ! out="$(ip netns exec osb-sandbox-a curl -s -m 5 -H 'Host: ext.test' http://10.99.0.2/)"; then
+    echo "--- Pod netns fleet table (input chain + subject a sets) ---"
+    nft list table inet opensandbox-fleet 2>&1 | grep -E "input|subj_s_a" | head -30
+    echo "--- Pod netns conntrack (subject a) ---"
+    conntrack -L 2>/dev/null | grep "10.10.0.5" | head -10 || true
+    echo "--- sandbox a nft tables after flush ---"
+    ip netns exec osb-sandbox-a nft list tables 2>&1 | head -5
+    fail "allow must still inject via the Pod INPUT chain with the sandbox layer flushed"
+  fi
+  echo "${out}" | grep -qi "x-api-key: secret-v1-new" \
+    || fail "allow must still inject via the Pod INPUT chain with the sandbox layer flushed; got: ${out}"
+  if ip netns exec osb-sandbox-a curl -s -m 3 -o /dev/null -H 'Host: ext.test' http://10.99.0.9/ 2>/dev/null; then
+    fail "always-deny (MITM 80) must hold via the Pod INPUT chain with the sandbox layer flushed"
+  fi
+  if ip netns exec osb-sandbox-a curl -sk -m 3 -o /dev/null https://203.0.113.1/ 2>/dev/null; then
+    fail "DoH-443 blocklist must hold via the Pod INPUT chain with the sandbox layer flushed"
+  fi
+  if ip netns exec osb-sandbox-a curl -s -m 3 -o /dev/null http://10.99.0.9:8080/ 2>/dev/null; then
+    fail "always-deny (non-MITM :8080) must hold via the Pod forward hook with the sandbox layer flushed"
+  fi
+  pass "authoritative enforcement survives a sandbox-layer flush (forward hook + MITM input chain)"
+
+  # Spoofed-source-IP attack: sandbox b forges sandbox a's IP. The DNAT is
+  # iifname-bound, so the packet is NOT intercepted — it hits the forward
+  # master drop (iifname mismatch) and never reaches any vault dispatch. A
+  # permissive DNAT (saddr only) would have let the mitm dispatch on the
+  # forged clientIp and injected subject a's credential into b.
+  ip netns exec osb-sandbox-b ip addr add 10.10.0.5/32 dev veth-b 2>/dev/null || true
+  if ip netns exec osb-sandbox-b curl -s -m 3 -o /dev/null --interface 10.10.0.5 -H 'Host: ext.test' http://10.99.0.2/ 2>/dev/null; then
+    fail "spoofed source IP must not reach the mitm (DNAT iifname binding)"
+  fi
+  pass "spoofed source IP rejected (DNAT iifname binding)"
+
+
+  # Unload removes the subject's DNAT rule (the rebuild drops it).
+  rm -f "${SLOT_DIR}/b.json"
+  wait_for 15 "subject b DNAT removed on unload" bash -c "! nft list table inet opensandbox_gateway_mitm 2>/dev/null | grep -q 'ip saddr 10.10.0.6'"
+  pass "unload removed subject b's DNAT rule"
+
+  # mitmdump death -> healthz 503 -> auto-restart (watchMitmproxy + backoff)
+  # -> injection resumes. The 503 window can be sub-second, so poll fast.
+  pkill -TERM -x mitmdump 2>/dev/null || true
+  deadline=$((SECONDS + 15))
+  saw_503=0
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${POLICY_PORT}/healthz" 2>/dev/null || true)"
+    if [ "${code}" = "503" ]; then saw_503=1; break; fi
+    sleep 0.2
+  done
+  [ "${saw_503}" = "1" ] || fail "healthz must 503 while mitmdump is down"
+  deadline=$((SECONDS + 30))
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${POLICY_PORT}/healthz" 2>/dev/null || true)"
+    if [ "${code}" = "200" ]; then break; fi
+    sleep 0.5
+  done
+  [ "${code}" = "200" ] || fail "healthz must recover after mitmdump auto-restart"
+  out="$(ip netns exec osb-sandbox-a curl -s -m 5 -H 'Host: ext.test' http://10.99.0.2/)"
+  echo "${out}" | grep -qi "x-api-key: secret-v1-new" || fail "injection must resume after mitmdump restart; got: ${out}"
+  pass "mitmdump death recovery (503 -> auto-restart -> injection resumes)"
+
+###############################################################################
+  info "Test 12: MITM-mode restart recovery (DNAT rebuild + CA re-export + vault re-push)"
+  kill "${EGRESS_PID}" 2>/dev/null
+  wait "${EGRESS_PID}" 2>/dev/null || true
+  EGRESS_PID=""
+  EGRESS_MITM=1 start_egress
+  wait_for 20 "CA re-exported after restart" test -s /opt/opensandbox/mitm-ca/mitmproxy-ca-cert.pem
+  wait_for 15 "DNAT rebuilt after restart" bash -c "nft list table inet opensandbox_gateway_mitm 2>/dev/null | grep -q 'ip saddr 10.10.0.5 iifname '"
+  wait_for 15 "subject a re-registered denying" bash -c "curl -s -H 'X-Fast-Sandbox-Uid: a' http://127.0.0.1:${POLICY_PORT}/policy | grep -q denying"
+  # the in-memory vault died with the old process; re-push (idempotent)
+  push_policy a '{"defaultAction":"deny","egress":[{"action":"allow","target":"10.99.0.2"},{"action":"allow","target":"ext.test"}]}'
+  push_vault a '{"credentials":[{"name":"k","source":{"type":"inline","value":"secret-v1-new"}}],"bindings":[{"name":"b","match":{"schemes":["http","https"],"hosts":["ext.test"]},"auth":{"type":"apiKey","name":"X-Api-Key","credential":"k"}}]}'
+  out="$(ip netns exec osb-sandbox-a curl -s -m 5 -H 'Host: ext.test' http://10.99.0.2/)"
+  echo "${out}" | grep -qi "x-api-key: secret-v1-new" || fail "injection must work after MITM-mode restart; got: ${out}"
+  pass "MITM-mode restart recovery (DNAT + CA + vault re-push + injection)"
+fi
 
 ###############################################################################
 info "All fleet smoke tests passed."
