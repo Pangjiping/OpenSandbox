@@ -536,6 +536,14 @@ else
   echo "${out}" | grep -qi "x-api-key" && fail ":8080 must not receive credentials; got: ${out}"
   pass "interception set precision (:8080 direct, no injection)"
 
+  # Direct proxy-protocol connection to the mitm port: a default-allow
+  # sandbox must not bypass the transparent interception by talking to the
+  # gateway:18081 itself (the input chain drops non-DNATed traffic to it).
+  if ip netns exec osb-sandbox-a curl -s -m 3 -x http://10.10.0.1:18081 -H 'Host: ext.test' http://ext.test/ 2>/dev/null; then
+    fail "direct connection to the mitm port must be dropped"
+  fi
+  pass "direct mitm-port connection rejected"
+
   # DoH-443 blocking under MITM: the DNAT happens in the Pod netns prerouting
   # (AFTER the sandbox OUTPUT hook), so the sandbox-layer DoH rules still see
   # the real daddr/dport and keep dropping blocklisted 443 endpoints before

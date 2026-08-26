@@ -118,8 +118,8 @@ func runFleetProfile(ctx context.Context) {
 			log.Fatalf("fleet mitmproxy ports: %v", err)
 		}
 		fleetSrv.SetMitm(mitmGate, mitm.port, dports)
-		mitmGate.SetReady(true)
 		mitm.watchMitmproxy(ctx, mitmGate)
+		mitmGate.SetReady(true)
 		log.Infof("fleet mitmproxy watch started (shared listener, healthz-gated)")
 		startFleetActiveSocket(ctx, fleetSrv)
 	} else {

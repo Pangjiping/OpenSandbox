@@ -452,6 +452,9 @@ func TestInputChainInstalledWithMITM(t *testing.T) {
 	require.Contains(t, script, "add chain inet opensandbox-fleet input { type filter hook input priority 0; policy accept; }")
 	require.Contains(t, script, "add chain inet opensandbox-fleet subj_s_u_1_in")
 	require.Contains(t, script, `add rule inet opensandbox-fleet input ip saddr 10.0.0.5 iifname "vethu-1" tcp dport 18081 ct status dnat jump subj_s_u_1_in`)
+	// a direct (non-DNATed) connection to the mitm port must be dropped —
+	// default-allow sandboxes must not bypass the transparent interception
+	require.Contains(t, script, `add rule inet opensandbox-fleet input ip saddr 10.0.0.5 iifname "vethu-1" ip daddr 10.0.0.1 tcp dport 18081 drop`)
 	// verdicts match the conntrack ORIGINAL destination (the DNATed dst is
 	// the local mitm port)
 	require.Contains(t, script, "add rule inet opensandbox-fleet subj_s_u_1_in ct original ip daddr @subj_s_u_1_deny_v4 drop")

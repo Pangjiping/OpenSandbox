@@ -559,16 +559,17 @@ func (s *fleetPolicyServer) OnRegistered(subj subject.Subject, slot slotsource.S
 	if err := s.setMitmRedirect(subj, slot, false); err != nil {
 		// Fail closed: a sandbox whose HTTP(S) is not intercepted must not
 		// register as usable (it could exfiltrate credentials-bearing
-		// traffic the MITM layer is responsible for).
+		// traffic the MITM layer is responsible for). Roll back the gateway
+		// DNS redirect refcount installed above — the controller retries
+		// OnRegistered, and an unreleased refcount would accumulate on
+		// repeated failures, leaving the gateway redirect behind forever.
+		s.releaseGatewayDNSRedirect(slot.Gateway)
 		return err
 	}
-	log.Infof("subject %s deny-first enforced (nft + resolv + gateway redirect)", subj)
+	log.Infof("subject %s deny-first enforced (nft + resolv + gateway redirect + mitm redirect)", subj)
 	return nil
 }
 
-// installMitmRedirect adds the subject's interception entry and rebuilds the
-// Pod-netns table. No-op when MITM is disabled. A failure rolls back the entry
-// (the rebuild is transactional, so the previous table stays live).
 // setMitmRedirect upserts the subject's interception entry and rebuilds the
 // Pod-netns table. On failure, keepOnError decides whether the entry is
 // rolled back (registration: the subject must stay unregistered) or kept

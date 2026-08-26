@@ -702,9 +702,12 @@ func writeSubjectVerdictRules(b *strings.Builder, s subject.Subject, defaultActi
 // matching source IP and host veth (defense in depth: a forged source IP from
 // another sandbox is rejected by the iifname bound to this sandbox's veth).
 // The input dispatch additionally requires ct status dnat on the mitmproxy
-// port, so only intercepted traffic enters the input enforcement chain.
-// Verdict maps cannot jump to chains (EOPNOTSUPP on add element), so dispatch
-// is a plain rule per subject; removal rebuilds the table (see Remove).
+// port, so only intercepted traffic enters the input enforcement chain; a
+// DIRECT connection to the mitm port (no DNAT — a default-allow sandbox
+// talking proxy protocol to the gateway) falls through to a drop, closing
+// the transparent-interception bypass. Verdict maps cannot jump to chains
+// (EOPNOTSUPP on add element), so dispatch is a plain rule per subject;
+// removal rebuilds the table (see Remove).
 func writeDispatchRule(b *strings.Builder, s subject.Subject, slot slotsource.Slot, mitmPort int) {
 	if slot.IP.Is4() {
 		fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" jump %s\n",
@@ -712,6 +715,10 @@ func writeDispatchRule(b *strings.Builder, s subject.Subject, slot slotsource.Sl
 		if mitmPort > 0 {
 			fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" tcp dport %d ct status dnat jump %s\n",
 				TableName, inputChain, slot.IP, slot.HostVeth, mitmPort, subjectChainIn(s))
+			if slot.Gateway.IsValid() {
+				fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" ip daddr %s tcp dport %d drop\n",
+					TableName, inputChain, slot.IP, slot.HostVeth, slot.Gateway, mitmPort)
+			}
 		}
 		return
 	}
@@ -720,6 +727,10 @@ func writeDispatchRule(b *strings.Builder, s subject.Subject, slot slotsource.Sl
 	if mitmPort > 0 {
 		fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" tcp dport %d ct status dnat jump %s\n",
 			TableName, inputChain, slot.IP, slot.HostVeth, mitmPort, subjectChainIn(s))
+		if slot.Gateway.IsValid() {
+			fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" ip6 daddr %s tcp dport %d drop\n",
+				TableName, inputChain, slot.IP, slot.HostVeth, slot.Gateway, mitmPort)
+		}
 	}
 }
 
