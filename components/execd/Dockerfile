@@ -153,9 +153,15 @@ COPY --from=ebpf-builder /build/execd-ebpf ./execd-ebpf
 COPY components/execd/bootstrap.sh ./bootstrap.sh
 COPY components/execd/install.bat ./install.bat
 
-# Defensive: force execd-related files executable for all users regardless
-# of source checkout permissions.
-RUN chmod a+x ./execd ./execd.exe ./execd-ebpf ./opensandbox-supervisor ./bootstrap.sh \
+# Defensive: normalize execd-related file modes regardless of source checkout
+# permissions or the builder's umask.
+RUN chmod 0755 \
+    ./execd \
+    ./execd.exe \
+    ./execd-ebpf \
+    ./opensandbox-supervisor \
+    ./bootstrap.sh \
+    ./install.bat \
     /usr/local/bin/bwrap \
     /usr/local/libexec/opensandbox-session-gate \
     /opt/opensandbox/opensandbox-session-gate \

@@ -155,6 +155,17 @@ export interface paths {
                 400: components["responses"]["BadRequest"];
                 401: components["responses"]["Unauthorized"];
                 409: components["responses"]["Conflict"];
+                /** @description Pool capacity remained unavailable before the acquisition timeout */
+                429: {
+                    headers: {
+                        "X-Request-ID": components["headers"]["XRequestId"];
+                        "Retry-After": components["headers"]["RetryAfter"];
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorResponse"];
+                    };
+                };
                 500: components["responses"]["InternalServerError"];
             };
         };

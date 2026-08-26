@@ -296,13 +296,22 @@ Pool lifecycle semantics:
 - Pool warmup create uses one transport attempt. Direct create, standalone create,
   acquire, connect, renew, and cleanup retain the configured retry behavior.
 - Reconcile runs once per second. Warmup completion does not trigger an extra tick.
+- With `ConnectionConfig.enableTracing()`, each admitted warmup emits one
+  `pool.warmup` trace. Each health stage is summarized by one span with its
+  attempt count and scheduler delay. Terminal structured logs classify
+  `stage`, `result`, and `reason`; the current primary also emits an active-pool
+  summary every 30 seconds from the existing reconcile thread. Production
+  deployments should configure OpenTelemetry sampling explicitly; tracing is
+  opt-in but the SDK does not override the application's sampler.
 - Graceful shutdown stops admitting new warmups, keeps the primary heartbeat and
   delayed-stage dispatcher alive while already-admitted warmups finish, and preserves
   the existing behavior of allowing those warmups to enter idle before shutdown completes.
-- The pool shares one OkHttp `ConnectionPool` across every sandbox it creates
-  (warmup, direct create, idle connect). When the `ConnectionConfig` carries no
-  custom pool, the pool creates one sized by `warmupConcurrency` (5-minute
-  keep-alive) and evicts it on `shutdown()`; a user-provided pool is never touched.
+- When `ConnectionConfig` carries no custom OkHttp `ConnectionPool`, the pool
+  creates one for direct create and idle connect, sized by `warmupConcurrency`
+  with a 5-minute keep-alive, and evicts it on `shutdown()`. Default staged
+  warmup sandboxes retain their own endpoint pools to avoid accumulating
+  mutually incompatible routes in one large pool. An explicitly user-provided
+  connection pool is honored by every path and is never evicted by the pool.
 
 
 > For distributed deployment, use the optional `com.alibaba.opensandbox:sandbox-pool-redis` module or provide a custom `PoolStateStore` implementation. The Redis module accepts a caller-managed Jedis client, so your application keeps ownership of Redis connection configuration and lifecycle. Nodes sharing the same pool namespace must use the same sandbox creation and warmup definition; use a new `poolName` or namespace when changing that definition. The pool renews an owned primary lock independently from warmup execution at an internal interval no greater than `primaryLockTtl / 3`, so one slow warmup does not block leader heartbeats.

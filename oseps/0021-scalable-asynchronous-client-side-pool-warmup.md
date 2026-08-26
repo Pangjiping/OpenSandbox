@@ -291,13 +291,13 @@ The create executor is elastic and has no work backlog:
 
 ```text
 corePoolSize = 0
-maximumPoolSize = ceil(warmupCreateQps × 1.2)
+maximumPoolSize = ceil(warmupCreateQps × 1.5)
 keepAliveTime = 30s
 workQueue = SynchronousQueue
 rejection = AbortPolicy
 ```
 
-The 20 percent allowance absorbs create calls that cross the next one-second
+The 50 percent allowance absorbs create calls that cross the next one-second
 tick. It does not authorize more requests in that tick.
 
 The post-create executor is also elastic:
@@ -497,32 +497,64 @@ code.
 
 ### 10. Observability
 
-At minimum, the Kotlin Pool should expose or record:
+The staged pipeline uses traces and structured logs rather than adding a new
+lifecycle metric event. It suppresses the legacy `sandbox.create` event because
+the warmup create call only performs create/connect and is not an end-to-end
+Pool success. Direct and standalone creates retain their existing metrics
+behavior. No server metrics contract or ingestion change is required.
 
-- gauges for idle, inflight, delayed tasks by stage, active workers, available
-  permits, and create/post-create executor size;
-- counters for create admission, success, classified failure, local rejection,
-  health attempts, final attempts, prepare/renew/commit failure, cancellation,
-  discard, shrink, and cleanup failure;
-- timers for create, queue delay, readiness, prepare, post-prepare check, renew,
-  commit, and end-to-end warmup;
-- structured reasons for HTTP 429, other HTTP errors, network failure, timeout,
-  local rejection, health false/exception, stale epoch, shutdown, and shrink;
-- leader-epoch invalidation and graceful-drain outcomes.
+Tracing is opt-in through the existing `ConnectionConfig.enableTracing()`
+setting and uses the application's global OpenTelemetry instance:
 
-Per-sandbox or task IDs belong in traces and structured logs, not metric labels.
+- one `pool.warmup` root starts at reconcile admission, before create-executor
+  submission, and ends at the task's exactly-once terminal transition;
+- create, prepare, renew, and commit are child spans;
+- readiness and post-prepare readiness each emit one backdated summary span for
+  the complete polling stage, not one span per health attempt;
+- health summary spans record attempt count, false-result count, exception
+  count, error category, and accumulated scheduler delay;
+- synchronous stage exceptions are recorded on the failed child span. The root
+  records the classified terminal stage, result, and reason without duplicating
+  exception events;
+- HTTP calls made while a warmup trace is current propagate W3C trace context.
 
-> **TODO — warmup metrics and observability follow-up:** The staged pipeline
-> narrows the existing `sandbox.create` event to the create/connect stage. It no
-> longer represents the complete Pool warmup outcome, so readiness, prepare,
-> post-prepare validation, renew, commit, discard, and cancellation failures are
-> not fully visible through the existing lifecycle metric. Add a distinct
-> `sandbox.pool.warmup` event and end-to-end warmup instruments in a follow-up.
-> Reuse the existing lifecycle metrics reporter transport, but preserve
-> `sandbox.create` semantics. This requires a backward-compatible lifecycle
-> metrics contract and server-side ingestion/export support before SDKs start
-> emitting the new event. Until then, this observability gap is an accepted
-> temporary limitation of the implementation.
+Tracing and logs share one internal terminal vocabulary. Stages are `admission`,
+`create`, `readiness`, `prepare`, `post_prepare_readiness`, `renew`, and
+`commit`. Results are `success`, `failure`, `dropped`, and `cancelled`. Stable
+reasons distinguish local create rejection, stage failures and health timeouts,
+primary-lock loss, stale/retired runs, shutdown, interruption, and unexpected
+failures.
+
+Every warmup task has exactly one terminal outcome after winning its terminal
+CAS. Success and expected cancellation use DEBUG. Failure and dropped outcomes
+use WARN, rate-limited once per reason per Pool per 30 seconds; exact unsampled
+result and reason counts remain in the periodic summary. Logs include pool,
+sandbox when known, run generation, terminal stage/result/reason, duration, and
+error category/details. Trace and span IDs are available through MDC while
+tracing is enabled. Failures in the application's OpenTelemetry provider or
+logging backend never prevent warmup cleanup or inflight release.
+
+Error categories are transport-oriented and non-overlapping: `rate_limit`,
+`http_4xx`, `http_5xx`, `http_other`, `timeout`, `connection`, `callback`, and
+`state_store`. When the SDK cannot establish one of those causes it reports
+`unclassified` rather than guessing from an exception message.
+
+The current primary also emits a pool-level summary every 30 seconds when the
+pool has in-flight warmup work or the interval contains events. An inactive Pool
+does not emit idle heartbeat logs or query the state store solely for a summary.
+This reuses the fixed reconcile
+thread—no scheduler or worker is added. O(1) atomic counters track inflight tasks
+by stage, admissions and terminal-result deltas, create/dispatch rejection,
+executor utilization, queue size, and average health scheduler delay; the
+summary never scans the `DelayQueue`. Stage and executor-active fields are
+explicitly marked approximate, and the record declares eventual snapshot
+consistency rather than implying a linearizable point-in-time view. Per-sandbox
+IDs remain confined to traces and terminal logs.
+
+The SDK uses the application's global OpenTelemetry sampler and exporter. It
+does not force 100% sampling. Production deployments should choose a bounded
+sampling policy appropriate for their warmup QPS; tracing-disabled and sampled
+resource overhead are validated separately from functional E2E coverage.
 
 ## Test Plan
 
@@ -549,6 +581,10 @@ Unit and integration tests must cover:
 13. Graceful and forced shutdown with creating, delayed, and running tasks.
 14. Existing third-party `PoolStateStore` compatibility.
 15. Existing and custom `PooledSandboxCreator` compatibility.
+16. One trace per admitted warmup, one summary span per health stage, terminal
+    OpenTelemetry status/reason classification, and trace-context propagation.
+17. Exactly one terminal structured log per task and leader-only periodic pool
+    summaries without a dedicated thread or `DelayQueue` scan.
 
 Load tests should measure throughput, queue delay, heap retention, platform
 threads, CPU, RSS, file descriptors, socket count, context switches, and

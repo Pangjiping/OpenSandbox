@@ -205,6 +205,44 @@ class SandboxPoolTest {
     }
 
     @Test
+    fun `warmup commits can enter the state store concurrently`() {
+        val store = BlockingConcurrentPutStore(expectedConcurrentPuts = 2)
+        val created = AtomicInteger(0)
+        val pool =
+            SandboxPool.builder()
+                .poolName("concurrent-commit-pool")
+                .ownerId("concurrent-commit-owner")
+                .maxIdle(2)
+                .warmupConcurrency(2)
+                .stateStore(store)
+                .connectionConfig(ConnectionConfig.builder().build())
+                .creationSpec(PoolCreationSpec.builder().image("ubuntu:22.04").build())
+                .sandboxCreator(
+                    PooledSandboxCreator {
+                        val index = created.incrementAndGet()
+                        mockk<Sandbox>(relaxed = true).also { sandbox ->
+                            every { sandbox.id } returns "concurrent-commit-$index"
+                        }
+                    },
+                ).warmupSkipHealthCheck()
+                .drainTimeout(Duration.ofSeconds(2))
+                .build()
+
+        pool.start()
+        try {
+            assertTrue(
+                store.allPutsStarted.await(5, TimeUnit.SECONDS),
+                "warmup commits should not serialize before entering putIdle",
+            )
+            store.releasePuts.countDown()
+            awaitCondition { store.snapshotCounters("concurrent-commit-pool").idleCount == 2 }
+        } finally {
+            store.releasePuts.countDown()
+            pool.shutdown(graceful = false)
+        }
+    }
+
+    @Test
     fun `failed warmup does not trigger an immediate completion-driven reconcile`() {
         val store = CountingPoolStateStore()
         val created = AtomicInteger(0)
@@ -2314,6 +2352,23 @@ class SandboxPoolTest {
         ): Boolean {
             renewCalls.incrementAndGet()
             return true
+        }
+    }
+
+    private class BlockingConcurrentPutStore(
+        expectedConcurrentPuts: Int,
+        private val delegate: InMemoryPoolStateStore = InMemoryPoolStateStore(),
+    ) : PoolStateStore by delegate {
+        val allPutsStarted = CountDownLatch(expectedConcurrentPuts)
+        val releasePuts = CountDownLatch(1)
+
+        override fun putIdle(
+            poolName: String,
+            sandboxId: String,
+        ) {
+            allPutsStarted.countDown()
+            check(releasePuts.await(5, TimeUnit.SECONDS)) { "timed out waiting to release concurrent puts" }
+            delegate.putIdle(poolName, sandboxId)
         }
     }
 

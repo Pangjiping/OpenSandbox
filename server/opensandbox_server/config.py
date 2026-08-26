@@ -639,6 +639,14 @@ class KubernetesRuntimeConfig(BaseModel):
         ge=1,
         description="Timeout in seconds to wait for a sandbox to become ready (IP assigned) after creation.",
     )
+    pool_acquisition_timeout_seconds: int = Field(
+        default=30,
+        ge=1,
+        description=(
+            "Maximum cumulative time in seconds to wait while Pool capacity "
+            "prevents sandbox allocation. The overall sandbox create timeout still applies."
+        ),
+    )
     sandbox_create_poll_interval_seconds: float = Field(
         default=1.0,
         gt=0,

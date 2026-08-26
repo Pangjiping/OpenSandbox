@@ -33,7 +33,7 @@ amplification. The pool evicts its shared pool on shutdown; a user-provided
 pool is never touched. Python and Go pools do not share HTTP connections
 across sandboxes today.
 
-![Client pool architecture](/images/client-pool-architecture.svg)
+![Client pool architecture](../public/images/client-pool-architecture.svg)
 
 Two flows happen concurrently:
 
@@ -56,7 +56,7 @@ and pods.
 The warmup path — the leader-only replenish flow above — is worth zooming in on
 because it is the only part of the pool that is gated by a distributed lock:
 
-![Warmup reconcile sequence](/images/client-pool-warmup-sequence.svg)
+![Warmup reconcile sequence](../public/images/client-pool-warmup-sequence.svg)
 
 ### Lifecycle model
 
@@ -78,7 +78,7 @@ behavior. A failed create is recorded and the next periodic tick may admit repla
 work. This exception applies only to pool warmup creates; normal `Sandbox` creation and
 `AcquirePolicy.DIRECT_CREATE` keep the caller's configured retry policy.
 
-![Client pool lifecycle state machine](/images/client-pool-lifecycle.svg)
+![Client pool lifecycle state machine](../public/images/client-pool-lifecycle.svg)
 
 ### There is no `release()`
 
@@ -102,7 +102,7 @@ its readiness check, `FAIL_FAST` raises and `DIRECT_CREATE` falls back to creati
 brand-new sandbox via the lifecycle API. A failed candidate still pays up to
 `acquire_ready_timeout`.
 
-![Acquire decision flow](/images/client-pool-acquire-decision.svg)
+![Acquire decision flow](../public/images/client-pool-acquire-decision.svg)
 
 ## Configuration
 
@@ -174,7 +174,7 @@ for health-check / prepare capacity.
   multi-pod deployments. All nodes in one logical pool must share the same `pool_name`
   and Redis `key_prefix`, and each process must use a **unique** `owner_id`.
 
-![Single-node vs distributed pool topology](/images/client-pool-topology.svg)
+![Single-node vs distributed pool topology](../public/images/client-pool-topology.svg)
 
 ### Rules that apply to every deployment
 

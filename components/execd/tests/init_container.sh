@@ -23,6 +23,7 @@
 #   - with [hardening] enabled, the entrypoint keeps bootstrap env
 #     (JUPYTER_TOKEN) while execd's credential (EXECD_ACCESS_TOKEN) is
 #     stripped by the launcher
+#   - packaged executables and scripts have stable 0755 permissions
 #   - on a non-PID-1 topology execd degrades to subreaper and says so
 #   - while preStart is blocked, /ping stays ready and both the entrypoint
 #     and periodic hooks wait; lifecycle transport is stripped from user code
@@ -111,6 +112,45 @@ else
     . >/dev/null
   echo ">> Image built."
 fi
+
+# -------------------------------------------------------------------
+# Test 0: packaged executables and scripts have stable permissions.
+# -------------------------------------------------------------------
+echo ""
+echo ">> Test 0: packaged executable and script permissions"
+
+if ! docker run --rm \
+  --user 65534:65534 \
+  --entrypoint /bin/sh \
+  "${IMAGE}" \
+  -c '
+    set -e
+    for path in \
+      /execd \
+      /execd.exe \
+      /execd-ebpf \
+      /opensandbox-supervisor \
+      /bootstrap.sh \
+      /install.bat \
+      /usr/local/bin/bwrap \
+      /usr/local/libexec/opensandbox-session-gate \
+      /opt/opensandbox/opensandbox-session-gate \
+      /usr/local/libexec/opensandbox-launcher \
+      /opt/opensandbox/opensandbox-launcher; do
+      mode=$(stat -c %a "$path")
+      [ "$mode" = 755 ] || {
+        echo "$path mode is $mode, expected 755" >&2
+        exit 1
+      }
+      [ -r "$path" ] && [ -x "$path" ] || {
+        echo "$path is not readable and executable by a non-root user" >&2
+        exit 1
+      }
+    done
+  '; then
+  fail "test 0: packaged executable or script permissions are invalid"
+fi
+echo "PASS: packaged executables and scripts are mode 0755"
 
 # -------------------------------------------------------------------
 # Test 1: execd is PID 1, workload is its child, orphans are reaped,
@@ -330,5 +370,5 @@ echo "========================================="
 echo " Init-mode container regression PASSED"
 echo "========================================="
 echo "  image: ${IMAGE}"
-echo "  cases: pid1 handoff / reaping / signal shield /"
-echo "         env inheritance / subreaper / lifecycle hooks"
+echo "  cases: packaged permissions / pid1 handoff / reaping /"
+echo "         signal shield / env inheritance / subreaper / lifecycle hooks"

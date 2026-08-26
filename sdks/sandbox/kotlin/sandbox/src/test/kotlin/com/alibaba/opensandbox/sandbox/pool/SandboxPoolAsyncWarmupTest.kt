@@ -42,6 +42,30 @@ import java.util.concurrent.atomic.AtomicReference
 
 class SandboxPoolAsyncWarmupTest {
     @Test
+    fun `create executor keeps fifty percent headroom over create qps`() {
+        val sandbox = sandbox("create-executor-headroom")
+
+        val pool =
+            poolBuilder("create-executor-headroom", sandbox)
+                .warmupCreateQps(100)
+                .build()
+
+        assertEquals(150, pool.createExecutorMaxSizeForTests())
+    }
+
+    @Test
+    fun `create executor headroom rounds up`() {
+        val sandbox = sandbox("create-executor-headroom-rounding")
+
+        val pool =
+            poolBuilder("create-executor-headroom-rounding", sandbox)
+                .warmupCreateQps(1)
+                .build()
+
+        assertEquals(2, pool.createExecutorMaxSizeForTests())
+    }
+
+    @Test
     fun `readiness retries wait in delay queue before prepare`() {
         val sandbox = sandbox("delayed-readiness")
         val createdAt = AtomicLong(0)

@@ -18,6 +18,7 @@ package com.alibaba.opensandbox.e2e;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.alibaba.opensandbox.sandbox.Sandbox;
@@ -30,6 +31,13 @@ import com.alibaba.opensandbox.sandbox.domain.pool.PoolLifecycleState;
 import com.alibaba.opensandbox.sandbox.domain.pool.PooledSandboxCreateContext;
 import com.alibaba.opensandbox.sandbox.infrastructure.pool.InMemoryPoolStateStore;
 import com.alibaba.opensandbox.sandbox.pool.SandboxPool;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.sdk.OpenTelemetrySdk;
+import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
@@ -72,6 +80,15 @@ public class SandboxPoolStagedWarmupE2ETest extends BaseE2ETest {
     @DisplayName("readiness final attempt, prepare, and post-prepare retry run in order")
     @Timeout(value = 4, unit = TimeUnit.MINUTES)
     void testStagedWarmupRunsInOrderAndPreparesExactlyOnce() throws Exception {
+        InMemorySpanExporter spanExporter = InMemorySpanExporter.create();
+        SdkTracerProvider tracerProvider =
+                SdkTracerProvider.builder()
+                        .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                        .build();
+        OpenTelemetrySdk telemetry =
+                OpenTelemetrySdk.builder().setTracerProvider(tracerProvider).build();
+        GlobalOpenTelemetry.resetForTest();
+        GlobalOpenTelemetry.set(telemetry);
         tag = uniqueTag("staged-order");
         String markerPath = "/tmp/staged-warmup-marker.txt";
         String markerContent = "prepared-" + tag;
@@ -82,6 +99,7 @@ public class SandboxPoolStagedWarmupE2ETest extends BaseE2ETest {
         AtomicInteger readinessCallsAtPrepare = new AtomicInteger();
         SandboxPool pool =
                 basePoolBuilder(1)
+                        .connectionConfig(createConnectionConfig(false, true))
                         // The first requested check is beyond the soft deadline, so the task must
                         // still receive its one final readiness attempt at the deadline.
                         .warmupReadyTimeout(Duration.ofSeconds(5))
@@ -135,6 +153,41 @@ public class SandboxPoolStagedWarmupE2ETest extends BaseE2ETest {
             assertEquals(List.of("readiness", "prepare", "post-prepare", "post-prepare"), events);
             assertEquals(1, countTaggedSandboxes());
 
+            List<SpanData> spans = spanExporter.getFinishedSpanItems();
+            SpanData root =
+                    spans.stream()
+                            .filter(span -> span.getName().equals("pool.warmup"))
+                            .findFirst()
+                            .orElseThrow();
+            assertEquals(
+                    "success", root.getAttributes().get(AttributeKey.stringKey("warmup.result")));
+            assertEquals(
+                    "commit", root.getAttributes().get(AttributeKey.stringKey("warmup.stage")));
+            assertNotNull(root.getAttributes().get(AttributeKey.stringKey("sandbox.id")));
+            assertEquals(
+                    1L,
+                    spans.stream()
+                            .filter(span -> span.getName().equals("pool.warmup.readiness"))
+                            .count());
+            SpanData postPrepareSpan =
+                    spans.stream()
+                            .filter(
+                                    span ->
+                                            span.getName()
+                                                    .equals("pool.warmup.post_prepare_readiness"))
+                            .findFirst()
+                            .orElseThrow();
+            assertEquals(
+                    2L,
+                    postPrepareSpan
+                            .getAttributes()
+                            .get(AttributeKey.longKey("warmup.health.attempt_count")));
+            assertTrue(
+                    spans.stream()
+                            .filter(span -> span.getName().startsWith("pool.warmup"))
+                            .allMatch(span -> span.getTraceId().equals(root.getTraceId())),
+                    "all warmup spans must stay in one trace across asynchronous stages");
+
             Sandbox sandbox = pool.acquire(Duration.ofMinutes(5), AcquirePolicy.FAIL_FAST);
             try {
                 assertTrue(sandbox.isHealthy());
@@ -152,7 +205,12 @@ public class SandboxPoolStagedWarmupE2ETest extends BaseE2ETest {
                     Duration.ofMillis(500),
                     () -> countTaggedSandboxes() == 0);
         } finally {
-            shutdownAndRelease(pool);
+            try {
+                shutdownAndRelease(pool);
+            } finally {
+                telemetry.close();
+                GlobalOpenTelemetry.resetForTest();
+            }
         }
     }
 

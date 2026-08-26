@@ -192,6 +192,14 @@ def test_server_config_defaults_include_max_sandbox_timeout():
     assert server_cfg.max_sandbox_timeout_seconds is None
 
 
+def test_kubernetes_pool_acquisition_timeout_defaults_and_validates():
+    kubernetes_cfg = config_module.KubernetesRuntimeConfig()
+    assert kubernetes_cfg.pool_acquisition_timeout_seconds == 30
+
+    with pytest.raises(ValueError):
+        config_module.KubernetesRuntimeConfig(pool_acquisition_timeout_seconds=0)
+
+
 def test_server_config_uvicorn_tuning_defaults():
     """ServerConfig exposes uvicorn concurrency knobs with sensible defaults."""
     server_cfg = ServerConfig()

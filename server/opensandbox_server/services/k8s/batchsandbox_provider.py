@@ -48,6 +48,9 @@ from opensandbox_server.services.k8s.provider_common import (
     _extract_platform_unschedulable_message_from_pod,
     _workload_platform_constraint_scope,
 )
+from opensandbox_server.services.k8s.status_helpers import (
+    POOL_CAPACITY_EXHAUSTED_REASON,
+)
 from opensandbox_server.services.k8s.windows_profile import (
     apply_windows_profile_arch_selector,
     apply_windows_profile_overrides,
@@ -887,7 +890,29 @@ class BatchSandboxProvider(WorkloadProvider):
             "Resuming": ("RESUMING", "Resuming sandbox"),
             "Failed": ("FAILED", failed_message or "Operation failed"),
         }
-        if phase in phase_map:
+        if phase in phase_map and phase != "Pending":
+            reason, message = phase_map[phase]
+            return {
+                "state": _PUBLIC_STATE_BY_PHASE[phase],
+                "reason": reason,
+                "message": message,
+                "last_transition_at": creation_timestamp,
+            }
+
+        conditions = status.get("conditions", [])
+        if self._has_true_condition(conditions, "PoolAllocationPending"):
+            pool_capacity_message = self._first_true_condition_message(
+                conditions,
+                ["PoolAllocationPending"],
+            ) or "Pool capacity is currently unavailable"
+            return {
+                "state": "Pending",
+                "reason": POOL_CAPACITY_EXHAUSTED_REASON,
+                "message": pool_capacity_message,
+                "last_transition_at": creation_timestamp,
+            }
+
+        if phase == "Pending":
             reason, message = phase_map[phase]
             return {
                 "state": _PUBLIC_STATE_BY_PHASE[phase],

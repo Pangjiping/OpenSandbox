@@ -27,7 +27,7 @@ dependencies {
     testImplementation(libs.bundles.testing)
     testImplementation(libs.bundles.serialization)
     testImplementation(libs.opentelemetry.sdk.testing)
-    testRuntimeOnly(libs.logback.classic)
+    testImplementation(libs.logback.classic)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

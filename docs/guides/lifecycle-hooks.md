@@ -16,7 +16,7 @@ Lifecycle hooks let a sandbox run declarative commands at defined points in its 
 
 Both hooks run inside the sandbox with the sandbox environment. Commands are argument arrays and are executed directly. To use shell syntax such as pipes, redirects, or variable expansion, invoke a shell explicitly, for example `['sh', '-c', 'command > file']`.
 
-![Lifecycle hook timing in bootstrap and execd-as-init modes](/images/lifecycle-hooks-startup.png)
+![Lifecycle hook timing in bootstrap and execd-as-init modes](../public/images/lifecycle-hooks-startup.png)
 
 The ordering is the same in both startup modes:
 

@@ -297,7 +297,7 @@ unchanged; both profiles are mutually exclusive deployment forms.
 
 For how policy is applied, how outbound traffic flows through the nftables
 dispatch, and how the credential vault works in the fleet profile, see
-[policy, traffic flow, and credential vault](../../components/egress/docs/policy-traffic-vault-flow.md).
+[policy, traffic flow, and credential vault](https://github.com/opensandbox-group/OpenSandbox/blob/main/components/egress/docs/policy-traffic-vault-flow.md).
 
 ## Build & Run
 

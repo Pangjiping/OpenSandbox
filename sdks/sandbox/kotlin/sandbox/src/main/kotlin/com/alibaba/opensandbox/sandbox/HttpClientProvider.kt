@@ -60,7 +60,13 @@ class HttpClientProvider(
                 // Propagate the active trace context (W3C traceparent) so the
                 // lifecycle server can join the same trace. No-op when there
                 // is no active span in the current context.
-                builder.addInterceptor(TraceContextInterceptor(GlobalOpenTelemetry.getPropagators().textMapPropagator))
+                try {
+                    builder.addInterceptor(
+                        TraceContextInterceptor(GlobalOpenTelemetry.getPropagators().textMapPropagator),
+                    )
+                } catch (_: Throwable) {
+                    // OpenTelemetry is best-effort; keep the original request path operational.
+                }
             }
             return builder
         }
@@ -252,8 +258,15 @@ class HttpClientProvider(
         override fun intercept(chain: Interceptor.Chain): Response {
             val request = chain.request()
             val headers = request.headers.newBuilder()
-            propagators.inject(Context.current(), headers, setter)
-            return chain.proceed(request.newBuilder().headers(headers.build()).build())
+            val tracedRequest =
+                try {
+                    propagators.inject(Context.current(), headers, setter)
+                    request.newBuilder().headers(headers.build()).build()
+                } catch (_: Throwable) {
+                    // Trace propagation is best-effort and must never fail an HTTP request.
+                    request
+                }
+            return chain.proceed(tracedRequest)
         }
     }
 
