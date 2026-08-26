@@ -49,6 +49,12 @@ const systemScriptPath = "/var/egress/mitmscripts/system.py"
 // components/egress/mitmproxy/config.yaml).
 type Config struct {
 	ListenPort int
+	// ListenHost overrides the baked-in config.yaml listen_host
+	// (127.0.0.1 for the sidecar). The fleet profile passes 0.0.0.0: the
+	// per-subject interception DNAT lands traffic on the gateway veth
+	// address, which a loopback bind would never receive (same reason the
+	// fleet DNS proxy binds :15353).
+	ListenHost string
 	UserName   string
 	// ScriptPaths are optional user-supplied addons, loaded after the system addon
 	// in the order given. Parsed from the comma-separated OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT env var.
@@ -140,6 +146,9 @@ func buildMitmdumpArgs(cfg Config) []string {
 	args := []string{
 		"--listen-port", strconv.Itoa(cfg.ListenPort),
 		"--set", "flow_detail=0",
+	}
+	if strings.TrimSpace(cfg.ListenHost) != "" {
+		args = append(args, "--listen-host", cfg.ListenHost)
 	}
 
 	if trustDir := strings.TrimSpace(os.Getenv(constants.EnvMitmproxyUpstreamTrustDir)); trustDir != "" {

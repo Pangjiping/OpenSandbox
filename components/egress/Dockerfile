@@ -135,6 +135,10 @@ RUN chmod 0755 /opt/opensandbox-egress/cleanup.sh \
     && ln -s /opt/opensandbox-egress/egress /egress
 
 COPY components/egress/mitmscripts /var/egress/mitmscripts
+# The mitmdump addon is loaded by the mitmproxy user (uid 10042): normalize
+# permissions so a restrictive build umask (e.g. 027) can never leave the
+# scripts unreadable to it.
+RUN chmod -R a+rX /var/egress/mitmscripts
 
 # Supervisor wraps the egress binary: restarts on crash with backoff and
 # forwards SIGTERM gracefully. The cleanup hook runs only as pre-start; the

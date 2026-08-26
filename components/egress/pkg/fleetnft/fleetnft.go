@@ -64,7 +64,16 @@ const TableName = "opensandbox-fleet"
 const (
 	dispatchChain    = "dispatch"
 	dispatchPriority = 0
-	dynSetTimeoutS   = 360
+	// inputChain is the authoritative enforcement layer for MITM traffic:
+	// intercepted HTTP(S) is DNATed to the shared mitmproxy port and
+	// delivered locally, so it never traverses the forward hook. The input
+	// chain (policy accept, matching ONLY ct-status-DNAT packets) runs the
+	// same subject policy on the conntrack ORIGINAL destination — a
+	// compromised sandbox flushing its own OUTPUT table cannot bypass the
+	// authoritative layers, and Pod's own traffic never matches (no DNAT).
+	inputChain     = "input"
+	inputPriority  = 0
+	dynSetTimeoutS = 360
 	// nftTTLSlackSec is added to the DNS TTL before clamping (mirrors
 	// pkg/nftables so both profiles behave identically).
 	nftTTLSlackSec = 60
@@ -106,6 +115,12 @@ type Options struct {
 	// OPENSANDBOX_EGRESS_DOH_BLOCKLIST); tcp 443 to them is dropped.
 	DoHBlocklistV4 []string
 	DoHBlocklistV6 []string
+	// MitmRedirectPort is the shared mitmproxy port that intercepted
+	// HTTP(S) is DNATed to. DNATed traffic is delivered locally (INPUT), so
+	// the forward hook never sees it; the input enforcement chain (below)
+	// executes the same policy on it using the conntrack ORIGINAL
+	// destination. 0 disables the input chain entirely (no MITM).
+	MitmRedirectPort int
 }
 
 // installedSubject tracks the enforcement state the applier owns in memory;
@@ -236,11 +251,11 @@ func (a *Applier) ApplyDenyFirst(ctx context.Context, s subject.Subject, slot sl
 		a.tableReady = true
 	}
 	if _, ok := a.subjects[s]; ok {
-		if err := writeSubjectResetFragment(&b, s, slot); err != nil {
+		if err := writeSubjectResetFragment(&b, s, slot, a.opts.MitmRedirectPort); err != nil {
 			return err
 		}
 	} else {
-		if err := writeSubjectDenyFirstFragment(&b, s, slot); err != nil {
+		if err := writeSubjectDenyFirstFragment(&b, s, slot, a.opts.MitmRedirectPort); err != nil {
 			return err
 		}
 	}
@@ -271,7 +286,7 @@ func (a *Applier) ApplyPolicy(ctx context.Context, s subject.Subject, pol *polic
 		pol = policy.DefaultDenyPolicy()
 	}
 	var b strings.Builder
-	if err := writeSubjectPolicySwapFragment(&b, s, pol); err != nil {
+	if err := writeSubjectPolicySwapFragment(&b, s, pol, a.opts.MitmRedirectPort); err != nil {
 		return err
 	}
 	if _, err := a.run(ctx, b.String()); err != nil {
@@ -347,7 +362,7 @@ func (a *Applier) ApplyDispatchUpdate(ctx context.Context, s subject.Subject, sl
 		return ErrUnknownSubject
 	}
 	var b strings.Builder
-	writeDispatchRule(&b, s, slot)
+	writeDispatchRule(&b, s, slot, a.opts.MitmRedirectPort)
 	if _, err := a.run(ctx, b.String()); err != nil {
 		telemetry.RecordNftablesUpdateFailed(telemetry.NftOpDispatch)
 		return err
@@ -395,9 +410,9 @@ func (a *Applier) Remove(ctx context.Context, s subject.Subject) error {
 	for subj, inst := range a.subjects {
 		var err error
 		if inst.pol == nil {
-			err = writeSubjectDenyFirstFragment(&b, subj, inst.slot)
+			err = writeSubjectDenyFirstFragment(&b, subj, inst.slot, a.opts.MitmRedirectPort)
 		} else {
-			err = writeSubjectInitialPolicyFragment(&b, subj, inst.slot, inst.pol)
+			err = writeSubjectInitialPolicyFragment(&b, subj, inst.slot, inst.pol, a.opts.MitmRedirectPort)
 		}
 		if err != nil {
 			return err
@@ -453,20 +468,33 @@ func (a *Applier) writeTableHeader(b *strings.Builder) error {
 	fmt.Fprintf(b, "add rule inet %s %s ct state established,related accept\n", TableName, dispatchChain)
 	fmt.Fprintf(b, "add rule inet %s %s tcp dport 853 drop\n", TableName, dispatchChain)
 	fmt.Fprintf(b, "add rule inet %s %s udp dport 853 drop\n", TableName, dispatchChain)
+	// input enforcement chain for MITM traffic: accept-by-default, only
+	// ct-status-DNAT packets (the intercepted HTTP(S) delivered locally) are
+	// dispatched. Pod's own traffic is never DNATed, so it never matches.
+	if a.opts.MitmRedirectPort > 0 {
+		fmt.Fprintf(b, "add chain inet %s %s { type filter hook input priority %d; policy accept; }\n",
+			TableName, inputChain, inputPriority)
+		fmt.Fprintf(b, "add rule inet %s %s ct state established,related accept\n", TableName, inputChain)
+	}
 	if !a.opts.BlockDoH443 {
 		return nil
 	}
 	return a.writeDoHBlockFragment(b)
 }
 
-// writeDoHBlockFragment emits the DoH-443 blocking sets and rules. With a
-// blocklist: interval sets + per-family drop rules. Without one (strict
-// mode): a bare drop of all tcp 443. Mirrors the sidecar manager's
-// BlockDoH443 handling.
+// writeDoHBlockFragment emits the DoH-443 blocking sets and rules for BOTH
+// paths: the forward chain (non-MITM traffic sees the real destination) and
+// the input chain (MITM traffic is DNATed; the real destination and port
+// come from conntrack). With a blocklist: interval sets + per-family drop
+// rules. Without one (strict mode): a bare drop of all tcp 443. Mirrors the
+// sidecar manager's BlockDoH443 handling.
 func (a *Applier) writeDoHBlockFragment(b *strings.Builder) error {
 	if len(a.opts.DoHBlocklistV4) == 0 && len(a.opts.DoHBlocklistV6) == 0 {
 		// strict: drop all 443 when enabled but no blocklist provided
 		fmt.Fprintf(b, "add rule inet %s %s tcp dport 443 drop\n", TableName, dispatchChain)
+		if a.opts.MitmRedirectPort > 0 {
+			fmt.Fprintf(b, "add rule inet %s %s ct status dnat ct original proto-dst 443 drop\n", TableName, inputChain)
+		}
 		return nil
 	}
 	if len(a.opts.DoHBlocklistV4) > 0 {
@@ -475,6 +503,10 @@ func (a *Applier) writeDoHBlockFragment(b *strings.Builder) error {
 			return fmt.Errorf("doh blocklist v4: %w", err)
 		}
 		fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s tcp dport 443 drop\n", TableName, dispatchChain, dohBlockV4Set)
+		if a.opts.MitmRedirectPort > 0 {
+			fmt.Fprintf(b, "add rule inet %s %s ct status dnat ct original ip daddr @%s ct original proto-dst 443 drop\n",
+				TableName, inputChain, dohBlockV4Set)
+		}
 	}
 	if len(a.opts.DoHBlocklistV6) > 0 {
 		fmt.Fprintf(b, "add set inet %s %s { type ipv6_addr; flags interval; }\n", TableName, dohBlockV6Set)
@@ -482,6 +514,10 @@ func (a *Applier) writeDoHBlockFragment(b *strings.Builder) error {
 			return fmt.Errorf("doh blocklist v6: %w", err)
 		}
 		fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s tcp dport 443 drop\n", TableName, dispatchChain, dohBlockV6Set)
+		if a.opts.MitmRedirectPort > 0 {
+			fmt.Fprintf(b, "add rule inet %s %s ct status dnat ct original ip6 daddr @%s ct original proto-dst 443 drop\n",
+				TableName, inputChain, dohBlockV6Set)
+		}
 	}
 	return nil
 }
@@ -491,25 +527,25 @@ func (a *Applier) writeDoHBlockFragment(b *strings.Builder) error {
 // sandbox source IP + host veth (iifname binding: defense in depth against
 // UDP spoofing). Applies against an existing table (or right after the
 // header).
-func writeSubjectDenyFirstFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot) error {
+func writeSubjectDenyFirstFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot, mitmPort int) error {
 	if err := writeSubjectSets(b, s, nil); err != nil {
 		return err
 	}
-	writeSubjectChain(b, s, policy.ActionDeny)
-	writeDispatchRule(b, s, slot)
-	writeSubjectVerdictRules(b, s, policy.ActionDeny)
+	writeSubjectChain(b, s, policy.ActionDeny, mitmPort)
+	writeDispatchRule(b, s, slot, mitmPort)
+	writeSubjectVerdictRules(b, s, policy.ActionDeny, mitmPort)
 	return nil
 }
 
 // writeSubjectInitialPolicyFragment installs a subject with full policy
 // content on a fresh table (used by rebuilds after Remove).
-func writeSubjectInitialPolicyFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot, pol *policy.NetworkPolicy) error {
+func writeSubjectInitialPolicyFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot, pol *policy.NetworkPolicy, mitmPort int) error {
 	if err := writeSubjectSets(b, s, pol); err != nil {
 		return err
 	}
-	writeSubjectChain(b, s, pol.DefaultAction)
-	writeDispatchRule(b, s, slot)
-	writeSubjectVerdictRules(b, s, pol.DefaultAction)
+	writeSubjectChain(b, s, pol.DefaultAction, mitmPort)
+	writeDispatchRule(b, s, slot, mitmPort)
+	writeSubjectVerdictRules(b, s, pol.DefaultAction, mitmPort)
 	return nil
 }
 
@@ -522,13 +558,16 @@ func writeSubjectInitialPolicyFragment(b *strings.Builder, s subject.Subject, sl
 // survive. A dispatch rule from a previous slot key is harmless (a stale
 // source key never matches; the same key yields an identical duplicate rule
 // with the same verdict).
-func writeSubjectResetFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot) error {
+func writeSubjectResetFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot, mitmPort int) error {
 	fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChain(s))
+	if mitmPort > 0 {
+		fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChainIn(s))
+	}
 	for _, name := range allSetNames(s) {
 		fmt.Fprintf(b, "flush set inet %s %s\n", TableName, name)
 	}
-	writeDispatchRule(b, s, slot)
-	writeSubjectVerdictRules(b, s, policy.ActionDeny)
+	writeDispatchRule(b, s, slot, mitmPort)
+	writeSubjectVerdictRules(b, s, policy.ActionDeny, mitmPort)
 	return nil
 }
 
@@ -539,8 +578,11 @@ func writeSubjectResetFragment(b *strings.Builder, s subject.Subject, slot slots
 // with EBUSY. Dynamic DNS-learned sets and the dispatch rule are untouched.
 // Chain policy is explicit (regular chain), so re-adding the verdict rules
 // after the flush is a complete swap.
-func writeSubjectPolicySwapFragment(b *strings.Builder, s subject.Subject, pol *policy.NetworkPolicy) error {
+func writeSubjectPolicySwapFragment(b *strings.Builder, s subject.Subject, pol *policy.NetworkPolicy, mitmPort int) error {
 	fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChain(s))
+	if mitmPort > 0 {
+		fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChainIn(s))
+	}
 	for _, name := range staticSetNames(s) {
 		fmt.Fprintf(b, "flush set inet %s %s\n", TableName, name)
 	}
@@ -557,7 +599,7 @@ func writeSubjectPolicySwapFragment(b *strings.Builder, s subject.Subject, pol *
 	if err := writeSetElements(b, denySetName(s, "v6"), denyV6); err != nil {
 		return err
 	}
-	writeSubjectVerdictRules(b, s, pol.DefaultAction)
+	writeSubjectVerdictRules(b, s, pol.DefaultAction, mitmPort)
 	return nil
 }
 
@@ -611,42 +653,74 @@ func writeSetElements(b *strings.Builder, setName string, elems []string) error 
 // writeSubjectChain creates the subject chain as a REGULAR (non-hook) chain:
 // nf_tables rejects `jump` to hook-bound chains (EOPNOTSUPP), and subject
 // chains are only ever entered through the master dispatch jump. The default
-// action is an explicit trailing verdict instead of a chain policy.
-func writeSubjectChain(b *strings.Builder, s subject.Subject, defaultAction string) {
+// action is an explicit trailing verdict instead of a chain policy. The
+// per-subject input chain is created alongside when MITM is enabled.
+func writeSubjectChain(b *strings.Builder, s subject.Subject, defaultAction string, mitmPort int) {
 	fmt.Fprintf(b, "add chain inet %s %s\n", TableName, subjectChain(s))
-}
-
-// writeSubjectVerdictRules emits the set-based verdicts. The trailing rule
-// carries the default action: drop for default-deny (deny-first and
-// enforcing), accept for default-allow — a regular chain has no policy, so
-// the default must be explicit (matches the sidecar's chain-policy choice).
-func writeSubjectVerdictRules(b *strings.Builder, s subject.Subject, defaultAction string) {
-	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s drop\n", TableName, subjectChain(s), denySetName(s, "v4"))
-	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s drop\n", TableName, subjectChain(s), denySetName(s, "v6"))
-	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s accept\n", TableName, subjectChain(s), dynSetName(s, "v4"))
-	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s accept\n", TableName, subjectChain(s), dynSetName(s, "v6"))
-	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s accept\n", TableName, subjectChain(s), allowSetName(s, "v4"))
-	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s accept\n", TableName, subjectChain(s), allowSetName(s, "v6"))
-	if defaultAction == policy.ActionDeny {
-		fmt.Fprintf(b, "add rule inet %s %s drop\n", TableName, subjectChain(s))
-	} else {
-		fmt.Fprintf(b, "add rule inet %s %s accept\n", TableName, subjectChain(s))
+	if mitmPort > 0 {
+		fmt.Fprintf(b, "add chain inet %s %s\n", TableName, subjectChainIn(s))
 	}
 }
 
-// writeDispatchRule adds the master-chain dispatch jump for a subject,
+// writeSubjectVerdictRules emits the set-based verdicts for both paths: the
+// forward chain matches the real destination directly; the input chain (MITM
+// traffic, DNATed) matches the conntrack ORIGINAL destination. The trailing
+// rule carries the default action: drop for default-deny (deny-first and
+// enforcing), accept for default-allow — a regular chain has no policy, so
+// the default must be explicit (matches the sidecar's chain-policy choice).
+func writeSubjectVerdictRules(b *strings.Builder, s subject.Subject, defaultAction string, mitmPort int) {
+	chain := subjectChain(s)
+	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s drop\n", TableName, chain, denySetName(s, "v4"))
+	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s drop\n", TableName, chain, denySetName(s, "v6"))
+	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s accept\n", TableName, chain, dynSetName(s, "v4"))
+	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s accept\n", TableName, chain, dynSetName(s, "v6"))
+	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s accept\n", TableName, chain, allowSetName(s, "v4"))
+	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s accept\n", TableName, chain, allowSetName(s, "v6"))
+	if defaultAction == policy.ActionDeny {
+		fmt.Fprintf(b, "add rule inet %s %s drop\n", TableName, chain)
+	} else {
+		fmt.Fprintf(b, "add rule inet %s %s accept\n", TableName, chain)
+	}
+	if mitmPort <= 0 {
+		return
+	}
+	in := subjectChainIn(s)
+	fmt.Fprintf(b, "add rule inet %s %s ct original ip daddr @%s drop\n", TableName, in, denySetName(s, "v4"))
+	fmt.Fprintf(b, "add rule inet %s %s ct original ip6 daddr @%s drop\n", TableName, in, denySetName(s, "v6"))
+	fmt.Fprintf(b, "add rule inet %s %s ct original ip daddr @%s accept\n", TableName, in, dynSetName(s, "v4"))
+	fmt.Fprintf(b, "add rule inet %s %s ct original ip6 daddr @%s accept\n", TableName, in, dynSetName(s, "v6"))
+	fmt.Fprintf(b, "add rule inet %s %s ct original ip daddr @%s accept\n", TableName, in, allowSetName(s, "v4"))
+	fmt.Fprintf(b, "add rule inet %s %s ct original ip6 daddr @%s accept\n", TableName, in, allowSetName(s, "v6"))
+	if defaultAction == policy.ActionDeny {
+		fmt.Fprintf(b, "add rule inet %s %s drop\n", TableName, in)
+	} else {
+		fmt.Fprintf(b, "add rule inet %s %s accept\n", TableName, in)
+	}
+}
+
+// writeDispatchRule adds the master-chain dispatch jumps for a subject,
 // matching source IP and host veth (defense in depth: a forged source IP from
 // another sandbox is rejected by the iifname bound to this sandbox's veth).
+// The input dispatch additionally requires ct status dnat on the mitmproxy
+// port, so only intercepted traffic enters the input enforcement chain.
 // Verdict maps cannot jump to chains (EOPNOTSUPP on add element), so dispatch
 // is a plain rule per subject; removal rebuilds the table (see Remove).
-func writeDispatchRule(b *strings.Builder, s subject.Subject, slot slotsource.Slot) {
+func writeDispatchRule(b *strings.Builder, s subject.Subject, slot slotsource.Slot, mitmPort int) {
 	if slot.IP.Is4() {
 		fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" jump %s\n",
 			TableName, dispatchChain, slot.IP, slot.HostVeth, subjectChain(s))
+		if mitmPort > 0 {
+			fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" tcp dport %d ct status dnat jump %s\n",
+				TableName, inputChain, slot.IP, slot.HostVeth, mitmPort, subjectChainIn(s))
+		}
 		return
 	}
 	fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" jump %s\n",
 		TableName, dispatchChain, slot.IP, slot.HostVeth, subjectChain(s))
+	if mitmPort > 0 {
+		fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" tcp dport %d ct status dnat jump %s\n",
+			TableName, inputChain, slot.IP, slot.HostVeth, mitmPort, subjectChainIn(s))
+	}
 }
 
 // writeResolvedIPsFragment adds DNS-learned IPs to a subject's dynamic sets
@@ -680,6 +754,11 @@ func clampTTL(d time.Duration) time.Duration {
 // Subject names appear in nft identifiers: sanitize to [a-z0-9_].
 func subjectChain(s subject.Subject) string {
 	return "subj_" + sanitize(string(s))
+}
+
+// subjectChainIn is the per-subject INPUT enforcement chain (MITM traffic).
+func subjectChainIn(s subject.Subject) string {
+	return subjectChain(s) + "_in"
 }
 
 func sanitize(id string) string {

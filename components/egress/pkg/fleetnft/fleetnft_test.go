@@ -308,7 +308,7 @@ func TestSanitize(t *testing.T) {
 
 func TestWriteDispatchRuleV6(t *testing.T) {
 	var b strings.Builder
-	writeDispatchRule(&b, subject.FromSandboxUID("u-1"), testSlot("u-1", "fd00::5"))
+	writeDispatchRule(&b, subject.FromSandboxUID("u-1"), testSlot("u-1", "fd00::5"), 0)
 	require.Contains(t, b.String(), `add rule inet opensandbox-fleet dispatch ip6 saddr fd00::5 iifname "vethu-1" jump subj_s_u_1`)
 }
 
@@ -435,4 +435,73 @@ func TestDoHRulesSurviveRebuild(t *testing.T) {
 	require.Contains(t, runner.last(), "add set inet opensandbox-fleet doh_block_v4", "empty-table swap must keep DoH rules")
 	require.NoError(t, a.ApplyReset(ctx))
 	require.Contains(t, runner.last(), "add rule inet opensandbox-fleet dispatch ip daddr @doh_block_v4 tcp dport 443 drop", "reset must keep DoH rules")
+}
+
+// TestInputChainInstalledWithMITM: the Pod-netns INPUT enforcement chain is
+// the authoritative layer for intercepted (DNATed) traffic — the forward
+// hook never sees it. Deny-first must install the chain, the per-subject
+// dispatch (ct status dnat on the mitm port) and the ct-original verdicts.
+func TestInputChainInstalledWithMITM(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{MitmRedirectPort: 18081})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+
+	script := runner.last()
+	require.Contains(t, script, "add chain inet opensandbox-fleet input { type filter hook input priority 0; policy accept; }")
+	require.Contains(t, script, "add chain inet opensandbox-fleet subj_s_u_1_in")
+	require.Contains(t, script, `add rule inet opensandbox-fleet input ip saddr 10.0.0.5 iifname "vethu-1" tcp dport 18081 ct status dnat jump subj_s_u_1_in`)
+	// verdicts match the conntrack ORIGINAL destination (the DNATed dst is
+	// the local mitm port)
+	require.Contains(t, script, "add rule inet opensandbox-fleet subj_s_u_1_in ct original ip daddr @subj_s_u_1_deny_v4 drop")
+	require.Contains(t, script, "add rule inet opensandbox-fleet subj_s_u_1_in ct original ip daddr @subj_s_u_1_allow_v4 accept")
+	require.Contains(t, script, "add rule inet opensandbox-fleet subj_s_u_1_in drop", "deny-first default in the input chain")
+}
+
+// TestInputChainAbsentWithoutMITM: no MITM, no input chain — the forward
+// hook is the only enforcement layer and Pod traffic is untouched.
+func TestInputChainAbsentWithoutMITM(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run)
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+	assert.NotContains(t, runner.last(), "hook input", "no MITM: input chain must not be installed")
+	assert.NotContains(t, runner.last(), "subj_s_u_1_in", "no MITM: per-subject input chain must not exist")
+}
+
+// TestInputChainDoHBlocklist: DoH-443 blocking on the input chain matches
+// the ORIGINAL port/destination (the DNATed dst is the mitm port).
+func TestInputChainDoHBlocklist(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{
+		BlockDoH443:      true,
+		DoHBlocklistV4:   []string{"10.99.0.2"},
+		MitmRedirectPort: 18081,
+	})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+
+	script := runner.last()
+	require.Contains(t, script, "add rule inet opensandbox-fleet input ct status dnat ct original ip daddr @doh_block_v4 ct original proto-dst 443 drop")
+}
+
+// TestInputChainPolicySwap: a policy swap rewrites the input-chain verdicts
+// with the new sets (and keeps the dispatch rule untouched).
+func TestInputChainPolicySwap(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{MitmRedirectPort: 18081})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+
+	pol, err := policy.ParsePolicy(`{"defaultAction":"deny","egress":[{"action":"allow","target":"8.8.8.8"}]}`)
+	require.NoError(t, err)
+	require.NoError(t, a.ApplyPolicy(ctx, s, pol))
+	script := runner.last()
+	require.Contains(t, script, "flush chain inet opensandbox-fleet subj_s_u_1_in")
+	require.Contains(t, script, "add rule inet opensandbox-fleet subj_s_u_1_in ct original ip daddr @subj_s_u_1_allow_v4 accept")
+	assert.NotContains(t, script, "add rule inet opensandbox-fleet input ip saddr", "swap must not duplicate the input dispatch rule")
 }

@@ -39,6 +39,7 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/dnsproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/fleetnft"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
+	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/alibaba/opensandbox/egress/pkg/sandboxnft"
@@ -52,6 +53,12 @@ import (
 // canceled or a fatal error occurs.
 func runFleetProfile(ctx context.Context) {
 	log.Infof("egress profile: fleet (multi-sandbox control plane)")
+
+	// Erase any stale mitmproxy CA left on the shared volume (root and the
+	// fleet mount subdir) by a previous egress generation, so a sandbox's
+	// bootstrap can never install a CA this generation no longer signs with
+	// (upstream issue #1370, fast-sandbox issue #19).
+	mitmproxy.PurgeStaleExportedCA()
 
 	otelShutdown, err := telemetry.Init(ctx)
 	if err != nil {
@@ -96,6 +103,28 @@ func runFleetProfile(ctx context.Context) {
 	pendingTTL := time.Duration(constants.EnvIntOrDefault(constants.EnvPendingPushTTL, constants.DefaultPendingPushTTL)) * time.Second
 	fleetSrv := newFleetPolicyServer(ctx, reg, nftMgr, pendingTTL)
 	controller := subject.NewController(reg, fleetSrv)
+
+	// Shared mitmproxy (OSEP-0022 A1): one mitmdump in the Pod netns serving
+	// every sandbox. Started BEFORE the controller so subjects can never
+	// register against a missing interceptor (fail-closed registration);
+	// the per-subject prerouting DNAT is installed by the fleet server on
+	// registration. A disabled MITM skips the whole block.
+	mitmGate := mitmproxy.NewHealthGate()
+	if mitm, err := startFleetMitmproxyIfEnabled(); err != nil {
+		log.Fatalf("fleet mitmproxy start failed: %v", err)
+	} else if mitm != nil {
+		dports, err := constants.BuildMitmproxyPorts(os.Getenv(constants.EnvMitmproxyExtraPorts))
+		if err != nil {
+			log.Fatalf("fleet mitmproxy ports: %v", err)
+		}
+		fleetSrv.SetMitm(mitmGate, mitm.port, dports)
+		mitmGate.SetReady(true)
+		mitm.watchMitmproxy(ctx, mitmGate)
+		log.Infof("fleet mitmproxy watch started (shared listener, healthz-gated)")
+		startFleetActiveSocket(ctx, fleetSrv)
+	} else {
+		fleetSrv.SetMitm(nil, 0, nil)
+	}
 
 	// DNS: one shared listener. Bound on :15353 (all interfaces — a
 	// prerouting REDIRECT retargets sandbox DNS to the interface address,
@@ -185,11 +214,16 @@ func runFleetProfile(ctx context.Context) {
 // fleetDoHOptions parses the shared DoH-443 blocking env for the fleet
 // profile: OPENSANDBOX_EGRESS_BLOCK_DOH_443 (strict all-443 drop when the
 // blocklist is empty) + OPENSANDBOX_EGRESS_DOH_BLOCKLIST (comma-separated
-// IP/CIDR list), same semantics as the sidecar profile.
+// IP/CIDR list), same semantics as the sidecar profile. MitmRedirectPort
+// enables the Pod-netns INPUT enforcement chain for intercepted (DNATed)
+// traffic; 0 when MITM is off.
 func fleetDoHOptions() fleetnft.Options {
 	opts := fleetnft.Options{BlockDoH443: constants.IsTruthy(os.Getenv(constants.EnvBlockDoH443))}
 	if raw := strings.TrimSpace(os.Getenv(constants.EnvDoHBlocklist)); raw != "" {
 		opts.DoHBlocklistV4, opts.DoHBlocklistV6 = parseDoHBlocklist(raw)
+	}
+	if constants.IsTruthy(os.Getenv(constants.EnvMitmproxyTransparent)) {
+		opts.MitmRedirectPort = constants.EnvIntOrDefault(constants.EnvMitmproxyPort, constants.DefaultMitmproxyPort)
 	}
 	return opts
 }
