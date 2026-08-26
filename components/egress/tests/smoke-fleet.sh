@@ -145,6 +145,11 @@ start_egress() {
   # blocklist instead of falling back to the default.
   local block_doh="${EGRESS_BLOCK_DOH_443-true}"
   local doh_blocklist="${EGRESS_DOH_BLOCKLIST-203.0.113.1}"
+  local mitm="${EGRESS_MITM-}"
+  local mitm_env=()
+  if [ "${mitm}" = "1" ]; then
+    mitm_env=(OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT=true)
+  fi
   OPENSANDBOX_EGRESS_PROFILE=fleet \
   OPENSANDBOX_EGRESS_SLOT_STORE_DIR="${SLOT_DIR}" \
   OPENSANDBOX_EGRESS_SLOT_POLL_INTERVAL=1 \
@@ -153,6 +158,7 @@ start_egress() {
   OPENSANDBOX_EGRESS_HTTP_ADDR="127.0.0.1:${POLICY_PORT}" \
   OPENSANDBOX_EGRESS_BLOCK_DOH_443="${block_doh}" \
   OPENSANDBOX_EGRESS_DOH_BLOCKLIST="${doh_blocklist}" \
+  "${mitm_env[@]}" \
   "${EGRESS_BIN}" >"${EGRESS_LOG}" 2>&1 &
   EGRESS_PID=$!
   wait_for 30 "egress healthz" curl -sf "http://127.0.0.1:${POLICY_PORT}/healthz"
@@ -367,6 +373,76 @@ nft_has 'tcp dport 443 drop' || fail "strict mode must install a bare tcp 443 dr
 nft_has 'doh_block_v4' && fail "strict mode must not create blocklist sets"
 ns_nft_has osb-sandbox-a 'tcp dport 443 drop' || fail "strict mode must mirror the bare 443 drop into the sandbox netns"
 pass "strict DoH mode enforced (bare 443 drop, no blocklist sets)"
+
+###############################################################################
+info "Test 11: MITM data plane — shared mitmdump + per-subject DNAT + subject-aware active vault"
+if ! command -v mitmdump >/dev/null 2>&1 || ! id mitmproxy >/dev/null 2>&1; then
+  info "SKIP MITM phase: mitmdump and/or the 'mitmproxy' user are not installed."
+  info "  Install to match the egress image (CI does this in .github/workflows/egress-test.yml):"
+  info "    apt-get install -y python3-pip"
+  info "    useradd -r -u 10042 -d /var/lib/mitmproxy -s /usr/sbin/nologin mitmproxy"
+  info "    pip3 install --no-cache-dir --break-system-packages 'mitmproxy==11.0.2'"
+  info "  then re-run ./tests/smoke-fleet.sh (Test 11 runs last)."
+else
+  # Ship the baked-in mitm config (the image carries it; the host may not).
+  mkdir -p /var/lib/mitmproxy/.mitmproxy
+  cp -f "${SCRIPT_DIR}/../mitmproxy/config.yaml" /var/lib/mitmproxy/.mitmproxy/config.yaml
+  chown -R mitmproxy:mitmproxy /var/lib/mitmproxy
+
+  kill "${EGRESS_PID}" 2>/dev/null
+  wait "${EGRESS_PID}" 2>/dev/null || true
+  EGRESS_PID=""
+  EGRESS_MITM=1 start_egress
+
+  # CA exported into the dedicated fleet subdir (the fastlet mount point).
+  wait_for 20 "fleet CA export" test -s /opt/opensandbox/mitm-ca/mitmproxy-ca-cert.pem
+  pass "CA exported to /opt/opensandbox/mitm-ca/mitmproxy-ca-cert.pem"
+
+  # Per-subject Pod-netns prerouting DNAT + management-dst exception.
+  # (nft's canonical `list` output renders port sets with spaces: { 80, 443 }).
+  wait_for 15 "per-subject DNAT" bash -c "nft list table inet opensandbox_gateway_mitm 2>/dev/null | grep -q 'ip saddr 10.10.0.5 tcp dport { 80, 443 } dnat to 10.10.0.1:18081'"
+  nft list table inet opensandbox_gateway_mitm 2>/dev/null | grep -q 'ip saddr 10.10.0.5 ip daddr 10.10.0.1 tcp dport { 80, 443 } return' \
+    || fail "management-dst exception missing"
+  pass "per-subject DNAT installed (10.10.0.5 -> 10.10.0.1:18081; gateway dst excluded)"
+
+  # Subject-aware active vault API over the shared unix socket.
+  ACTIVE_SOCK="/run/opensandbox/credential-proxy/active.sock"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "${ACTIVE_SOCK}" 'http://localhost/credential-vault/_active?clientIp=10.10.0.5')"
+  [ "${code}" = "404" ] || fail "active API: subject without vault must 404, got ${code}"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "${ACTIVE_SOCK}" 'http://localhost/credential-vault/_active?clientIp=10.10.0.99')"
+  [ "${code}" = "404" ] || fail "active API: unknown IP must 404, got ${code}"
+  pass "active API dispatch (unknown IP 404, no-vault 404)"
+
+  # Subject a: policy + vault, then a real HTTP request through the shared
+  # mitm; the upstream must see the injected credential (proves interception
+  # AND clientIp -> subject -> vault dispatch).
+  push_policy a '{"defaultAction":"deny","egress":[{"action":"allow","target":"10.99.0.2"}]}'
+  curl -sSf -H "X-Fast-Sandbox-Uid: a" -XPOST "http://127.0.0.1:${POLICY_PORT}/credential-vault" \
+    -d '{"credentials":[{"name":"k","source":{"type":"inline","value":"secret-v1"}}],"bindings":[{"name":"b","match":{"hosts":["10.99.0.2"]},"auth":{"type":"apiKey","name":"X-Api-Key","credential":"k"}}]}' >/dev/null
+  code="$(curl -s -o /dev/null -w '%{http_code}' --unix-socket "${ACTIVE_SOCK}" 'http://localhost/credential-vault/_active?clientIp=10.10.0.5')"
+  [ "${code}" = "200" ] || fail "active API: subject a vault must resolve, got ${code}"
+  out="$(ip netns exec osb-sandbox-a curl -s -m 5 http://10.99.0.2:8080/)"
+  echo "${out}" | grep -qi "x-api-key: secret-v1" || fail "mitm must inject subject a's credential; got: ${out}"
+  pass "real HTTP through shared mitm with credential injection (clientIp dispatch)"
+
+  # Subject b (re-observed after Test 8's unload): a second sandbox with its
+  # OWN vault gets its OWN credential while subject a's stays intact.
+  write_slot b b 1 10.10.0.6 veth-b-p "${RESOLV_A}"
+  wait_for 15 "subject b re-registered with DNAT" bash -c "nft list table inet opensandbox_gateway_mitm 2>/dev/null | grep -q 'ip saddr 10.10.0.6 '"
+  push_policy b '{"defaultAction":"deny","egress":[{"action":"allow","target":"10.99.0.2"}]}'
+  curl -sSf -H "X-Fast-Sandbox-Uid: b" -XPOST "http://127.0.0.1:${POLICY_PORT}/credential-vault" \
+    -d '{"credentials":[{"name":"k","source":{"type":"inline","value":"secret-v2"}}],"bindings":[{"name":"b","match":{"hosts":["10.99.0.2"]},"auth":{"type":"apiKey","name":"X-Api-Key","credential":"k"}}]}' >/dev/null
+  out="$(ip netns exec osb-sandbox-b curl -s -m 5 http://10.99.0.2:8080/)"
+  echo "${out}" | grep -qi "x-api-key: secret-v2" || fail "mitm must inject subject b's credential; got: ${out}"
+  out="$(ip netns exec osb-sandbox-a curl -s -m 5 http://10.99.0.2:8080/)"
+  echo "${out}" | grep -qi "x-api-key: secret-v1" || fail "subject a's credential must survive subject b's registration; got: ${out}"
+  pass "per-subject vault dispatch (two sandboxes, distinct credentials)"
+
+  # Unload removes the subject's DNAT rule (the rebuild drops it).
+  rm -f "${SLOT_DIR}/b.json"
+  wait_for 15 "subject b DNAT removed on unload" bash -c "! nft list table inet opensandbox_gateway_mitm 2>/dev/null | grep -q 'ip saddr 10.10.0.6'"
+  pass "unload removed subject b's DNAT rule"
+fi
 
 ###############################################################################
 info "All fleet smoke tests passed."

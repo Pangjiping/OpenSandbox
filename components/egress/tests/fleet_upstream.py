@@ -116,8 +116,22 @@ def run_dns_upstream():
 
 
 def run_ext_http():
-    handler = http.server.SimpleHTTPRequestHandler
-    http.server.HTTPServer(("0.0.0.0", 8080), handler).serve_forever()
+    # Echo the request headers as the response body: the MITM smoke phase
+    # asserts the credential-proxy-injected header arrived at the upstream
+    # (proving interception + subject-aware vault dispatch).
+    class EchoHeadersHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = "".join(f"{k}: {v}\n" for k, v in sorted(self.headers.items())).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):  # keep the server quiet
+            pass
+
+    http.server.HTTPServer(("0.0.0.0", 8080), EchoHeadersHandler).serve_forever()
 
 
 def do_query(server: str, name: str, port: int = 53) -> int:

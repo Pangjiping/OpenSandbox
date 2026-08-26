@@ -42,6 +42,7 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/credentialvault"
 	"github.com/alibaba/opensandbox/egress/pkg/iptables"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
+	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/alibaba/opensandbox/egress/pkg/resolvrewrite"
 	"github.com/alibaba/opensandbox/egress/pkg/slotsource"
@@ -105,6 +106,17 @@ type fleetPolicyServer struct {
 	dnsRedirectInstall func(gateway netip.Addr, port int) error
 	dnsRedirectRemove  func() error
 
+	// mitmMu guards the per-subject interception entries; the Pod-netns table
+	// is rebuilt wholesale from this map on every change (see
+	// pkg/iptables.InstallMitmRedirects). nil mitmInstall = MITM disabled
+	// (the hooks skip interception entirely).
+	mitmMu       sync.Mutex
+	mitmEntries  map[subject.Subject]iptables.MitmRedirectEntry
+	mitmInstall  func(entries []iptables.MitmRedirectEntry) error
+	mitmRemove   func() error
+	mitmGate     *mitmproxy.HealthGate // nil when MITM disabled
+	mitmActiveMu sync.Mutex            // serializes the active vault socket lifecycle
+
 	policyMu sync.Mutex // serializes policy applies (registry + nft stay ordered)
 }
 
@@ -122,7 +134,36 @@ func newFleetPolicyServer(ctx context.Context, reg *subject.MemoryRegistry, nft 
 		gatewayDNSRefs:     make(map[netip.Addr]int),
 		dnsRedirectInstall: iptables.SetupGatewayDNSRedirect,
 		dnsRedirectRemove:  iptables.RemoveGatewayDNSRedirect,
+		mitmEntries:        make(map[subject.Subject]iptables.MitmRedirectEntry),
 	}
+}
+
+// SetMitm wires the shared mitmproxy into the control plane: the healthz gate
+// and the per-subject interception redirect install/remove. Called once at
+// assembly, before the controller starts; a nil gate (MITM disabled) leaves
+// the lifecycle hooks skipping interception.
+func (s *fleetPolicyServer) SetMitm(gate *mitmproxy.HealthGate, port int, dports []int) {
+	s.mitmGate = gate
+	if gate == nil {
+		return
+	}
+	s.mitmInstall = func(entries []iptables.MitmRedirectEntry) error {
+		return iptables.InstallMitmRedirects(entries, port, dports)
+	}
+	s.mitmRemove = iptables.RemoveMitmRedirects
+}
+
+// mitmRedirectRebuild installs the interception table from the current entry
+// map. Callers hold mitmMu. A nil installer (MITM disabled) is a no-op.
+func (s *fleetPolicyServer) mitmRedirectRebuild() error {
+	if s.mitmInstall == nil {
+		return nil
+	}
+	entries := make([]iptables.MitmRedirectEntry, 0, len(s.mitmEntries))
+	for _, e := range s.mitmEntries {
+		entries = append(entries, e)
+	}
+	return s.mitmInstall(entries)
 }
 
 // fleetDNSProxyPort is where the shared DNS proxy listens on loopback; the
@@ -175,10 +216,45 @@ func (s *fleetPolicyServer) Handler() http.Handler {
 	mux.HandleFunc("/policy", s.handlePolicy)
 	mux.HandleFunc("/credential-vault", s.handleCredentialVault)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if s.mitmGate != nil && s.mitmGate.MitmPending() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("mitmproxy not ready\n"))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 	return mux
+}
+
+// handleCredentialVaultActive is the fleet-profile active vault API: one
+// shared socket, dispatch inside. The addon carries the flow's client IP
+// (REDIRECT/DNAT preserves the source), and the handler resolves clientIp ->
+// subject -> that subject's vault snapshot. Unknown IPs 404 (the addon treats
+// that as no-vault, no injection). The sidecar's single-vault handler is
+// unchanged.
+func (s *fleetPolicyServer) handleCredentialVaultActive(w http.ResponseWriter, r *http.Request) {
+	raw := strings.TrimSpace(r.URL.Query().Get("clientIp"))
+	if raw == "" {
+		http.Error(w, "clientIp query parameter required", http.StatusBadRequest)
+		return
+	}
+	ip, err := netip.ParseAddr(raw)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid clientIp %q", raw), http.StatusBadRequest)
+		return
+	}
+	subj, ok := s.reg.Resolve(subject.SubjectKey{SourceIP: ip})
+	if !ok {
+		http.Error(w, "no subject for clientIp", http.StatusNotFound)
+		return
+	}
+	snapshot, err := s.vaultFor(subj).ActiveSnapshot()
+	if err != nil {
+		credentialvault.WriteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 // subjectOf extracts and validates the routing header. The proxy is the only
@@ -462,8 +538,8 @@ func (s *fleetPolicyServer) cachePending(r *http.Request, subj subject.Subject, 
 }
 
 // OnRegistered implements subject.LifecycleHooks: deny-first enforcement
-// (nft rules + resolv.conf rewrite + gateway DNS redirect). Runs under the
-// registry write lock, so no registry calls here.
+// (nft rules + resolv.conf rewrite + gateway DNS redirect + MITM
+// interception). Runs under the registry write lock, so no registry calls here.
 func (s *fleetPolicyServer) OnRegistered(subj subject.Subject, slot slotsource.Slot) error {
 	nftCtx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
@@ -481,7 +557,34 @@ func (s *fleetPolicyServer) OnRegistered(subj subject.Subject, slot slotsource.S
 		// resolver the policy cannot see.
 		return err
 	}
+	if err := s.installMitmRedirect(subj, slot); err != nil {
+		// Fail closed: a sandbox whose HTTP(S) is not intercepted must not
+		// register as usable (it could exfiltrate credentials-bearing
+		// traffic the MITM layer is responsible for).
+		return err
+	}
 	log.Infof("subject %s deny-first enforced (nft + resolv + gateway redirect)", subj)
+	return nil
+}
+
+// installMitmRedirect adds the subject's interception entry and rebuilds the
+// Pod-netns table. No-op when MITM is disabled. A failure rolls back the entry
+// (the rebuild is transactional, so the previous table stays live).
+func (s *fleetPolicyServer) installMitmRedirect(subj subject.Subject, slot slotsource.Slot) error {
+	s.mitmMu.Lock()
+	defer s.mitmMu.Unlock()
+	if s.mitmInstall == nil {
+		return nil
+	}
+	entry := iptables.MitmRedirectEntry{SandboxIP: slot.IP, Gateway: slot.Gateway}
+	if !entry.SandboxIP.IsValid() {
+		return fmt.Errorf("mitm redirect: subject %s has no source IP in slot", subj)
+	}
+	s.mitmEntries[subj] = entry
+	if err := s.mitmRedirectRebuild(); err != nil {
+		delete(s.mitmEntries, subj)
+		return err
+	}
 	return nil
 }
 
@@ -592,7 +695,31 @@ func (s *fleetPolicyServer) OnSlotUpdated(subj subject.Subject, slot slotsource.
 	if err := s.nft.ApplyDispatchUpdate(nftCtx, subj, slot); err != nil {
 		return err
 	}
+	if err := s.updateMitmRedirect(subj, slot); err != nil {
+		return err
+	}
 	log.Infof("subject %s slot updated (resolv + redirect + dispatch reconciled)", subj)
+	return nil
+}
+
+// updateMitmRedirect refreshes the subject's interception entry (the sandbox
+// source IP or gateway may have moved) and rebuilds the table.
+func (s *fleetPolicyServer) updateMitmRedirect(subj subject.Subject, slot slotsource.Slot) error {
+	s.mitmMu.Lock()
+	defer s.mitmMu.Unlock()
+	if s.mitmInstall == nil {
+		return nil
+	}
+	entry := iptables.MitmRedirectEntry{SandboxIP: slot.IP, Gateway: slot.Gateway}
+	if !entry.SandboxIP.IsValid() {
+		return fmt.Errorf("mitm redirect: subject %s has no source IP in slot", subj)
+	}
+	s.mitmEntries[subj] = entry
+	if err := s.mitmRedirectRebuild(); err != nil {
+		// A failed rebuild leaves the previous table live (transactional);
+		// the entry is kept so the next rebuild converges.
+		return err
+	}
 	return nil
 }
 
@@ -605,6 +732,7 @@ func (s *fleetPolicyServer) OnUnloaded(subj subject.Subject, slot slotsource.Slo
 	delete(s.vaults, subj)
 	s.mu.Unlock()
 	s.releaseGatewayDNSRedirect(slot.Gateway)
+	s.removeMitmRedirect(subj)
 	nftCtx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
 	if err := s.nft.Remove(nftCtx, subj); err != nil {
@@ -612,6 +740,25 @@ func (s *fleetPolicyServer) OnUnloaded(subj subject.Subject, slot slotsource.Slo
 	}
 	log.Infof("subject %s enforcement removed", subj)
 	return nil
+}
+
+// removeMitmRedirect drops the subject's interception entry and rebuilds the
+// table. Best effort: a leftover rule for a dead sandbox's IP is inert (the
+// IP is gone with the sandbox; a reused IP is re-registered over a fresh
+// rebuild), and a rebuild failure keeps the previous table live.
+func (s *fleetPolicyServer) removeMitmRedirect(subj subject.Subject) {
+	s.mitmMu.Lock()
+	defer s.mitmMu.Unlock()
+	if s.mitmInstall == nil {
+		return
+	}
+	if _, ok := s.mitmEntries[subj]; !ok {
+		return
+	}
+	delete(s.mitmEntries, subj)
+	if err := s.mitmRedirectRebuild(); err != nil {
+		log.Warnf("mitm redirect rebuild after subject %s unload failed, ignoring: %v", subj, err)
+	}
 }
 
 // recordingResponseWriter captures handler output for pending replays.

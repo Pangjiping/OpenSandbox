@@ -201,10 +201,104 @@ class SystemAddonRedactionTest(unittest.TestCase):
         self.assertEqual(("request", "GET", system.ACTIVE_VAULT_PATH), calls[1])
         self.assertEqual(("close", None, None), calls[-1])
 
+    def test_fleet_mode_active_vault_cache_keyed_by_client_ip(self) -> None:
+        system = _load_system_module()
+        fetches: list[str] = []
+
+        class FakeResponse:
+            status = 200
+
+            def read(self) -> bytes:
+                return json.dumps({"revision": 7, "bindings": []}).encode("utf-8")
+
+        class FakeConnection:
+            def __init__(self, socket_path: str, timeout: float) -> None:
+                pass
+
+            def request(self, method: str, path: str) -> None:
+                pass
+
+            def getresponse(self) -> FakeResponse:
+                fetches.append("fetch")
+                return FakeResponse()
+
+            def close(self) -> None:
+                pass
+
+        old_profile = os.environ.get("OPENSANDBOX_EGRESS_PROFILE")
+        old_connection = system.UnixSocketHTTPConnection
+        os.environ["OPENSANDBOX_EGRESS_PROFILE"] = "fleet"
+        system.UnixSocketHTTPConnection = FakeConnection
+        system._vault_cache_by_ip = {}
+        system._vault_cache_by_ip_loaded_at = {}
+        system._set_fleet_mode_from_env()
+        try:
+            self.assertIsNotNone(system._load_active_vault("10.0.0.5"))
+            # cached within TTL: no second fetch for the same client
+            self.assertIsNotNone(system._load_active_vault("10.0.0.5"))
+            self.assertEqual(1, len(fetches))
+            # a different client IP fetches its own vault
+            self.assertIsNotNone(system._load_active_vault("10.0.0.6"))
+            self.assertEqual(2, len(fetches))
+            # no client IP -> no dispatch key, no fetch, no injection
+            self.assertIsNone(system._load_active_vault(None))
+            self.assertEqual(2, len(fetches))
+        finally:
+            system.UnixSocketHTTPConnection = old_connection
+            if old_profile is None:
+                os.environ.pop("OPENSANDBOX_EGRESS_PROFILE", None)
+            else:
+                os.environ["OPENSANDBOX_EGRESS_PROFILE"] = old_profile
+            system._set_fleet_mode_from_env()
+
+    def test_sidecar_mode_uses_shared_cache(self) -> None:
+        system = _load_system_module()
+        fetches: list[str] = []
+
+        class FakeResponse:
+            status = 200
+
+            def read(self) -> bytes:
+                return json.dumps({"revision": 7, "bindings": []}).encode("utf-8")
+
+        class FakeConnection:
+            def __init__(self, socket_path: str, timeout: float) -> None:
+                pass
+
+            def request(self, method: str, path: str) -> None:
+                pass
+
+            def getresponse(self) -> FakeResponse:
+                fetches.append("fetch")
+                return FakeResponse()
+
+            def close(self) -> None:
+                pass
+
+        old_profile = os.environ.get("OPENSANDBOX_EGRESS_PROFILE")
+        old_connection = system.UnixSocketHTTPConnection
+        os.environ.pop("OPENSANDBOX_EGRESS_PROFILE", None)
+        system.UnixSocketHTTPConnection = FakeConnection
+        system._vault_cache = None
+        system._vault_cache_loaded_at = 0.0
+        try:
+            system._set_fleet_mode_from_env()
+            self.assertIsNotNone(system._load_active_vault("10.0.0.5"))
+            self.assertIsNotNone(system._load_active_vault("10.0.0.6"))
+            # sidecar: one shared cache, one fetch regardless of client IP
+            self.assertEqual(1, len(fetches))
+        finally:
+            system.UnixSocketHTTPConnection = old_connection
+            if old_profile is None:
+                os.environ.pop("OPENSANDBOX_EGRESS_PROFILE", None)
+            else:
+                os.environ["OPENSANDBOX_EGRESS_PROFILE"] = old_profile
+            system._set_fleet_mode_from_env()
+
     def test_request_injection_log_does_not_include_secret_value(self) -> None:
         system = _load_system_module()
         flow = _Flow()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -240,7 +334,7 @@ class SystemAddonRedactionTest(unittest.TestCase):
     def test_responseheaders_uses_injected_flow_redactions(self) -> None:
         system = _load_system_module()
         flow = _Flow()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -253,7 +347,7 @@ class SystemAddonRedactionTest(unittest.TestCase):
         )
 
         system.requestheaders(flow)
-        system._load_active_vault = lambda: system.ActiveVault(2, [], ["new-secret"])
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(2, [], ["new-secret"])
         flow.response.headers["x-token-echo"] = "old-secret"
         system.responseheaders(flow)
 
@@ -273,7 +367,7 @@ class SystemAddonRedactionTest(unittest.TestCase):
 class SystemAddonSubstitutionTest(unittest.TestCase):
     def _make_system_with_substitutions(self):
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -391,7 +485,7 @@ class SystemAddonSubstitutionTest(unittest.TestCase):
 
     def test_body_substitution_does_not_rewrite_inserted_values(self) -> None:
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -431,7 +525,7 @@ class SystemAddonSubstitutionTest(unittest.TestCase):
 
     def test_header_substitution_does_not_rewrite_injected_headers(self) -> None:
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -484,7 +578,7 @@ class SystemAddonSubstitutionTest(unittest.TestCase):
 
     def test_rejected_path_substitution_log_does_not_include_secret_value(self) -> None:
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -519,7 +613,7 @@ class SystemAddonSubstitutionTest(unittest.TestCase):
 
     def test_path_substitution_rejects_nested_encoded_separator(self) -> None:
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -554,7 +648,7 @@ class SystemAddonPathTraversalTest(unittest.TestCase):
 
     def _make_system_with_vault(self):
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -734,7 +828,7 @@ class SystemAddonPathTraversalTest(unittest.TestCase):
     def test_no_vault_active_allows_dot_dot_through(self) -> None:
         """When no vault is active, ambiguous paths are not blocked (no credential risk)."""
         system = _load_system_module()
-        system._load_active_vault = lambda: None
+        system._load_active_vault = lambda _client_ip=None: None
         flow = _Flow()
         flow.request.path = "/api/v8/projects/123/../456/variables"
 
@@ -752,7 +846,7 @@ class SystemAddonPathTraversalTest(unittest.TestCase):
         flow = _Flow()
         # ``/api/v8/*`` covers both raw and decoded forms, so this is the
         # tolerated case: the encoded slash does not cross a binding boundary.
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -783,7 +877,7 @@ class SystemAddonPathTraversalTest(unittest.TestCase):
         what the new guard must catch before injecting the wrong credential.
         """
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -826,7 +920,7 @@ class SystemAddonNpmScopedPackageTest(unittest.TestCase):
 
     def _make_system_with_npm_vault(self):
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -935,7 +1029,7 @@ class SystemAddonStreamingTest(unittest.TestCase):
         """The regression: a >1 MiB request must receive the injected header
         in the requestheaders hook, where the body is not available yet."""
         system = _load_system_module()
-        system._load_active_vault = lambda: self._make_vault_with_large_body_binding(
+        system._load_active_vault = lambda _client_ip=None: self._make_vault_with_large_body_binding(
             system
         )
         flow = _Flow()
@@ -953,7 +1047,7 @@ class SystemAddonStreamingTest(unittest.TestCase):
         """A streamed request (body forwarded, content unavailable) must not
         crash and must keep its body untouched; header injection still works."""
         system = _load_system_module()
-        system._load_active_vault = lambda: self._make_vault_with_large_body_binding(
+        system._load_active_vault = lambda _client_ip=None: self._make_vault_with_large_body_binding(
             system
         )
         flow = _Flow()
@@ -974,7 +1068,7 @@ class SystemAddonStreamingTest(unittest.TestCase):
 
     def test_body_only_binding_sets_redactions_when_body_substituted(self) -> None:
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -1016,7 +1110,7 @@ class SystemAddonStreamingTest(unittest.TestCase):
         """Redactions must come from the vault revision matched at
         requestheaders time, not from a later reload (0.5s cache TTL)."""
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -1046,7 +1140,7 @@ class SystemAddonStreamingTest(unittest.TestCase):
 
         system.requestheaders(flow)
         # Vault changes (e.g. cache TTL expiry) before the body arrives.
-        system._load_active_vault = lambda: system.ActiveVault(2, [], ["new-secret"])
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(2, [], ["new-secret"])
 
         system.request(flow)
 
@@ -1062,7 +1156,7 @@ class SystemAddonStreamingTest(unittest.TestCase):
         """Phase 2 must not do anything without phase 1 having matched a
         binding (e.g. no active vault at header time)."""
         system = _load_system_module()
-        system._load_active_vault = lambda: system.ActiveVault(
+        system._load_active_vault = lambda _client_ip=None: system.ActiveVault(
             1,
             [
                 {
@@ -1095,7 +1189,7 @@ class SystemAddonStreamingTest(unittest.TestCase):
         11.0.2 (start_request_stream raises NotImplementedError). A streamed
         request must be killed instead, and must never receive credentials."""
         system = _load_system_module()
-        system._load_active_vault = lambda: self._make_vault_with_large_body_binding(
+        system._load_active_vault = lambda _client_ip=None: self._make_vault_with_large_body_binding(
             system
         )
         flow = _Flow()
@@ -1114,7 +1208,7 @@ class SystemAddonStreamingTest(unittest.TestCase):
         """Chunked bodies can cross 1 MiB after requestheaders, which enables
         streaming mid-upload; a 403 would crash there, so kill instead."""
         system = _load_system_module()
-        system._load_active_vault = lambda: self._make_vault_with_large_body_binding(
+        system._load_active_vault = lambda _client_ip=None: self._make_vault_with_large_body_binding(
             system
         )
         flow = _Flow()
@@ -1132,7 +1226,7 @@ class SystemAddonStreamingTest(unittest.TestCase):
         """Bodies fully known to be under stream_large_bodies can never be
         streamed, so the 403 response is still safe."""
         system = _load_system_module()
-        system._load_active_vault = lambda: self._make_vault_with_large_body_binding(
+        system._load_active_vault = lambda _client_ip=None: self._make_vault_with_large_body_binding(
             system
         )
         flow = _Flow()

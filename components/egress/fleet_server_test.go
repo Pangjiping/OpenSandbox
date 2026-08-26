@@ -33,6 +33,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
+	"github.com/alibaba/opensandbox/egress/pkg/iptables"
+	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/alibaba/opensandbox/egress/pkg/slotsource"
 	"github.com/alibaba/opensandbox/egress/pkg/subject"
@@ -288,6 +290,191 @@ func TestFleetServerHealthz(t *testing.T) {
 	srv, _, _ := fleetTestServer(t)
 	rec := doRequest(t, srv, http.MethodGet, "/healthz", "", "")
 	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// ---------------------------------------------------------------------------
+// MITM interception redirects
+// ---------------------------------------------------------------------------
+
+type fakeMitmInstaller struct {
+	mu      sync.Mutex
+	entries []iptables.MitmRedirectEntry
+	err     error
+	removed bool
+}
+
+func (f *fakeMitmInstaller) install(entries []iptables.MitmRedirectEntry) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.entries = append([]iptables.MitmRedirectEntry(nil), entries...)
+	return nil
+}
+
+func (f *fakeMitmInstaller) remove() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = true
+	f.entries = nil
+	return nil
+}
+
+func (f *fakeMitmInstaller) snapshot() []iptables.MitmRedirectEntry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]iptables.MitmRedirectEntry(nil), f.entries...)
+}
+
+func mitmSlot(t *testing.T, ip, gw string) slotsource.Slot {
+	t.Helper()
+	dnsPath := filepath.Join(t.TempDir(), "resolv.conf")
+	require.NoError(t, os.WriteFile(dnsPath, []byte("nameserver 10.96.0.10\n"), 0o644))
+	return slotsource.Slot{
+		ID: "slot-1", Phase: slotsource.PhaseBound,
+		Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1},
+		IP:    netip.MustParseAddr(ip), HostNetnsPath: "/n", HostVeth: "v",
+		Gateway: netip.MustParseAddr(gw), DNSPath: dnsPath,
+	}
+}
+
+func TestFleetServerMitmRedirectInstalledOnRegistration(t *testing.T) {
+	srv, _, _ := fleetTestServer(t)
+	inst := &fakeMitmInstaller{}
+	srv.SetMitm(nil, 18081, []int{80, 443})
+	srv.mitmInstall = inst.install
+	srv.mitmRemove = inst.remove
+
+	s := subject.FromSandboxUID("u-1")
+	require.NoError(t, srv.OnRegistered(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
+	require.Equal(t, []iptables.MitmRedirectEntry{{SandboxIP: netip.MustParseAddr("10.0.0.5"), Gateway: netip.MustParseAddr("10.0.0.1")}}, inst.snapshot())
+
+	// a second subject rebuilds with both entries
+	s2 := subject.FromSandboxUID("u-2")
+	slot2 := mitmSlot(t, "10.0.0.6", "10.0.0.1")
+	slot2.Owner.SandboxUID = "u-2"
+	slot2.Owner.InstanceGeneration = 1
+	require.NoError(t, srv.OnRegistered(s2, slot2))
+	require.ElementsMatch(t, []iptables.MitmRedirectEntry{
+		{SandboxIP: netip.MustParseAddr("10.0.0.5"), Gateway: netip.MustParseAddr("10.0.0.1")},
+		{SandboxIP: netip.MustParseAddr("10.0.0.6"), Gateway: netip.MustParseAddr("10.0.0.1")},
+	}, inst.snapshot())
+
+	// unload rebuilds without the subject
+	require.NoError(t, srv.OnUnloaded(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
+	require.Equal(t, []iptables.MitmRedirectEntry{{SandboxIP: netip.MustParseAddr("10.0.0.6"), Gateway: netip.MustParseAddr("10.0.0.1")}}, inst.snapshot())
+}
+
+func TestFleetServerMitmRedirectFailClosesRegistration(t *testing.T) {
+	srv, _, nft := fleetTestServer(t)
+	inst := &fakeMitmInstaller{err: fmt.Errorf("nft unavailable")}
+	srv.SetMitm(nil, 18081, []int{80, 443})
+	srv.mitmInstall = inst.install
+
+	s := subject.FromSandboxUID("u-1")
+	require.Error(t, srv.OnRegistered(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
+	// the entry was rolled back: nothing left for the next rebuild
+	srv.mitmMu.Lock()
+	require.Len(t, srv.mitmEntries, 0)
+	srv.mitmMu.Unlock()
+	// the subject stays denying (deny-first ran before the failed redirect)
+	require.Len(t, nft.denyFirst, 1)
+}
+
+func TestFleetServerMitmRedirectSlotUpdateRebuilds(t *testing.T) {
+	srv, _, _ := fleetTestServer(t)
+	inst := &fakeMitmInstaller{}
+	srv.SetMitm(nil, 18081, []int{80, 443})
+	srv.mitmInstall = inst.install
+	srv.mitmRemove = inst.remove
+
+	s := subject.FromSandboxUID("u-1")
+	require.NoError(t, srv.OnRegistered(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
+
+	// the sandbox IP moved (new veth); the rebuild carries the new entry
+	require.NoError(t, srv.OnSlotUpdated(s, mitmSlot(t, "10.0.0.9", "10.0.0.1")))
+	require.Equal(t, []iptables.MitmRedirectEntry{{SandboxIP: netip.MustParseAddr("10.0.0.9"), Gateway: netip.MustParseAddr("10.0.0.1")}}, inst.snapshot())
+}
+
+func TestFleetServerMitmDisabledSkipsInterception(t *testing.T) {
+	srv, _, _ := fleetTestServer(t)
+	inst := &fakeMitmInstaller{}
+	// SetMitm never called with a gate: hooks must not install anything
+	srv.mitmInstall = inst.install
+
+	s := subject.FromSandboxUID("u-1")
+	require.NoError(t, srv.OnRegistered(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
+	require.NoError(t, srv.OnUnloaded(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
+	require.Nil(t, inst.snapshot())
+}
+
+func TestFleetServerHealthzMitmGate(t *testing.T) {
+	t.Setenv(constants.EnvMitmproxyTransparent, "true")
+	srv, _, _ := fleetTestServer(t)
+	gate := mitmproxy.NewHealthGate()
+	srv.mitmGate = gate
+
+	gate.SetReady(false)
+	rec := doRequest(t, srv, http.MethodGet, "/healthz", "", "")
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	require.Contains(t, rec.Body.String(), "mitmproxy not ready")
+
+	gate.SetReady(true)
+	rec = doRequest(t, srv, http.MethodGet, "/healthz", "", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// ---------------------------------------------------------------------------
+// Subject-aware active vault API
+// ---------------------------------------------------------------------------
+
+func TestFleetServerActiveVaultClientIPDispatch(t *testing.T) {
+	srv, reg, _ := fleetTestServer(t)
+	sA := subject.FromSandboxUID("a")
+	sB := subject.FromSandboxUID("b")
+	reg.Register(sA, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")}, subject.Fencing{SandboxUID: "a"})
+	reg.Register(sB, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.6")}, subject.Fencing{SandboxUID: "b"})
+
+	// push a vault to subject A only (bindings require a policy that allows
+	// the bound host)
+	rec := doRequest(t, srv, http.MethodPut, "/policy", uidHeader(sA),
+		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, srv, http.MethodPost, "/credential-vault", uidHeader(sA),
+		`{"credentials":[{"name":"k","source":{"type":"inline","value":"v"}}],"bindings":[{"name":"b","match":{"hosts":["example.com"]},"auth":{"type":"apiKey","name":"X-API-Key","credential":"k"}}]}`)
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	// client IP -> subject A vault (the active endpoint is served on the
+	// unix socket; here the handler is exercised directly)
+	rec = httptest.NewRecorder()
+	srv.handleCredentialVaultActive(rec, httptest.NewRequest(http.MethodGet, "/credential-vault/_active?clientIp=10.0.0.5", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), `"revision":1`)
+
+	// subject B has no vault: 404 (the addon treats it as no-vault)
+	rec = httptest.NewRecorder()
+	srv.handleCredentialVaultActive(rec, httptest.NewRequest(http.MethodGet, "/credential-vault/_active?clientIp=10.0.0.6", nil))
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	// unknown IP: 404
+	rec = httptest.NewRecorder()
+	srv.handleCredentialVaultActive(rec, httptest.NewRequest(http.MethodGet, "/credential-vault/_active?clientIp=10.0.0.99", nil))
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	// missing / malformed clientIp: 400
+	rec = httptest.NewRecorder()
+	srv.handleCredentialVaultActive(rec, httptest.NewRequest(http.MethodGet, "/credential-vault/_active", nil))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	rec = httptest.NewRecorder()
+	srv.handleCredentialVaultActive(rec, httptest.NewRequest(http.MethodGet, "/credential-vault/_active?clientIp=not-an-ip", nil))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	// the HTTP mux must NOT expose the active endpoint (sidecar parity: the
+	// addon is the only client, over the unix socket)
+	rec = doRequest(t, srv, http.MethodGet, "/credential-vault/_active?clientIp=10.0.0.5", "", "")
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 // TestFleetCreateThenConfigureEndToEnd exercises the create-then-

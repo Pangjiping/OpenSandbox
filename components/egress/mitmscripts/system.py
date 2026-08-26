@@ -102,6 +102,26 @@ class ActiveVault:
 _vault_cache: ActiveVault | None = None
 _vault_cache_loaded_at = 0.0
 
+# Fleet profile: one shared mitmdump serving N sandboxes; the active vault is
+# selected by the client's source IP (preserved by the interception DNAT), so
+# the 0.5s cache is keyed per client IP. The sidecar profile keeps the single
+# shared cache and never uses these.
+_fleet_mode_enabled = False
+_vault_cache_by_ip: dict[str, ActiveVault | None] = {}
+_vault_cache_by_ip_loaded_at: dict[str, float] = {}
+
+
+def _set_fleet_mode(enabled: bool) -> None:
+    global _fleet_mode_enabled
+    _fleet_mode_enabled = enabled
+
+
+def _set_fleet_mode_from_env() -> None:
+    _set_fleet_mode(os.environ.get("OPENSANDBOX_EGRESS_PROFILE", "").strip().lower() == "fleet")
+
+
+_set_fleet_mode_from_env()
+
 
 class UnixSocketHTTPConnection(http_client.HTTPConnection):
     def __init__(self, socket_path: str, timeout: float) -> None:
@@ -152,12 +172,39 @@ def tls_clienthello(data: ClientHelloData) -> None:
             pass
 
 
-def _load_active_vault() -> ActiveVault | None:
+def _load_active_vault(client_ip: str | None = None) -> ActiveVault | None:
+    if _fleet_mode_enabled:
+        return _load_active_vault_for_ip(client_ip)
+    return _load_active_vault_shared()
+
+
+def _load_active_vault_shared() -> ActiveVault | None:
     global _vault_cache, _vault_cache_loaded_at
     now = time.monotonic()
     if _vault_cache is not None and now - _vault_cache_loaded_at < VAULT_CACHE_TTL_SECONDS:
         return _vault_cache
 
+    vault = _fetch_active_vault()
+    _vault_cache = vault
+    _vault_cache_loaded_at = now
+    return vault
+
+
+def _load_active_vault_for_ip(client_ip: str | None) -> ActiveVault | None:
+    if not client_ip:
+        return None
+    global _vault_cache_by_ip, _vault_cache_by_ip_loaded_at
+    now = time.monotonic()
+    if client_ip in _vault_cache_by_ip and now - _vault_cache_by_ip_loaded_at[client_ip] < VAULT_CACHE_TTL_SECONDS:
+        return _vault_cache_by_ip[client_ip]
+
+    vault = _fetch_active_vault()
+    _vault_cache_by_ip[client_ip] = vault
+    _vault_cache_by_ip_loaded_at[client_ip] = now
+    return vault
+
+
+def _fetch_active_vault() -> ActiveVault | None:
     socket_path = (
         os.environ.get(CREDENTIAL_PROXY_SOCKET_ENV, "").strip()
         or DEFAULT_CREDENTIAL_PROXY_SOCKET
@@ -168,34 +215,26 @@ def _load_active_vault() -> ActiveVault | None:
         response = connection.getresponse()
         body = response.read()
         if response.status == 404:
-            _vault_cache = None
-            _vault_cache_loaded_at = now
             return None
         if response.status != 200:
             ctx.log.warn(
                 f"credential proxy: active vault lookup failed with HTTP {response.status}"
             )
-            _vault_cache = None
-            _vault_cache_loaded_at = now
             return None
         payload = json.loads(body.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001 - mitm addon must not crash traffic handling
         ctx.log.warn(f"credential proxy: active vault lookup failed: {exc}")
-        _vault_cache = None
-        _vault_cache_loaded_at = now
         return None
     finally:
         connection.close()
 
     bindings = payload.get("bindings") or []
     redactions = [v for v in (payload.get("redactions") or []) if isinstance(v, str) and v]
-    _vault_cache = ActiveVault(
+    return ActiveVault(
         revision=int(payload.get("revision") or 0),
         bindings=bindings,
         redactions=redactions,
     )
-    _vault_cache_loaded_at = now
-    return _vault_cache
 
 
 def _request_host(flow: http.HTTPFlow) -> str:
@@ -631,6 +670,16 @@ def _has_substitutions_on(binding: dict[str, Any], surfaces: set[str]) -> bool:
     )
 
 
+def _flow_client_ip(flow: http.HTTPFlow) -> str | None:
+    try:
+        client_conn = getattr(flow, "client_conn", None)
+        if client_conn is None:
+            return None
+        return client_conn.peername[0]
+    except Exception:  # noqa: BLE001 - defensive; missing peername means no dispatch key
+        return None
+
+
 def requestheaders(flow: http.HTTPFlow) -> None:
     """Credential proxy phase 1: binding match and request metadata rewrite.
 
@@ -638,7 +687,7 @@ def requestheaders(flow: http.HTTPFlow) -> None:
     made: with ``stream_large_bodies=1m`` the ``request`` hook fires only
     after a body above 1 MiB has been streamed upstream.
     """
-    vault = _load_active_vault()
+    vault = _load_active_vault(_flow_client_ip(flow))
     if vault is None:
         return
 
