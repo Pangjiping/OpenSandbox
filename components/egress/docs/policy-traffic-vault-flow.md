@@ -147,7 +147,7 @@ unix socket):
 
 - shared mitmdump startup in the fleet assembly, and the per-sandbox netns
   OUTPUT REDIRECT pairs installed from the host (`nsenter`), see
-  [fleet-mitm-data-plane.md](fleet-mitm-data-plane.md)
+  [fleet-mitm-data-plane](../../../docs/components/egress-fleet-mitm-data-plane.md)
 - subject dispatch inside the shared active socket: `/_active?clientIp=…`
   → `registry.Resolve` → subject vault snapshot (one socket, no per-subject
   sockets, no UID in the socket protocol)

@@ -1,3 +1,8 @@
+---
+title: "Fleet Firecracker E2E"
+description: "Real-KVM fast-sandbox credential-vault e2e: two firecracker VMs with per-subject policies and vaults, real CA trust install, and the measured CA-installation cost."
+---
+
 # Fleet Firecracker E2E: Real-VM Credential Vault on fast-sandbox
 
 > Status: **verified on real hardware**. The fast-sandbox terminal state:

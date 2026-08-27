@@ -38,6 +38,7 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/dnsproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/fleetnft"
+	"github.com/alibaba/opensandbox/egress/pkg/iptables"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
@@ -110,9 +111,11 @@ func runFleetProfile(ctx context.Context) {
 	// the per-subject prerouting DNAT is installed by the fleet server on
 	// registration. A disabled MITM skips the whole block.
 	mitmGate := mitmproxy.NewHealthGate()
+	var fleetMitm *mitmTransparent
 	if mitm, err := startFleetMitmproxyIfEnabled(); err != nil {
 		log.Fatalf("fleet mitmproxy start failed: %v", err)
 	} else if mitm != nil {
+		fleetMitm = mitm
 		dports, err := constants.BuildMitmproxyPorts(os.Getenv(constants.EnvMitmproxyExtraPorts))
 		if err != nil {
 			log.Fatalf("fleet mitmproxy ports: %v", err)
@@ -124,6 +127,12 @@ func runFleetProfile(ctx context.Context) {
 		startFleetActiveSocket(ctx, fleetSrv)
 	} else {
 		fleetSrv.SetMitm(nil, 0, nil)
+		// MITM disabled: clear any interception table a previous generation
+		// (running with MITM enabled) may have left — stale rules would keep
+		// DNATing 80/443 to a now-unserved mitmproxy port (blackhole).
+		if err := iptables.RemoveMitmRedirects(); err != nil {
+			log.Warnf("fleet mitmproxy: stale redirect table cleanup failed (ignored): %v", err)
+		}
 	}
 
 	// DNS: one shared listener. Bound on :15353 (all interfaces — a
@@ -200,6 +209,9 @@ func runFleetProfile(ctx context.Context) {
 	}
 	if err := proxy.Shutdown(); err != nil {
 		log.Errorf("fleet dns proxy shutdown error: %v", err)
+	}
+	if fleetMitm != nil {
+		mitmproxy.GracefulShutdown(fleetMitm.getRunning(), 3*time.Second)
 	}
 	// Enforcement is intentionally NOT removed: the kernel rules keep denying
 	// while the daemon is down (fail closed); the next start wipes them via

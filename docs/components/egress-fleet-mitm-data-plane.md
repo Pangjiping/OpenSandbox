@@ -1,3 +1,8 @@
+---
+title: "Fleet Profile: Shared MITM Data Plane"
+description: "Design and implementation of the fleet-profile shared mitmdump: per-subject Pod-netns DNAT interception, the authoritative INPUT enforcement chain, the subject-aware active vault API, and CA delivery."
+---
+
 # Fleet Profile: Shared MITM Data Plane — Design
 
 > Status: **implemented** (control plane + data plane). The per-sandbox CA
