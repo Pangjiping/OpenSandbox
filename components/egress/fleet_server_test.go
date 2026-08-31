@@ -17,13 +17,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -32,11 +31,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/alibaba/opensandbox/egress/pkg/actionhandler"
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/iptables"
 	"github.com/alibaba/opensandbox/egress/pkg/mitmproxy"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
-	"github.com/alibaba/opensandbox/egress/pkg/slotsource"
 	"github.com/alibaba/opensandbox/egress/pkg/subject"
 )
 
@@ -47,12 +46,11 @@ type fakeNft struct {
 	policyApplied []subject.Subject
 	lastPolicy    *policy.NetworkPolicy
 	removed       []subject.Subject
-	dispatchUpd   []subject.Subject
 	denyFirstErr  error
 	policyErr     error
 }
 
-func (f *fakeNft) ApplyDenyFirst(_ context.Context, s subject.Subject, _ slotsource.Slot) error {
+func (f *fakeNft) ApplyDenyFirst(_ context.Context, s subject.Subject, _ actionhandler.NetworkAttachment) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.denyFirstErr != nil {
@@ -70,13 +68,6 @@ func (f *fakeNft) ApplyPolicy(_ context.Context, s subject.Subject, pol *policy.
 	}
 	f.policyApplied = append(f.policyApplied, s)
 	f.lastPolicy = pol
-	return nil
-}
-
-func (f *fakeNft) ApplyDispatchUpdate(_ context.Context, s subject.Subject, _ slotsource.Slot) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.dispatchUpd = append(f.dispatchUpd, s)
 	return nil
 }
 
@@ -125,11 +116,429 @@ func doRequest(t *testing.T, srv *fleetPolicyServer, method, path, uid, body str
 	return rec
 }
 
+// doAction posts an action envelope to the Fastlet dispatch endpoint.
+func doAction(t *testing.T, srv *fleetPolicyServer, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return doRequest(t, srv, http.MethodPost, constants.ActionsDispatchPath, "", body)
+}
+
+// ---------------------------------------------------------------------------
+// Envelope builders (wire format via the actionhandler types)
+// ---------------------------------------------------------------------------
+
+const (
+	testUID    = "u-1"
+	testIP     = "10.0.0.5"
+	testGW     = "10.0.0.1"
+	testFenceR = "runtime-1"
+	testFenceA = "attachment-1"
+)
+
+func testAttachment() *actionhandler.Attachment {
+	return &actionhandler.Attachment{Network: actionhandler.NetworkAttachment{
+		IP:          netip.MustParseAddr(testIP),
+		Gateway:     netip.MustParseAddr(testGW),
+		PrivateCIDR: netip.MustParsePrefix("10.0.0.0/24"),
+		HostVeth:    "veth0",
+	}}
+}
+
+// bindBody builds a SET_BINDING envelope; input nil = JSON-null removal.
+func bindBody(t *testing.T, uid, ip, runtimeID, attID string, specGen uint64, input *string) string {
+	t.Helper()
+	env := actionhandler.Envelope{
+		APIVersion:   constants.ActionsAPIVersion,
+		Operation:    actionhandler.OperationSetBinding,
+		InvocationID: fmt.Sprintf("inv-%s-%d", uid, specGen),
+		Sandbox:      actionhandler.SandboxRef{UID: uid, Name: "sb", Namespace: "ns"},
+		Revision: actionhandler.Revision{
+			SpecGeneration:    specGen,
+			RuntimeInstanceID: runtimeID,
+			AttachmentID:      attID,
+			RouteGeneration:   1,
+		},
+		Attachment: testAttachment(),
+		Binding:    &actionhandler.Binding{},
+	}
+	if ip != testIP {
+		env.Attachment.Network.IP = netip.MustParseAddr(ip)
+	}
+	if input != nil {
+		quoted, err := json.Marshal(*input)
+		require.NoError(t, err)
+		env.Binding.Input = json.RawMessage(quoted)
+	} else {
+		env.Binding.Input = json.RawMessage("null")
+	}
+	raw, err := json.Marshal(env)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+func hookBody(t *testing.T, uid, runtimeID, attID, name string) string {
+	t.Helper()
+	env := actionhandler.Envelope{
+		APIVersion:   constants.ActionsAPIVersion,
+		Operation:    actionhandler.OperationLifecycleHook,
+		InvocationID: fmt.Sprintf("inv-%s-hook", uid),
+		Sandbox:      actionhandler.SandboxRef{UID: uid, Name: "sb", Namespace: "ns"},
+		Revision: actionhandler.Revision{
+			SpecGeneration:    1,
+			RuntimeInstanceID: runtimeID,
+			AttachmentID:      attID,
+			RouteGeneration:   1,
+		},
+		Hook: &actionhandler.Hook{Name: name, Sequence: 1},
+	}
+	raw, err := json.Marshal(env)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+func removeBody(t *testing.T, uid, runtimeID, attID string) string {
+	t.Helper()
+	env := actionhandler.Envelope{
+		APIVersion:   constants.ActionsAPIVersion,
+		Operation:    actionhandler.OperationRemoveBinding,
+		InvocationID: fmt.Sprintf("inv-%s-remove", uid),
+		Sandbox:      actionhandler.SandboxRef{UID: uid, Name: "sb", Namespace: "ns"},
+		Revision: actionhandler.Revision{
+			SpecGeneration:    1,
+			RuntimeInstanceID: runtimeID,
+			AttachmentID:      attID,
+			RouteGeneration:   1,
+		},
+	}
+	raw, err := json.Marshal(env)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+// setBindingAndReady drives a sandbox to active through the action protocol:
+// SET_BINDING -> runtime-ready -> data-plane-ready.
+func setBindingAndReady(t *testing.T, srv *fleetPolicyServer, reg *subject.MemoryRegistry, uid, ip string, input *string) subject.Subject {
+	t.Helper()
+	s := subject.FromSandboxUID(uid)
+	rec := doAction(t, srv, bindBody(t, uid, ip, testFenceR, testFenceA, 1, input))
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = doAction(t, srv, hookBody(t, uid, testFenceR, testFenceA, constants.HookRuntimeReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = doAction(t, srv, hookBody(t, uid, testFenceR, testFenceA, constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
+	return s
+}
+
+// ---------------------------------------------------------------------------
+// Status endpoint
+// ---------------------------------------------------------------------------
+
+func TestActionsStatus(t *testing.T) {
+	srv, _, _ := fleetTestServer(t)
+	rec := doRequest(t, srv, http.MethodGet, constants.ActionsStatusPath, "", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	var status actionhandler.StatusResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &status))
+	assert.Equal(t, constants.ActionsAPIVersion, status.APIVersion)
+	assert.True(t, status.Ready)
+	assert.NotEmpty(t, status.InstanceID)
+
+	// instanceId is stable for the process incarnation
+	rec = doRequest(t, srv, http.MethodGet, constants.ActionsStatusPath, "", "")
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &status))
+	assert.Equal(t, srv.instanceID, status.InstanceID)
+}
+
+func TestActionsStatusMirrorsMitmGate(t *testing.T) {
+	t.Setenv(constants.EnvMitmproxyTransparent, "true")
+	srv, _, _ := fleetTestServer(t)
+	gate := mitmproxy.NewHealthGate()
+	srv.mitmGate = gate
+	gate.SetReady(false)
+
+	rec := doRequest(t, srv, http.MethodGet, constants.ActionsStatusPath, "", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	var status actionhandler.StatusResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &status))
+	assert.False(t, status.Ready, "handler not ready while the MITM stack is pending")
+
+	gate.SetReady(true)
+	rec = doRequest(t, srv, http.MethodGet, constants.ActionsStatusPath, "", "")
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &status))
+	assert.True(t, status.Ready)
+}
+
+// ---------------------------------------------------------------------------
+// SET_BINDING + LIFECYCLE_HOOK lifecycle
+// ---------------------------------------------------------------------------
+
+func TestActionsSetBindingDenyFirstThenHookActivates(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	s := subject.FromSandboxUID(testUID)
+	input := `{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`
+
+	// SET_BINDING: deny-first registered, policy stored pending, DNS denies
+	rec := doAction(t, srv, bindBody(t, testUID, testIP, testFenceR, testFenceA, 1, &input))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+	require.Len(t, nft.denyFirst, 1)
+	assert.Nil(t, reg.EffectivePolicy(s), "DNS must keep denying while the policy is pending")
+	rec = doRequest(t, srv, http.MethodGet, "/policy", uidHeader(s), "")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "denying")
+
+	// runtime-ready confirms; still denying
+	rec = doAction(t, srv, hookBody(t, testUID, testFenceR, testFenceA, constants.HookRuntimeReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+
+	// data-plane-ready applies the pending policy -> active
+	rec = doAction(t, srv, hookBody(t, testUID, testFenceR, testFenceA, constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
+	require.Equal(t, 1, nft.appliedCount())
+	eff := reg.EffectivePolicy(s)
+	require.NotNil(t, eff)
+	assert.Equal(t, "allow", eff.Evaluate("example.com"))
+}
+
+func TestActionsSetBindingUpdateWhileActiveDoesNotReplay(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	input := `{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`
+	s := setBindingAndReady(t, srv, reg, testUID, testIP, &input)
+	denyFirstInstalls := len(nft.denyFirst)
+
+	// plain input update (new spec generation, same fence): applied in place
+	newInput := `{"defaultAction":"deny","egress":[{"action":"allow","target":"updated.com"}]}`
+	rec := doAction(t, srv, bindBody(t, testUID, testIP, testFenceR, testFenceA, 2, &newInput))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
+	require.Equal(t, 2, nft.appliedCount())
+	require.Equal(t, denyFirstInstalls, len(nft.denyFirst), "an update must not re-install deny-first")
+	assert.Equal(t, "allow", reg.EffectivePolicy(s).Evaluate("updated.com"))
+}
+
+func TestActionsSetBindingNullRemovesPolicy(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	input := `{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`
+	s := setBindingAndReady(t, srv, reg, testUID, testIP, &input)
+	denyFirstInstalls := len(nft.denyFirst)
+
+	// binding removed from a still-live sandbox: back to deny-first
+	rec := doAction(t, srv, bindBody(t, testUID, testIP, testFenceR, testFenceA, 3, nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+	assert.Nil(t, reg.EffectivePolicy(s))
+	assert.Nil(t, reg.UserPolicy(s))
+	require.Equal(t, denyFirstInstalls+1, len(nft.denyFirst), "revert must re-install deny-first")
+
+	// the sandbox is still registered and can be re-activated by a new binding
+	reInput := `{"defaultAction":"deny"}`
+	rec = doAction(t, srv, bindBody(t, testUID, testIP, testFenceR, testFenceA, 4, &reInput))
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = doAction(t, srv, hookBody(t, testUID, testFenceR, testFenceA, constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
+}
+
+func TestActionsDataPlaneReadyWithoutPendingPolicyFailsClosed(t *testing.T) {
+	srv, reg, _ := fleetTestServer(t)
+	s := subject.FromSandboxUID(testUID)
+
+	// binding removed immediately (null input): no pending policy exists
+	rec := doAction(t, srv, bindBody(t, testUID, testIP, testFenceR, testFenceA, 1, nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+
+	// a (protocol-violating) data-plane-ready without a pending policy must
+	// fail closed: the subject never activates
+	rec = doAction(t, srv, hookBody(t, testUID, testFenceR, testFenceA, constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+}
+
+func TestActionsRebindDiscardsPolicy(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	input := `{"defaultAction":"deny","egress":[{"action":"allow","target":"old.com"}]}`
+	s := setBindingAndReady(t, srv, reg, testUID, testIP, &input)
+
+	// same UID, new runtime instance: full reset to deny-first, old policy gone
+	rec := doAction(t, srv, bindBody(t, testUID, testIP, "runtime-2", "attachment-2", 5, &input))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+	assert.Nil(t, reg.EffectivePolicy(s), "old policy must not survive a rebind")
+
+	// the new instance's data-plane-ready activates with its own policy
+	newInput := `{"defaultAction":"deny","egress":[{"action":"allow","target":"new.com"}]}`
+	rec = doAction(t, srv, bindBody(t, testUID, testIP, "runtime-2", "attachment-2", 6, &newInput))
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = doAction(t, srv, hookBody(t, testUID, "runtime-2", "attachment-2", constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
+	assert.Equal(t, "allow", reg.EffectivePolicy(s).Evaluate("new.com"))
+	require.Greater(t, len(nft.denyFirst), 0)
+}
+
+func TestActionsSetBindingIdempotentRetry(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	s := subject.FromSandboxUID(testUID)
+	input := `{"defaultAction":"deny"}`
+
+	// deny-first install fails: 500, subject stays absent-of-effective-policy
+	nft.mu.Lock()
+	nft.denyFirstErr = errors.New("nft busy")
+	nft.mu.Unlock()
+	rec := doAction(t, srv, bindBody(t, testUID, testIP, testFenceR, testFenceA, 1, &input))
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+
+	// fastlet retries the same logical operation; the retry succeeds
+	nft.mu.Lock()
+	nft.denyFirstErr = nil
+	nft.mu.Unlock()
+	rec = doAction(t, srv, bindBody(t, testUID, testIP, testFenceR, testFenceA, 1, &input))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+	require.Len(t, nft.denyFirst, 1, "only the successful attempt installs deny-first")
+}
+
+func TestActionsInvalidPolicyInputRejected(t *testing.T) {
+	srv, reg, _ := fleetTestServer(t)
+	bad := "not-json"
+	rec := doAction(t, srv, bindBody(t, testUID, testIP, testFenceR, testFenceA, 1, &bad))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	_, ok := reg.Get(subject.FromSandboxUID(testUID))
+	assert.False(t, ok, "invalid input must not leave the subject half-registered")
+
+	// empty input and the literal string "null" are ordinary values -> deny
+	empty := ""
+	rec = doAction(t, srv, bindBody(t, testUID, testIP, testFenceR, testFenceA, 2, &empty))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(subject.FromSandboxUID(testUID))))
+}
+
+// ---------------------------------------------------------------------------
+// REMOVE_BINDING
+// ---------------------------------------------------------------------------
+
+func TestActionsRemoveBindingCleansUp(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	input := `{"defaultAction":"deny"}`
+	s := setBindingAndReady(t, srv, reg, testUID, testIP, &input)
+
+	// a pending vault push sits in the cache: removal must drop it
+	rec := doRequest(t, srv, http.MethodPost, "/credential-vault", uidHeader(s), `{"credentials":[],"bindings":[]}`)
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	rec = doAction(t, srv, removeBody(t, testUID, testFenceR, testFenceA))
+	require.Equal(t, http.StatusOK, rec.Code)
+	_, ok := reg.Get(s)
+	assert.False(t, ok)
+	require.Len(t, nft.removed, 1)
+
+	// a later registration must not flush the removed sandbox's state
+	rec = doRequest(t, srv, http.MethodGet, "/credential-vault", uidHeader(s), "")
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestActionsRemoveBindingMissingStateSuccess(t *testing.T) {
+	srv, _, nft := fleetTestServer(t)
+	rec := doAction(t, srv, removeBody(t, "ghost", testFenceR, testFenceA))
+	require.Equal(t, http.StatusOK, rec.Code, "missing Handler state is success")
+	require.Len(t, nft.removed, 0)
+	// cached pushes for the dead sandbox are dropped
+	rec = doRequest(t, srv, http.MethodPost, "/credential-vault", "ghost", `{"credentials":[],"bindings":[]}`)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	rec = doAction(t, srv, removeBody(t, "ghost", testFenceR, testFenceA))
+	require.Equal(t, http.StatusOK, rec.Code)
+	srv.mu.Lock()
+	_, ok := srv.pending[subject.FromSandboxUID("ghost")]
+	srv.mu.Unlock()
+	assert.False(t, ok, "remove must drop cached pushes even for an unregistered UID")
+}
+
+func TestActionsRemoveBindingStaleFenceIgnored(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	input := `{"defaultAction":"deny"}`
+	s := setBindingAndReady(t, srv, reg, testUID, testIP, &input)
+
+	// a removal from a PREVIOUS instance of the same UID must not unload the
+	// current subject
+	rec := doAction(t, srv, removeBody(t, testUID, "runtime-old", "attachment-old"))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
+	require.Len(t, nft.removed, 0)
+}
+
+func TestActionsHookForUnregisteredSubjectConflict(t *testing.T) {
+	srv, _, _ := fleetTestServer(t)
+	rec := doAction(t, srv, hookBody(t, "ghost", testFenceR, testFenceA, constants.HookRuntimeReady))
+	require.Equal(t, http.StatusConflict, rec.Code)
+	rec = doAction(t, srv, hookBody(t, "ghost", testFenceR, testFenceA, constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
+// ---------------------------------------------------------------------------
+// Envelope validation
+// ---------------------------------------------------------------------------
+
+func TestActionsInvalidEnvelopesRejected(t *testing.T) {
+	srv, _, _ := fleetTestServer(t)
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"bad apiVersion", `{"apiVersion":"v1","operation":"SET_BINDING","sandbox":{"uid":"u"},"revision":{"runtimeInstanceId":"r","attachmentId":"a"},"attachment":{"network":{"ip":"10.0.0.5","gateway":"10.0.0.1","hostVeth":"v"}},"binding":{"input":"{}"}}`},
+		{"unknown operation", `{"apiVersion":"sandbox.fast.io/actions/v1","operation":"EXPLODE","sandbox":{"uid":"u"},"revision":{"runtimeInstanceId":"r","attachmentId":"a"}}`},
+		{"missing uid", `{"apiVersion":"sandbox.fast.io/actions/v1","operation":"SET_BINDING","revision":{"runtimeInstanceId":"r","attachmentId":"a"}}`},
+		{"set_binding without binding", `{"apiVersion":"sandbox.fast.io/actions/v1","operation":"SET_BINDING","sandbox":{"uid":"u"},"revision":{"runtimeInstanceId":"r","attachmentId":"a"}}`},
+		{"set_binding non-string input", `{"apiVersion":"sandbox.fast.io/actions/v1","operation":"SET_BINDING","sandbox":{"uid":"u"},"revision":{"runtimeInstanceId":"r","attachmentId":"a"},"attachment":{"network":{"ip":"10.0.0.5","gateway":"10.0.0.1","hostVeth":"v"}},"binding":{"input":42}}`},
+		{"set_binding without attachment", `{"apiVersion":"sandbox.fast.io/actions/v1","operation":"SET_BINDING","sandbox":{"uid":"u"},"revision":{"runtimeInstanceId":"r","attachmentId":"a"},"binding":{"input":"{}"}}`},
+		{"hook without hook", `{"apiVersion":"sandbox.fast.io/actions/v1","operation":"LIFECYCLE_HOOK","sandbox":{"uid":"u"},"revision":{"runtimeInstanceId":"r","attachmentId":"a"}}`},
+		{"unknown hook", `{"apiVersion":"sandbox.fast.io/actions/v1","operation":"LIFECYCLE_HOOK","sandbox":{"uid":"u"},"revision":{"runtimeInstanceId":"r","attachmentId":"a"},"hook":{"name":"sandbox.before-delete"}}`},
+		{"missing fence", `{"apiVersion":"sandbox.fast.io/actions/v1","operation":"SET_BINDING","sandbox":{"uid":"u"},"attachment":{"network":{"ip":"10.0.0.5","gateway":"10.0.0.1","hostVeth":"v"}},"binding":{"input":"{}"}}`},
+		{"not json", `{`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doAction(t, srv, tc.body)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
+}
+
+func TestActionsSetBindingNullDropsPendingPushes(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	s := subject.FromSandboxUID(testUID)
+
+	// a policy push races the binding and lands in the pending cache
+	rec := doRequest(t, srv, http.MethodPut, "/policy", uidHeader(s),
+		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+
+	// the binding is removed before it ever carried a policy: the cached push
+	// must be dropped, never applied to a policy-less subject
+	rec = doAction(t, srv, bindBody(t, testUID, testIP, testFenceR, testFenceA, 1, nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+	assert.Equal(t, 0, nft.appliedCount())
+	assert.Nil(t, reg.EffectivePolicy(s))
+
+	srv.mu.Lock()
+	_, ok := srv.pending[s]
+	srv.mu.Unlock()
+	assert.False(t, ok, "binding removal must drop cached pushes")
+}
+
+// ---------------------------------------------------------------------------
+// Proxy-route policy/vault surface (unchanged semantics)
+// ---------------------------------------------------------------------------
+
 func TestFleetServerPolicyRouting(t *testing.T) {
 	srv, reg, nft := fleetTestServer(t)
 	s := subject.FromSandboxUID("u-1")
 	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
-		subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1})
+		subject.Fencing{RuntimeInstanceID: "r-1", AttachmentID: "a-1"})
 
 	// unknown UID -> 404 on read
 	rec := doRequest(t, srv, http.MethodGet, "/policy", "ghost", "")
@@ -154,30 +563,20 @@ func TestFleetServerPolicyRouting(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestFleetServerPolicyPendingPushFlushedOnRegistration(t *testing.T) {
+func TestFleetServerPolicyPendingPushFlushedOnSetBinding(t *testing.T) {
 	srv, reg, nft := fleetTestServer(t)
 	s := subject.FromSandboxUID("u-1")
 
-	// push before the slot exists -> cached as pending (202), nothing applied
+	// push before the binding exists -> cached as pending (202), nothing applied
 	rec := doRequest(t, srv, http.MethodPut, "/policy", uidHeader(s),
 		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
 	require.Equal(t, http.StatusAccepted, rec.Code)
 	assert.Equal(t, 0, nft.appliedCount())
 
-	// slot appears: controller registration path flushes the pending push
-	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
-		subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1})
-	dir := t.TempDir()
-	dnsPath := filepath.Join(dir, "resolv.conf")
-	require.NoError(t, os.WriteFile(dnsPath, []byte("nameserver 10.96.0.10\n"), 0o644))
-	slot := slotsource.Slot{
-		ID: "slot-1", Phase: slotsource.PhaseBound,
-		Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1},
-		IP:    netip.MustParseAddr("10.0.0.5"), HostNetnsPath: "/n", HostVeth: "v",
-		Gateway: netip.MustParseAddr("10.0.0.1"), DNSPath: dnsPath,
-	}
-	require.NoError(t, srv.OnRegistered(s, slot))
-	srv.OnRegisteredComplete(s, slot)
+	// SET_BINDING registers the subject; the registration path flushes the
+	// pending push
+	rec = doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, strPtr(`{}`)))
+	require.Equal(t, http.StatusOK, rec.Code)
 
 	state, ok := reg.Get(s)
 	require.True(t, ok)
@@ -195,29 +594,18 @@ func TestFleetServerPendingGenerationMismatchDropped(t *testing.T) {
 	rec := doRequest(t, srv, http.MethodPut, "/policy", uidHeader(s),
 		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
 	require.Equal(t, http.StatusAccepted, rec.Code)
-	// header generation 2 set on the cached request
+	// header generation 9 set on the cached request
 	srv.mu.Lock()
 	if qs, ok := srv.pending[s]; ok && len(qs) > 0 {
 		qs[0].hasGen = true
-		qs[0].gen = 2
+		qs[0].gen = 9
 	}
 	srv.mu.Unlock()
 
-	// slot appears with generation 1 -> mismatch, pending dropped. The
-	// controller registers the subject (deny-first) before the flush.
-	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
-		subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1})
-	dir := t.TempDir()
-	dnsPath := filepath.Join(dir, "resolv.conf")
-	require.NoError(t, os.WriteFile(dnsPath, []byte("nameserver 10.96.0.10\n"), 0o644))
-	slot := slotsource.Slot{
-		ID: "slot-1", Phase: slotsource.PhaseBound,
-		Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1},
-		IP:    netip.MustParseAddr("10.0.0.5"), HostNetnsPath: "/n", HostVeth: "v",
-		Gateway: netip.MustParseAddr("10.0.0.1"), DNSPath: dnsPath,
-	}
-	require.NoError(t, srv.OnRegistered(s, slot))
-	srv.OnRegisteredComplete(s, slot)
+	// SET_BINDING with spec generation 1 -> mismatch, pending dropped. The
+	// subject is registered (deny-first) before the flush.
+	rec = doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, nil))
+	require.Equal(t, http.StatusOK, rec.Code)
 
 	state, _ := reg.Get(s)
 	assert.Equal(t, subject.StateDenying, state, "stale pending push must never activate a rebound sandbox")
@@ -228,8 +616,8 @@ func TestFleetServerCredentialVaultPerSubject(t *testing.T) {
 	srv, reg, _ := fleetTestServer(t)
 	sA := subject.FromSandboxUID("a")
 	sB := subject.FromSandboxUID("b")
-	reg.Register(sA, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")}, subject.Fencing{SandboxUID: "a"})
-	reg.Register(sB, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.6")}, subject.Fencing{SandboxUID: "b"})
+	reg.Register(sA, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")}, subject.Fencing{RuntimeInstanceID: "r-a", AttachmentID: "a-a"})
+	reg.Register(sB, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.6")}, subject.Fencing{RuntimeInstanceID: "r-b", AttachmentID: "a-b"})
 
 	rec := doRequest(t, srv, http.MethodPost, "/credential-vault", uidHeader(sA),
 		`{"credentials":[],"bindings":[]}`)
@@ -245,43 +633,19 @@ func TestFleetServerCredentialVaultPerSubject(t *testing.T) {
 	require.Contains(t, rec.Body.String(), `"revision":1`)
 }
 
-func TestFleetServerOnRegisteredResolvRewrite(t *testing.T) {
-	srv, _, nft := fleetTestServer(t)
-	dir := t.TempDir()
-	dnsPath := filepath.Join(dir, "resolv.conf")
-	require.NoError(t, os.WriteFile(dnsPath, []byte("nameserver 10.96.0.10\nsearch svc.local\n"), 0o644))
-	s := subject.FromSandboxUID("u-1")
-	slot := slotsource.Slot{
-		ID: "slot-1", Phase: slotsource.PhaseBound,
-		Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1},
-		IP:    netip.MustParseAddr("10.0.0.5"), HostNetnsPath: "/n", HostVeth: "v",
-		Gateway: netip.MustParseAddr("10.0.0.1"), DNSPath: dnsPath,
-	}
-	require.NoError(t, srv.OnRegistered(s, slot))
-	content, err := os.ReadFile(dnsPath)
-	require.NoError(t, err)
-	require.Equal(t, "nameserver 10.0.0.1\nsearch svc.local\n", string(content))
-	require.Len(t, nft.denyFirst, 1)
-
-	// resolv rewrite failure -> error (fail closed, controller retries)
-	nft.denyFirstErr = nil
-	slot.DNSPath = filepath.Join(dir, "missing.conf")
-	require.Error(t, srv.OnRegistered(s, slot))
-}
-
 func TestFleetServerOnUnloadedDropsPending(t *testing.T) {
 	srv, reg, nft := fleetTestServer(t)
 	s := subject.FromSandboxUID("u-1")
 	rec := doRequest(t, srv, http.MethodPut, "/policy", uidHeader(s), `{"defaultAction":"deny"}`)
 	require.Equal(t, http.StatusAccepted, rec.Code)
 
-	reg.Register(s, subject.SubjectKey{}, subject.Fencing{SandboxUID: "u-1"})
-	require.NoError(t, srv.OnUnloaded(s, slotsource.Slot{Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1}}))
+	reg.Register(s, subject.SubjectKey{}, subject.Fencing{RuntimeInstanceID: "r-1", AttachmentID: "a-1"})
+	require.NoError(t, srv.OnUnloaded(s, testAttachment().Network))
 	require.Len(t, nft.removed, 1)
 
 	// pending was dropped; a later registration must NOT flush stale policy
-	reg.Register(s, subject.SubjectKey{}, subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 2})
-	srv.OnRegisteredComplete(s, slotsource.Slot{Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 2}})
+	reg.Register(s, subject.SubjectKey{}, subject.Fencing{RuntimeInstanceID: "r-2", AttachmentID: "a-2"})
+	srv.OnRegisteredComplete(s, testAttachment().Network, 2)
 	state, _ := reg.Get(s)
 	assert.Equal(t, subject.StateDenying, state)
 }
@@ -327,15 +691,13 @@ func (f *fakeMitmInstaller) snapshot() []iptables.MitmRedirectEntry {
 	return append([]iptables.MitmRedirectEntry(nil), f.entries...)
 }
 
-func mitmSlot(t *testing.T, ip, gw string) slotsource.Slot {
+func mitmAtt(t *testing.T, ip, gw string) actionhandler.NetworkAttachment {
 	t.Helper()
-	dnsPath := filepath.Join(t.TempDir(), "resolv.conf")
-	require.NoError(t, os.WriteFile(dnsPath, []byte("nameserver 10.96.0.10\n"), 0o644))
-	return slotsource.Slot{
-		ID: "slot-1", Phase: slotsource.PhaseBound,
-		Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1},
-		IP:    netip.MustParseAddr(ip), HostNetnsPath: "/n", HostVeth: "v",
-		Gateway: netip.MustParseAddr(gw), DNSPath: dnsPath,
+	return actionhandler.NetworkAttachment{
+		IP:          netip.MustParseAddr(ip),
+		Gateway:     netip.MustParseAddr(gw),
+		PrivateCIDR: netip.MustParsePrefix("10.0.0.0/24"),
+		HostVeth:    "v",
 	}
 }
 
@@ -347,22 +709,19 @@ func TestFleetServerMitmRedirectInstalledOnRegistration(t *testing.T) {
 	srv.mitmRemove = inst.remove
 
 	s := subject.FromSandboxUID("u-1")
-	require.NoError(t, srv.OnRegistered(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
+	require.NoError(t, srv.OnRegistered(s, mitmAtt(t, "10.0.0.5", "10.0.0.1")))
 	require.Equal(t, []iptables.MitmRedirectEntry{{SandboxIP: netip.MustParseAddr("10.0.0.5"), Gateway: netip.MustParseAddr("10.0.0.1"), HostVeth: "v"}}, inst.snapshot())
 
 	// a second subject rebuilds with both entries
 	s2 := subject.FromSandboxUID("u-2")
-	slot2 := mitmSlot(t, "10.0.0.6", "10.0.0.1")
-	slot2.Owner.SandboxUID = "u-2"
-	slot2.Owner.InstanceGeneration = 1
-	require.NoError(t, srv.OnRegistered(s2, slot2))
+	require.NoError(t, srv.OnRegistered(s2, mitmAtt(t, "10.0.0.6", "10.0.0.1")))
 	require.ElementsMatch(t, []iptables.MitmRedirectEntry{
 		{SandboxIP: netip.MustParseAddr("10.0.0.5"), Gateway: netip.MustParseAddr("10.0.0.1"), HostVeth: "v"},
 		{SandboxIP: netip.MustParseAddr("10.0.0.6"), Gateway: netip.MustParseAddr("10.0.0.1"), HostVeth: "v"},
 	}, inst.snapshot())
 
 	// unload rebuilds without the subject
-	require.NoError(t, srv.OnUnloaded(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
+	require.NoError(t, srv.OnUnloaded(s, mitmAtt(t, "10.0.0.5", "10.0.0.1")))
 	require.Equal(t, []iptables.MitmRedirectEntry{{SandboxIP: netip.MustParseAddr("10.0.0.6"), Gateway: netip.MustParseAddr("10.0.0.1"), HostVeth: "v"}}, inst.snapshot())
 }
 
@@ -373,28 +732,13 @@ func TestFleetServerMitmRedirectFailClosesRegistration(t *testing.T) {
 	srv.mitmInstall = inst.install
 
 	s := subject.FromSandboxUID("u-1")
-	require.Error(t, srv.OnRegistered(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
+	require.Error(t, srv.OnRegistered(s, mitmAtt(t, "10.0.0.5", "10.0.0.1")))
 	// the entry was rolled back: nothing left for the next rebuild
 	srv.mitmMu.Lock()
 	require.Len(t, srv.mitmEntries, 0)
 	srv.mitmMu.Unlock()
 	// the subject stays denying (deny-first ran before the failed redirect)
 	require.Len(t, nft.denyFirst, 1)
-}
-
-func TestFleetServerMitmRedirectSlotUpdateRebuilds(t *testing.T) {
-	srv, _, _ := fleetTestServer(t)
-	inst := &fakeMitmInstaller{}
-	srv.SetMitm(nil, 18081, []int{80, 443})
-	srv.mitmInstall = inst.install
-	srv.mitmRemove = inst.remove
-
-	s := subject.FromSandboxUID("u-1")
-	require.NoError(t, srv.OnRegistered(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
-
-	// the sandbox IP moved (new veth); the rebuild carries the new entry
-	require.NoError(t, srv.OnSlotUpdated(s, mitmSlot(t, "10.0.0.9", "10.0.0.1")))
-	require.Equal(t, []iptables.MitmRedirectEntry{{SandboxIP: netip.MustParseAddr("10.0.0.9"), Gateway: netip.MustParseAddr("10.0.0.1"), HostVeth: "v"}}, inst.snapshot())
 }
 
 func TestFleetServerMitmRedirectCrossFamilyRejected(t *testing.T) {
@@ -404,16 +748,16 @@ func TestFleetServerMitmRedirectCrossFamilyRejected(t *testing.T) {
 	srv.mitmInstall = inst.install
 
 	s := subject.FromSandboxUID("u-1")
-	slot := mitmSlot(t, "10.0.0.5", "10.0.0.1")
+	att := mitmAtt(t, "10.0.0.5", "10.0.0.1")
 	// v6 sandbox IP with a v4 gateway: an illegal nft expression that would
 	// abort the whole transactional rebuild — must be rejected up front
-	slot.IP = netip.MustParseAddr("fd00::5")
-	require.Error(t, srv.OnRegistered(s, slot))
+	att.IP = netip.MustParseAddr("fd00::5")
+	require.Error(t, srv.OnRegistered(s, att))
 	require.Nil(t, inst.snapshot())
 	// invalid gateway likewise
-	slot = mitmSlot(t, "10.0.0.5", "10.0.0.1")
-	slot.Gateway = netip.Addr{}
-	require.Error(t, srv.OnRegistered(s, slot))
+	att = mitmAtt(t, "10.0.0.5", "10.0.0.1")
+	att.Gateway = netip.Addr{}
+	require.Error(t, srv.OnRegistered(s, att))
 	require.Nil(t, inst.snapshot())
 }
 
@@ -424,8 +768,8 @@ func TestFleetServerMitmDisabledSkipsInterception(t *testing.T) {
 	srv.mitmInstall = inst.install
 
 	s := subject.FromSandboxUID("u-1")
-	require.NoError(t, srv.OnRegistered(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
-	require.NoError(t, srv.OnUnloaded(s, mitmSlot(t, "10.0.0.5", "10.0.0.1")))
+	require.NoError(t, srv.OnRegistered(s, mitmAtt(t, "10.0.0.5", "10.0.0.1")))
+	require.NoError(t, srv.OnUnloaded(s, mitmAtt(t, "10.0.0.5", "10.0.0.1")))
 	require.Nil(t, inst.snapshot())
 }
 
@@ -453,8 +797,8 @@ func TestFleetServerActiveVaultClientIPDispatch(t *testing.T) {
 	srv, reg, _ := fleetTestServer(t)
 	sA := subject.FromSandboxUID("a")
 	sB := subject.FromSandboxUID("b")
-	reg.Register(sA, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")}, subject.Fencing{SandboxUID: "a"})
-	reg.Register(sB, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.6")}, subject.Fencing{SandboxUID: "b"})
+	reg.Register(sA, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")}, subject.Fencing{RuntimeInstanceID: "r-a", AttachmentID: "a-a"})
+	reg.Register(sB, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.6")}, subject.Fencing{RuntimeInstanceID: "r-b", AttachmentID: "a-b"})
 
 	// push a vault to subject A only (bindings require a policy that allows
 	// the bound host)
@@ -497,67 +841,40 @@ func TestFleetServerActiveVaultClientIPDispatch(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-// TestFleetCreateThenConfigureEndToEnd exercises the create-then-
-// configure spine: policy pushed before the slot exists is cached pending,
-// and the controller applies it (deny-first -> active) once the slot appears.
-func TestFleetCreateThenConfigureEndToEnd(t *testing.T) {
-	dir := t.TempDir()
-	dnsPath := filepath.Join(dir, "resolv.conf")
-	require.NoError(t, os.WriteFile(dnsPath, []byte("nameserver 10.96.0.10\n"), 0o644))
-
-	src := slotsource.NewFileSource(dir, 20*time.Millisecond)
-	reg := subject.NewRegistry(nil, nil)
-	nft := &fakeNft{}
-	srv := newFleetPolicyServer(context.Background(), reg, nft, time.Minute)
-	srv.dnsRedirectInstall = func(netip.Addr, int) error { return nil }
-	srv.dnsRedirectRemove = func() error { return nil }
-	controller := subject.NewController(reg, srv)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	controllerErr := controller.StartWatch(ctx, src)
-
+// TestActionsCreateThenConfigureEndToEnd exercises the actions-driven
+// create-then-configure spine: SET_BINDING installs deny-first, a vault push
+// racing registration is flushed, data-plane-ready activates the policy, and
+// REMOVE_BINDING tears everything down.
+func TestActionsCreateThenConfigureEndToEnd(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
 	uid := "e2e-1"
-	rec := doRequest(t, srv, http.MethodPut, "/policy", uid,
-		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
-	require.Equal(t, http.StatusAccepted, rec.Code, "push before slot exists must be accepted (pending)")
+	s := subject.FromSandboxUID(uid)
 
-	// slot bound appears; resolv file exists so deny-first install succeeds
-	writeSlotFile(t, filepath.Join(dir, "e2e.json"), uid, dnsPath)
-	waitForState(t, 10*time.Second, func() bool {
-		state, ok := reg.Get(subject.FromSandboxUID(uid))
-		return ok && state == subject.StateActive
-	})
-
-	// resolv.conf rewritten to the gateway (deny-first side effect)
-	content, err := os.ReadFile(dnsPath)
-	require.NoError(t, err)
-	require.Contains(t, string(content), "nameserver 10.0.0.1")
+	// SET_BINDING with the policy: deny-first, policy pending
+	rec := doAction(t, srv, bindBody(t, uid, testIP, testFenceR, testFenceA, 1, strPtr(`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+	assert.Nil(t, reg.EffectivePolicy(s), "fail-closed: DNS denies while the policy is pending")
 
 	// vault push after registration goes straight through
 	rec = doRequest(t, srv, http.MethodPost, "/credential-vault", uid, `{"credentials":[],"bindings":[]}`)
 	require.Equal(t, http.StatusCreated, rec.Code)
 
-	cancel()
-	require.NoError(t, <-controllerErr)
-}
+	// data-plane-ready activates the policy
+	rec = doAction(t, srv, hookBody(t, uid, testFenceR, testFenceA, constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
+	assert.Equal(t, "allow", reg.EffectivePolicy(s).Evaluate("example.com"))
+	require.Equal(t, 1, nft.appliedCount())
 
-func writeSlotFile(t *testing.T, path, uid, dnsPath string) {
-	t.Helper()
-	content := `{"id":"%s","phase":"Bound","owner":{"sandboxUid":"%s","instanceGeneration":1,"assignmentAttempt":1},"ip":"10.0.0.5","hostNetnsPath":"/n","hostVeth":"v","gateway":"10.0.0.1","dnsPath":"%s"}`
-	require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf(content, uid, uid, dnsPath)), 0o644))
-}
-
-func waitForState(t *testing.T, timeout time.Duration, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("condition not met within deadline")
+	// REMOVE_BINDING tears everything down
+	rec = doAction(t, srv, removeBody(t, uid, testFenceR, testFenceA))
+	require.Equal(t, http.StatusOK, rec.Code)
+	_, ok := reg.Get(s)
+	assert.False(t, ok)
+	require.Len(t, nft.removed, 1)
+	rec = doRequest(t, srv, http.MethodGet, "/credential-vault", uid, "")
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 // TestFleetServerAlwaysRulesReachNft: allow.always/deny.always must be
@@ -574,7 +891,7 @@ func TestFleetServerAlwaysRulesReachNft(t *testing.T) {
 	srv := newFleetPolicyServer(context.Background(), reg, nft, time.Minute)
 	s := subject.FromSandboxUID("u-1")
 	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
-		subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1})
+		subject.Fencing{RuntimeInstanceID: "r-1", AttachmentID: "a-1"})
 
 	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1",
 		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
@@ -589,18 +906,18 @@ func TestFleetServerAlwaysRulesReachNft(t *testing.T) {
 	require.Contains(t, allowV4, "198.51.100.7", "always-allow IP must reach the nft allow set")
 }
 
-// TestFleetServerNftFailureKeepsRegistryState (Fix 4): a failed nft apply
-// must leave the registry (DNS/GET) on the PREVIOUS policy — nft commits
-// before registry state.
+// TestFleetServerNftFailureKeepsRegistryState: a failed nft apply must leave
+// the registry (DNS/GET) on the PREVIOUS policy — nft commits before registry
+// state.
 func TestFleetServerNftFailureKeepsRegistryState(t *testing.T) {
 	srv, reg, nft := fleetTestServer(t)
 	s := subject.FromSandboxUID("u-1")
 	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
-		subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1})
+		subject.Fencing{RuntimeInstanceID: "r-1", AttachmentID: "a-1"})
 
 	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1", `{"defaultAction":"deny"}`)
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, subject.StateActive, mustState2(reg.Get(s)))
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
 
 	// second push fails at nft: registry must stay on the FIRST policy
 	nft.mu.Lock()
@@ -615,85 +932,6 @@ func TestFleetServerNftFailureKeepsRegistryState(t *testing.T) {
 	assert.Equal(t, "deny", eff.Evaluate("example.com"), "failed nft apply must not publish the new policy")
 }
 
-// TestFleetServerPendingQueueReplaysBothPushes (Fix 6): policy AND vault
-// pushes arriving before the slot must BOTH be replayed in order.
-func TestFleetServerPendingQueueReplaysBothPushes(t *testing.T) {
-	srv, reg, nft := fleetTestServer(t)
-	s := subject.FromSandboxUID("u-1")
-
-	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1",
-		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
-	require.Equal(t, http.StatusAccepted, rec.Code)
-	rec = doRequest(t, srv, http.MethodPost, "/credential-vault", "u-1", `{"credentials":[],"bindings":[]}`)
-	require.Equal(t, http.StatusAccepted, rec.Code)
-
-	// slot appears: both pushes flush in order
-	dir := t.TempDir()
-	dnsPath := filepath.Join(dir, "resolv.conf")
-	require.NoError(t, os.WriteFile(dnsPath, []byte("nameserver 10.96.0.10\n"), 0o644))
-	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
-		subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1})
-	slot := slotsource.Slot{
-		ID: "slot-1", Phase: slotsource.PhaseBound,
-		Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1},
-		IP:    netip.MustParseAddr("10.0.0.5"), HostNetnsPath: "/n", HostVeth: "v",
-		Gateway: netip.MustParseAddr("10.0.0.1"), DNSPath: dnsPath,
-	}
-	require.NoError(t, srv.OnRegistered(s, slot))
-	srv.OnRegisteredComplete(s, slot)
-
-	// policy applied with its exact content, and the vault was created
-	eff := reg.EffectivePolicy(s)
-	require.NotNil(t, eff)
-	assert.Equal(t, "allow", eff.Evaluate("example.com"))
-	rec = doRequest(t, srv, http.MethodGet, "/credential-vault", "u-1", "")
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Contains(t, rec.Body.String(), `"revision":1`)
-	require.Equal(t, 1, nft.appliedCount())
-}
-
-// TestFleetServerOnSlotUpdatedReconciles (Fix 5): an EventUpdated with
-// unchanged fencing must rewrite resolv and update the dispatch rule without
-// resetting the policy.
-func TestFleetServerOnSlotUpdatedReconciles(t *testing.T) {
-	srv, reg, nft := fleetTestServer(t)
-	s := subject.FromSandboxUID("u-1")
-	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
-		subject.Fencing{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1})
-	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1",
-		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	dir := t.TempDir()
-	dnsPath := filepath.Join(dir, "resolv.conf")
-	require.NoError(t, os.WriteFile(dnsPath, []byte("nameserver 10.96.0.10\n"), 0o644))
-	slot := slotsource.Slot{
-		ID: "slot-1", Phase: slotsource.PhaseBound,
-		Owner: slotsource.Owner{SandboxUID: "u-1", InstanceGeneration: 1, AssignmentAttempt: 1},
-		IP:    netip.MustParseAddr("10.0.0.5"), HostNetnsPath: "/n", HostVeth: "veth-new",
-		Gateway: netip.MustParseAddr("10.0.0.1"), DNSPath: dnsPath,
-	}
-	require.NoError(t, srv.OnSlotUpdated(s, slot))
-
-	content, err := os.ReadFile(dnsPath)
-	require.NoError(t, err)
-	require.Contains(t, string(content), "nameserver 10.0.0.1")
-	nft.mu.Lock()
-	require.Len(t, nft.dispatchUpd, 1)
-	nft.mu.Unlock()
-	// policy untouched
-	eff := reg.EffectivePolicy(s)
-	require.NotNil(t, eff)
-	assert.Equal(t, "allow", eff.Evaluate("example.com"))
-}
-
-func mustState2(st subject.State, ok bool) subject.State {
-	if !ok {
-		panic("subject absent")
-	}
-	return st
-}
-
 // TestFleetServerGatewayRedirectRefcounted: the shared prerouting REDIRECT
 // installs once per gateway and is removed when the last subject using it is
 // unloaded.
@@ -705,25 +943,28 @@ func TestFleetServerGatewayRedirectRefcounted(t *testing.T) {
 	srv.dnsRedirectInstall = func(netip.Addr, int) error { installs++; return nil }
 	srv.dnsRedirectRemove = func() error { removes++; return nil }
 
-	dir := t.TempDir()
-	mkResolv := func(name string) string {
-		p := filepath.Join(dir, name)
-		require.NoError(t, os.WriteFile(p, []byte("nameserver 10.96.0.10\n"), 0o644))
-		return p
-	}
-	slotA := slotsource.Slot{Owner: slotsource.Owner{SandboxUID: "a"}, Gateway: netip.MustParseAddr("10.10.0.1"), DNSPath: mkResolv("a.conf")}
-	slotB := slotsource.Slot{Owner: slotsource.Owner{SandboxUID: "b"}, Gateway: netip.MustParseAddr("10.10.0.1"), DNSPath: mkResolv("b.conf")}
-	slotC := slotsource.Slot{Owner: slotsource.Owner{SandboxUID: "c"}, Gateway: netip.MustParseAddr("10.20.0.1"), DNSPath: mkResolv("c.conf")}
+	attA := mitmAtt(t, "10.0.0.5", "10.10.0.1")
+	attB := mitmAtt(t, "10.0.0.6", "10.10.0.1")
+	attC := mitmAtt(t, "10.0.0.7", "10.20.0.1")
 
-	require.NoError(t, srv.OnRegistered(subject.FromSandboxUID("a"), slotA))
-	require.NoError(t, srv.OnRegistered(subject.FromSandboxUID("b"), slotB))
-	require.NoError(t, srv.OnRegistered(subject.FromSandboxUID("c"), slotC))
+	require.NoError(t, srv.OnRegistered(subject.FromSandboxUID("a"), attA))
+	require.NoError(t, srv.OnRegistered(subject.FromSandboxUID("b"), attB))
+	require.NoError(t, srv.OnRegistered(subject.FromSandboxUID("c"), attC))
 	assert.Equal(t, 2, installs, "shared gateway installs once; distinct gateway installs again")
 
-	require.NoError(t, srv.OnUnloaded(subject.FromSandboxUID("a"), slotA))
-	require.NoError(t, srv.OnUnloaded(subject.FromSandboxUID("b"), slotB))
+	require.NoError(t, srv.OnUnloaded(subject.FromSandboxUID("a"), attA))
+	require.NoError(t, srv.OnUnloaded(subject.FromSandboxUID("b"), attB))
 	assert.Equal(t, 1, removes, "remove only when the LAST subject of the shared gateway unloads")
 
-	require.NoError(t, srv.OnUnloaded(subject.FromSandboxUID("c"), slotC))
+	require.NoError(t, srv.OnUnloaded(subject.FromSandboxUID("c"), attC))
 	assert.Equal(t, 2, removes)
+}
+
+func strPtr(s string) *string { return &s }
+
+func mustState(st subject.State, ok bool) subject.State {
+	if !ok {
+		panic("subject absent")
+	}
+	return st
 }

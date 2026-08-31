@@ -66,15 +66,10 @@ queried name nor the error text is ever attached:
 
 `egress.nftables.updates.failed_total` covers the other silent failure. Its `operation`
 attribute is one of `static_apply`, `dynamic_add`, `remove`, or — in the fleet profile
-(OSEP-0022) — `deny_first`, `dispatch_update`, `reset`; `dynamic_add` is the one to
+(OSEP-0022) — `deny_first`, `reset`; `dynamic_add` is the one to
 alert on, because a failed add means the kernel never learned about IPs the policy allows,
 so the chain drops traffic that should pass — which looks exactly like a policy denial from
 inside the sandbox while `egress.policy.denied_total` stays flat.
-
-The per-sandbox netns layer (fleet profile) counts its updates under the same operations;
-two expected cases are deliberately NOT counted as failures: a sandbox-layer removal whose
-netns is already destroyed (the rules died with it), and the startup recovery sweep of
-netns that never had a table installed.
 
 A `static_apply` failure happens during startup, where the sidecar logs and exits. Metrics
 leave through a periodic reader and `os.Exit` skips the deferred shutdown, so that path

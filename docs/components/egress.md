@@ -243,7 +243,10 @@ Full metric inventory and attribute semantics: [egress OpenTelemetry reference](
 
 ## Fleet Profile (multi-sandbox control plane)
 
-> Experimental: design per [OSEP-0022](https://github.com/opensandbox-group/OpenSandbox/blob/main/oseps/0022-multi-sandbox-egress-control-plane.md).
+> Experimental: design per [OSEP-0022](https://github.com/opensandbox-group/OpenSandbox/blob/main/oseps/0022-multi-sandbox-egress-control-plane.md);
+> subject lifecycle follows the fast-sandbox
+> [Sandbox Actions](https://github.com/opensandbox-group/fast-sandbox/blob/master/docs/concepts/sandbox-actions.md)
+> Handler protocol (replacing the earlier slot-store observation).
 
 The default `sidecar` profile serves exactly one sandbox sharing one network
 namespace. The opt-in `fleet` profile (`OPENSANDBOX_EGRESS_PROFILE=fleet`)
@@ -252,33 +255,38 @@ Pod): a single egress process hosts one **subject** per sandbox, each with its
 own policy, credentials, and kernel rules. The sidecar profile and its API are
 unchanged; both profiles are mutually exclusive deployment forms.
 
-- **Identity**: subjects are observed read-only from the fastlet slot store
-  (`OPENSANDBOX_EGRESS_SLOT_STORE_DIR`, default `/run/fast-sandbox/network`)
-  via polling (`OPENSANDBOX_EGRESS_SLOT_POLL_INTERVAL`, seconds). A subject is
-  deny-first from observation until its policy lands.
+- **Identity and lifecycle**: the Fastlet is the sole lifecycle dispatcher.
+  The egress Handler implements `GET /_fastlet/v1/actions/status` (process
+  incarnation probe: a changed `instanceId` makes the Fastlet replay the
+  latest `SET_BINDING` plus reached Hooks) and `POST /_fastlet/v1/actions`
+  (`SET_BINDING` / `LIFECYCLE_HOOK` / `REMOVE_BINDING`). `SET_BINDING`
+  registers the subject deny-first and stores the input policy as pending;
+  `sandbox.data-plane-ready` applies it (`denying` → `active`). The network
+  identity (source IP, gateway, veth, private CIDR) comes from the action
+  envelope's attachment block. A subject is deny-first from registration
+  until its data-plane-ready Hook succeeds, so policy delivery can be late,
+  never early-open.
 - **Control surface**: the listener binds the Pod netns loopback only
-  (`OPENSANDBOX_EGRESS_HTTP_ADDR`, default `127.0.0.1:18080`). Policy and
+  (`OPENSANDBOX_EGRESS_HTTP_ADDR`, default `127.0.0.1:18080`) and serves the
+  action endpoints plus the proxy-route policy and credential surfaces.
+  Policy rides the Sandbox CRD `actionBindings` (declarative, revisioned);
   credential pushes from the server are routed per subject by the
   `X-Fast-Sandbox-Uid` header (added by fastlet-proxy, the only peer). A push
-  for a UID whose slot has not appeared is cached and applied on registration
-  (`OPENSANDBOX_EGRESS_PENDING_PUSH_TTL`, seconds, default `30`); a stale
-  push carrying a mismatched `X-Fast-Sandbox-Generation` is discarded.
+  for a UID whose binding has not appeared is cached and applied on
+  registration (`OPENSANDBOX_EGRESS_PENDING_PUSH_TTL`, seconds, default
+  `30`); a stale push carrying a mismatched `X-Fast-Sandbox-Generation` is
+  discarded.
 - **DNS**: one shared proxy on loopback `127.0.0.1:15353` (never collides
   with a host DNS service on `:53`); per-subject prerouting REDIRECTs
-  forward sandbox DNS addressed to `slot.Gateway:53` to it, preserving the
-  source IP, and per-query policy is dispatched by source IP.
+  forward sandbox DNS addressed to the attachment gateway `:53` to it,
+  preserving the source IP, and per-query policy is dispatched by source IP.
 - **Enforcement**: nftables `hook forward` in the Pod netns with a
   drop-by-default master chain; per-subject chains and static sets are swapped
-  atomically. Dynamic DNS-learned sets carry bounded leases. A second,
-  per-sandbox netns OUTPUT chain mirrors each subject's policy as defense in
-  depth (installed from the host via `nsenter --net=<slot.hostNetnsPath>`),
-  and a per-subject connection refresh loop (Pod netns conntrack, bucketed by
-  source IP, every 30s, one batched transaction per tick) keeps the dynamic
-  leases of active connections alive in both layers. Only TCP sessions are
-  renewed; UDP/QUIC (HTTP/3) relies on the DNS lease TTLs — same limitation
-  as the sidecar profile. A sandbox-layer mirror miss marks the IPs pending
-  and redelivers them on the next tick, so a transient failure can never
-  self-lock a subject until the lease expires.
+  atomically. Dynamic DNS-learned sets carry bounded leases. A per-subject
+  connection refresh loop (Pod netns conntrack, bucketed by source IP, every
+  30s, one batched transaction per tick) keeps the dynamic leases of active
+  connections alive. Only TCP sessions are renewed; UDP/QUIC (HTTP/3) relies
+  on the DNS lease TTLs — same limitation as the sidecar profile.
 - **Encrypted-DNS blocking**: DoT 853 is always dropped in the master chain.
   With `OPENSANDBOX_EGRESS_BLOCK_DOH_443=true`, TCP 443 to the
   `OPENSANDBOX_EGRESS_DOH_BLOCKLIST` IP/CIDR list is dropped too — same
@@ -289,13 +297,15 @@ unchanged; both profiles are mutually exclusive deployment forms.
   > (HTTP/3, DoH-over-UDP) is not intercepted by this mechanism.
 - **Telemetry**: OpenTelemetry metrics are exported exactly as in the sidecar
   profile; nft updates are attributed per fleet operation (`deny_first`,
-  `static_apply`, `dynamic_add`, `dispatch_update`, `reset`, `remove`).
+  `static_apply`, `dynamic_add`, `reset`, `remove`).
 - **Credentials**: memory-only, per subject; complete vault revisions are
   pushed over the proxy route (OSEP-0012 model). No Secret volume, no egress
-  disk state.
-- **Recovery**: on restart, egress wipes stale rules, rescans the slot store
-  (every live subject re-enters `denying`), and the server re-pushes
-  policies.
+  disk state. The action binding input is NOT a secret transport (it is
+  persisted in the Sandbox CRD).
+- **Recovery**: on restart, egress wipes stale rules and serves a new
+  `instanceId`; the Fastlet detects the change and replays every live
+  binding (`SET_BINDING` + reached Hooks), re-entering each subject through
+  deny-first. The server re-pushes credential revisions.
 
 For how policy is applied, how outbound traffic flows through the nftables
 dispatch, and how the credential vault works in the fleet profile, see

@@ -27,9 +27,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/alibaba/opensandbox/egress/pkg/actionhandler"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
-	"github.com/alibaba/opensandbox/egress/pkg/slotsource"
 	"github.com/alibaba/opensandbox/egress/pkg/subject"
 )
 
@@ -65,17 +65,12 @@ func (r *fakeRunner) last() string {
 	return r.scripts[len(r.scripts)-1]
 }
 
-func testSlot(uid string, ip string) slotsource.Slot {
-	return slotsource.Slot{
-		ID:            "slot-" + uid,
-		Phase:         slotsource.PhaseBound,
-		Owner:         slotsource.Owner{SandboxUID: uid, InstanceGeneration: 1, AssignmentAttempt: 1},
-		IP:            netip.MustParseAddr(ip),
-		HostNetnsPath: "/var/run/netns/ns-" + uid,
-		HostVeth:      "veth" + uid,
-		Gateway:       netip.MustParseAddr("10.0.0.1"),
-		PrivateCIDR:   netip.MustParsePrefix("10.0.0.0/24"),
-		DNSPath:       "/run/fast-sandbox/network/dns/" + uid,
+func testSlot(uid string, ip string) actionhandler.NetworkAttachment {
+	return actionhandler.NetworkAttachment{
+		IP:          netip.MustParseAddr(ip),
+		Gateway:     netip.MustParseAddr("10.0.0.1"),
+		PrivateCIDR: netip.MustParsePrefix("10.0.0.0/24"),
+		HostVeth:    "veth" + uid,
 	}
 }
 
@@ -278,7 +273,7 @@ func TestApplyResetKeepsEmptyMasterDropChain(t *testing.T) {
 	require.Contains(t, runner.last(), "add chain inet opensandbox-fleet subj_s_u_1")
 }
 
-func TestApplyDispatchUpdate(t *testing.T) {
+func TestApplyDenyFirstReRegistersWithNewAttachment(t *testing.T) {
 	runner := &fakeRunner{}
 	a := NewApplier(runner.Run)
 	ctx := context.Background()
@@ -289,16 +284,19 @@ func TestApplyDispatchUpdate(t *testing.T) {
 	runner.scripts = nil
 	runner.mu.Unlock()
 
-	// slot updated with a new veth: only the dispatch rule is appended, the
-	// subject's policy content is untouched
-	require.NoError(t, a.ApplyDispatchUpdate(ctx, s, testSlot("u-1", "10.0.0.5")))
+	// rebind with a moved veth/IP: deny-first re-registration resets the
+	// subject (flush + new dispatch rule) WITHOUT recreating the table
+	att2 := testSlot("u-1", "10.0.0.9")
+	att2.HostVeth = "veth-new"
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, att2))
 	script := runner.last()
-	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 iifname "vethu-1" jump subj_s_u_1`)
-	assert.NotContains(t, script, "flush", "dispatch update must not touch the subject chain")
-	assert.NotContains(t, script, "subj_s_u_1 ip daddr", "dispatch update must not re-add policy rules")
+	require.Contains(t, script, "flush chain inet opensandbox-fleet subj_s_u_1")
+	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.9 iifname "veth-new" jump subj_s_u_1`)
+	assert.NotContains(t, script, "delete table", "rebind must not recreate the table")
 
-	// unknown subject rejected
-	require.ErrorIs(t, a.ApplyDispatchUpdate(ctx, subject.FromSandboxUID("ghost"), testSlot("g", "10.0.0.9")), ErrUnknownSubject)
+	// unknown subject rejected on deny-first? No: deny-first installs; only
+	// policy applies require a prior install.
+	require.ErrorIs(t, a.ApplyPolicy(ctx, subject.FromSandboxUID("ghost"), nil), ErrUnknownSubject)
 }
 
 func TestSanitize(t *testing.T) {

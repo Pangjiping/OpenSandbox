@@ -48,9 +48,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alibaba/opensandbox/egress/pkg/actionhandler"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
-	"github.com/alibaba/opensandbox/egress/pkg/slotsource"
 	"github.com/alibaba/opensandbox/egress/pkg/subject"
 	"github.com/alibaba/opensandbox/egress/pkg/telemetry"
 )
@@ -127,8 +127,8 @@ type Options struct {
 // it is the source for table rebuilds (subject removal) and the idempotency
 // guard for deny-first installs.
 type installedSubject struct {
-	slot slotsource.Slot
-	pol  *policy.NetworkPolicy // nil while denying
+	att actionhandler.NetworkAttachment
+	pol *policy.NetworkPolicy // nil while denying
 }
 
 // Applier applies per-subject rules to table TableName. All methods are safe
@@ -171,12 +171,13 @@ func NewApplier(r Runner, opts ...Options) *Applier {
 
 // ApplyReset atomically swaps the ruleset for an EMPTY master drop chain:
 // the drop-by-default dispatch chain (with its established/DoT rules) stays
-// installed with no subjects, so unregistered sources remain denied while
-// the slot store is rescanned — the fail-closed guarantee must not have a
-// window where the hook is gone. Recovery protocol: the caller must reset
-// before rescanning the slot store at startup, so stale rules from a
-// previous egress generation can never carry old policy into a new sandbox.
-// A missing table is not an error (fallback retry without the delete line).
+// installed with no subjects, so unregistered sources remain denied while the
+// handler replays bindings after an egress restart — the fail-closed
+// guarantee must not have a window where the hook is gone. Recovery protocol:
+// the caller must reset before serving action requests at startup, so stale
+// rules from a previous egress generation can never carry old policy into a
+// new sandbox. A missing table is not an error (fallback retry without the
+// delete line).
 func (a *Applier) ApplyReset(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -240,7 +241,7 @@ func (a *Applier) applyWithMissingTableFallback(ctx context.Context, script stri
 // policy can never carry into a new sandbox. (Registry + DNS already fail
 // closed on rebind; this closes the nft layer, which keeps the old allow sets
 // otherwise.)
-func (a *Applier) ApplyDenyFirst(ctx context.Context, s subject.Subject, slot slotsource.Slot) error {
+func (a *Applier) ApplyDenyFirst(ctx context.Context, s subject.Subject, att actionhandler.NetworkAttachment) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var b strings.Builder
@@ -251,11 +252,11 @@ func (a *Applier) ApplyDenyFirst(ctx context.Context, s subject.Subject, slot sl
 		a.tableReady = true
 	}
 	if _, ok := a.subjects[s]; ok {
-		if err := writeSubjectResetFragment(&b, s, slot, a.opts.MitmRedirectPort); err != nil {
+		if err := writeSubjectResetFragment(&b, s, att, a.opts.MitmRedirectPort); err != nil {
 			return err
 		}
 	} else {
-		if err := writeSubjectDenyFirstFragment(&b, s, slot, a.opts.MitmRedirectPort); err != nil {
+		if err := writeSubjectDenyFirstFragment(&b, s, att, a.opts.MitmRedirectPort); err != nil {
 			return err
 		}
 	}
@@ -265,7 +266,7 @@ func (a *Applier) ApplyDenyFirst(ctx context.Context, s subject.Subject, slot sl
 		telemetry.RecordNftablesUpdateFailed(telemetry.NftOpDenyFirst)
 		return err
 	}
-	a.subjects[s] = installedSubject{slot: slot}
+	a.subjects[s] = installedSubject{att: att}
 	delete(a.states, s) // deny-first: no policy, no leases (nft dyn sets were flushed)
 	a.recordRuleCountLocked()
 	telemetry.RecordNftablesUpdate()
@@ -347,32 +348,6 @@ func (a *Applier) trackDynamicIPs(s subject.Subject, ips []nftables.ResolvedIP) 
 	}
 }
 
-// ApplyDispatchUpdate re-adds the dispatch rule for a changed slot (e.g. the
-// host veth moved on an EventUpdated with unchanged fencing) WITHOUT touching
-// the subject's policy content. A stale rule from the previous slot key never
-// matches (the iifname is bound), and duplicates are cleared by the next
-// table rebuild (rebind reset, remove, or ApplyReset). The stored slot is
-// replaced with the updated one so the connection-refresh bucketing keeps
-// matching the subject's (possibly moved) source IP.
-func (a *Applier) ApplyDispatchUpdate(ctx context.Context, s subject.Subject, slot slotsource.Slot) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	inst, ok := a.subjects[s]
-	if !ok {
-		return ErrUnknownSubject
-	}
-	var b strings.Builder
-	writeDispatchRule(&b, s, slot, a.opts.MitmRedirectPort)
-	if _, err := a.run(ctx, b.String()); err != nil {
-		telemetry.RecordNftablesUpdateFailed(telemetry.NftOpDispatch)
-		return err
-	}
-	inst.slot = slot
-	a.subjects[s] = inst
-	telemetry.RecordNftablesUpdate()
-	return nil
-}
-
 // Remove deletes a subject's enforcement. nftables deletes rules only by
 // handle (no handle-less match), and verdict maps cannot jump to chains
 // (EOPNOTSUPP on add element), so the master-chain dispatch rule cannot be
@@ -410,9 +385,9 @@ func (a *Applier) Remove(ctx context.Context, s subject.Subject) error {
 	for subj, inst := range a.subjects {
 		var err error
 		if inst.pol == nil {
-			err = writeSubjectDenyFirstFragment(&b, subj, inst.slot, a.opts.MitmRedirectPort)
+			err = writeSubjectDenyFirstFragment(&b, subj, inst.att, a.opts.MitmRedirectPort)
 		} else {
-			err = writeSubjectInitialPolicyFragment(&b, subj, inst.slot, inst.pol, a.opts.MitmRedirectPort)
+			err = writeSubjectInitialPolicyFragment(&b, subj, inst.att, inst.pol, a.opts.MitmRedirectPort)
 		}
 		if err != nil {
 			return err
@@ -527,24 +502,24 @@ func (a *Applier) writeDoHBlockFragment(b *strings.Builder) error {
 // sandbox source IP + host veth (iifname binding: defense in depth against
 // UDP spoofing). Applies against an existing table (or right after the
 // header).
-func writeSubjectDenyFirstFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot, mitmPort int) error {
+func writeSubjectDenyFirstFragment(b *strings.Builder, s subject.Subject, att actionhandler.NetworkAttachment, mitmPort int) error {
 	if err := writeSubjectSets(b, s, nil); err != nil {
 		return err
 	}
 	writeSubjectChain(b, s, policy.ActionDeny, mitmPort)
-	writeDispatchRule(b, s, slot, mitmPort)
+	writeDispatchRule(b, s, att, mitmPort)
 	writeSubjectVerdictRules(b, s, policy.ActionDeny, mitmPort)
 	return nil
 }
 
 // writeSubjectInitialPolicyFragment installs a subject with full policy
 // content on a fresh table (used by rebuilds after Remove).
-func writeSubjectInitialPolicyFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot, pol *policy.NetworkPolicy, mitmPort int) error {
+func writeSubjectInitialPolicyFragment(b *strings.Builder, s subject.Subject, att actionhandler.NetworkAttachment, pol *policy.NetworkPolicy, mitmPort int) error {
 	if err := writeSubjectSets(b, s, pol); err != nil {
 		return err
 	}
 	writeSubjectChain(b, s, pol.DefaultAction, mitmPort)
-	writeDispatchRule(b, s, slot, mitmPort)
+	writeDispatchRule(b, s, att, mitmPort)
 	writeSubjectVerdictRules(b, s, pol.DefaultAction, mitmPort)
 	return nil
 }
@@ -553,12 +528,12 @@ func writeSubjectInitialPolicyFragment(b *strings.Builder, s subject.Subject, sl
 // deny-first: chain and all sets (static + dynamic) are FLUSHED (not deleted —
 // the master-chain dispatch rule references the chain, and deleting a
 // referenced chain/set fails with EBUSY) and the deny-first content is
-// re-added, with the dispatch rule for the (possibly changed) slot. Used on
-// re-registration so a previous sandbox's policy and DNS leases never
-// survive. A dispatch rule from a previous slot key is harmless (a stale
-// source key never matches; the same key yields an identical duplicate rule
-// with the same verdict).
-func writeSubjectResetFragment(b *strings.Builder, s subject.Subject, slot slotsource.Slot, mitmPort int) error {
+// re-added, with the dispatch rule for the (possibly changed) attachment.
+// Used on re-registration so a previous sandbox's policy and DNS leases never
+// survive. A dispatch rule from a previous attachment key is harmless (a
+// stale source key never matches; the same key yields an identical duplicate
+// rule with the same verdict).
+func writeSubjectResetFragment(b *strings.Builder, s subject.Subject, att actionhandler.NetworkAttachment, mitmPort int) error {
 	fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChain(s))
 	if mitmPort > 0 {
 		fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChainIn(s))
@@ -566,7 +541,7 @@ func writeSubjectResetFragment(b *strings.Builder, s subject.Subject, slot slots
 	for _, name := range allSetNames(s) {
 		fmt.Fprintf(b, "flush set inet %s %s\n", TableName, name)
 	}
-	writeDispatchRule(b, s, slot, mitmPort)
+	writeDispatchRule(b, s, att, mitmPort)
 	writeSubjectVerdictRules(b, s, policy.ActionDeny, mitmPort)
 	return nil
 }
@@ -708,28 +683,28 @@ func writeSubjectVerdictRules(b *strings.Builder, s subject.Subject, defaultActi
 // the transparent-interception bypass. Verdict maps cannot jump to chains
 // (EOPNOTSUPP on add element), so dispatch is a plain rule per subject;
 // removal rebuilds the table (see Remove).
-func writeDispatchRule(b *strings.Builder, s subject.Subject, slot slotsource.Slot, mitmPort int) {
-	if slot.IP.Is4() {
+func writeDispatchRule(b *strings.Builder, s subject.Subject, att actionhandler.NetworkAttachment, mitmPort int) {
+	if att.IP.Is4() {
 		fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" jump %s\n",
-			TableName, dispatchChain, slot.IP, slot.HostVeth, subjectChain(s))
+			TableName, dispatchChain, att.IP, att.HostVeth, subjectChain(s))
 		if mitmPort > 0 {
 			fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" tcp dport %d ct status dnat jump %s\n",
-				TableName, inputChain, slot.IP, slot.HostVeth, mitmPort, subjectChainIn(s))
-			if slot.Gateway.IsValid() {
+				TableName, inputChain, att.IP, att.HostVeth, mitmPort, subjectChainIn(s))
+			if att.Gateway.IsValid() {
 				fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" ip daddr %s tcp dport %d drop\n",
-					TableName, inputChain, slot.IP, slot.HostVeth, slot.Gateway, mitmPort)
+					TableName, inputChain, att.IP, att.HostVeth, att.Gateway, mitmPort)
 			}
 		}
 		return
 	}
 	fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" jump %s\n",
-		TableName, dispatchChain, slot.IP, slot.HostVeth, subjectChain(s))
+		TableName, dispatchChain, att.IP, att.HostVeth, subjectChain(s))
 	if mitmPort > 0 {
 		fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" tcp dport %d ct status dnat jump %s\n",
-			TableName, inputChain, slot.IP, slot.HostVeth, mitmPort, subjectChainIn(s))
-		if slot.Gateway.IsValid() {
+			TableName, inputChain, att.IP, att.HostVeth, mitmPort, subjectChainIn(s))
+		if att.Gateway.IsValid() {
 			fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" ip6 daddr %s tcp dport %d drop\n",
-				TableName, inputChain, slot.IP, slot.HostVeth, slot.Gateway, mitmPort)
+				TableName, inputChain, att.IP, att.HostVeth, att.Gateway, mitmPort)
 		}
 	}
 }

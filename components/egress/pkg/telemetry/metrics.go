@@ -58,7 +58,6 @@ const (
 	// Fleet-profile operations (OSEP-0022).
 	NftOpReset     = "reset"
 	NftOpDenyFirst = "deny_first"
-	NftOpDispatch  = "dispatch_update"
 )
 
 var egressSharedAttrs = sync.OnceValue(func() []attribute.KeyValue {
