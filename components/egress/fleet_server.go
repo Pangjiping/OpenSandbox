@@ -111,12 +111,14 @@ type fleetPolicyServer struct {
 	// the attachment block.
 	subjAtt map[subject.Subject]actionhandler.NetworkAttachment
 
-	// gatewayDNSRefs refcounts subjects per gateway so the shared prerouting
-	// REDIRECT (sandbox DNS -> loopback proxy) is installed once and removed
-	// when the last subject using that gateway is gone. Injected fns keep the
-	// hooks testable without iptables.
+	// gatewayDNSRefs maps each subject to its gateway so the shared
+	// prerouting REDIRECT (sandbox DNS -> loopback proxy) is installed once
+	// per gateway and removed when the last subject using it is gone. Keyed
+	// per SUBJECT (not per gateway) so at-least-once SET_BINDING delivery is
+	// idempotent: a duplicate registration is a map no-op instead of a
+	// double refcount. Injected fns keep the hooks testable without iptables.
 	gwMu               sync.Mutex
-	gatewayDNSRefs     map[netip.Addr]int
+	gatewayDNSRefs     map[subject.Subject]netip.Addr
 	dnsRedirectInstall func(gateway netip.Addr, port int) error
 	dnsRedirectRemove  func() error
 
@@ -152,7 +154,7 @@ func newFleetPolicyServer(ctx context.Context, reg *subject.MemoryRegistry, nft 
 		pendingPolicies:    make(map[subject.Subject]*policy.NetworkPolicy),
 		subjGen:            make(map[subject.Subject]uint64),
 		subjAtt:            make(map[subject.Subject]actionhandler.NetworkAttachment),
-		gatewayDNSRefs:     make(map[netip.Addr]int),
+		gatewayDNSRefs:     make(map[subject.Subject]netip.Addr),
 		dnsRedirectInstall: iptables.SetupGatewayDNSRedirect,
 		dnsRedirectRemove:  iptables.RemoveGatewayDNSRedirect,
 		mitmEntries:        make(map[subject.Subject]iptables.MitmRedirectEntry),
@@ -192,39 +194,65 @@ func (s *fleetPolicyServer) mitmRedirectRebuild() error {
 // per-subject gateway REDIRECT forwards sandbox DNS here.
 const fleetDNSProxyPort = 15353
 
-// installGatewayDNSRedirect refcounts a gateway and installs (once) the
-// prerouting REDIRECT for it. Fails closed: a subject whose DNS cannot reach
-// the proxy must not register as usable.
-func (s *fleetPolicyServer) installGatewayDNSRedirect(gateway netip.Addr) error {
+// installGatewayDNSRedirect records a subject's gateway and installs (once)
+// the prerouting REDIRECT for it. Idempotent under at-least-once SET_BINDING
+// delivery: a duplicate registration (or a retried deny-first install) is a
+// no-op. A rebind that moved the subject to a different gateway releases the
+// old gateway first. Fails closed: a subject whose DNS cannot reach the
+// proxy must not register as usable.
+func (s *fleetPolicyServer) installGatewayDNSRedirect(subj subject.Subject, gateway netip.Addr) error {
 	s.gwMu.Lock()
 	defer s.gwMu.Unlock()
-	s.gatewayDNSRefs[gateway]++
-	if s.gatewayDNSRefs[gateway] > 1 {
-		return nil // already installed
+	if old, ok := s.gatewayDNSRefs[subj]; ok {
+		if old == gateway {
+			return nil // duplicate delivery: already counted for this gateway
+		}
+		// The subject moved gateways (rebind): release the old one first.
+		delete(s.gatewayDNSRefs, subj)
+		if s.countGatewayUsersLocked(old) == 0 && s.dnsRedirectRemove != nil {
+			_ = s.dnsRedirectRemove()
+		}
 	}
+	s.gatewayDNSRefs[subj] = gateway
 	if s.dnsRedirectInstall == nil {
 		return nil
 	}
+	if s.countGatewayUsersLocked(gateway) > 1 {
+		return nil // already installed for this gateway
+	}
 	if err := s.dnsRedirectInstall(gateway, fleetDNSProxyPort); err != nil {
-		s.gatewayDNSRefs[gateway]--
-		if s.gatewayDNSRefs[gateway] <= 0 {
-			delete(s.gatewayDNSRefs, gateway)
-		}
+		delete(s.gatewayDNSRefs, subj)
 		return err
 	}
 	return nil
 }
 
-// releaseGatewayDNSRedirect decrements the gateway refcount and removes the
-// shared REDIRECT table when the last subject using it is gone.
-func (s *fleetPolicyServer) releaseGatewayDNSRedirect(gateway netip.Addr) {
+// countGatewayUsersLocked counts the subjects currently mapped to a gateway.
+// Callers hold gwMu.
+func (s *fleetPolicyServer) countGatewayUsersLocked(gateway netip.Addr) int {
+	n := 0
+	for _, g := range s.gatewayDNSRefs {
+		if g == gateway {
+			n++
+		}
+	}
+	return n
+}
+
+// releaseGatewayDNSRedirect drops the subject's gateway mapping and removes
+// the shared REDIRECT table when the last subject using that gateway is gone.
+// Idempotent: a duplicate unload is a no-op.
+func (s *fleetPolicyServer) releaseGatewayDNSRedirect(subj subject.Subject) {
 	s.gwMu.Lock()
 	defer s.gwMu.Unlock()
-	s.gatewayDNSRefs[gateway]--
-	if s.gatewayDNSRefs[gateway] > 0 {
+	gateway, ok := s.gatewayDNSRefs[subj]
+	if !ok {
 		return
 	}
-	delete(s.gatewayDNSRefs, gateway)
+	delete(s.gatewayDNSRefs, subj)
+	if s.countGatewayUsersLocked(gateway) > 0 {
+		return
+	}
 	if s.dnsRedirectRemove != nil {
 		if err := s.dnsRedirectRemove(); err != nil {
 			log.Warnf("gateway DNS redirect remove (ignored): %v", err)
@@ -371,12 +399,26 @@ func (s *fleetPolicyServer) applyPolicy(subj subject.Subject, pol *policy.Networ
 // request body as read once by the handler — it is cached verbatim so the
 // pending replay applies the EXACT policy the client pushed (the body is
 // consumed by parsing, so it must be passed here explicitly).
+//
+// Lifecycle barrier: a runtime policy push for a still-DENYING subject must
+// not activate it ahead of sandbox.data-plane-ready. It is stored as the
+// subject's pending policy (the SET_BINDING input and later pushes
+// overwrite it) and becomes effective when the Hook lands.
 func (s *fleetPolicyServer) resolvePolicyPush(w http.ResponseWriter, r *http.Request, subj subject.Subject, pol *policy.NetworkPolicy, rawBody string) {
-	if _, ok := s.reg.Get(subj); !ok {
+	state, ok := s.reg.Get(subj)
+	if !ok {
 		s.cachePending(r, subj, []byte(rawBody))
 		writeJSON(w, http.StatusAccepted, policyStatusResponse{
 			Status: "pending",
 			Reason: "subject not registered yet; push cached",
+		})
+		return
+	}
+	if state == subject.StateDenying {
+		s.storePendingPolicy(subj, pol)
+		writeJSON(w, http.StatusAccepted, policyStatusResponse{
+			Status: "pending",
+			Reason: "subject denying; policy applied at data-plane-ready",
 		})
 		return
 	}
@@ -572,7 +614,7 @@ func (s *fleetPolicyServer) OnRegistered(subj subject.Subject, att actionhandler
 	if err := s.nft.ApplyDenyFirst(nftCtx, subj, att); err != nil {
 		return err
 	}
-	if err := s.installGatewayDNSRedirect(att.Gateway); err != nil {
+	if err := s.installGatewayDNSRedirect(subj, att.Gateway); err != nil {
 		// Fail closed: sandbox DNS addressed to gateway:53 must reach the
 		// proxy; without the redirect the sandbox would fall back to a
 		// resolver the policy cannot see.
@@ -582,10 +624,9 @@ func (s *fleetPolicyServer) OnRegistered(subj subject.Subject, att actionhandler
 		// Fail closed: a sandbox whose HTTP(S) is not intercepted must not
 		// register as usable (it could exfiltrate credentials-bearing
 		// traffic the MITM layer is responsible for). Roll back the gateway
-		// DNS redirect refcount installed above — the caller retries
-		// OnRegistered, and an unreleased refcount would accumulate on
-		// repeated failures, leaving the gateway redirect behind forever.
-		s.releaseGatewayDNSRedirect(att.Gateway)
+		// DNS redirect installed above — the caller retries OnRegistered,
+		// and an unreleased mapping would keep the gateway redirect forever.
+		s.releaseGatewayDNSRedirect(subj)
 		return err
 	}
 	log.Infof("subject %s deny-first enforced (nft + gateway redirect + mitm redirect)", subj)
@@ -717,15 +758,20 @@ func (s *fleetPolicyServer) StartPendingSweep(ctx context.Context) {
 // any cached push, pending policy, and vault (stale for a new sandbox of the
 // same UID). The gateway refcount is released when the last subject using it
 // goes away.
+//
+// Enforcement removal runs FIRST: a transient nft failure leaves every other
+// teardown step undone, and the caller keeps the subject registered so the
+// retried terminal cleanup re-runs everything (no double gateway release, no
+// stale rules).
 func (s *fleetPolicyServer) OnUnloaded(subj subject.Subject, att actionhandler.NetworkAttachment) error {
-	s.dropSubjectState(subj)
-	s.releaseGatewayDNSRedirect(att.Gateway)
-	s.removeMitmRedirect(subj)
 	nftCtx, cancel := context.WithTimeout(s.ctx, 30*time.Second)
 	defer cancel()
 	if err := s.nft.Remove(nftCtx, subj); err != nil {
 		return err
 	}
+	s.dropSubjectState(subj)
+	s.releaseGatewayDNSRedirect(subj)
+	s.removeMitmRedirect(subj)
 	log.Infof("subject %s enforcement removed", subj)
 	return nil
 }
@@ -788,14 +834,12 @@ func (s *fleetPolicyServer) clearPendingPolicy(subj subject.Subject) {
 	delete(s.pendingPolicies, subj)
 }
 
-// takePendingPolicy atomically returns and drops the subject's pending
-// policy.
-func (s *fleetPolicyServer) takePendingPolicy(subj subject.Subject) *policy.NetworkPolicy {
+// pendingPolicy returns the subject's pending policy without consuming it
+// (a failed data-plane-ready apply must leave it in place for the retry).
+func (s *fleetPolicyServer) pendingPolicy(subj subject.Subject) *policy.NetworkPolicy {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	pol := s.pendingPolicies[subj]
-	delete(s.pendingPolicies, subj)
-	return pol
+	return s.pendingPolicies[subj]
 }
 
 // revertToDenyFirst returns an active subject to deny-first (SET_BINDING with

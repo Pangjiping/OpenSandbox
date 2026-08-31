@@ -48,6 +48,7 @@ type fakeNft struct {
 	removed       []subject.Subject
 	denyFirstErr  error
 	policyErr     error
+	removeErr     error
 }
 
 func (f *fakeNft) ApplyDenyFirst(_ context.Context, s subject.Subject, _ actionhandler.NetworkAttachment) error {
@@ -74,6 +75,9 @@ func (f *fakeNft) ApplyPolicy(_ context.Context, s subject.Subject, pol *policy.
 func (f *fakeNft) Remove(_ context.Context, s subject.Subject) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.removeErr != nil {
+		return f.removeErr
+	}
 	f.removed = append(f.removed, s)
 	return nil
 }
@@ -536,25 +540,25 @@ func TestActionsSetBindingNullDropsPendingPushes(t *testing.T) {
 
 func TestFleetServerPolicyRouting(t *testing.T) {
 	srv, reg, nft := fleetTestServer(t)
-	s := subject.FromSandboxUID("u-1")
-	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
-		subject.Fencing{RuntimeInstanceID: "r-1", AttachmentID: "a-1"})
+	uid := "u-1"
+	s := setBindingAndReady(t, srv, reg, uid, testIP, strPtr(`{"defaultAction":"deny"}`))
+	_ = s
 
 	// unknown UID -> 404 on read
 	rec := doRequest(t, srv, http.MethodGet, "/policy", "ghost", "")
 	require.Equal(t, http.StatusNotFound, rec.Code)
 
-	// push policy for a registered subject -> active
-	rec = doRequest(t, srv, http.MethodPut, "/policy", uidHeader(s),
+	// push policy for an active subject -> in-place apply
+	rec = doRequest(t, srv, http.MethodPut, "/policy", uid,
 		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, 1, nft.appliedCount())
-	state, ok := reg.Get(s)
+	require.Equal(t, 2, nft.appliedCount())
+	state, ok := reg.Get(subject.FromSandboxUID(uid))
 	require.True(t, ok)
 	assert.Equal(t, subject.StateActive, state)
 
 	// GET reflects the subject's policy
-	rec = doRequest(t, srv, http.MethodGet, "/policy", uidHeader(s), "")
+	rec = doRequest(t, srv, http.MethodGet, "/policy", uid, "")
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), "example.com")
 
@@ -563,24 +567,57 @@ func TestFleetServerPolicyRouting(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// TestFleetServerPolicyPushWhileDenyingStaysPending (review fix): a runtime
+// /policy push must not activate a subject ahead of sandbox.data-plane-ready
+// (the lifecycle barrier). It updates the pending policy, which the Hook then
+// applies.
+func TestFleetServerPolicyPushWhileDenyingStaysPending(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	s := subject.FromSandboxUID("u-1")
+	rec := doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, strPtr(`{"defaultAction":"deny"}`)))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+
+	// push a NEW policy while the subject is denying: 202, stored pending,
+	// NOT applied, DNS keeps denying
+	rec = doRequest(t, srv, http.MethodPut, "/policy", "u-1",
+		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+	require.Equal(t, 0, nft.appliedCount())
+	assert.Nil(t, reg.EffectivePolicy(s))
+
+	// the Hook applies the PUSHED policy (it overwrote the binding input's
+	// pending policy)
+	rec = doAction(t, srv, hookBody(t, "u-1", testFenceR, testFenceA, constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
+	require.Equal(t, 1, nft.appliedCount())
+	assert.Equal(t, "allow", reg.EffectivePolicy(s).Evaluate("example.com"))
+}
+
 func TestFleetServerPolicyPendingPushFlushedOnSetBinding(t *testing.T) {
 	srv, reg, nft := fleetTestServer(t)
 	s := subject.FromSandboxUID("u-1")
 
 	// push before the binding exists -> cached as pending (202), nothing applied
-	rec := doRequest(t, srv, http.MethodPut, "/policy", uidHeader(s),
+	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1",
 		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
 	require.Equal(t, http.StatusAccepted, rec.Code)
 	assert.Equal(t, 0, nft.appliedCount())
 
-	// SET_BINDING registers the subject; the registration path flushes the
-	// pending push
+	// SET_BINDING registers the subject deny-first and flushes the cached
+	// push into the pending store (still deny-first — the barrier holds)
 	rec = doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, strPtr(`{}`)))
 	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+	assert.Equal(t, 0, nft.appliedCount())
 
-	state, ok := reg.Get(s)
-	require.True(t, ok)
-	assert.Equal(t, subject.StateActive, state, "pending push must be applied on registration")
+	// data-plane-ready applies the EXACT pushed policy, not the binding's
+	// default-deny
+	rec = doAction(t, srv, hookBody(t, "u-1", testFenceR, testFenceA, constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
 	assert.Equal(t, 1, nft.appliedCount())
 	eff := reg.EffectivePolicy(s)
 	require.NotNil(t, eff)
@@ -591,7 +628,7 @@ func TestFleetServerPendingGenerationMismatchDropped(t *testing.T) {
 	srv, reg, nft := fleetTestServer(t)
 	s := subject.FromSandboxUID("u-1")
 
-	rec := doRequest(t, srv, http.MethodPut, "/policy", uidHeader(s),
+	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1",
 		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
 	require.Equal(t, http.StatusAccepted, rec.Code)
 	// header generation 9 set on the cached request
@@ -603,8 +640,8 @@ func TestFleetServerPendingGenerationMismatchDropped(t *testing.T) {
 	srv.mu.Unlock()
 
 	// SET_BINDING with spec generation 1 -> mismatch, pending dropped. The
-	// subject is registered (deny-first) before the flush.
-	rec = doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, nil))
+	// subject is registered (deny-first) before the flush; no policy lands.
+	rec = doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, strPtr(`{"defaultAction":"deny"}`)))
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	state, _ := reg.Get(s)
@@ -800,10 +837,12 @@ func TestFleetServerActiveVaultClientIPDispatch(t *testing.T) {
 	reg.Register(sA, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")}, subject.Fencing{RuntimeInstanceID: "r-a", AttachmentID: "a-a"})
 	reg.Register(sB, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.6")}, subject.Fencing{RuntimeInstanceID: "r-b", AttachmentID: "a-b"})
 
-	// push a vault to subject A only (bindings require a policy that allows
+	// activate subject A (bindings require an effective policy that allows
 	// the bound host)
-	rec := doRequest(t, srv, http.MethodPut, "/policy", uidHeader(sA),
-		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
+	rec := doAction(t, srv, bindBody(t, "a", "10.0.0.5", "r-a", "a-a", 1,
+		strPtr(`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)))
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = doAction(t, srv, hookBody(t, "a", "r-a", "a-a", constants.HookDataPlaneReady))
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	rec = doRequest(t, srv, http.MethodPost, "/credential-vault", uidHeader(sA),
@@ -889,12 +928,14 @@ func TestFleetServerAlwaysRulesReachNft(t *testing.T) {
 	reg := subject.NewRegistry([]policy.EgressRule{alwaysDeny}, []policy.EgressRule{alwaysAllow})
 	nft := &fakeNft{}
 	srv := newFleetPolicyServer(context.Background(), reg, nft, time.Minute)
-	s := subject.FromSandboxUID("u-1")
-	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
-		subject.Fencing{RuntimeInstanceID: "r-1", AttachmentID: "a-1"})
+	srv.dnsRedirectInstall = func(netip.Addr, int) error { return nil }
+	srv.dnsRedirectRemove = func() error { return nil }
 
-	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1",
-		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
+	// activation through the action protocol; the binding policy reaches nft
+	// merged with the always overlay
+	rec := doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, strPtr(`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)))
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = doAction(t, srv, hookBody(t, "u-1", testFenceR, testFenceA, constants.HookDataPlaneReady))
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	nft.mu.Lock()
@@ -911,19 +952,15 @@ func TestFleetServerAlwaysRulesReachNft(t *testing.T) {
 // state.
 func TestFleetServerNftFailureKeepsRegistryState(t *testing.T) {
 	srv, reg, nft := fleetTestServer(t)
-	s := subject.FromSandboxUID("u-1")
-	reg.Register(s, subject.SubjectKey{SourceIP: netip.MustParseAddr("10.0.0.5")},
-		subject.Fencing{RuntimeInstanceID: "r-1", AttachmentID: "a-1"})
-
-	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1", `{"defaultAction":"deny"}`)
-	require.Equal(t, http.StatusOK, rec.Code)
+	input := `{"defaultAction":"deny"}`
+	s := setBindingAndReady(t, srv, reg, "u-1", testIP, &input)
 	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
 
 	// second push fails at nft: registry must stay on the FIRST policy
 	nft.mu.Lock()
 	nft.policyErr = errors.New("nft busy")
 	nft.mu.Unlock()
-	rec = doRequest(t, srv, http.MethodPut, "/policy", "u-1",
+	rec := doRequest(t, srv, http.MethodPut, "/policy", "u-1",
 		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 
@@ -967,4 +1004,138 @@ func mustState(st subject.State, ok bool) subject.State {
 		panic("subject absent")
 	}
 	return st
+}
+
+// ---------------------------------------------------------------------------
+// Review fixes: lifecycle-barrier retry semantics (PR #1678 comments)
+// ---------------------------------------------------------------------------
+
+// TestActionsDataPlaneReadyRetriesAfterNftFailure (review fix): a transient
+// nft failure on data-plane-ready must NOT consume the pending policy — the
+// Fastlet's retry of the same Hook succeeds instead of 409-ing forever with
+// the subject permanently deny-first.
+func TestActionsDataPlaneReadyRetriesAfterNftFailure(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	s := subject.FromSandboxUID("u-1")
+	input := `{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`
+	rec := doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, &input))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+
+	// first data-plane-ready fails at nft: 500, pending policy retained
+	nft.mu.Lock()
+	nft.policyErr = errors.New("nft busy")
+	nft.mu.Unlock()
+	rec = doAction(t, srv, hookBody(t, "u-1", testFenceR, testFenceA, constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+
+	// retry of the SAME Hook succeeds with the retained pending policy
+	nft.mu.Lock()
+	nft.policyErr = nil
+	nft.mu.Unlock()
+	rec = doAction(t, srv, hookBody(t, "u-1", testFenceR, testFenceA, constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
+	require.Equal(t, 1, nft.appliedCount())
+	assert.Equal(t, "allow", reg.EffectivePolicy(s).Evaluate("example.com"))
+}
+
+// TestActionsStaleHookFenceRejected (review fix): a delayed data-plane-ready
+// from a previous instance must not consume the replacement sandbox's pending
+// policy or activate it before its own data plane is ready.
+func TestActionsStaleHookFenceRejected(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	s := subject.FromSandboxUID("u-1")
+	input := `{"defaultAction":"deny","egress":[{"action":"allow","target":"new.com"}]}`
+	rec := doAction(t, srv, bindBody(t, "u-1", testIP, "runtime-2", "attachment-2", 1, &input))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+
+	// stale Hook (old runtime identity): 409, pending policy untouched, the
+	// subject stays deny-first
+	rec = doAction(t, srv, hookBody(t, "u-1", "runtime-old", "attachment-old", constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
+	assert.Equal(t, 0, nft.appliedCount())
+
+	// the genuine Hook (current fence) succeeds
+	rec = doAction(t, srv, hookBody(t, "u-1", "runtime-2", "attachment-2", constants.HookDataPlaneReady))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
+	assert.Equal(t, "allow", reg.EffectivePolicy(s).Evaluate("new.com"))
+}
+
+// TestActionsRemoveBindingRetriesAfterNftFailure (review fix): a transient
+// nft removal failure must keep the subject registered so the retried
+// REMOVE_BINDING resumes cleanup — otherwise it would succeed with stale
+// rules left for a possibly-reused IP.
+func TestActionsRemoveBindingRetriesAfterNftFailure(t *testing.T) {
+	srv, reg, nft := fleetTestServer(t)
+	input := `{"defaultAction":"deny"}`
+	s := setBindingAndReady(t, srv, reg, "u-1", testIP, &input)
+
+	// first REMOVE_BINDING fails at nft: 500, the subject STAYS registered
+	nft.mu.Lock()
+	nft.removeErr = errors.New("nft busy")
+	nft.mu.Unlock()
+	rec := doAction(t, srv, removeBody(t, "u-1", testFenceR, testFenceA))
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	state, ok := reg.Get(s)
+	require.True(t, ok, "subject must stay registered after a failed removal")
+	assert.Equal(t, subject.StateActive, state)
+
+	// retried REMOVE_BINDING resumes cleanup and completes (the fake only
+	// records successful removes; the registry state below proves the retry
+	// re-ran the enforcement removal instead of short-circuiting)
+	nft.mu.Lock()
+	nft.removeErr = nil
+	nft.mu.Unlock()
+	rec = doAction(t, srv, removeBody(t, "u-1", testFenceR, testFenceA))
+	require.Equal(t, http.StatusOK, rec.Code)
+	_, ok = reg.Get(s)
+	assert.False(t, ok)
+	require.Len(t, nft.removed, 1, "the retry must re-attempt and complete the nft removal")
+}
+
+// TestFleetServerGatewayRedirectDuplicateSetBindingIdempotent (review fix):
+// at-least-once SET_BINDING delivery must not double-count the gateway — a
+// duplicate registration is a no-op, and one unload fully releases it.
+func TestFleetServerGatewayRedirectDuplicateSetBindingIdempotent(t *testing.T) {
+	reg := subject.NewRegistry(nil, nil)
+	nft := &fakeNft{}
+	srv := newFleetPolicyServer(context.Background(), reg, nft, time.Minute)
+	var installs, removes int
+	srv.dnsRedirectInstall = func(netip.Addr, int) error { installs++; return nil }
+	srv.dnsRedirectRemove = func() error { removes++; return nil }
+
+	att := mitmAtt(t, "10.0.0.5", "10.10.0.1")
+	s := subject.FromSandboxUID("a")
+	require.NoError(t, srv.OnRegistered(s, att))
+	require.NoError(t, srv.OnRegistered(s, att), "duplicate SET_BINDING delivery")
+	assert.Equal(t, 1, installs, "duplicate registration must not re-install the redirect")
+
+	require.NoError(t, srv.OnUnloaded(s, att))
+	assert.Equal(t, 1, removes, "one unload must fully release the gateway")
+}
+
+// TestFleetServerGatewayRedirectRebindMovesGateway: a rebind that moved the
+// subject to a different gateway releases the old gateway's redirect.
+func TestFleetServerGatewayRedirectRebindMovesGateway(t *testing.T) {
+	reg := subject.NewRegistry(nil, nil)
+	nft := &fakeNft{}
+	srv := newFleetPolicyServer(context.Background(), reg, nft, time.Minute)
+	var installs, removes int
+	srv.dnsRedirectInstall = func(netip.Addr, int) error { installs++; return nil }
+	srv.dnsRedirectRemove = func() error { removes++; return nil }
+
+	s := subject.FromSandboxUID("a")
+	att1 := mitmAtt(t, "10.0.0.5", "10.10.0.1")
+	att2 := mitmAtt(t, "10.0.0.5", "10.20.0.1")
+	require.NoError(t, srv.OnRegistered(s, att1))
+	require.NoError(t, srv.OnRegistered(s, att2), "rebind with a new gateway")
+	assert.Equal(t, 2, installs)
+
+	require.NoError(t, srv.OnUnloaded(s, att2))
+	assert.Equal(t, 2, removes, "both gateways must be released")
 }

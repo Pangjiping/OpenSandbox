@@ -171,7 +171,6 @@ func (s *fleetPolicyServer) applySetBinding(env *actionhandler.Envelope) (int, e
 		log.Infof("subject %s: binding removed (deny-first)", subj)
 		return http.StatusOK, nil
 	}
-	s.OnRegisteredComplete(subj, att, env.Revision.SpecGeneration)
 	if state == subject.StateActive {
 		// Ordinary input update on an already-ready sandbox: apply in place,
 		// no Hook replay (the Fastlet does not send one for updates).
@@ -182,6 +181,11 @@ func (s *fleetPolicyServer) applySetBinding(env *actionhandler.Envelope) (int, e
 		// Deny-first until sandbox.data-plane-ready activates the subject.
 		s.storePendingPolicy(subj, pol)
 	}
+	// Flush cached pushes LAST: a push that landed during the registration
+	// window is newer intent than the binding input, so it overwrites the
+	// pending policy (the lifecycle barrier still holds — it only becomes
+	// effective at data-plane-ready). Vault pushes apply regardless.
+	s.OnRegisteredComplete(subj, att, env.Revision.SpecGeneration)
 	log.Infof("subject %s: SET_BINDING applied (state=%s)", subj, state)
 	return http.StatusOK, nil
 }
@@ -190,16 +194,29 @@ func (s *fleetPolicyServer) applySetBinding(env *actionhandler.Envelope) (int, e
 // confirms the deny-first install (idempotent re-registration — a replay
 // after an egress restart re-enters the subject through SET_BINDING first);
 // data-plane-ready applies the pending policy and activates the subject.
+//
+// Both Hooks are fenced against the registered identity: a delayed Hook from
+// a previous instance of the same UID must never consume the replacement
+// sandbox's pending policy or activate it before its own data plane is ready
+// (fail closed; the Fastlet retries with the current revision).
 func (s *fleetPolicyServer) applyLifecycleHook(env *actionhandler.Envelope) (int, error) {
 	subj := subject.FromSandboxUID(env.Sandbox.UID)
+	fence := subject.FromRevision(env)
+	regFence, ok := s.reg.Fence(subj)
+	if !ok {
+		return http.StatusConflict, fmt.Errorf("%s for unregistered subject %s", env.Hook.Name, subj)
+	}
+	if !regFence.Matches(fence) {
+		return http.StatusConflict, fmt.Errorf("stale %s (fence mismatch) for subject %s", env.Hook.Name, subj)
+	}
 	switch env.Hook.Name {
 	case constants.HookRuntimeReady:
-		if _, ok := s.reg.Get(subj); !ok {
-			return http.StatusConflict, fmt.Errorf("runtime-ready for unregistered subject %s", subj)
-		}
 		return http.StatusOK, nil
 	case constants.HookDataPlaneReady:
-		pol := s.takePendingPolicy(subj)
+		// Peek, do not consume: a transient nft failure must leave the
+		// pending policy in place so the Fastlet's retry of the same Hook
+		// succeeds instead of 409-ing forever with the subject deny-first.
+		pol := s.pendingPolicy(subj)
 		if pol == nil {
 			// No pending policy: SET_BINDING has not landed (protocol
 			// ordering violation) or the binding was removed. Fail closed —
@@ -209,6 +226,7 @@ func (s *fleetPolicyServer) applyLifecycleHook(env *actionhandler.Envelope) (int
 		if err := s.applyPolicy(subj, pol); err != nil {
 			return http.StatusInternalServerError, fmt.Errorf("policy apply: %w", err)
 		}
+		s.clearPendingPolicy(subj)
 		log.Infof("subject %s: data-plane-ready, policy active", subj)
 		return http.StatusOK, nil
 	default:
@@ -220,6 +238,10 @@ func (s *fleetPolicyServer) applyLifecycleHook(env *actionhandler.Envelope) (int
 // applyRemoveBinding performs terminal cleanup. Missing Handler state is
 // success; a fence mismatch (a stale removal for a previous instance of the
 // same UID) is ignored so it can never unload the current sandbox's subject.
+//
+// The subject stays registered until enforcement removal succeeds: a
+// transient failure returns 500 and the retried REMOVE_BINDING resumes
+// cleanup instead of succeeding with stale rules left in the kernel.
 func (s *fleetPolicyServer) applyRemoveBinding(env *actionhandler.Envelope) (int, error) {
 	subj := subject.FromSandboxUID(env.Sandbox.UID)
 	fence := subject.FromRevision(env)
@@ -228,17 +250,18 @@ func (s *fleetPolicyServer) applyRemoveBinding(env *actionhandler.Envelope) (int
 		log.Infof("subject %s: stale REMOVE_BINDING ignored (fence mismatch)", subj)
 		return http.StatusOK, nil
 	}
-	prev := s.reg.Unregister(subj)
-	att, _ := s.attachment(subj)
-	if prev == subject.StateAbsent {
+	if !ok {
 		// Missing Handler state is success; still drop any cached pushes for
 		// the dead sandbox so they can never flush into a later registration.
 		s.dropSubjectState(subj)
 		return http.StatusOK, nil
 	}
+	att, _ := s.attachment(subj)
+	prev, _ := s.reg.Get(subj)
 	if err := s.OnUnloaded(subj, att); err != nil {
 		return http.StatusInternalServerError, fmt.Errorf("enforcement removal: %w", err)
 	}
+	s.reg.Unregister(subj)
 	log.Infof("subject %s: REMOVE_BINDING complete (was %s)", subj, prev)
 	return http.StatusOK, nil
 }
