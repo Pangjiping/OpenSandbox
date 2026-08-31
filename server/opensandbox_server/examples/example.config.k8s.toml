@@ -51,6 +51,13 @@ allowed_host_paths = []
 # Default storage size for auto-created Kubernetes PVCs (when caller omits size).
 volume_default_size = "1Gi"
 
+[store]
+# SQLite is durable only when this path is backed by a PersistentVolume.
+type = "sqlite"
+path = "~/.opensandbox/opensandbox.db"
+# To use PostgreSQL, set type = "postgresql", configure [store.postgresql], and
+# inject OPENSANDBOX_STORE_POSTGRESQL_DSN. Use only one active server replica.
+
 [kubernetes]
 # Path to kubeconfig file. Leave as null to use in-cluster configuration
 kubeconfig_path = "~/.kube/config"
@@ -87,6 +94,9 @@ image = "opensandbox/egress:v1.1.7"
 mode = "dns"
 # Default is true (recommended for dual-stack CNI). Set false only if you need IPv6 in the netns (see server/configuration.md).
 # disable_ipv6 = false
+# Optional Kubernetes resources for the generated egress sidecar. Tune for your workload.
+# requests = { cpu = "25m", memory = "64Mi" }
+# limits = { cpu = "250m", memory = "256Mi" }
 
 # Renew-on-access. Off by default — see server/README.md.
 [renew_intent]

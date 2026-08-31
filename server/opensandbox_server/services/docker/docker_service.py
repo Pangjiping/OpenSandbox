@@ -653,7 +653,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
                     "message": "poolRef is not supported by the Docker provider. Use Kubernetes BatchSandbox provider instead.",
                 },
             )
-        request = resolve_sandbox_image_from_request(request)
+        request = await resolve_sandbox_image_from_request(request)
         ensure_entrypoint(request.entrypoint or [])
         ensure_metadata_labels(request.metadata)
         ensure_platform_valid(request.platform)

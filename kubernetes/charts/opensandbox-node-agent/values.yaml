@@ -22,21 +22,24 @@ imagePullSecrets: []
 
 # -- Runtime configuration for the node agent.
 config:
+  # -- Sources to enable. The image must contain every named Source.
+  sources:
+    - container-logs
   # -- Cluster identifier reported in collected records.
   clusterID: dev-cluster
   # -- Host path where node-local checkpoint state is persisted.
   stateDir: /var/lib/opensandbox/nodeagent
   # -- Maximum bytes of checkpoint state to keep on the node.
   stateMaxBytes: 1073741824
-  # -- Memory budget for buffering sandbox logs on the node.
+  # -- Memory budget for buffering sandbox records on the node.
   memoryBudgetBytes: 268435456
   # -- Maximum queued bytes per sandbox before backpressure applies.
   perSandboxQueueBytes: 16777216
   # -- Per-sandbox rate limit (bytes/s); 0 disables the limit.
   perSandboxRateLimit: 0
-  # -- Maximum length of a single log line before it is truncated.
+  # -- Maximum log-line length for the container-logs Source.
   maxLineBytes: 1048576
-  # -- Timeout after which a partial log line is flushed as complete.
+  # -- Partial-line timeout for the container-logs Source.
   partialTimeout: 5s
   # -- Delivery policy when a sink is unavailable (block or drop).
   dropPolicy: block
@@ -44,28 +47,28 @@ config:
   sinkTimeout: 30s
   # -- Maximum interval between sink retries.
   retryMaxInterval: 30s
-  # -- How long to retain records for ended sandboxes before checkpoint cleanup.
+  # -- Ended-sandbox retention for the container-logs Source.
   endedStateRetention: 24h
   # -- Address the node agent health/pprof HTTP server binds to.
   serverAddr: :8080
   # -- Optional pprof listen address; empty disables pprof.
   pprofAddr: ""
 
-# -- Sink configuration for collected log records.
+# -- Sink configuration for collected records.
 sink:
   # -- Sink type: file or oss.
   type: file
   # -- File sink configuration (used when sink.type is file).
   file:
-    # -- Directory where collected log files are written.
+    # -- Directory where collected records are written.
     path: /var/lib/opensandbox/nodeagent-data
-    # -- Maximum size of a single log file before rotation.
+    # -- Maximum size of a single output file before rotation.
     maxBytes: 1073741824
-    # -- Maximum number of rotated log files to keep.
+    # -- Maximum number of rotated output files to keep.
     maxFiles: 16
-    # -- Maximum total bytes of rotated log files to keep.
+    # -- Maximum total bytes of rotated output files to keep.
     maxTotalBytes: 10737418240
-    # -- Retention window for rotated log files.
+    # -- Retention window for rotated output files.
     retention: 24h
   # -- Alibaba Cloud OSS sink configuration (used when sink.type is oss).
   oss:
@@ -84,9 +87,9 @@ sink:
     # -- Key in the Secret holding the optional session token.
     sessionTokenKey: session-token
 
-# -- Host paths mounted into the node agent.
+# -- Host paths available to the node agent; enabled Sources and Sinks select mounts.
 hostPaths:
-  # -- Host path containing pod container logs (e.g. /var/log/pods).
+  # -- Pod-log host path used only by the container-logs Source.
   logs: /var/log/pods
   # -- Host path for checkpoint state (must match config.stateDir).
   state: /var/lib/opensandbox/nodeagent

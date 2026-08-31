@@ -350,11 +350,19 @@ class TestKubernetesSandboxServiceCreate:
         assert kwargs["labels"].get(SANDBOX_MANUAL_CLEANUP_LABEL) == "true"
 
     @pytest.mark.asyncio
-    async def test_create_sandbox_with_network_policy_passes_egress_token_and_annotations(
+    async def test_create_sandbox_with_network_policy_passes_unified_egress_settings(
         self, k8s_service, create_sandbox_request
     ):
         create_sandbox_request.network_policy = NetworkPolicy(default_action="deny", egress=[])
-        k8s_service.app_config.egress = EgressConfig(image="opensandbox/egress:v1.1.7")
+        create_sandbox_request.env = {
+            "OPENSANDBOX_EGRESS_LOG_LEVEL": "debug",
+            "SANDBOX_ENV": "value",
+        }
+        k8s_service.app_config.egress = EgressConfig(
+            image="opensandbox/egress:v1.1.7",
+            disable_ipv6=False,
+            requests={"cpu": "25m"},
+        )
         k8s_service.workload_provider.create_workload.return_value = {
             "name": "test-id", "uid": "uid-1"
         }
@@ -371,8 +379,17 @@ class TestKubernetesSandboxServiceCreate:
             await k8s_service.create_sandbox(create_sandbox_request)
 
         _, kwargs = k8s_service.workload_provider.create_workload.call_args
-        assert kwargs["egress_auth_token"] == "egress-token"
-        assert kwargs["egress_mode"] == EGRESS_MODE_DNS
+        egress_settings = kwargs["egress_settings"]
+        assert egress_settings.network_policy is create_sandbox_request.network_policy
+        assert egress_settings.auth_token == "egress-token"
+        assert egress_settings.image == "opensandbox/egress:v1.1.7"
+        assert egress_settings.mode == EGRESS_MODE_DNS
+        assert egress_settings.disable_ipv6 is False
+        assert egress_settings.resource_requests == {"cpu": "25m"}
+        assert egress_settings.resource_limits is None
+        assert egress_settings.env == {"OPENSANDBOX_EGRESS_LOG_LEVEL": "debug"}
+        assert kwargs["env"] == {"SANDBOX_ENV": "value"}
+        assert "network_policy" not in kwargs
         assert kwargs["annotations"][SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY] == "egress-token"
 
     @pytest.mark.asyncio
@@ -447,7 +464,7 @@ class TestKubernetesSandboxServiceCreate:
             await k8s_service.create_sandbox(create_sandbox_request)
 
         _, kwargs = k8s_service.workload_provider.create_workload.call_args
-        assert kwargs["egress_mode"] == EGRESS_MODE_DNS_NFT
+        assert kwargs["egress_settings"].mode == EGRESS_MODE_DNS_NFT
 
     @pytest.mark.asyncio
     async def test_create_sandbox_passes_platform_to_workload_provider(

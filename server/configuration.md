@@ -221,6 +221,17 @@ Configures the **egress sidecar** image and enforcement mode. The server only at
 | `mode` | string | `"dns"` | Passed to the sidecar as `OPENSANDBOX_EGRESS_MODE`. Values: **`dns`** — DNS-proxy-based enforcement (CIDR/static IP rules **not** enforced); **`dns+nft`** — adds nftables where available so **CIDR/IP** rules can be enforced. |
 | `disable_ipv6` | bool | `true` | IPv6 egress is incomplete (especially on Kubernetes). **Default on**; set `false` only when you want IPv6 left up in the netns. Details in [IPv6 and egress](#ipv6-and-egress) below. |
 | `readiness_timeout_seconds` | float | `30.0` | **Docker only.** Maximum time to wait for the egress sidecar health endpoint to become ready. Must be greater than `0`. |
+| `requests` | map string → string \| omitted | `null` | **Kubernetes only.** Resource requests for the generated egress sidecar. |
+| `limits` | map string → string \| omitted | `null` | **Kubernetes only.** Resource limits for the generated egress sidecar. |
+
+```toml
+[egress]
+image = "opensandbox/egress:v1.1.7"
+requests = { cpu = "25m", memory = "64Mi" }
+limits = { cpu = "250m", memory = "256Mi" }
+```
+
+Requests and limits can be omitted independently. Invalid or negative Kubernetes resource quantities cause configuration loading to fail. When both settings are omitted, the egress container does not declare resources and namespace `LimitRange` defaults may apply.
 
 ### IPv6 and egress
 
@@ -235,6 +246,7 @@ OpenSandbox egress does **not** treat IPv6 as a first-class, fully covered path�
 **Kubernetes notes:**
 
 - When `networkPolicy` is set, the workload includes an egress sidecar built from `egress.image`.
+- Configure `egress.requests` and/or `egress.limits` when namespace-wide `LimitRange` defaults are too large for the sidecar.
 
 See [`components/egress/README.md`](../components/egress/README.md) for sidecar behavior and limits.
 
@@ -263,17 +275,48 @@ the same backend.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `type` | string | `"sqlite"` | Server persistence backend type. Currently only **`sqlite`** is supported. |
+| `type` | string | `"sqlite"` | Server persistence backend type: `sqlite` or `postgresql`. |
 | `path` | string | `"~/.opensandbox/opensandbox.db"` | Filesystem path to the SQLite database file used for server-managed metadata. Parent directories are created automatically when needed. |
+| `postgresql.dsn` | string | unset | PostgreSQL connection string. Required when `type = "postgresql"`. In production, prefer the `OPENSANDBOX_STORE_POSTGRESQL_DSN` environment variable. |
+| `postgresql.min_pool_size` | integer | `1` | Minimum number of PostgreSQL connections retained by each server process. |
+| `postgresql.max_pool_size` | integer | `10` | Maximum number of PostgreSQL connections used by each server process. |
+| `postgresql.connect_timeout_seconds` | integer | `5` | Maximum time to establish the initial PostgreSQL connections. |
+| `postgresql.pool_timeout_seconds` | number | `5` | Maximum time to wait for a pooled PostgreSQL connection. |
 
 **Notes**
 
 - The default SQLite backend gives local and single-node deployments persistent
   metadata without requiring an external database service.
+- PostgreSQL provides externally managed persistence, but snapshot recovery is
+  not coordinated across server processes. Run only one active server process
+  against a PostgreSQL database.
+- `OPENSANDBOX_STORE_POSTGRESQL_DSN` overrides `postgresql.dsn`, keeping database
+  credentials out of configuration files and Kubernetes ConfigMaps.
+- Switching backends does not copy existing snapshot metadata. Start with an
+  empty PostgreSQL database or migrate existing records separately before cutover.
 - `memory` is intentionally **not** the default because server-managed snapshot
   resources must survive process restarts.
 - Higher-level components should depend on repository abstractions rather than
   importing `sqlite3` directly.
+
+Example:
+
+```toml
+[store]
+type = "postgresql"
+
+[store.postgresql]
+min_pool_size = 1
+max_pool_size = 10
+connect_timeout_seconds = 5
+pool_timeout_seconds = 5
+```
+
+```bash
+export OPENSANDBOX_STORE_POSTGRESQL_DSN='postgresql://opensandbox:password@postgres:5432/opensandbox?sslmode=require'
+```
+
+For Kubernetes configuration, see [Kubernetes Deployment](../docs/kubernetes/deployment.md#use-postgresql-for-server-persistence).
 
 ---
 

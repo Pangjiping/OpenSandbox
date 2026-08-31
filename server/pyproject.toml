@@ -52,6 +52,7 @@ dependencies = [
     "opentelemetry-sdk",
     "opentelemetry-exporter-otlp-proto-http",
     "pydantic",
+    "psycopg[binary,pool]>=3.2,<4",
     "redis>=5",
     "pydantic-settings>=2.14.2",
     "pyyaml",

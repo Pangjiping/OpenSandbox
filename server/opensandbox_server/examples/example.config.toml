@@ -54,6 +54,14 @@ volume_default_size = "1Gi"
 [store]
 type = "sqlite"
 path = "~/.opensandbox/opensandbox.db"
+# For an external PostgreSQL store, set type = "postgresql" and configure:
+# [store.postgresql]
+# min_pool_size = 1
+# max_pool_size = 10
+# connect_timeout_seconds = 5
+# pool_timeout_seconds = 5
+# Inject the DSN with OPENSANDBOX_STORE_POSTGRESQL_DSN in production.
+# Use only one active server process per PostgreSQL database.
 
 [docker]
 network_mode = "bridge"

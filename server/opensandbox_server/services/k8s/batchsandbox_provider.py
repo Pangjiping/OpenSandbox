@@ -24,14 +24,12 @@ from typing import Dict, List, Any, Optional
 
 from opensandbox_server.config import (
     AppConfig,
-    DEFAULT_EGRESS_DISABLE_IPV6,
-    EGRESS_MODE_DNS,
     INGRESS_MODE_GATEWAY,
 )
 from opensandbox_server.extensions.keys import BOOTSTRAP_EXECD_ISOLATION_KEY
 from opensandbox_server.services.constants import OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT
 from opensandbox_server.services.helpers import format_ingress_endpoint
-from opensandbox_server.api.schema import Endpoint, ImageSpec, NetworkPolicy, PlatformSpec, Volume
+from opensandbox_server.api.schema import Endpoint, ImageSpec, PlatformSpec, Volume
 from opensandbox_server.services.k8s.image_pull_secret_helper import (
     build_image_pull_secret,
     build_image_pull_secret_name,
@@ -58,7 +56,10 @@ from opensandbox_server.services.k8s.windows_profile import (
     validate_windows_profile_resource_limits,
 )
 from opensandbox_server.services.k8s.volume_helper import apply_volumes_to_pod_spec
-from opensandbox_server.services.k8s.workload_provider import WorkloadProvider
+from opensandbox_server.services.k8s.workload_provider import (
+    EgressWorkloadSettings,
+    WorkloadProvider,
+)
 from opensandbox_server.services.runtime_resolver import SecureRuntimeResolver
 
 logger = logging.getLogger(__name__)
@@ -125,12 +126,6 @@ class BatchSandboxProvider(WorkloadProvider):
 
         self.template_manager = BatchSandboxTemplateManager(template_file_path)
 
-        self.egress_disable_ipv6 = (
-            bool(app_config.egress.disable_ipv6)
-            if app_config and app_config.egress is not None
-            else DEFAULT_EGRESS_DISABLE_IPV6
-        )
-
     def supports_image_auth(self) -> bool:
         """BatchSandbox supports per-request image pull auth."""
         return True
@@ -147,16 +142,11 @@ class BatchSandboxProvider(WorkloadProvider):
         expires_at: Optional[datetime],
         execd_image: str,
         extensions: Optional[Dict[str, str]] = None,
-        network_policy: Optional[NetworkPolicy] = None,
-        egress_image: Optional[str] = None,
+        egress_settings: Optional[EgressWorkloadSettings] = None,
         volumes: Optional[List[Volume]] = None,
         platform: Optional[PlatformSpec] = None,
         annotations: Optional[Dict[str, str]] = None,
-        egress_auth_token: Optional[str] = None,
-        egress_mode: str = EGRESS_MODE_DNS,
-        credential_proxy_enabled: bool = False,
         resource_requests: Optional[Dict[str, str]] = None,
-        egress_env: Optional[Dict[str, Optional[str]]] = None,
     ) -> Dict[str, Any]:
         """Create a BatchSandbox in template mode or pool mode."""
         extensions = extensions or {}
@@ -176,15 +166,10 @@ class BatchSandboxProvider(WorkloadProvider):
                     "Pool mode does not support volumes. "
                     "Remove 'volumes' from request or use template mode."
                 )
-            if network_policy is not None:
+            if egress_settings is not None:
                 raise ValueError(
                     "Pool mode does not support networkPolicy. "
                     "Remove 'networkPolicy' from request or use template mode."
-                )
-            if credential_proxy_enabled:
-                raise ValueError(
-                    "Pool mode does not support credentialProxy.enabled. "
-                    "Disable credential proxy or use template mode."
                 )
             return self._create_workload_from_pool(
                 batchsandbox_name=sandbox_id,
@@ -202,10 +187,9 @@ class BatchSandboxProvider(WorkloadProvider):
         if windows_profile:
             validate_windows_profile_resource_limits(resource_limits)
 
+        has_egress = egress_settings is not None
         disable_ipv6_for_egress = (
-            network_policy is not None
-            and egress_image is not None
-            and self.egress_disable_ipv6
+            egress_settings.disable_ipv6 if egress_settings is not None else False
         )
         init_container = _build_execd_init_container(
             execd_image,
@@ -217,7 +201,7 @@ class BatchSandboxProvider(WorkloadProvider):
         main_env["OPENSANDBOX_ID"] = sandbox_id
         if self.execd_run_as_init:
             main_env["EXECD_INIT"] = "1"
-        if credential_proxy_enabled:
+        if egress_settings is not None and egress_settings.credential_proxy_enabled:
             main_env[OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT] = "true"
 
         main_container = _build_main_container(
@@ -225,7 +209,7 @@ class BatchSandboxProvider(WorkloadProvider):
             entrypoint=entrypoint,
             env=main_env,
             resource_limits=resource_limits,
-            has_network_policy=network_policy is not None,
+            has_network_policy=has_egress,
             isolation_enabled=(extensions or {}).get(BOOTSTRAP_EXECD_ISOLATION_KEY) == "enable",
             image_pull_policy=self.image_pull_policy,
             resource_requests=resource_requests or None,
@@ -282,12 +266,7 @@ class BatchSandboxProvider(WorkloadProvider):
 
         apply_egress_to_spec(
             containers=containers,
-            network_policy=network_policy,
-            egress_image=egress_image,
-            egress_auth_token=egress_auth_token,
-            egress_mode=egress_mode,
-            credential_proxy_enabled=credential_proxy_enabled,
-            extra_env=egress_env,
+            egress_settings=egress_settings,
             sandbox_id=sandbox_id,
         )
 
@@ -328,7 +307,7 @@ class BatchSandboxProvider(WorkloadProvider):
         )
         merged_pod_spec = batchsandbox.get("spec", {}).get("template", {}).get("spec", {})
         ensure_egress_runtime_compatible(
-            network_policy,
+            egress_settings.network_policy if egress_settings is not None else None,
             effective_runtime_class=merged_pod_spec.get("runtimeClassName"),
         )
         if platform is not None and not windows_profile:

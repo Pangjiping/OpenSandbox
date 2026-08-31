@@ -61,6 +61,8 @@ See [Network Isolation](/architecture/network-isolation#allowing-legitimate-in-c
 
 ## Configuration
 
+For non-pooled Kubernetes sandboxes, configure independent sidecar requests and limits to avoid inheriting workload-sized `LimitRange` defaults. See [Kubernetes deployment](/kubernetes/deployment#configure-egress-sidecar-resources).
+
 Most deployments only need these settings:
 
 - **Mode**: `OPENSANDBOX_EGRESS_MODE`

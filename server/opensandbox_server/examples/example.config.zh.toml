@@ -49,6 +49,14 @@ volume_default_size = "1Gi"
 [store]
 type = "sqlite"
 path = "~/.opensandbox/opensandbox.db"
+# 如需使用外部 PostgreSQL 存储，请设置 type = "postgresql" 并配置：
+# [store.postgresql]
+# min_pool_size = 1
+# max_pool_size = 10
+# connect_timeout_seconds = 5
+# pool_timeout_seconds = 5
+# 生产环境通过 OPENSANDBOX_STORE_POSTGRESQL_DSN 注入连接串。
+# 每个 PostgreSQL 数据库只能由一个活跃 Server 进程使用。
 
 [docker]
 # Supported values for network_mode: "host", "bridge"

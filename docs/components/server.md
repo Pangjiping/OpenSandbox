@@ -68,7 +68,31 @@ opensandbox-server init-config ~/.sandbox.toml --example docker
 2. Edit the file for your environment. Full reference: [configuration.md](https://github.com/opensandbox-group/OpenSandbox/blob/main/server/configuration.md) (all keys, defaults, validation, env vars).
 
    Topics covered there include: Docker `network_mode` / `host_ip` (e.g. server in Docker Compose), `[egress]` when clients send `networkPolicy`, `[ingress]`, `[secure_runtime]`, Kubernetes `workload_provider` / `batchsandbox_template_file`, `[agent_sandbox]`, TTL caps, `[renew_intent]`.
-   The server-wide persistence backend is configured under `[store]`; by default OpenSandbox uses a local SQLite database at `~/.opensandbox/opensandbox.db` for server-managed metadata such as snapshot records.
+   The server-wide persistence backend is configured under `[store]`; by default OpenSandbox uses a local SQLite database at `~/.opensandbox/opensandbox.db` for server-managed metadata such as snapshot records. PostgreSQL can be selected for externally managed persistence; see the [store configuration](https://github.com/opensandbox-group/OpenSandbox/blob/main/server/configuration.md#store).
+
+### PostgreSQL persistence
+
+Set the backend in the TOML configuration and inject the connection string through the environment:
+
+```toml
+[store]
+type = "postgresql"
+
+[store.postgresql]
+min_pool_size = 1
+max_pool_size = 10
+```
+
+```bash
+export OPENSANDBOX_STORE_POSTGRESQL_DSN='postgresql://opensandbox:password@postgres:5432/opensandbox?sslmode=require'
+opensandbox-server
+```
+
+::: warning
+Snapshot recovery is not coordinated across server processes. Run only one active server process against a PostgreSQL database.
+:::
+
+For Kubernetes Secret and Helm values wiring, see [Kubernetes Deployment](/kubernetes/deployment#use-postgresql-for-server-persistence).
 
 ### OpenTelemetry metrics
 

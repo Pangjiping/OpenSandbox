@@ -828,7 +828,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
         self._ensure_pool_mode_compatible(request, has_pool_ref)
 
         if not has_pool_ref:
-            request = resolve_sandbox_image_from_request(request)
+            request = await resolve_sandbox_image_from_request(request)
             ensure_entrypoint(request.entrypoint or [])
         ensure_metadata_labels(request.metadata)
         ensure_platform_valid(request.platform)
@@ -932,12 +932,7 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                     expires_at=context.expires_at,
                     execd_image=self.execd_image,
                     extensions=request.extensions,
-                    network_policy=request.network_policy,
-                    egress_image=context.egress_image,
-                    egress_auth_token=context.egress_auth_token,
-                    egress_mode=context.egress_mode,
-                    credential_proxy_enabled=context.credential_proxy_enabled,
-                    egress_env=context.egress_env,
+                    egress_settings=context.egress_settings,
                     volumes=request.volumes,
                     platform=request.platform,
                 )

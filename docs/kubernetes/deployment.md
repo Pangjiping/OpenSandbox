@@ -69,6 +69,48 @@ Use an external secret manager instead of creating the Secret manually in produc
 
 The chart installs the server into `opensandbox-system`, while the default `configToml` creates sandbox and pool resources in `opensandbox`. If you change `[kubernetes].namespace` in `configToml`, create that namespace instead of `opensandbox` before submitting workloads.
 
+### Use PostgreSQL for server persistence
+
+Create a Secret containing the PostgreSQL connection string:
+
+```bash
+read -s OPENSANDBOX_POSTGRESQL_DSN
+kubectl create secret generic opensandbox-postgresql \
+  --namespace opensandbox-system \
+  --from-literal=dsn="${OPENSANDBOX_POSTGRESQL_DSN}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+unset OPENSANDBOX_POSTGRESQL_DSN
+```
+
+In `values-server.yaml`, set `server.replicaCount` to `1`, add the Secret-backed
+environment variable below, and add the shown `[store]` tables to the complete
+`configToml` value:
+
+```yaml
+server:
+  replicaCount: 1
+  env:
+    - name: OPENSANDBOX_STORE_POSTGRESQL_DSN
+      valueFrom:
+        secretKeyRef:
+          name: opensandbox-postgresql
+          key: dsn
+
+configToml: |
+  # Keep the rest of the chart's complete server configuration here.
+  [store]
+  type = "postgresql"
+
+  [store.postgresql]
+  min_pool_size = 1
+  max_pool_size = 10
+```
+
+::: warning
+Snapshot recovery is not coordinated across server replicas. Keep
+`server.replicaCount: 1` when replicas use the same PostgreSQL database.
+:::
+
 ### Install and verify
 
 Inspect all available settings before installation:
@@ -118,6 +160,21 @@ curl --fail http://127.0.0.1:8080/health
 | `namespaceOverride` | Namespace used by chart resources | Defaults to `opensandbox-system`. |
 
 The server container and its Service use port `80`. Keep `[server].port = 80` when replacing `configToml` unless the chart templates are also updated to use a different port. The Service is `ClusterIP` by default; set `server.service.type` to reach the server from outside the cluster.
+
+### Configure egress sidecar resources
+
+When a create request includes `networkPolicy`, the lifecycle server adds an egress sidecar to each non-pooled sandbox Pod. Namespace `LimitRange` defaults apply to this container when it does not declare resources, which can reserve substantially more capacity than basic DNS/nft enforcement needs.
+
+Add optional resource settings to the `[egress]` section of `configToml`:
+
+```toml
+[egress]
+image = "opensandbox/egress:v1.1.7"
+requests = { cpu = "25m", memory = "64Mi" }
+limits = { cpu = "250m", memory = "256Mi" }
+```
+
+You can omit either `requests` or `limits`. Treat these values as a starting point and tune them from observed usage; Credential Vault and transparent mitmproxy generally need more headroom than basic DNS/nft enforcement.
 
 ### Upgrade
 
