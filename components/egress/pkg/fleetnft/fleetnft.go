@@ -73,8 +73,9 @@ const (
 	dispatchPriority = 0
 	// markChain is the shared prerouting hook chain where per-subject allow
 	// marks are set (see the package comment: the forward path never accepts
-	// explicitly — it only drops, so bridge topologies keep routing).
-	markChain    = "mark"
+	// explicitly — it only drops, so bridge topologies keep routing). The
+	// name avoids the nft keyword `mark` (chain names cannot be keywords).
+	markChain    = "marking"
 	markPriority = 0
 	allowMark    = 0x2 // distinct from the DNS proxy's SO_MARK 0x1 bypass
 	// inputChain is the authoritative enforcement layer for MITM traffic:

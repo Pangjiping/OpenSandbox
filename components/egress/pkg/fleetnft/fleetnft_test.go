@@ -87,14 +87,14 @@ func TestDenyFirstInstallFailClosedShape(t *testing.T) {
 	// (the forward path never issues an explicit accept — bridge-netfilter
 	// semantics), plus the prerouting mark hook chain
 	require.Contains(t, script, "add chain inet opensandbox-fleet dispatch { type filter hook forward priority 0; policy accept; }")
-	require.Contains(t, script, "add chain inet opensandbox-fleet mark { type filter hook prerouting priority 0; }")
+	require.Contains(t, script, "add chain inet opensandbox-fleet marking { type filter hook prerouting priority 0; }")
 	require.Contains(t, script, "delete table inet opensandbox-fleet")
 	require.Contains(t, script, "add rule inet opensandbox-fleet dispatch meta mark & 0x2 != 0x2 drop")
 	// dispatch rule binds source IP + host veth (defense in depth)
 	require.Contains(t, script, "ip saddr 10.0.0.5 iifname \"vethu-1\" jump")
 	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 iifname "vethu-1" jump subj_s_u_1`)
 	// the prerouting mark jump reaches the subject's mark chain
-	require.Contains(t, script, `add rule inet opensandbox-fleet mark ip saddr 10.0.0.5 iifname "vethu-1" jump mark_s_u_1`)
+	require.Contains(t, script, `add rule inet opensandbox-fleet marking ip saddr 10.0.0.5 iifname "vethu-1" jump mark_s_u_1`)
 	// subject chains exist; deny-first = no mark rules, drop-only forward chain
 	require.Contains(t, script, "subj_s_u_1")
 	require.Contains(t, script, "mark_s_u_1")
@@ -358,7 +358,7 @@ func TestWriteDispatchRuleV6(t *testing.T) {
 	var b strings.Builder
 	writeDispatchRule(&b, subject.FromSandboxUID("u-1"), testSlot("u-1", "fd00::5"), 0)
 	require.Contains(t, b.String(), `add rule inet opensandbox-fleet dispatch ip6 saddr fd00::5 iifname "vethu-1" jump subj_s_u_1`)
-	require.Contains(t, b.String(), `add rule inet opensandbox-fleet mark ip6 saddr fd00::5 iifname "vethu-1" jump mark_s_u_1`)
+	require.Contains(t, b.String(), `add rule inet opensandbox-fleet marking ip6 saddr fd00::5 iifname "vethu-1" jump mark_s_u_1`)
 }
 
 // TestIifnameBindingInDispatchRule: the host-veth binding lives in the
