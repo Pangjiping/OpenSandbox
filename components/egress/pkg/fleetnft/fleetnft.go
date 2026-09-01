@@ -19,24 +19,31 @@
 // Enforcement model (Pod netns):
 //
 //	table inet opensandbox-fleet
-//	  chain dispatch { hook forward, policy drop }   <- master chain, fail-closed
-//	    ct state established,related accept           <- return traffic of allowed flows
+//	  chain mark { hook prerouting, priority 0 }      <- per-subject allow marks
+//	    ip saddr <ip> iifname <veth> jump mark_<id>   <- one rule per subject
+//	  chain mark_<id> (regular chain)                 <- what to mark
+//	    ip daddr @subj_<id>_allow_v4 meta mark set 0x2
+//	    ip daddr @subj_<id>_dyn_v4    meta mark set 0x2
+//	    (default-allow subjects: unconditional mark)
+//	  chain dispatch { hook forward, policy ACCEPT }  <- master chain
+//	    ct state established,related accept           <- return traffic
 //	    tcp/udp dport 853 drop                        <- DoT bypass blocked
 //	    ip saddr <ip> iifname <veth> jump subj_<id>   <- one rule per subject
-//	  chain subj_<id> (regular chain)            <- per-subject policy, reached via dispatch jump
-//	    ...deny/dyn/allow set verdicts...             <- policy content
+//	    meta mark & 0x2 != 0x2 drop                   <- fail-closed tail
+//	  chain subj_<id> (regular chain)                 <- deny sets only
+//	    ip daddr @subj_<id>_deny_v4/v6 drop
 //
-// The master chain defaults to drop, so an unregistered sandbox source is
-// denied before its slot is ever observed (Codex review point on the OSEP).
-// Dispatch is one rule per subject keyed on source IP bound to the host veth
-// (iifname, defense in depth against UDP spoofing). Verdict maps cannot jump
-// to chains (nf_tables rejects `jump`/`goto` in map elements with EOPNOTSUPP),
-// so rule-based dispatch is used and Remove rebuilds the whole table in one
-// atomic transaction (rules are deletable only by handle, which we do not
-// track). Deny-first registration installs a subject chain with empty sets
-// and a drop policy; a policy push swaps the chain and static sets in one
-// atomic nft -f transaction. DNS-learned dynamic sets are separate and
-// survive the swap.
+// NO explicit accept verdicts exist in the forward path: with
+// net.bridge.bridge-nf-call-iptables=1 (the fast-sandbox Firecracker bridge
+// topology), an accept verdict from the forward hook returns the frame to the
+// bridge L2 path — a frame whose destination is the bridge itself is then
+// treated as local delivery and dropped, so postrouting (SNAT) is never
+// reached. Only "not hitting a drop rule" lets the frame continue IP routing.
+// The master chain therefore defaults to ACCEPT and drops everything that was
+// not explicitly marked as allowed in prerouting; per-subject allow/dyn set
+// members are marked there. Unregistered sources and deny-first subjects are
+// unmarked and dropped by the tail, so fail-closed is preserved. Mark 0x2 is
+// distinct from the DNS proxy's SO_MARK 0x1 bypass (pkg/constants MarkValue).
 package fleetnft
 
 import (
@@ -64,6 +71,12 @@ const TableName = "opensandbox-fleet"
 const (
 	dispatchChain    = "dispatch"
 	dispatchPriority = 0
+	// markChain is the shared prerouting hook chain where per-subject allow
+	// marks are set (see the package comment: the forward path never accepts
+	// explicitly — it only drops, so bridge topologies keep routing).
+	markChain    = "mark"
+	markPriority = 0
+	allowMark    = 0x2 // distinct from the DNS proxy's SO_MARK 0x1 bypass
 	// inputChain is the authoritative enforcement layer for MITM traffic:
 	// intercepted HTTP(S) is DNATed to the shared mitmproxy port and
 	// delivered locally, so it never traverses the forward hook. The input
@@ -430,15 +443,21 @@ func removeDeleteTableLine(script string) string {
 // Script builders (pure string generation, unit-testable).
 // ---------------------------------------------------------------------------
 
-// writeTableHeader writes the idempotent table + master dispatch chain
-// header. The chain policy is drop: unregistered sandbox sources are denied.
-// The DoH-443 blocking rules (when enabled) are global — they live in the
-// master chain ahead of the dispatch jumps, so they apply to every subject
-// regardless of policy, matching the sidecar profile's semantics.
+// writeTableHeader writes the idempotent table, the mark hook chain, the
+// master dispatch chain, and (with MITM) the input chain. The dispatch chain
+// policy is ACCEPT with an unmarked-drop tail: the forward path never issues
+// an explicit accept (bridge-netfilter semantics, see the package comment),
+// so allowed traffic is marked in prerouting and simply not dropped, while
+// unregistered/deny-first/unmarked traffic is dropped by the tail — fail
+// closed. The DoH-443 blocking rules (when enabled) are global — they live in
+// the master chain ahead of the dispatch jumps, so they apply to every
+// subject regardless of policy, matching the sidecar profile's semantics.
 func (a *Applier) writeTableHeader(b *strings.Builder) error {
 	fmt.Fprintf(b, "delete table inet %s\n", TableName)
 	fmt.Fprintf(b, "add table inet %s\n", TableName)
-	fmt.Fprintf(b, "add chain inet %s %s { type filter hook forward priority %d; policy drop; }\n",
+	fmt.Fprintf(b, "add chain inet %s %s { type filter hook prerouting priority %d; }\n",
+		TableName, markChain, markPriority)
+	fmt.Fprintf(b, "add chain inet %s %s { type filter hook forward priority %d; policy accept; }\n",
 		TableName, dispatchChain, dispatchPriority)
 	fmt.Fprintf(b, "add rule inet %s %s ct state established,related accept\n", TableName, dispatchChain)
 	fmt.Fprintf(b, "add rule inet %s %s tcp dport 853 drop\n", TableName, dispatchChain)
@@ -452,9 +471,26 @@ func (a *Applier) writeTableHeader(b *strings.Builder) error {
 		fmt.Fprintf(b, "add rule inet %s %s ct state established,related accept\n", TableName, inputChain)
 	}
 	if !a.opts.BlockDoH443 {
+		writeFailClosedTail(b)
 		return nil
 	}
-	return a.writeDoHBlockFragment(b)
+	if err := a.writeDoHBlockFragment(b); err != nil {
+		return err
+	}
+	writeFailClosedTail(b)
+	return nil
+}
+
+// writeFailClosedTail appends the master-chain rule that drops every
+// unmarked outbound packet: the forward path only drops (never accepts), so
+// per-subject allow/dyn marks set in prerouting are the ONLY way a packet
+// passes the tail. Unregistered sources and deny-first subjects carry no
+// mark and are denied here (the empty table after ApplyReset therefore stays
+// fail-closed). The tail's position relative to the per-subject jumps is
+// irrelevant: marked and unmarked packets are disjoint predicates.
+func writeFailClosedTail(b *strings.Builder) {
+	fmt.Fprintf(b, "add rule inet %s %s meta mark & 0x%x != 0x%x drop\n",
+		TableName, dispatchChain, allowMark, allowMark)
 }
 
 // writeDoHBlockFragment emits the DoH-443 blocking sets and rules for BOTH
@@ -498,17 +534,19 @@ func (a *Applier) writeDoHBlockFragment(b *strings.Builder) error {
 }
 
 // writeSubjectDenyFirstFragment installs a subject in deny-first state:
-// empty static sets, drop-policy chain, and a dispatch rule keyed on the
-// sandbox source IP + host veth (iifname binding: defense in depth against
-// UDP spoofing). Applies against an existing table (or right after the
-// header).
+// empty static sets, a drop-only forward chain, NO prerouting marks (the
+// master-chain fail-closed tail drops all unmarked outbound), and the
+// dispatch rules keyed on the sandbox source IP + host veth (iifname binding:
+// defense in depth against UDP spoofing). Applies against an existing table
+// (or right after the header).
 func writeSubjectDenyFirstFragment(b *strings.Builder, s subject.Subject, att actionhandler.NetworkAttachment, mitmPort int) error {
 	if err := writeSubjectSets(b, s, nil); err != nil {
 		return err
 	}
-	writeSubjectChain(b, s, policy.ActionDeny, mitmPort)
+	writeSubjectChain(b, s, mitmPort)
 	writeDispatchRule(b, s, att, mitmPort)
-	writeSubjectVerdictRules(b, s, policy.ActionDeny, mitmPort)
+	writeSubjectForwardDenyRules(b, s, true)
+	writeSubjectInputVerdictRules(b, s, policy.ActionDeny, mitmPort)
 	return nil
 }
 
@@ -518,9 +556,11 @@ func writeSubjectInitialPolicyFragment(b *strings.Builder, s subject.Subject, at
 	if err := writeSubjectSets(b, s, pol); err != nil {
 		return err
 	}
-	writeSubjectChain(b, s, pol.DefaultAction, mitmPort)
+	writeSubjectChain(b, s, mitmPort)
 	writeDispatchRule(b, s, att, mitmPort)
-	writeSubjectVerdictRules(b, s, pol.DefaultAction, mitmPort)
+	writeSubjectForwardDenyRules(b, s, false)
+	writeSubjectMarkRules(b, s, pol.DefaultAction)
+	writeSubjectInputVerdictRules(b, s, pol.DefaultAction, mitmPort)
 	return nil
 }
 
@@ -529,12 +569,13 @@ func writeSubjectInitialPolicyFragment(b *strings.Builder, s subject.Subject, at
 // the master-chain dispatch rule references the chain, and deleting a
 // referenced chain/set fails with EBUSY) and the deny-first content is
 // re-added, with the dispatch rule for the (possibly changed) attachment.
-// Used on re-registration so a previous sandbox's policy and DNS leases never
-// survive. A dispatch rule from a previous attachment key is harmless (a
-// stale source key never matches; the same key yields an identical duplicate
-// rule with the same verdict).
+// Used on re-registration so a previous sandbox's policy, DNS leases, and
+// prerouting marks never survive. A dispatch rule from a previous attachment
+// key is harmless (a stale source key never matches; the same key yields an
+// identical duplicate rule with the same verdict).
 func writeSubjectResetFragment(b *strings.Builder, s subject.Subject, att actionhandler.NetworkAttachment, mitmPort int) error {
 	fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChain(s))
+	fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, markChainName(s))
 	if mitmPort > 0 {
 		fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChainIn(s))
 	}
@@ -542,7 +583,8 @@ func writeSubjectResetFragment(b *strings.Builder, s subject.Subject, att action
 		fmt.Fprintf(b, "flush set inet %s %s\n", TableName, name)
 	}
 	writeDispatchRule(b, s, att, mitmPort)
-	writeSubjectVerdictRules(b, s, policy.ActionDeny, mitmPort)
+	writeSubjectForwardDenyRules(b, s, true)
+	writeSubjectInputVerdictRules(b, s, policy.ActionDeny, mitmPort)
 	return nil
 }
 
@@ -550,11 +592,13 @@ func writeSubjectResetFragment(b *strings.Builder, s subject.Subject, att action
 // and static set elements. The chain and set objects are FLUSHED, not
 // deleted: the master-chain dispatch rule references the chain (and the
 // verdict rules reference the sets), and deleting referenced objects fails
-// with EBUSY. Dynamic DNS-learned sets and the dispatch rule are untouched.
-// Chain policy is explicit (regular chain), so re-adding the verdict rules
-// after the flush is a complete swap.
+// with EBUSY. Dynamic DNS-learned sets and the dispatch rules are untouched.
+// Regular chains have no policy, so re-adding the rules after the flush is a
+// complete swap; the prerouting mark chain is flushed and rebuilt alongside
+// (a default-action change flips the mark strategy).
 func writeSubjectPolicySwapFragment(b *strings.Builder, s subject.Subject, pol *policy.NetworkPolicy, mitmPort int) error {
 	fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChain(s))
+	fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, markChainName(s))
 	if mitmPort > 0 {
 		fmt.Fprintf(b, "flush chain inet %s %s\n", TableName, subjectChainIn(s))
 	}
@@ -574,7 +618,9 @@ func writeSubjectPolicySwapFragment(b *strings.Builder, s subject.Subject, pol *
 	if err := writeSetElements(b, denySetName(s, "v6"), denyV6); err != nil {
 		return err
 	}
-	writeSubjectVerdictRules(b, s, pol.DefaultAction, mitmPort)
+	writeSubjectForwardDenyRules(b, s, false)
+	writeSubjectMarkRules(b, s, pol.DefaultAction)
+	writeSubjectInputVerdictRules(b, s, pol.DefaultAction, mitmPort)
 	return nil
 }
 
@@ -625,37 +671,59 @@ func writeSetElements(b *strings.Builder, setName string, elems []string) error 
 	return nil
 }
 
-// writeSubjectChain creates the subject chain as a REGULAR (non-hook) chain:
+// writeSubjectChain creates the subject chains as REGULAR (non-hook) chains:
 // nf_tables rejects `jump` to hook-bound chains (EOPNOTSUPP), and subject
-// chains are only ever entered through the master dispatch jump. The default
-// action is an explicit trailing verdict instead of a chain policy. The
-// per-subject input chain is created alongside when MITM is enabled.
-func writeSubjectChain(b *strings.Builder, s subject.Subject, defaultAction string, mitmPort int) {
+// chains are only ever entered through the master dispatch jumps. The
+// per-subject prerouting mark chain and the per-subject input chain (MITM)
+// are created alongside.
+func writeSubjectChain(b *strings.Builder, s subject.Subject, mitmPort int) {
 	fmt.Fprintf(b, "add chain inet %s %s\n", TableName, subjectChain(s))
+	fmt.Fprintf(b, "add chain inet %s %s\n", TableName, markChainName(s))
 	if mitmPort > 0 {
 		fmt.Fprintf(b, "add chain inet %s %s\n", TableName, subjectChainIn(s))
 	}
 }
 
-// writeSubjectVerdictRules emits the set-based verdicts for both paths: the
-// forward chain matches the real destination directly; the input chain (MITM
-// traffic, DNATed) matches the conntrack ORIGINAL destination. The trailing
-// rule carries the default action: drop for default-deny (deny-first and
-// enforcing), accept for default-allow — a regular chain has no policy, so
-// the default must be explicit (matches the sidecar's chain-policy choice).
-func writeSubjectVerdictRules(b *strings.Builder, s subject.Subject, defaultAction string, mitmPort int) {
+// writeSubjectForwardDenyRules emits the forward-path subject chain content:
+// the deny-set drops ONLY. No accept verdicts exist in the forward path
+// (bridge-netfilter semantics — an explicit accept would return the frame to
+// the bridge L2 path and drop it); allowed traffic is marked in prerouting
+// and simply not dropped by the master-chain tail. denyFirst additionally
+// appends a bare drop so a deny-first subject is blocked even before any
+// marks could exist.
+func writeSubjectForwardDenyRules(b *strings.Builder, s subject.Subject, denyFirst bool) {
 	chain := subjectChain(s)
 	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s drop\n", TableName, chain, denySetName(s, "v4"))
 	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s drop\n", TableName, chain, denySetName(s, "v6"))
-	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s accept\n", TableName, chain, dynSetName(s, "v4"))
-	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s accept\n", TableName, chain, dynSetName(s, "v6"))
-	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s accept\n", TableName, chain, allowSetName(s, "v4"))
-	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s accept\n", TableName, chain, allowSetName(s, "v6"))
-	if defaultAction == policy.ActionDeny {
+	if denyFirst {
 		fmt.Fprintf(b, "add rule inet %s %s drop\n", TableName, chain)
-	} else {
-		fmt.Fprintf(b, "add rule inet %s %s accept\n", TableName, chain)
 	}
+}
+
+// writeSubjectMarkRules emits the prerouting mark content for a subject:
+// default-deny policies mark allow/dyn set members (everything else stays
+// unmarked and is dropped by the master-chain tail); default-allow policies
+// mark EVERY outbound packet (the deny sets still drop). Deny-first subjects
+// carry no mark rules at all.
+func writeSubjectMarkRules(b *strings.Builder, s subject.Subject, defaultAction string) {
+	chain := markChainName(s)
+	if defaultAction == policy.ActionAllow {
+		fmt.Fprintf(b, "add rule inet %s %s meta mark set 0x%x\n", TableName, chain, allowMark)
+		return
+	}
+	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s meta mark set 0x%x\n", TableName, chain, allowSetName(s, "v4"), allowMark)
+	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s meta mark set 0x%x\n", TableName, chain, allowSetName(s, "v6"), allowMark)
+	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s meta mark set 0x%x\n", TableName, chain, dynSetName(s, "v4"), allowMark)
+	fmt.Fprintf(b, "add rule inet %s %s ip6 daddr @%s meta mark set 0x%x\n", TableName, chain, dynSetName(s, "v6"), allowMark)
+}
+
+// writeSubjectInputVerdictRules emits the INPUT-path (MITM) enforcement: the
+// intercepted traffic is DNATed and delivered locally, so it never traverses
+// the forward hook. The input chain keeps the full set-based verdicts —
+// accept semantics are normal for local delivery, and the conntrack ORIGINAL
+// destination is matched. The trailing rule carries the default action: drop
+// for default-deny (deny-first and enforcing), accept for default-allow.
+func writeSubjectInputVerdictRules(b *strings.Builder, s subject.Subject, defaultAction string, mitmPort int) {
 	if mitmPort <= 0 {
 		return
 	}
@@ -673,20 +741,24 @@ func writeSubjectVerdictRules(b *strings.Builder, s subject.Subject, defaultActi
 	}
 }
 
-// writeDispatchRule adds the master-chain dispatch jumps for a subject,
-// matching source IP and host veth (defense in depth: a forged source IP from
-// another sandbox is rejected by the iifname bound to this sandbox's veth).
-// The input dispatch additionally requires ct status dnat on the mitmproxy
-// port, so only intercepted traffic enters the input enforcement chain; a
-// DIRECT connection to the mitm port (no DNAT — a default-allow sandbox
-// talking proxy protocol to the gateway) falls through to a drop, closing
-// the transparent-interception bypass. Verdict maps cannot jump to chains
-// (EOPNOTSUPP on add element), so dispatch is a plain rule per subject;
-// removal rebuilds the table (see Remove).
+// writeDispatchRule adds the dispatch jumps for a subject: the forward-path
+// jump (master dispatch -> subject chain), the prerouting jump (mark chain ->
+// subject mark chain, where allow/dyn marks are set), and — with MITM — the
+// input dispatch. All match source IP and host veth (defense in depth: a
+// forged source IP from another sandbox is rejected by the iifname bound to
+// this sandbox's veth). The input dispatch additionally requires ct status
+// dnat on the mitmproxy port, so only intercepted traffic enters the input
+// enforcement chain; a DIRECT connection to the mitm port (no DNAT — a
+// default-allow sandbox talking proxy protocol to the gateway) falls through
+// to a drop, closing the transparent-interception bypass. Verdict maps cannot
+// jump to chains (EOPNOTSUPP on add element), so dispatch is a plain rule per
+// subject; removal rebuilds the table (see Remove).
 func writeDispatchRule(b *strings.Builder, s subject.Subject, att actionhandler.NetworkAttachment, mitmPort int) {
 	if att.IP.Is4() {
 		fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" jump %s\n",
 			TableName, dispatchChain, att.IP, att.HostVeth, subjectChain(s))
+		fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" jump %s\n",
+			TableName, markChain, att.IP, att.HostVeth, markChainName(s))
 		if mitmPort > 0 {
 			fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" tcp dport %d ct status dnat jump %s\n",
 				TableName, inputChain, att.IP, att.HostVeth, mitmPort, subjectChainIn(s))
@@ -699,6 +771,8 @@ func writeDispatchRule(b *strings.Builder, s subject.Subject, att actionhandler.
 	}
 	fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" jump %s\n",
 		TableName, dispatchChain, att.IP, att.HostVeth, subjectChain(s))
+	fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" jump %s\n",
+		TableName, markChain, att.IP, att.HostVeth, markChainName(s))
 	if mitmPort > 0 {
 		fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" tcp dport %d ct status dnat jump %s\n",
 			TableName, inputChain, att.IP, att.HostVeth, mitmPort, subjectChainIn(s))
@@ -740,6 +814,12 @@ func clampTTL(d time.Duration) time.Duration {
 // Subject names appear in nft identifiers: sanitize to [a-z0-9_].
 func subjectChain(s subject.Subject) string {
 	return "subj_" + sanitize(string(s))
+}
+
+// markChainName is the subject's regular prerouting mark chain (reached via
+// the shared mark hook chain's per-subject jump).
+func markChainName(s subject.Subject) string {
+	return "mark_" + sanitize(string(s))
 }
 
 // subjectChainIn is the per-subject INPUT enforcement chain (MITM traffic).

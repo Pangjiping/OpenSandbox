@@ -88,15 +88,22 @@ sequenceDiagram
 ## 3. Data plane: outbound traffic flow
 
 The authoritative enforcement layer is the Pod netns `forward` hook
-(`table opensandbox-fleet`, master chain policy **drop**): per-subject
+(`table opensandbox-fleet`, master chain policy **accept** with an
+unmarked-drop tail — the forward path never issues an explicit accept,
+because on the fast-sandbox Firecracker bridge topology
+(`bridge-nf-call-iptables=1`) an accept verdict returns the frame to the
+bridge L2 path and drops it before postrouting). Allowed destinations are
+marked in per-subject `hook prerouting` chains (`meta mark set 0x2` for
+allow/dyn set members, unconditional for default-allow policies); per-subject
 dispatch by `ip saddr . iifname` (the host veth binding is defense in depth
-against UDP spoofing), then the subject chain's deny/dyn/allow sets. The
-unregistered-source default is drop. Intercepted MITM traffic is delivered
-locally (DNAT) and enforced by the dedicated INPUT chain on the conntrack
-original destination. DNS-learned leases are kept alive by the per-subject
-connection refresh loop (Pod netns conntrack, bucketed by source IP, one
-batched transaction per tick); only TCP sessions are renewed — UDP/QUIC
-(HTTP/3) relies on DNS lease TTLs.
+against UDP spoofing) leads to subject chains whose deny sets drop explicitly,
+and the unmarked-drop tail denies everything else (unregistered sources,
+deny-first subjects). Intercepted MITM traffic is delivered locally (DNAT)
+and enforced by the dedicated INPUT chain on the conntrack original
+destination. DNS-learned leases are kept alive by the per-subject connection
+refresh loop (Pod netns conntrack, bucketed by source IP, one batched
+transaction per tick); only TCP sessions are renewed — UDP/QUIC (HTTP/3)
+relies on DNS lease TTLs.
 
 ```mermaid
 flowchart LR
@@ -112,7 +119,7 @@ flowchart LR
     UP -->|answer| DNSQ
     UP -->|resolved IPs with TTL| DYN[subject dynamic allow set - timeout lease]
 
-    TCP -->|via host veth| DISPATCH[dispatch chain - hook forward, policy DROP]
+    TCP -->|via host veth| DISPATCH[dispatch chain - hook forward, ACCEPT + unmarked-drop tail]
     DISPATCH -->|ct state established,related| ACC1[accept]
     DISPATCH -->|tcp/udp dport 853| DROP1[drop - DoT blocked]
     DISPATCH -->|ip saddr . iifname| JUMP[jump subj_&lt;id&gt; chain]
@@ -165,7 +172,7 @@ sequenceDiagram
 | Rebind (new runtimeInstanceId/attachmentId) | policy discarded in registry AND nft chain/sets/DNS leases force-reset |
 | Unload (REMOVE_BINDING) | chain + all sets removed in one transaction; stale fence ignored |
 | Egress restart | stale rules wiped (ApplyReset); new instanceId triggers Fastlet replay of SET_BINDING + reached Hooks |
-| Unregistered source | master chain policy drop — denied before the binding is ever observed |
+| Unregistered source | unmarked -> master-chain tail drop — denied before the binding is ever observed |
 | Malformed action envelope | rejected (never silently ignored); the subject is never activated |
 | data-plane-ready without pending policy | failed (protocol violation) — the subject stays denying |
 

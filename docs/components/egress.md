@@ -280,13 +280,23 @@ unchanged; both profiles are mutually exclusive deployment forms.
   with a host DNS service on `:53`); per-subject prerouting REDIRECTs
   forward sandbox DNS addressed to the attachment gateway `:53` to it,
   preserving the source IP, and per-query policy is dispatched by source IP.
-- **Enforcement**: nftables `hook forward` in the Pod netns with a
-  drop-by-default master chain; per-subject chains and static sets are swapped
-  atomically. Dynamic DNS-learned sets carry bounded leases. A per-subject
-  connection refresh loop (Pod netns conntrack, bucketed by source IP, every
-  30s, one batched transaction per tick) keeps the dynamic leases of active
-  connections alive. Only TCP sessions are renewed; UDP/QUIC (HTTP/3) relies
-  on the DNS lease TTLs — same limitation as the sidecar profile.
+- **Enforcement**: nftables in the Pod netns. The forward path never issues
+  an explicit `accept` — with `net.bridge.bridge-nf-call-iptables=1` (the
+  fast-sandbox Firecracker bridge topology) an accept verdict returns the
+  frame to the bridge L2 path and drops it before postrouting. Instead,
+  per-subject `hook prerouting` chains mark allowed destinations (`meta mark
+  set 0x2` for allow/dyn set members; an unconditional mark for
+  default-allow policies), and the drop-by-default master forward chain
+  becomes a drop-by-unmarked chain (`policy accept` + `meta mark & 0x2 !=
+  0x2 drop` tail): per-subject deny sets still drop explicitly, unregistered
+  sources and deny-first subjects carry no mark and are denied by the tail.
+  Static sets are swapped atomically; dynamic DNS-learned sets carry bounded
+  leases. A per-subject connection refresh loop (Pod netns conntrack,
+  bucketed by source IP, every 30s, one batched transaction per tick) keeps
+  the dynamic leases of active connections alive. Only TCP sessions are
+  renewed; UDP/QUIC (HTTP/3) relies on the DNS lease TTLs — same limitation
+  as the sidecar profile. Mark `0x2` is distinct from the DNS proxy's
+  `SO_MARK 0x1` bypass.
 - **Encrypted-DNS blocking**: DoT 853 is always dropped in the master chain.
   With `OPENSANDBOX_EGRESS_BLOCK_DOH_443=true`, TCP 443 to the
   `OPENSANDBOX_EGRESS_DOH_BLOCKLIST` IP/CIDR list is dropped too — same

@@ -83,14 +83,23 @@ func TestDenyFirstInstallFailClosedShape(t *testing.T) {
 	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
 	script := runner.last()
 
-	// master chain is fail-closed (policy drop) and installed once
-	require.Contains(t, script, "add chain inet opensandbox-fleet dispatch { type filter hook forward priority 0; policy drop; }")
+	// master chain is fail-closed: ACCEPT policy with an unmarked-drop tail
+	// (the forward path never issues an explicit accept — bridge-netfilter
+	// semantics), plus the prerouting mark hook chain
+	require.Contains(t, script, "add chain inet opensandbox-fleet dispatch { type filter hook forward priority 0; policy accept; }")
+	require.Contains(t, script, "add chain inet opensandbox-fleet mark { type filter hook prerouting priority 0; }")
 	require.Contains(t, script, "delete table inet opensandbox-fleet")
+	require.Contains(t, script, "add rule inet opensandbox-fleet dispatch meta mark & 0x2 != 0x2 drop")
 	// dispatch rule binds source IP + host veth (defense in depth)
 	require.Contains(t, script, "ip saddr 10.0.0.5 iifname \"vethu-1\" jump")
 	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 iifname "vethu-1" jump subj_s_u_1`)
-	// subject chain: empty static sets, drop policy (deny-first)
+	// the prerouting mark jump reaches the subject's mark chain
+	require.Contains(t, script, `add rule inet opensandbox-fleet mark ip saddr 10.0.0.5 iifname "vethu-1" jump mark_s_u_1`)
+	// subject chains exist; deny-first = no mark rules, drop-only forward chain
 	require.Contains(t, script, "subj_s_u_1")
+	require.Contains(t, script, "mark_s_u_1")
+	require.Contains(t, script, "add rule inet opensandbox-fleet subj_s_u_1 drop")
+	assert.NotContains(t, script, "meta mark set", "deny-first must not mark anything")
 	// no allow elements exist yet
 	require.NotContains(t, script, "add element inet opensandbox-fleet subj_s_u_1_allow")
 
@@ -204,7 +213,7 @@ func TestRemoveRebuildsTable(t *testing.T) {
 	// last subject removed: swap in the empty master drop chain (fail closed)
 	require.NoError(t, a.Remove(ctx, s2))
 	script = runner.last()
-	require.Contains(t, script, "add chain inet opensandbox-fleet dispatch { type filter hook forward priority 0; policy drop; }")
+	require.Contains(t, script, "add chain inet opensandbox-fleet dispatch { type filter hook forward priority 0; policy accept; }")
 	assert.NotContains(t, script, "subj_s_u_2", "no subjects may remain after removing the last one")
 
 	// last subject removed: whole table deleted
@@ -258,7 +267,7 @@ func TestApplyResetKeepsEmptyMasterDropChain(t *testing.T) {
 	// must not have a window where the drop hook is gone.
 	script := runner.last()
 	require.Contains(t, script, "delete table inet opensandbox-fleet")
-	require.Contains(t, script, "add chain inet opensandbox-fleet dispatch { type filter hook forward priority 0; policy drop; }")
+	require.Contains(t, script, "add chain inet opensandbox-fleet dispatch { type filter hook forward priority 0; policy accept; }")
 	assert.NotContains(t, script, "subj_s_u_1", "reset must not carry subjects")
 	assert.NotContains(t, script, "10.0.0.5", "reset must not carry dispatch rules")
 
@@ -302,12 +311,54 @@ func TestApplyDenyFirstReRegistersWithNewAttachment(t *testing.T) {
 func TestSanitize(t *testing.T) {
 	assert.Equal(t, "subj_s_abc_def", subjectChain(subject.Subject("s-abc:def")))
 	assert.Equal(t, "subj_s_u_1", subjectChain(subject.FromSandboxUID("u-1")))
+	assert.Equal(t, "mark_s_u_1", markChainName(subject.FromSandboxUID("u-1")))
+}
+
+// TestMarkBasedAllowShapes: the forward path never accepts explicitly — the
+// per-subject prerouting mark chain marks allow/dyn members (default-deny) or
+// everything (default-allow), and the master chain drops unmarked traffic.
+func TestMarkBasedAllowShapes(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run)
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+
+	// default-deny policy: allow/dyn marks, deny drops only in the forward
+	// chain (no accept verdicts)
+	pol, err := policy.ParsePolicy(`{"defaultAction":"deny","egress":[{"action":"allow","target":"8.8.8.8"}]}`)
+	require.NoError(t, err)
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+	require.NoError(t, a.ApplyPolicy(ctx, s, pol))
+	script := runner.last()
+	require.Contains(t, script, "add rule inet opensandbox-fleet mark_s_u_1 ip daddr @subj_s_u_1_allow_v4 meta mark set 0x2")
+	require.Contains(t, script, "add rule inet opensandbox-fleet mark_s_u_1 ip daddr @subj_s_u_1_dyn_v4 meta mark set 0x2")
+	require.Contains(t, script, "add rule inet opensandbox-fleet subj_s_u_1 ip daddr @subj_s_u_1_deny_v4 drop")
+	assert.NotContains(t, script, "subj_s_u_1 ip daddr @subj_s_u_1_allow_v4 accept", "forward path must not accept explicitly")
+	assert.NotContains(t, script, "add rule inet opensandbox-fleet subj_s_u_1 accept")
+	assert.NotContains(t, script, "add rule inet opensandbox-fleet subj_s_u_1 drop")
+
+	// default-allow policy: unconditional mark; deny sets still drop
+	pol2, err := policy.ParsePolicy(`{"defaultAction":"allow","egress":[{"action":"deny","target":"9.9.9.9"}]}`)
+	require.NoError(t, err)
+	require.NoError(t, a.ApplyPolicy(ctx, s, pol2))
+	script = runner.last()
+	require.Contains(t, script, "add rule inet opensandbox-fleet mark_s_u_1 meta mark set 0x2")
+	assert.NotContains(t, script, "ip daddr @subj_s_u_1_allow_v4 meta mark", "default-allow must not need set-based marks")
+	require.Contains(t, script, "add rule inet opensandbox-fleet subj_s_u_1 ip daddr @subj_s_u_1_deny_v4 drop")
+
+	// deny-first reset: mark chain flushed, no mark rules, drop-only forward
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+	script = runner.last()
+	require.Contains(t, script, "flush chain inet opensandbox-fleet mark_s_u_1")
+	require.Contains(t, script, "add rule inet opensandbox-fleet subj_s_u_1 drop")
+	assert.NotContains(t, script, "meta mark set", "deny-first must not mark anything")
 }
 
 func TestWriteDispatchRuleV6(t *testing.T) {
 	var b strings.Builder
 	writeDispatchRule(&b, subject.FromSandboxUID("u-1"), testSlot("u-1", "fd00::5"), 0)
 	require.Contains(t, b.String(), `add rule inet opensandbox-fleet dispatch ip6 saddr fd00::5 iifname "vethu-1" jump subj_s_u_1`)
+	require.Contains(t, b.String(), `add rule inet opensandbox-fleet mark ip6 saddr fd00::5 iifname "vethu-1" jump mark_s_u_1`)
 }
 
 // TestIifnameBindingInDispatchRule: the host-veth binding lives in the
