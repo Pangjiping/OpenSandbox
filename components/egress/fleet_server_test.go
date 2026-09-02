@@ -567,33 +567,40 @@ func TestFleetServerPolicyRouting(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-// TestFleetServerPolicyPushWhileDenyingStaysPending (review fix): a runtime
-// /policy push must not activate a subject ahead of sandbox.data-plane-ready
-// (the lifecycle barrier). It updates the pending policy, which the Hook then
-// applies.
+// TestFleetServerPolicyPushWhileDenyingStaysPending (review fix + binding
+// authority): a runtime /policy push for a still-denying subject must neither
+// activate it nor override the SET_BINDING input — data-plane-ready applies
+// the binding's policy, not the pushed one.
 func TestFleetServerPolicyPushWhileDenyingStaysPending(t *testing.T) {
 	srv, reg, nft := fleetTestServer(t)
 	s := subject.FromSandboxUID("u-1")
-	rec := doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, strPtr(`{"defaultAction":"deny"}`)))
+	binding := `{"defaultAction":"deny","egress":[{"action":"allow","target":"binding.com"}]}`
+	rec := doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, &binding))
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
 
-	// push a NEW policy while the subject is denying: 202, stored pending,
-	// NOT applied, DNS keeps denying
+	// a push with a DIFFERENT policy while denying: 202, stored nowhere, the
+	// binding's pending policy is untouched
 	rec = doRequest(t, srv, http.MethodPut, "/policy", "u-1",
-		`{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}`)
+		`{"defaultAction":"deny","egress":[{"action":"allow","target":"pushed.com"}]}`)
 	require.Equal(t, http.StatusAccepted, rec.Code)
 	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
 	require.Equal(t, 0, nft.appliedCount())
-	assert.Nil(t, reg.EffectivePolicy(s))
 
-	// the Hook applies the PUSHED policy (it overwrote the binding input's
-	// pending policy)
+	// data-plane-ready applies the BINDING policy, not the pushed one
 	rec = doAction(t, srv, hookBody(t, "u-1", testFenceR, testFenceA, constants.HookDataPlaneReady))
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
 	require.Equal(t, 1, nft.appliedCount())
-	assert.Equal(t, "allow", reg.EffectivePolicy(s).Evaluate("example.com"))
+	assert.Equal(t, "allow", reg.EffectivePolicy(s).Evaluate("binding.com"))
+	assert.Equal(t, "deny", reg.EffectivePolicy(s).Evaluate("pushed.com"), "a denying push must not override the binding")
+
+	// an active subject accepts the same push in place (runtime override;
+	// the next SET_BINDING resets it)
+	rec = doRequest(t, srv, http.MethodPut, "/policy", "u-1",
+		`{"defaultAction":"deny","egress":[{"action":"allow","target":"pushed.com"}]}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "allow", reg.EffectivePolicy(s).Evaluate("pushed.com"))
 }
 
 func TestFleetServerPolicyPendingPushFlushedOnSetBinding(t *testing.T) {
@@ -607,21 +614,22 @@ func TestFleetServerPolicyPendingPushFlushedOnSetBinding(t *testing.T) {
 	assert.Equal(t, 0, nft.appliedCount())
 
 	// SET_BINDING registers the subject deny-first and flushes the cached
-	// push into the pending store (still deny-first — the barrier holds)
+	// push — but the binding input is authoritative, so the flush does not
+	// change the pending policy (the binding's default-deny stays)
 	rec = doAction(t, srv, bindBody(t, "u-1", testIP, testFenceR, testFenceA, 1, strPtr(`{}`)))
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, subject.StateDenying, mustState(reg.Get(s)))
 	assert.Equal(t, 0, nft.appliedCount())
 
-	// data-plane-ready applies the EXACT pushed policy, not the binding's
-	// default-deny
+	// data-plane-ready applies the BINDING input (default deny), not the
+	// flushed push
 	rec = doAction(t, srv, hookBody(t, "u-1", testFenceR, testFenceA, constants.HookDataPlaneReady))
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, subject.StateActive, mustState(reg.Get(s)))
 	assert.Equal(t, 1, nft.appliedCount())
 	eff := reg.EffectivePolicy(s)
 	require.NotNil(t, eff)
-	assert.Equal(t, "allow", eff.Evaluate("example.com"), "pending push must replay the EXACT pushed policy, not default-deny")
+	assert.Equal(t, "deny", eff.Evaluate("example.com"), "the binding input is authoritative over cached pushes")
 }
 
 func TestFleetServerPendingGenerationMismatchDropped(t *testing.T) {

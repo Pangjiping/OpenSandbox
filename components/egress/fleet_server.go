@@ -400,10 +400,15 @@ func (s *fleetPolicyServer) applyPolicy(subj subject.Subject, pol *policy.Networ
 // pending replay applies the EXACT policy the client pushed (the body is
 // consumed by parsing, so it must be passed here explicitly).
 //
-// Lifecycle barrier: a runtime policy push for a still-DENYING subject must
-// not activate it ahead of sandbox.data-plane-ready. It is stored as the
-// subject's pending policy (the SET_BINDING input and later pushes
-// overwrite it) and becomes effective when the Hook lands.
+// Lifecycle barrier and authority: the SET_BINDING input (the declarative
+// binding) is the authoritative desired value — sandbox.data-plane-ready
+// applies exactly what the binding carried. A runtime /policy push for a
+// still-DENYING subject is therefore accepted (202) but NEVER stored as the
+// pending policy: storing it would override the binding and change what
+// data-plane-ready activates (the "first create with an allow policy stays
+// DNS-denied" bug). Pushes take effect only once the subject is active (the
+// in-place apply path below) or arrive via the registration flush for an
+// already-active subject.
 func (s *fleetPolicyServer) resolvePolicyPush(w http.ResponseWriter, r *http.Request, subj subject.Subject, pol *policy.NetworkPolicy, rawBody string) {
 	state, ok := s.reg.Get(subj)
 	if !ok {
@@ -415,10 +420,11 @@ func (s *fleetPolicyServer) resolvePolicyPush(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if state == subject.StateDenying {
-		s.storePendingPolicy(subj, pol)
+		// The binding input is authoritative while the subject is denying;
+		// a runtime push must not override what data-plane-ready will apply.
 		writeJSON(w, http.StatusAccepted, policyStatusResponse{
 			Status: "pending",
-			Reason: "subject denying; policy applied at data-plane-ready",
+			Reason: "subject denying; SET_BINDING input is authoritative",
 		})
 		return
 	}
