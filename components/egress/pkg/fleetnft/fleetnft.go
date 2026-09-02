@@ -20,7 +20,7 @@
 //
 //	table inet opensandbox-fleet
 //	  chain mark { hook prerouting, priority 0 }      <- per-subject allow marks
-//	    ip saddr <ip> iifname <veth> jump mark_<id>   <- one rule per subject
+//	    ip saddr <ip> jump mark_<id>                  <- one rule per subject
 //	  chain mark_<id> (regular chain)                 <- what to mark
 //	    ip daddr @subj_<id>_allow_v4 meta mark set 0x2
 //	    ip daddr @subj_<id>_dyn_v4    meta mark set 0x2
@@ -28,10 +28,17 @@
 //	  chain dispatch { hook forward, policy ACCEPT }  <- master chain
 //	    ct state established,related accept           <- return traffic
 //	    tcp/udp dport 853 drop                        <- DoT bypass blocked
-//	    ip saddr <ip> iifname <veth> jump subj_<id>   <- one rule per subject
+//	    ip saddr <ip> jump subj_<id>                  <- one rule per subject
 //	    meta mark & 0x2 != 0x2 drop                   <- fail-closed tail
 //	  chain subj_<id> (regular chain)                 <- deny sets only
 //	    ip daddr @subj_<id>_deny_v4/v6 drop
+//
+// Dispatch matches the sandbox source IP only — never iifname: with
+// net.bridge.bridge-nf-call-iptables=1 (the fast-sandbox Firecracker bridge
+// topology), frames entering the bridge destined to the bridge itself are
+// pulled into the IP stack with skb->dev = the BRIDGE, so an iifname match on
+// the pod-side veth would never fire. Source-IP unforgeability rests on IPAM
+// (per-sandbox unique IP) and the sandbox lacking NET_ADMIN/NET_RAW.
 //
 // NO explicit accept verdicts exist in the forward path: with
 // net.bridge.bridge-nf-call-iptables=1 (the fast-sandbox Firecracker bridge
@@ -245,9 +252,9 @@ func (a *Applier) applyWithMissingTableFallback(ctx context.Context, script stri
 }
 
 // ApplyDenyFirst registers a subject in deny-first state: empty static sets,
-// drop policy chain, and a dispatch rule keyed on the sandbox source IP bound
-// to its host veth (iifname, defense in depth against UDP spoofing). The
-// first call also installs the master dispatch chain.
+// drop policy chain, and a dispatch rule keyed on the sandbox source IP
+// (the dispatch key; see the package comment for why iifname is not used).
+// The first call also installs the master dispatch chain.
 //
 // Re-registration (e.g. a fencing rebind, where the controller re-observes
 // the same subject): the subject is force-reset to deny-first — chain, static
@@ -537,9 +544,8 @@ func (a *Applier) writeDoHBlockFragment(b *strings.Builder) error {
 // writeSubjectDenyFirstFragment installs a subject in deny-first state:
 // empty static sets, a drop-only forward chain, NO prerouting marks (the
 // master-chain fail-closed tail drops all unmarked outbound), and the
-// dispatch rules keyed on the sandbox source IP + host veth (iifname binding:
-// defense in depth against UDP spoofing). Applies against an existing table
-// (or right after the header).
+// dispatch rules keyed on the sandbox source IP. Applies against an existing
+// table (or right after the header).
 func writeSubjectDenyFirstFragment(b *strings.Builder, s subject.Subject, att actionhandler.NetworkAttachment, mitmPort int) error {
 	if err := writeSubjectSets(b, s, nil); err != nil {
 		return err
@@ -745,41 +751,46 @@ func writeSubjectInputVerdictRules(b *strings.Builder, s subject.Subject, defaul
 // writeDispatchRule adds the dispatch jumps for a subject: the forward-path
 // jump (master dispatch -> subject chain), the prerouting jump (mark chain ->
 // subject mark chain, where allow/dyn marks are set), and — with MITM — the
-// input dispatch. All match source IP and host veth (defense in depth: a
-// forged source IP from another sandbox is rejected by the iifname bound to
-// this sandbox's veth). The input dispatch additionally requires ct status
-// dnat on the mitmproxy port, so only intercepted traffic enters the input
-// enforcement chain; a DIRECT connection to the mitm port (no DNAT — a
-// default-allow sandbox talking proxy protocol to the gateway) falls through
-// to a drop, closing the transparent-interception bypass. Verdict maps cannot
-// jump to chains (EOPNOTSUPP on add element), so dispatch is a plain rule per
-// subject; removal rebuilds the table (see Remove).
+// input dispatch. All match the sandbox source IP ONLY: with
+// net.bridge.bridge-nf-call-iptables=1 (the fast-sandbox Firecracker bridge
+// topology), frames entering the bridge destined to the bridge itself are
+// pulled into the IP stack with skb->dev = the BRIDGE, so any iifname match
+// on the pod-side veth would never fire and every rule would be inert. The
+// source IP is the dispatch key; unforgeability rests on IPAM (per-sandbox
+// unique IP) plus the sandbox lacking NET_ADMIN/NET_RAW, not on iifname. The
+// input dispatch additionally requires ct status dnat on the mitmproxy port,
+// so only intercepted traffic enters the input enforcement chain; a DIRECT
+// connection to the mitm port (no DNAT — a default-allow sandbox talking
+// proxy protocol to the gateway) falls through to a drop, closing the
+// transparent-interception bypass. Verdict maps cannot jump to chains
+// (EOPNOTSUPP on add element), so dispatch is a plain rule per subject;
+// removal rebuilds the table (see Remove).
 func writeDispatchRule(b *strings.Builder, s subject.Subject, att actionhandler.NetworkAttachment, mitmPort int) {
 	if att.IP.Is4() {
-		fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" jump %s\n",
-			TableName, dispatchChain, att.IP, att.HostVeth, subjectChain(s))
-		fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" jump %s\n",
-			TableName, markChain, att.IP, att.HostVeth, markChainName(s))
+		fmt.Fprintf(b, "add rule inet %s %s ip saddr %s jump %s\n",
+			TableName, dispatchChain, att.IP, subjectChain(s))
+		fmt.Fprintf(b, "add rule inet %s %s ip saddr %s jump %s\n",
+			TableName, markChain, att.IP, markChainName(s))
 		if mitmPort > 0 {
-			fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" tcp dport %d ct status dnat jump %s\n",
-				TableName, inputChain, att.IP, att.HostVeth, mitmPort, subjectChainIn(s))
+			fmt.Fprintf(b, "add rule inet %s %s ip saddr %s tcp dport %d ct status dnat jump %s\n",
+				TableName, inputChain, att.IP, mitmPort, subjectChainIn(s))
 			if att.Gateway.IsValid() {
-				fmt.Fprintf(b, "add rule inet %s %s ip saddr %s iifname \"%s\" ip daddr %s tcp dport %d drop\n",
-					TableName, inputChain, att.IP, att.HostVeth, att.Gateway, mitmPort)
+				fmt.Fprintf(b, "add rule inet %s %s ip saddr %s ip daddr %s tcp dport %d drop\n",
+					TableName, inputChain, att.IP, att.Gateway, mitmPort)
 			}
 		}
 		return
 	}
-	fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" jump %s\n",
-		TableName, dispatchChain, att.IP, att.HostVeth, subjectChain(s))
-	fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" jump %s\n",
-		TableName, markChain, att.IP, att.HostVeth, markChainName(s))
+	fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s jump %s\n",
+		TableName, dispatchChain, att.IP, subjectChain(s))
+	fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s jump %s\n",
+		TableName, markChain, att.IP, markChainName(s))
 	if mitmPort > 0 {
-		fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" tcp dport %d ct status dnat jump %s\n",
-			TableName, inputChain, att.IP, att.HostVeth, mitmPort, subjectChainIn(s))
+		fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s tcp dport %d ct status dnat jump %s\n",
+			TableName, inputChain, att.IP, mitmPort, subjectChainIn(s))
 		if att.Gateway.IsValid() {
-			fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s iifname \"%s\" ip6 daddr %s tcp dport %d drop\n",
-				TableName, inputChain, att.IP, att.HostVeth, att.Gateway, mitmPort)
+			fmt.Fprintf(b, "add rule inet %s %s ip6 saddr %s ip6 daddr %s tcp dport %d drop\n",
+				TableName, inputChain, att.IP, att.Gateway, mitmPort)
 		}
 	}
 }

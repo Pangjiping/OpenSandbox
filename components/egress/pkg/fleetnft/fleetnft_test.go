@@ -91,10 +91,10 @@ func TestDenyFirstInstallFailClosedShape(t *testing.T) {
 	require.Contains(t, script, "delete table inet opensandbox-fleet")
 	require.Contains(t, script, "add rule inet opensandbox-fleet dispatch meta mark & 0x2 != 0x2 drop")
 	// dispatch rule binds source IP + host veth (defense in depth)
-	require.Contains(t, script, "ip saddr 10.0.0.5 iifname \"vethu-1\" jump")
-	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 iifname "vethu-1" jump subj_s_u_1`)
+	require.Contains(t, script, "ip saddr 10.0.0.5 jump")
+	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 jump subj_s_u_1`)
 	// the prerouting mark jump reaches the subject's mark chain
-	require.Contains(t, script, `add rule inet opensandbox-fleet marking ip saddr 10.0.0.5 iifname "vethu-1" jump mark_s_u_1`)
+	require.Contains(t, script, `add rule inet opensandbox-fleet marking ip saddr 10.0.0.5 jump mark_s_u_1`)
 	// subject chains exist; deny-first = no mark rules, drop-only forward chain
 	require.Contains(t, script, "subj_s_u_1")
 	require.Contains(t, script, "mark_s_u_1")
@@ -108,7 +108,7 @@ func TestDenyFirstInstallFailClosedShape(t *testing.T) {
 	require.NoError(t, a.ApplyDenyFirst(ctx, s2, testSlot("u-2", "10.0.0.6")))
 	script2 := runner.last()
 	assert.NotContains(t, script2, "delete table inet opensandbox-fleet", "table must not be recreated")
-	require.Contains(t, script2, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.6 iifname "vethu-2" jump subj_s_u_2`)
+	require.Contains(t, script2, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.6 jump subj_s_u_2`)
 	require.Equal(t, 2, runner.count())
 }
 
@@ -243,7 +243,7 @@ func TestDenyFirstResetsOnReRegistration(t *testing.T) {
 	script := runner.last()
 	require.Contains(t, script, "flush chain inet opensandbox-fleet subj_s_u_1")
 	require.Contains(t, script, "flush set inet opensandbox-fleet subj_s_u_1_dyn_v4", "DNS leases must be wiped on rebind")
-	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 iifname "vethu-1" jump subj_s_u_1`, "dispatch re-added")
+	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 jump subj_s_u_1`, "dispatch re-added")
 	assert.NotContains(t, script, "8.8.8.8", "old policy must not survive a rebind")
 	assert.NotContains(t, script, "1.1.1.1", "old DNS lease must not survive a rebind")
 	assert.NotContains(t, script, "delete table inet opensandbox-fleet", "reset must not touch other subjects")
@@ -300,7 +300,7 @@ func TestApplyDenyFirstReRegistersWithNewAttachment(t *testing.T) {
 	require.NoError(t, a.ApplyDenyFirst(ctx, s, att2))
 	script := runner.last()
 	require.Contains(t, script, "flush chain inet opensandbox-fleet subj_s_u_1")
-	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.9 iifname "veth-new" jump subj_s_u_1`)
+	require.Contains(t, script, `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.9 jump subj_s_u_1`)
 	assert.NotContains(t, script, "delete table", "rebind must not recreate the table")
 
 	// unknown subject rejected on deny-first? No: deny-first installs; only
@@ -357,8 +357,8 @@ func TestMarkBasedAllowShapes(t *testing.T) {
 func TestWriteDispatchRuleV6(t *testing.T) {
 	var b strings.Builder
 	writeDispatchRule(&b, subject.FromSandboxUID("u-1"), testSlot("u-1", "fd00::5"), 0)
-	require.Contains(t, b.String(), `add rule inet opensandbox-fleet dispatch ip6 saddr fd00::5 iifname "vethu-1" jump subj_s_u_1`)
-	require.Contains(t, b.String(), `add rule inet opensandbox-fleet marking ip6 saddr fd00::5 iifname "vethu-1" jump mark_s_u_1`)
+	require.Contains(t, b.String(), `add rule inet opensandbox-fleet dispatch ip6 saddr fd00::5 jump subj_s_u_1`)
+	require.Contains(t, b.String(), `add rule inet opensandbox-fleet marking ip6 saddr fd00::5 jump mark_s_u_1`)
 }
 
 // TestIifnameBindingInDispatchRule: the host-veth binding lives in the
@@ -371,7 +371,7 @@ func TestIifnameBindingInDispatchRule(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
-	require.Contains(t, runner.last(), `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 iifname "vethu-1" jump subj_s_u_1`)
+	require.Contains(t, runner.last(), `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 jump subj_s_u_1`)
 
 	pol, err := policy.ParsePolicy(`{"defaultAction":"deny","egress":[{"action":"allow","target":"8.8.8.8"}]}`)
 	require.NoError(t, err)
@@ -380,7 +380,7 @@ func TestIifnameBindingInDispatchRule(t *testing.T) {
 
 	// rebind re-adds the dispatch rule for the (possibly changed) slot
 	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
-	require.Contains(t, runner.last(), `iifname "vethu-1" jump subj_s_u_1`)
+	require.Contains(t, runner.last(), `add rule inet opensandbox-fleet dispatch ip saddr 10.0.0.5 jump subj_s_u_1`)
 }
 
 // TestApplyDenyFirstMissingTableFallback: the first install on a fresh table
@@ -500,10 +500,10 @@ func TestInputChainInstalledWithMITM(t *testing.T) {
 	script := runner.last()
 	require.Contains(t, script, "add chain inet opensandbox-fleet input { type filter hook input priority 0; policy accept; }")
 	require.Contains(t, script, "add chain inet opensandbox-fleet subj_s_u_1_in")
-	require.Contains(t, script, `add rule inet opensandbox-fleet input ip saddr 10.0.0.5 iifname "vethu-1" tcp dport 18081 ct status dnat jump subj_s_u_1_in`)
+	require.Contains(t, script, `add rule inet opensandbox-fleet input ip saddr 10.0.0.5 tcp dport 18081 ct status dnat jump subj_s_u_1_in`)
 	// a direct (non-DNATed) connection to the mitm port must be dropped —
 	// default-allow sandboxes must not bypass the transparent interception
-	require.Contains(t, script, `add rule inet opensandbox-fleet input ip saddr 10.0.0.5 iifname "vethu-1" ip daddr 10.0.0.1 tcp dport 18081 drop`)
+	require.Contains(t, script, `add rule inet opensandbox-fleet input ip saddr 10.0.0.5 ip daddr 10.0.0.1 tcp dport 18081 drop`)
 	// verdicts match the conntrack ORIGINAL destination (the DNATed dst is
 	// the local mitm port)
 	require.Contains(t, script, "add rule inet opensandbox-fleet subj_s_u_1_in ct original ip daddr @subj_s_u_1_deny_v4 drop")

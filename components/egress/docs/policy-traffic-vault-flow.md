@@ -95,8 +95,9 @@ because on the fast-sandbox Firecracker bridge topology
 bridge L2 path and drops it before postrouting). Allowed destinations are
 marked in per-subject `hook prerouting` chains (`meta mark set 0x2` for
 allow/dyn set members, unconditional for default-allow policies); per-subject
-dispatch by `ip saddr . iifname` (the host veth binding is defense in depth
-against UDP spoofing) leads to subject chains whose deny sets drop explicitly,
+dispatch by `ip saddr` (the source IP is the only dispatch key — an iifname
+match would never fire on the bridge topology, where the IP hooks see
+skb->dev = the bridge) leads to subject chains whose deny sets drop explicitly,
 and the unmarked-drop tail denies everything else (unregistered sources,
 deny-first subjects). Intercepted MITM traffic is delivered locally (DNAT)
 and enforced by the dedicated INPUT chain on the conntrack original
@@ -122,7 +123,7 @@ flowchart LR
     TCP -->|via host veth| DISPATCH[dispatch chain - hook forward, ACCEPT + unmarked-drop tail]
     DISPATCH -->|ct state established,related| ACC1[accept]
     DISPATCH -->|tcp/udp dport 853| DROP1[drop - DoT blocked]
-    DISPATCH -->|ip saddr . iifname| JUMP[jump subj_&lt;id&gt; chain]
+    DISPATCH -->|ip saddr| JUMP[jump subj_&lt;id&gt; chain]
 
     JUMP -->|deny_v4/v6 sets| DROP2[drop]
     JUMP -->|dyn_v4/v6 + allow_v4/v6 sets| ACC2[accept]

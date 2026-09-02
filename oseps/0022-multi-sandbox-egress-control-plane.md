@@ -84,7 +84,7 @@ Egress reads exactly these fields from the action envelope (everything else is i
 | `revision.runtimeInstanceId`, `revision.attachmentId` | identity fencing (a change = rebind, discard all prior state) |
 | `revision.specGeneration` | pending-push fencing (`X-Fast-Sandbox-Generation` comparison) |
 | `attachment.network.ip` | dispatch key (`ip saddr`) |
-| `attachment.network.hostVeth` | `iifname` binding against UDP spoofing |
+| `attachment.network.hostVeth` | reserved (no longer used: on the bridge topology the IP hooks see skb->dev = the bridge, so an iifname match on the pod-side veth would never fire) |
 | `attachment.network.gateway` | gateway DNS REDIRECT target / MITM DNAT target |
 | `attachment.network.privateCidr` | sibling-isolation rules |
 | `binding.input` | the policy (opaque; parsed by egress as its policy format) |
@@ -196,7 +196,7 @@ The two profiles are mutually exclusive deployment forms. `sidecar`: a service i
 | Fail-closed at every transition | `denying` state, atomic policy swaps, deny-first registration, data-plane-ready as the only activation signal |
 | Management plane independent of subject state | While a subject is `denying` (or `active`), credential pushes and runtime policy/vault operations remain fully usable: the proxy route terminates in the host domain (Pod-netns loopback) and never traverses sandbox traffic paths — only application traffic is blocked (DNS NXDOMAIN + forward drop) |
 | No creation window when egress is unavailable | The OpenSandbox runtime driver probes egress healthz (`127.0.0.1:18080/healthz`, same Pod netns) inside `EnsureSandbox` before creating the sandbox container; unready egress rejects creation. The normal path has no window anyway: deny-first is installed at `SET_BINDING`, which precedes the `sandbox.runtime-ready` Hook, and deny-first installation is far faster than container startup; a fully deterministic guarantee (independent of timing) would additionally require the driver to confirm the subject is registered before container creation — recorded as a known trade-off |
-| Dispatch key unforgeability | IPAM + per-sandbox netns without `NET_ADMIN` (existing); the new OpenSandbox driver additionally drops `NET_RAW`; `iifname` binding remains as defense in depth |
+| Dispatch key unforgeability | IPAM + per-sandbox netns without `NET_ADMIN` (existing); the new OpenSandbox driver additionally drops `NET_RAW`; Pod netns rp_filter strict mode rejects forged source IPs (iifname binding is not usable on the bridge topology — the IP hooks see skb->dev = the bridge) |
 | Enforcement placement | Pod netns `hook forward` (ACCEPT policy + unmarked-drop tail; allowed traffic is marked in per-subject `hook prerouting` chains with `meta mark set 0x2`, because an explicit forward `accept` cannot pass on the `bridge-nf-call-iptables=1` Firecracker bridge topology — the frame returns to the bridge L2 path and is dropped before postrouting) plus the Pod-netns INPUT chain for intercepted MITM traffic; Kata covered via TAP (same forward surface). The earlier per-sandbox netns OUTPUT defense-in-depth layer is dropped (the action envelope does not carry the netns path; the Pod-netns layers are authoritative for both forwarded and intercepted traffic) |
 
 ### Platform Adapters
@@ -241,7 +241,7 @@ The lifecycle/policy channel needs **zero** fast-sandbox work (the Actions proto
 
 Deployment config: egress container in Pool `FastletTemplate` (Pod-netns privileges; no slot-store or netns-mount volumes are needed anymore).
 
-**OpenSandbox runtime driver**: the OpenSandbox integration lands as a **new `internal/runtime/contract.Driver` implementation** (registered in the runtime factory alongside containerd/boxlite). Its container spec drops `NET_RAW` (runc defaults grant it → UDP source spoofing would weaken the source-IP dispatch key; `iifname` binding in nft remains as defense in depth). The egress healthz probe lives inside its `EnsureSandbox` (before container creation): unready egress → reject with a runtime-unavailable error. Existing drivers are untouched; existing Fastlet Pods without the egress component behave exactly as today.
+**OpenSandbox runtime driver**: the OpenSandbox integration lands as a **new `internal/runtime/contract.Driver` implementation** (registered in the runtime factory alongside containerd/boxlite). Its container spec drops `NET_RAW` (runc defaults grant it → UDP source spoofing would weaken the source-IP dispatch key; Pod netns rp_filter strict mode is the remaining defense against forged source IPs). The egress healthz probe lives inside its `EnsureSandbox` (before container creation): unready egress → reject with a runtime-unavailable error. Existing drivers are untouched; existing Fastlet Pods without the egress component behave exactly as today.
 
 ### Explicitly Untouched
 

@@ -747,19 +747,19 @@ func TestFleetServerMitmRedirectInstalledOnRegistration(t *testing.T) {
 
 	s := subject.FromSandboxUID("u-1")
 	require.NoError(t, srv.OnRegistered(s, mitmAtt(t, "10.0.0.5", "10.0.0.1")))
-	require.Equal(t, []iptables.MitmRedirectEntry{{SandboxIP: netip.MustParseAddr("10.0.0.5"), Gateway: netip.MustParseAddr("10.0.0.1"), HostVeth: "v"}}, inst.snapshot())
+	require.Equal(t, []iptables.MitmRedirectEntry{{SandboxIP: netip.MustParseAddr("10.0.0.5"), Gateway: netip.MustParseAddr("10.0.0.1")}}, inst.snapshot())
 
 	// a second subject rebuilds with both entries
 	s2 := subject.FromSandboxUID("u-2")
 	require.NoError(t, srv.OnRegistered(s2, mitmAtt(t, "10.0.0.6", "10.0.0.1")))
 	require.ElementsMatch(t, []iptables.MitmRedirectEntry{
-		{SandboxIP: netip.MustParseAddr("10.0.0.5"), Gateway: netip.MustParseAddr("10.0.0.1"), HostVeth: "v"},
-		{SandboxIP: netip.MustParseAddr("10.0.0.6"), Gateway: netip.MustParseAddr("10.0.0.1"), HostVeth: "v"},
+		{SandboxIP: netip.MustParseAddr("10.0.0.5"), Gateway: netip.MustParseAddr("10.0.0.1")},
+		{SandboxIP: netip.MustParseAddr("10.0.0.6"), Gateway: netip.MustParseAddr("10.0.0.1")},
 	}, inst.snapshot())
 
 	// unload rebuilds without the subject
 	require.NoError(t, srv.OnUnloaded(s, mitmAtt(t, "10.0.0.5", "10.0.0.1")))
-	require.Equal(t, []iptables.MitmRedirectEntry{{SandboxIP: netip.MustParseAddr("10.0.0.6"), Gateway: netip.MustParseAddr("10.0.0.1"), HostVeth: "v"}}, inst.snapshot())
+	require.Equal(t, []iptables.MitmRedirectEntry{{SandboxIP: netip.MustParseAddr("10.0.0.6"), Gateway: netip.MustParseAddr("10.0.0.1")}}, inst.snapshot())
 }
 
 func TestFleetServerMitmRedirectFailClosesRegistration(t *testing.T) {

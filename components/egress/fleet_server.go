@@ -647,7 +647,7 @@ func (s *fleetPolicyServer) setMitmRedirect(subj subject.Subject, att actionhand
 	if s.mitmInstall == nil {
 		return nil
 	}
-	entry := iptables.MitmRedirectEntry{SandboxIP: att.IP, Gateway: att.Gateway, HostVeth: att.HostVeth}
+	entry := iptables.MitmRedirectEntry{SandboxIP: att.IP, Gateway: att.Gateway}
 	if !entry.SandboxIP.IsValid() || !entry.Gateway.IsValid() {
 		return fmt.Errorf("mitm redirect: subject %s has no valid sandbox IP/gateway in attachment", subj)
 	}
