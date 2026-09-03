@@ -30,7 +30,10 @@ import type {
 } from "../models/sandboxes.js";
 
 export interface Sandboxes {
-  createSandbox(req: CreateSandboxRequest): Promise<CreateSandboxResponse>;
+  createSandbox(
+    req: CreateSandboxRequest,
+    signal?: AbortSignal,
+  ): Promise<CreateSandboxResponse>;
   getSandbox(sandboxId: SandboxId): Promise<SandboxInfo>;
   listSandboxes(params?: ListSandboxesParams): Promise<ListSandboxesResponse>;
   patchSandboxMetadata(
@@ -59,7 +62,8 @@ export interface Sandboxes {
   getSandboxEndpoint(
     sandboxId: SandboxId,
     port: number,
-    useServerProxy?: boolean
+    useServerProxy?: boolean,
+    signal?: AbortSignal,
   ): Promise<Endpoint>;
 
   getSignedEndpoint(

@@ -12,7 +12,7 @@ description: HTTP/WebSocket reverse proxy that routes traffic to OpenSandbox ins
   - AgentSandbox: reads `status.serviceFQDN`.
 - Can serve fleets routes from the same ingress when `--fastpath-endpoint` is set.
 - Fleets routes lazily call FastPath v2 `ResolveEndpoint` when traffic arrives.
-- Exposes `/status.ok` health check; prints build metadata (version, commit, time, Go/platform) at startup.
+- Exposes `/status.ok` health check and a shadow-only network readiness assessment at `/status.ok/network-readiness`; prints build metadata (version, commit, time, Go/platform) at startup.
 
 ## Quick Start
 ```bash
@@ -25,7 +25,55 @@ go run main.go \
   --port 28888 \
   --log-level info
 ```
-Endpoints: `/` (proxy), `/status.ok` (health).
+Endpoints: `/` (proxy), `/status.ok` (health), `/status.ok/network-readiness` (shadow network assessment).
+
+## Network Readiness Observation
+
+Ingress observes the TCP connections that its HTTP transport and WebSocket
+dialer open to upstream targets. Each connection is classified as `success`,
+`timeout`, `unreachable`, `refused`, `dns_error`, `canceled`, or `other`.
+Only timeouts and unreachable errors are treated as possible source-side
+network degradation signals. Canceled connections remain visible in the
+per-result connection metric but are excluded from the assessment denominator
+because they do not establish whether the network path was healthy.
+
+The assessment uses the most recent complete fixed window. It requires enough
+connection attempts, distinct upstream targets, and distinct failing targets
+before reporting `DEGRADED`. The endpoint remains shadow-only:
+`/status.ok/network-readiness` always returns HTTP 200 with a body of `OK` or
+`DEGRADED`, and responses are never cacheable. This path is reserved by the
+Ingress itself. The normal `/status.ok` liveness and readiness endpoint is
+unchanged.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--network-readiness-shadow-window` | `1m` | Fixed aggregation window |
+| `--network-readiness-shadow-max-targets` | `1024` | Maximum distinct targets retained per window |
+| `--network-readiness-shadow-min-attempts` | `20` | Minimum connection attempts required to qualify a window |
+| `--network-readiness-shadow-min-targets` | `5` | Minimum distinct targets required to qualify a window |
+| `--network-readiness-shadow-min-signal-targets` | `2` | Minimum distinct targets with timeout or unreachable results |
+| `--network-readiness-shadow-failure-ratio` | `0.2` | Failure ratio required to report `DEGRADED` |
+
+Invalid shadow settings disable connection observation and make the shadow
+endpoint return HTTP 404; they do not stop the Ingress data plane.
+
+The following OpenTelemetry metrics are emitted when OTLP metrics are enabled:
+
+- `ingress.upstream.connect.count` and `ingress.upstream.connect.duration`,
+  labeled only by connection result and proxy type.
+- `ingress.network.shadow.*` gauges for attempts, signal failures, distinct
+  targets, qualification, and the shadow decision.
+
+`attempts` counts physical TCP connections, not HTTP requests. Distinct targets
+are network hosts; multiple ports on the same host intentionally count once.
+HTTP keep-alive
+can therefore make the sample count much lower than the request count. Target
+addresses and Sandbox IDs are intentionally excluded from metric attributes.
+Deployments that route through a fixed central proxy, or otherwise connect to
+fewer than the configured minimum number of targets, may never qualify with
+the default thresholds. If `HTTP_PROXY` or `HTTPS_PROXY` is configured, HTTP
+observations describe the connection to that proxy rather than the final
+Sandbox endpoint.
 
 ## Routing Modes
 

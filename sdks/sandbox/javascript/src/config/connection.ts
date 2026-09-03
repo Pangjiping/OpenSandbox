@@ -214,6 +214,11 @@ function createTimedFetch(opts: {
         : (input as any)?.toString?.() ?? String(input);
 
     const ac = new AbortController();
+    const requestSignal =
+      init?.signal ??
+      (typeof Request !== "undefined" && input instanceof Request
+        ? input.signal
+        : undefined);
     const timeoutMs = Math.floor(timeoutSeconds * 1000);
     const t =
       Number.isFinite(timeoutMs) && timeoutMs > 0
@@ -229,11 +234,11 @@ function createTimedFetch(opts: {
         : undefined;
 
     const onAbort = () =>
-      ac.abort((init?.signal as any)?.reason ?? new Error("Aborted"));
-    if (init?.signal) {
-      if (init.signal.aborted) onAbort();
+      ac.abort((requestSignal as any)?.reason ?? new Error("Aborted"));
+    if (requestSignal) {
+      if (requestSignal.aborted) onAbort();
       else
-        init.signal.addEventListener("abort", onAbort, { once: true } as any);
+        requestSignal.addEventListener("abort", onAbort, { once: true } as any);
     }
 
     // Best-effort: attach the SDK host's own IP so the server can see the
@@ -281,8 +286,8 @@ function createTimedFetch(opts: {
       return res;
     } finally {
       if (t) clearTimeout(t);
-      if (init?.signal)
-        init.signal.removeEventListener("abort", onAbort as any);
+      if (requestSignal)
+        requestSignal.removeEventListener("abort", onAbort as any);
     }
   };
 }

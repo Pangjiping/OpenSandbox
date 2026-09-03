@@ -26,6 +26,7 @@ import (
 type HTTPProxy struct {
 	responseObservers []func(*http.Response)
 	errorObserver     func(error)
+	transport         http.RoundTripper
 }
 
 func NewHTTPProxy(observers ...func(*http.Response)) *HTTPProxy {
@@ -42,6 +43,9 @@ func (hp *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (hp *HTTPProxy) newReverseProxy(targetURL *url.URL) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	if hp.transport != nil {
+		proxy.Transport = hp.transport
+	}
 	proxy.Director = func(req *http.Request) {
 		req.URL.Scheme = targetURL.Scheme
 		req.URL.Host = targetURL.Host

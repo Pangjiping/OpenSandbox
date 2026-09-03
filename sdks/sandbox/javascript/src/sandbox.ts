@@ -201,6 +201,10 @@ export interface SandboxCreateOptions {
    * Sandbox timeout in seconds. Set to `null` to require explicit cleanup.
    */
   timeoutSeconds?: number | null;
+  /**
+   * Optional signal used to cancel creation and readiness requests.
+   */
+  signal?: AbortSignal;
 
   /**
    * Skip readiness checks during create/connect.
@@ -250,10 +254,32 @@ export interface SandboxConnectOptions {
    * Polling interval for readiness checks (milliseconds).
    */
   healthCheckPollingInterval?: number;
+  /**
+   * Optional signal used to cancel connection and readiness requests.
+   */
+  signal?: AbortSignal;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+function throwIfAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  throwIfAborted(signal);
+
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function toImageSpec(
@@ -368,6 +394,7 @@ export class Sandbox {
         }
       }
     }
+    throwIfAborted(opts.signal);
 
     const baseConnectionConfig =
       opts.connectionConfig instanceof ConnectionConfig
@@ -431,18 +458,20 @@ export class Sandbox {
         : opts.image?.uri ?? opts.snapshotId;
     const createStarted = Date.now();
     try {
-      const created = await sandboxes.createSandbox(req);
+      const created = await sandboxes.createSandbox(req, opts.signal);
       sandboxId = created.id as SandboxId;
 
       const endpoint = await sandboxes.getSandboxEndpoint(
         sandboxId,
         DEFAULT_EXECD_PORT,
-        connectionConfig.useServerProxy
+        connectionConfig.useServerProxy,
+        opts.signal,
       );
       const egressEndpoint = await sandboxes.getSandboxEndpoint(
         sandboxId,
         DEFAULT_EGRESS_PORT,
-        connectionConfig.useServerProxy
+        connectionConfig.useServerProxy,
+        opts.signal,
       );
       const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
       const egressBaseUrl = `${connectionConfig.protocol}://${egressEndpoint.endpoint}`;
@@ -485,6 +514,7 @@ export class Sandbox {
             opts.healthCheckPollingInterval ??
             DEFAULT_HEALTH_CHECK_POLLING_INTERVAL_MILLIS,
           healthCheck: opts.healthCheck,
+          signal: opts.signal,
         });
       }
 
@@ -503,6 +533,20 @@ export class Sandbox {
         createDurationMs: Date.now() - createStarted,
         success: false,
       });
+      if (opts.signal?.aborted) {
+        void (async () => {
+          try {
+            if (sandboxId) {
+              await sandboxes.deleteSandbox(sandboxId);
+            }
+          } catch {
+            // Best-effort cleanup after cancellation.
+          } finally {
+            await connectionConfig.closeTransport().catch(() => undefined);
+          }
+        })();
+        throw err;
+      }
       if (sandboxId) {
         try {
           await sandboxes.deleteSandbox(sandboxId);
@@ -516,6 +560,7 @@ export class Sandbox {
   }
 
   static async connect(opts: SandboxConnectOptions): Promise<Sandbox> {
+    throwIfAborted(opts.signal);
     const baseConnectionConfig =
       opts.connectionConfig instanceof ConnectionConfig
         ? opts.connectionConfig
@@ -539,12 +584,14 @@ export class Sandbox {
       const endpoint = await sandboxes.getSandboxEndpoint(
         opts.sandboxId,
         DEFAULT_EXECD_PORT,
-        connectionConfig.useServerProxy
+        connectionConfig.useServerProxy,
+        opts.signal,
       );
       const egressEndpoint = await sandboxes.getSandboxEndpoint(
         opts.sandboxId,
         DEFAULT_EGRESS_PORT,
-        connectionConfig.useServerProxy
+        connectionConfig.useServerProxy,
+        opts.signal,
       );
       const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
       const egressBaseUrl = `${connectionConfig.protocol}://${egressEndpoint.endpoint}`;
@@ -586,11 +633,16 @@ export class Sandbox {
             opts.healthCheckPollingInterval ??
             DEFAULT_HEALTH_CHECK_POLLING_INTERVAL_MILLIS,
           healthCheck: opts.healthCheck,
+          signal: opts.signal,
         });
       }
 
       return sbx;
     } catch (err) {
+      if (opts.signal?.aborted) {
+        void connectionConfig.closeTransport().catch(() => undefined);
+        throw err;
+      }
       await connectionConfig.closeTransport();
       throw err;
     }
@@ -737,6 +789,7 @@ export class Sandbox {
     readyTimeoutSeconds: number;
     pollingIntervalMillis: number;
     healthCheck?: (sbx: Sandbox) => boolean | Promise<boolean>;
+    signal?: AbortSignal;
   }): Promise<void> {
     const deadline = Date.now() + opts.readyTimeoutSeconds * 1000;
     let attempt = 0;
@@ -749,6 +802,7 @@ export class Sandbox {
 
     // Wait until execd becomes reachable and passes health check.
     while (true) {
+      throwIfAborted(opts.signal);
       if (Date.now() > deadline) {
         throw new SandboxReadyTimeoutException({
           message: buildTimeoutMessage(),
@@ -758,21 +812,24 @@ export class Sandbox {
       try {
         if (opts.healthCheck) {
           const ok = await opts.healthCheck(this);
+          throwIfAborted(opts.signal);
           if (ok) {
             return;
           }
         } else {
-          const ok = await this.health.ping();
+          const ok = await this.health.ping(opts.signal);
+          throwIfAborted(opts.signal);
           if (ok) {
             return;
           }
         }
         errorDetail = "Health check returned false continuously.";
       } catch (err) {
+        throwIfAborted(opts.signal);
         const message = err instanceof Error ? err.message : String(err);
         errorDetail = `Last health check error: ${message}`;
       }
-      await sleep(opts.pollingIntervalMillis);
+      await sleep(opts.pollingIntervalMillis, opts.signal);
     }
   }
 }

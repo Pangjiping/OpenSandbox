@@ -2,8 +2,13 @@
 
 This chart deploys one Node Agent per Linux node. It runs one or more Sources
 compiled into the image and sends sandbox records to one configured file or
-Alibaba Cloud OSS sink. The published image currently includes the
-`container-logs` Source for CRI stdout/stderr from non-pooled OpenSandbox Pods.
+Alibaba Cloud OSS sink. The published image includes the `container-logs`
+Source for CRI stdout/stderr and the opt-in `syscalls` Source for cgroup-scoped
+Linux system-call records from non-pooled OpenSandbox Pods.
+
+The `syscalls` Source requires Linux kernel 5.11 or newer, cgroup v2, and a
+tracefs mount. It tracks the runtime's container cgroup; delegated descendant
+cgroups are not covered by this first implementation.
 
 The chart is disabled by default when used through the umbrella OpenSandbox
 chart. For OSS, create a Secret containing `access-key-id`,

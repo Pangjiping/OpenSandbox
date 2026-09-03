@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from concurrent.futures import Executor, wait
+from concurrent.futures import CancelledError, Executor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -146,48 +146,73 @@ def _run_primary_replenish_once(
         return
 
     futures = [warmup_executor.submit(create_one) for _ in range(to_create)]
-    wait(futures)
-    created_ids: list[str] = []
     failure_count = 0
     last_error: str | None = None
-    for future in futures:
+    created = 0
+    commit_failed = False
+    commit_error: str | None = None
+    accept_commits = True
+    dropped = 0
+    stop_reason: str | None = None
+    for future in as_completed(futures):
         try:
             sandbox_id = future.result()
-            if sandbox_id is not None:
-                created_ids.append(sandbox_id)
-            else:
+            if sandbox_id is None:
                 failure_count += 1
                 last_error = None
+                continue
+        except CancelledError:
+            failure_count += 1
+            last_error = "warmup future cancelled"
+            continue
         except Exception as exc:
             failure_count += 1
             last_error = str(exc)
-    reconcile_state.record_failures(failure_count, last_error)
+            continue
 
-    created = 0
-    for index, sandbox_id in enumerate(created_ids):
-        if not state_store.renew_primary_lock(pool_name, owner_id, ttl):
-            for orphaned_id in created_ids[index:]:
-                _discard(on_discard_sandbox, orphaned_id)
-            logger.warning(
-                f"Reconcile lost primary lock before put_idle; dropped {len(created_ids) - index} newly created sandbox(es): pool_name={pool_name}"
-            )
-            return
+        if not accept_commits:
+            _discard(on_discard_sandbox, sandbox_id)
+            dropped += 1
+            continue
+        try:
+            lock_renewed = state_store.renew_primary_lock(pool_name, owner_id, ttl)
+        except Exception as exc:
+            lock_renewed = False
+            commit_failed = True
+            commit_error = str(exc)
+            stop_reason = "primary lock renewal failed"
+        if not lock_renewed:
+            accept_commits = False
+            stop_reason = stop_reason or "primary lock lost"
+            _discard(on_discard_sandbox, sandbox_id)
+            dropped += 1
+            continue
         try:
             state_store.put_idle(pool_name, sandbox_id)
             created += 1
-            reconcile_state.record_success()
         except Exception as exc:
-            reconcile_state.record_failure(str(exc))
-            for orphaned_id in created_ids[index:]:
-                try:
-                    state_store.remove_idle(pool_name, orphaned_id)
-                except Exception:
-                    pass
-                _discard(on_discard_sandbox, orphaned_id)
-            logger.warning(
-                f"Reconcile put_idle failed; dropped {len(created_ids) - index} newly created sandbox(es): pool_name={pool_name} error={exc}"
-            )
-            return
+            accept_commits = False
+            stop_reason = "commit failed"
+            commit_failed = True
+            commit_error = str(exc)
+            try:
+                state_store.remove_idle(pool_name, sandbox_id)
+            except Exception:
+                pass
+            _discard(on_discard_sandbox, sandbox_id)
+            dropped += 1
+
+    reconcile_state.record_failures(failure_count, last_error)
+    if created > 0:
+        reconcile_state.record_success()
+    if commit_failed:
+        reconcile_state.record_failure(commit_error)
+
+    if dropped > 0:
+        error_detail = f" error={commit_error}" if commit_error else ""
+        logger.warning(
+            f"Reconcile {stop_reason}; dropped {dropped} newly created sandbox(es): pool_name={pool_name}{error_detail}"
+        )
     if created > 0:
         logger.debug(f"Reconcile created {created} sandboxes: pool_name={pool_name}")
 

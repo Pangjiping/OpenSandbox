@@ -128,11 +128,11 @@ class SandboxModelConverter:
         from opensandbox.api.lifecycle.types import UNSET
 
         api_host = UNSET
-        if volume.host is not None:
+        if volume.host is not None and not isinstance(volume.host, Unset):
             api_host = ApiHost(path=volume.host.path)
 
         api_pvc = UNSET
-        if volume.pvc is not None:
+        if volume.pvc is not None and not isinstance(volume.pvc, Unset):
             api_pvc = ApiPVC(
                 claim_name=volume.pvc.claim_name,
                 create_if_not_exists=volume.pvc.create_if_not_exists,
@@ -143,7 +143,12 @@ class SandboxModelConverter:
             )
 
         api_ossfs = UNSET
-        if volume.ossfs is not None and volume.ossfs.access_key_id is not None and volume.ossfs.access_key_secret is not None:
+        if (
+            volume.ossfs is not None
+            and not isinstance(volume.ossfs, Unset)
+            and volume.ossfs.access_key_id is not None
+            and volume.ossfs.access_key_secret is not None
+        ):
             api_ossfs = ApiOSSFS(
                 bucket=volume.ossfs.bucket,
                 endpoint=volume.ossfs.endpoint,
@@ -154,7 +159,7 @@ class SandboxModelConverter:
             )
 
         api_sub_path = UNSET
-        if volume.sub_path is not None:
+        if volume.sub_path is not None and not isinstance(volume.sub_path, Unset):
             api_sub_path = volume.sub_path
 
         return ApiVolume(

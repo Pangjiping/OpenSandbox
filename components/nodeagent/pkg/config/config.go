@@ -47,6 +47,7 @@ type Config struct {
 	Sources              []string
 	Sink                 string
 	LogRoot              string
+	SyscallCgroupRoot    string
 	StateDir             string
 	StateMaxBytes        int64
 	FilePath             string
@@ -86,6 +87,7 @@ func Load() (Config, error) {
 		Sources:            parseSources(envDefault("NODEAGENT_SOURCES", api.SourceNameContainerLogs), &errs),
 		Sink:               envDefault("NODEAGENT_SINKS", SinkFile),
 		LogRoot:            envDefault("NODEAGENT_LOG_ROOT", "/var/log/pods"),
+		SyscallCgroupRoot:  envDefault("NODEAGENT_SYSCALL_CGROUP_ROOT", "/host/sys/fs/cgroup"),
 		StateDir:           envDefault("NODEAGENT_STATE_DIR", "/var/lib/opensandbox/nodeagent"),
 		FilePath:           strings.TrimSpace(os.Getenv("NODEAGENT_FILE_PATH")),
 		OSSEndpoint:        strings.TrimSpace(os.Getenv("NODEAGENT_OSS_ENDPOINT")),
@@ -154,13 +156,21 @@ func (c Config) validate() []error {
 			errs = append(errs, errors.New("NODEAGENT_STATE_DIR must not overlap NODEAGENT_LOG_ROOT"))
 		}
 	}
+	if c.HasSource(api.SourceNameSyscalls) {
+		if err := validateAbsolutePath(c.SyscallCgroupRoot); err != nil {
+			errs = append(errs, fmt.Errorf("NODEAGENT_SYSCALL_CGROUP_ROOT: %w", err))
+		}
+		if pathsOverlap(c.StateDir, c.SyscallCgroupRoot) {
+			errs = append(errs, errors.New("NODEAGENT_STATE_DIR must not overlap NODEAGENT_SYSCALL_CGROUP_ROOT"))
+		}
+	}
 	switch c.Sink {
 	case SinkFile:
 		if c.FilePath != "" {
 			if err := validateAbsolutePath(c.FilePath); err != nil {
 				errs = append(errs, fmt.Errorf("NODEAGENT_FILE_PATH: %w", err))
 			}
-			if pathsOverlap(c.FilePath, c.StateDir) || containerLogsEnabled && pathsOverlap(c.FilePath, c.LogRoot) {
+			if pathsOverlap(c.FilePath, c.StateDir) || containerLogsEnabled && pathsOverlap(c.FilePath, c.LogRoot) || c.HasSource(api.SourceNameSyscalls) && pathsOverlap(c.FilePath, c.SyscallCgroupRoot) {
 				errs = append(errs, errors.New("NODEAGENT_FILE_PATH must not overlap active state or source paths"))
 			}
 			if c.FileMaxTotalBytes < c.FileMaxBytes {

@@ -2,8 +2,13 @@
 
 This chart deploys one Node Agent per Linux node. It runs one or more Sources
 compiled into the image and sends sandbox records to one configured file or
-Alibaba Cloud OSS sink. The published image currently includes the
-`container-logs` Source for CRI stdout/stderr from non-pooled OpenSandbox Pods.
+Alibaba Cloud OSS sink. The published image includes the `container-logs`
+Source for CRI stdout/stderr and the opt-in `syscalls` Source for cgroup-scoped
+Linux system-call records from non-pooled OpenSandbox Pods.
+
+The `syscalls` Source requires Linux kernel 5.11 or newer, cgroup v2, and a
+tracefs mount. It tracks the runtime's container cgroup; delegated descendant
+cgroups are not covered by this first implementation.
 
 The chart is disabled by default when used through the umbrella OpenSandbox
 chart. For OSS, create a Secret containing `access-key-id`,
@@ -41,10 +46,12 @@ The following table lists the configurable parameters of the chart and their def
 | enabled | bool | `true` | Whether the node-agent is enabled (used by the umbrella opensandbox chart). |
 | extraEnv | list | `[]` | Additional environment variables for the node agent container. |
 | fullnameOverride | string | `""` | Override the full name of the chart. |
-| hostPaths | object | `{"fileData":"/var/lib/opensandbox/nodeagent-data","logs":"/var/log/pods","state":"/var/lib/opensandbox/nodeagent"}` | Host paths available to the node agent; enabled Sources and Sinks select mounts. |
+| hostPaths | object | `{"cgroup":"/sys/fs/cgroup","fileData":"/var/lib/opensandbox/nodeagent-data","logs":"/var/log/pods","state":"/var/lib/opensandbox/nodeagent","tracing":"/sys/kernel/tracing"}` | Host paths available to the node agent; enabled Sources and Sinks select mounts. |
+| hostPaths.cgroup | string | `"/sys/fs/cgroup"` | Host cgroup v2 hierarchy used only by the syscalls Source. |
 | hostPaths.fileData | string | `"/var/lib/opensandbox/nodeagent-data"` | Host path for file sink data (must match sink.file.path). |
 | hostPaths.logs | string | `"/var/log/pods"` | Pod-log host path used only by the container-logs Source. |
 | hostPaths.state | string | `"/var/lib/opensandbox/nodeagent"` | Host path for checkpoint state (must match config.stateDir). |
+| hostPaths.tracing | string | `"/sys/kernel/tracing"` | Host tracefs used only by the syscalls Source. |
 | image | object | `{"pullPolicy":"IfNotPresent","repository":"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/nodeagent","tag":""}` | Node agent image configuration. |
 | image.pullPolicy | string | `"IfNotPresent"` | Image pull policy. |
 | image.repository | string | `"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/nodeagent"` | Node agent image repository. |

@@ -13,5 +13,5 @@
 // limitations under the License.
 
 export interface ExecdHealth {
-  ping(): Promise<boolean>;
+  ping(signal?: AbortSignal): Promise<boolean>;
 }

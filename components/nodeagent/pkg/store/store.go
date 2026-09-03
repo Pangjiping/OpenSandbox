@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,7 +50,10 @@ type View interface {
 // Kubernetes lifecycle state used only by the Store and Sources.
 type Resource struct {
 	api.Resource
-	Terminated bool
+	Terminated            bool
+	ContainerID           string
+	ContainerRuntime      string
+	ContainerRestartCount int32
 }
 
 type Store struct {
@@ -226,6 +230,7 @@ func (s *Store) upsert(obj any) {
 		},
 		Terminated: terminated,
 	}
+	resource.ContainerRuntime, resource.ContainerID, resource.ContainerRestartCount = containerStatus(pod, ContainerName)
 	s.mu.Lock()
 	if previous, exists := s.resources[resource.PodUID]; exists && previous.SandboxID != resource.SandboxID {
 		previous.Terminated = true
@@ -283,4 +288,18 @@ func hasContainer(pod *corev1.Pod, name string) bool {
 		}
 	}
 	return false
+}
+
+func containerStatus(pod *corev1.Pod, name string) (runtimeName, containerID string, restartCount int32) {
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name != name {
+			continue
+		}
+		runtimeName, containerID, _ = strings.Cut(status.ContainerID, "://")
+		if containerID == "" {
+			runtimeName = ""
+		}
+		return runtimeName, containerID, status.RestartCount
+	}
+	return "", "", 0
 }

@@ -39,6 +39,7 @@ import (
 	_ "github.com/alibaba/opensandbox/nodeagent/pkg/sink/oss"
 	sourcegroup "github.com/alibaba/opensandbox/nodeagent/pkg/source"
 	_ "github.com/alibaba/opensandbox/nodeagent/pkg/source/containerlogs"
+	_ "github.com/alibaba/opensandbox/nodeagent/pkg/source/syscalls"
 	"github.com/alibaba/opensandbox/nodeagent/pkg/state"
 	"github.com/alibaba/opensandbox/nodeagent/pkg/store"
 	"k8s.io/client-go/kubernetes"

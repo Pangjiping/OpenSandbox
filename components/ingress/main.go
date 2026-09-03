@@ -30,6 +30,7 @@ import (
 
 	"github.com/alibaba/opensandbox/ingress/pkg/flag"
 	"github.com/alibaba/opensandbox/ingress/pkg/proxy"
+	"github.com/alibaba/opensandbox/ingress/pkg/proxy/connectivity"
 	"github.com/alibaba/opensandbox/ingress/pkg/renewintent"
 	"github.com/alibaba/opensandbox/ingress/pkg/routescope"
 	"github.com/alibaba/opensandbox/ingress/pkg/sandbox"
@@ -124,17 +125,75 @@ func main() {
 		})
 	}
 
-	// Create reverse proxy with sandbox provider
-	reverseProxy := proxy.NewProxy(ctx, sandboxProvider, proxy.Mode(flag.Mode), renewPublisher, secure, scopeVerifier)
-	mux := http.NewServeMux()
-	mux.Handle("/", reverseProxy)
-	mux.HandleFunc("/status.ok", proxy.Healthz)
+	connectObserver, networkReadiness, err := newNetworkReadiness(connectivity.TrackerConfig{
+		Window:                   flag.NetworkReadinessShadowWindow,
+		MaxDistinctTargets:       flag.NetworkReadinessShadowMaxTargets,
+		MinAttempts:              flag.NetworkReadinessShadowMinAttempts,
+		MinDistinctTargets:       flag.NetworkReadinessShadowMinTargets,
+		MinDistinctSignalTargets: flag.NetworkReadinessShadowMinSignalTargets,
+		DegradedFailureRatio:     flag.NetworkReadinessShadowDegradedFailureRatio,
+	})
+	proxyOptions := make([]proxy.Option, 0, 1)
+	if err != nil {
+		log.Printf("network readiness shadow assessment disabled (invalid configuration): %v", err)
+	} else {
+		proxyOptions = append(proxyOptions, proxy.WithConnectObserver(connectObserver))
+	}
+
+	// Create reverse proxy with sandbox provider.
+	reverseProxy := proxy.NewProxy(
+		ctx,
+		sandboxProvider,
+		proxy.Mode(flag.Mode),
+		renewPublisher,
+		secure,
+		scopeVerifier,
+		proxyOptions...,
+	)
+	mux := newIngressMux(reverseProxy, networkReadiness)
 
 	if err := http.ListenAndServe(fmt.Sprintf(":%v", flag.Port), mux); err != nil {
 		log.Panicf("Error starting http server: %v", err)
 	}
 
 	panic("unreachable")
+}
+
+func newNetworkReadiness(config connectivity.TrackerConfig) (connectivity.Observer, http.Handler, error) {
+	tracker, err := connectivity.NewTracker(config)
+	if err != nil {
+		telemetry.SetConnectivitySnapshotProvider(nil)
+		return nil, http.NotFoundHandler(), err
+	}
+
+	observer := connectivity.ObserverFunc(func(observation connectivity.Observation) {
+		tracker.Observe(observation)
+		telemetry.RecordUpstreamConnect(
+			string(observation.Result),
+			observation.Protocol,
+			float64(observation.Duration)/float64(time.Millisecond),
+		)
+	})
+	telemetry.SetConnectivitySnapshotProvider(func() telemetry.ConnectivitySnapshot {
+		snapshot := tracker.Snapshot(time.Now())
+		return telemetry.ConnectivitySnapshot{
+			Attempts:              int64(snapshot.Attempts),
+			SignalFailures:        int64(snapshot.SignalFailures),
+			DistinctTargets:       int64(snapshot.DistinctTargets),
+			DistinctSignalTargets: int64(snapshot.DistinctSignalTargets),
+			Qualified:             snapshot.Qualified,
+			Degraded:              snapshot.Degraded,
+		}
+	})
+	return observer, connectivity.NewReadinessHandler(tracker), nil
+}
+
+func newIngressMux(reverseProxy, networkReadiness http.Handler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.Handle("/", reverseProxy)
+	mux.Handle("/status.ok/network-readiness", networkReadiness)
+	mux.HandleFunc("/status.ok", proxy.Healthz)
+	return mux
 }
 
 func withLogger(ctx context.Context, logLevel string) context.Context {

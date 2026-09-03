@@ -28,7 +28,9 @@ type RecordKind string
 
 const (
 	SourceNameContainerLogs            = "container-logs"
+	SourceNameSyscalls                 = "syscalls"
 	RecordKindContainerLog  RecordKind = "container-log"
+	RecordKindSyscall       RecordKind = "syscall"
 )
 
 type Capabilities struct {

@@ -684,6 +684,66 @@ def test_sandbox_model_converter_snapshot_restore_request() -> None:
     assert "image" not in dumped
     assert "entrypoint" not in dumped
 
+def test_sandbox_model_converter_to_api_volume_skips_unset_fields() -> None:
+    from opensandbox.api.lifecycle.types import UNSET
+    from opensandbox.models.sandboxes import Volume
+
+    # Inject UNSET into backend fields (bypassing Pydantic validation) to
+    # simulate a domain Volume carrying Unset values from an API round-trip.
+    volume = Volume.model_construct(
+        name="workdir",
+        mount_path="/mnt/work",
+        read_only=False,
+        host=UNSET,
+        pvc=UNSET,
+        ossfs=UNSET,
+        sub_path=UNSET,
+    )
+
+    api_volume = SandboxModelConverter.to_api_volume(volume)
+    dumped = api_volume.to_dict()
+    assert dumped == {"name": "workdir", "mountPath": "/mnt/work", "readOnly": False}
+    assert "host" not in dumped
+    assert "pvc" not in dumped
+    assert "ossfs" not in dumped
+    assert "subPath" not in dumped
+
+def test_sandbox_model_converter_to_api_volume_maps_backends() -> None:
+    from opensandbox.models.sandboxes import OSSFS, PVC, Host, Volume
+
+    volume = Volume(
+        name="workdir",
+        host=Host(path="/data/opensandbox"),
+        mount_path="/mnt/work",
+        sub_path="sub",
+    )
+    dumped = SandboxModelConverter.to_api_volume(volume).to_dict()
+    assert dumped["host"] == {"path": "/data/opensandbox"}
+    assert dumped["subPath"] == "sub"
+    assert "pvc" not in dumped
+    assert "ossfs" not in dumped
+
+    pvc_volume = Volume(
+        name="models",
+        pvc=PVC(claim_name="shared-models-pvc"),
+        mount_path="/mnt/models",
+        read_only=True,
+    )
+    pvc_dumped = SandboxModelConverter.to_api_volume(pvc_volume).to_dict()
+    assert pvc_dumped["pvc"]["claimName"] == "shared-models-pvc"
+    assert pvc_dumped["readOnly"] is True
+
+    ossfs_volume = Volume(
+        name="oss", ossfs=OSSFS(
+            bucket="b",
+            endpoint="oss-cn-hangzhou.aliyuncs.com",
+            accessKeyId="ak",
+            accessKeySecret="sk",
+        ),
+        mount_path="/mnt/oss",
+    )
+    ossfs_dumped = SandboxModelConverter.to_api_volume(ossfs_volume).to_dict()
+    assert ossfs_dumped["ossfs"]["bucket"] == "b"
 
 def test_sandbox_model_converter_maps_platform_from_create_response() -> None:
     from opensandbox.api.lifecycle.models.create_sandbox_response import (

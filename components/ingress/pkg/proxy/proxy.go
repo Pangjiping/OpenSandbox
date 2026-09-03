@@ -26,6 +26,7 @@ import (
 	"time"
 
 	slogger "github.com/alibaba/opensandbox/internal/logger"
+	"github.com/gorilla/websocket"
 
 	"github.com/alibaba/opensandbox/ingress/pkg/renewintent"
 	"github.com/alibaba/opensandbox/ingress/pkg/routescope"
@@ -43,15 +44,25 @@ type Proxy struct {
 
 	secure *signature.Verifier
 	scope  *routescope.Verifier
+
+	httpTransport   http.RoundTripper
+	websocketDialer *websocket.Dialer
 }
 
-func NewProxy(_ context.Context, sandboxProvider sandbox.Provider, mode Mode, renewIntentPublisher renewintent.Publisher, secure *signature.Verifier, scope *routescope.Verifier) *Proxy {
+func NewProxy(_ context.Context, sandboxProvider sandbox.Provider, mode Mode, renewIntentPublisher renewintent.Publisher, secure *signature.Verifier, scope *routescope.Verifier, opts ...Option) *Proxy {
+	options := proxyOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+
 	return &Proxy{
 		sandboxProvider:      sandboxProvider,
 		mode:                 mode,
 		renewIntentPublisher: renewIntentPublisher,
 		secure:               secure,
 		scope:                scope,
+		httpTransport:        newObservedHTTPTransport(options.connectObserver),
+		websocketDialer:      newObservedWebSocketDialer(options.connectObserver),
 	}
 }
 
@@ -172,6 +183,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, target sandbox.End
 		}
 		websocketProxy := NewWebSocketProxy(r.URL, p.upstreamResponseObserver(target)) //nolint:bodyclose // Failed handshake bodies are closed by copyResponse.
 		websocketProxy.errorObserver = p.upstreamErrorObserver(target)
+		websocketProxy.dialer = p.websocketDialer
 		websocketProxy.ServeHTTP(w, r)
 	} else {
 		if r.URL.Scheme == "" {
@@ -183,6 +195,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, target sandbox.End
 		}
 		httpProxy := NewHTTPProxy(p.upstreamResponseObserver(target)) //nolint:bodyclose // httputil.ReverseProxy owns response bodies.
 		httpProxy.errorObserver = p.upstreamErrorObserver(target)
+		httpProxy.transport = p.httpTransport
 		httpProxy.ServeHTTP(w, r)
 	}
 }

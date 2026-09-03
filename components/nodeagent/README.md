@@ -2,8 +2,9 @@
 
 Node Agent runs once per Linux Kubernetes node. It merges one or more Sources
 into a common pipeline, preserves order within each stream, and writes sandbox
-records to a file or Alibaba Cloud OSS Sink. The stock binary currently ships
-the `container-logs` Source for CRI stdout/stderr.
+records to a file or Alibaba Cloud OSS Sink. The stock binary ships the
+`container-logs` Source for CRI stdout/stderr and the opt-in `syscalls` Source
+for cgroup-scoped Linux system-call records.
 
 ## Status
 
@@ -21,6 +22,26 @@ make check
 binary and defaults to `container-logs`. Every Source owns its StreamRef
 namespace and private state handle. Each emitted RecordKind has a registered
 storage format that defines its encoding and object layout.
+
+The `syscalls` Source attaches one eBPF program to
+`raw_syscalls/sys_enter`, filters events by sandbox-container cgroup, and emits
+NDJSON. It requires Linux kernel 5.11 or newer, cgroup v2, tracefs, and the `BPF` and `PERFMON`
+capabilities. The Helm chart adds these mounts and capabilities only when
+`syscalls` is enabled. The Source persists active stream identity and outcome
+metadata so a restart can reattach a live container or finalize a stream whose
+Pod disappeared while the Agent was down. It does not persist eBPF event
+payloads, so the restart interval remains an unobservable gap and is reported
+as `syscall-agent-restart`. Its bounded Source data queue continues processing
+lifecycle events under output backpressure and reports discarded events as
+`syscall-source-backpressure`. It also attaches only after Kubernetes reports
+the container ID, so its finalization marker is `incomplete` with
+`syscall-attach-after-container-start` rather than claiming full-lifecycle
+coverage. The filter tracks the runtime's container cgroup itself; processes
+moved into delegated descendant cgroups are outside this first implementation.
+
+The checked-in eBPF object is generated on Linux x86-64 with clang 18 and the
+Ubuntu 24.04 libbpf headers. Run `make generate-syscalls-bpf CLANG=clang-18`
+in this directory after changing the BPF C source.
 
 Every Source also receives an isolated view of the node-local sandbox Pod
 store. It must call `Store.Forget` after it no longer needs a terminated Pod;

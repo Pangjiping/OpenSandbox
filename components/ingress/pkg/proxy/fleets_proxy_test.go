@@ -24,6 +24,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alibaba/opensandbox/ingress/pkg/proxy/connectivity"
 	"github.com/alibaba/opensandbox/ingress/pkg/routescope"
 	"github.com/alibaba/opensandbox/ingress/pkg/sandbox"
 	slogger "github.com/alibaba/opensandbox/internal/logger"
@@ -343,13 +344,27 @@ func TestFleetsProxyInvalidatesRouteOnUpstreamConnectionFailure(t *testing.T) {
 	require.NoError(t, listener.Close())
 
 	provider := &fleetsProxyProvider{info: &sandbox.EndpointInfo{UpstreamURL: upstream}}
-	p := NewProxy(context.Background(), provider, ModeHeader, nil, nil, &routescope.Verifier{Keys: map[string][]byte{"k": []byte("shared-secret")}})
+	observations := make(chan connectivity.Observation, 1)
+	p := NewProxy(
+		context.Background(),
+		provider,
+		ModeHeader,
+		nil,
+		nil,
+		&routescope.Verifier{Keys: map[string][]byte{"k": []byte("shared-secret")}},
+		WithConnectObserver(connectivity.ObserverFunc(func(observation connectivity.Observation) {
+			observations <- observation
+		})),
+	)
 	request := httptest.NewRequest(http.MethodPost, "http://ingress/mutate", strings.NewReader("body"))
 	request.Header.Set(SandboxIngress, fleetsScopeVector)
 	response := httptest.NewRecorder()
 	p.ServeHTTP(response, request)
 	require.Equal(t, http.StatusBadGateway, response.Code)
 	require.Equal(t, provider.target, provider.invalidated)
+	observation := <-observations
+	require.Equal(t, connectivity.ResultRefused, observation.Result)
+	require.Equal(t, "http", observation.Protocol)
 }
 
 func TestFleetsProxyWebSocketUsesBasePathAndUpstreamCredential(t *testing.T) {

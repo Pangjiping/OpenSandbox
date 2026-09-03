@@ -216,6 +216,128 @@ async def test_async_reconcile_batch_failures_only_advance_backoff_once() -> Non
 
 
 @pytest.mark.asyncio
+async def test_async_reconcile_commits_fast_warmup_before_slow_peer_finishes() -> (
+    None
+):
+    store = InMemoryAsyncPoolStateStore()
+    config = AsyncPoolConfig(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=2,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+    )
+    state = ReconcileState(degraded_threshold=3)
+    slow_started = asyncio.Event()
+    release_slow = asyncio.Event()
+    calls = 0
+
+    async def create_one() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            slow_started.set()
+            await release_slow.wait()
+            return "slow"
+        await slow_started.wait()
+        return "fast"
+
+    reconcile_task = asyncio.create_task(
+        run_async_reconcile_tick(
+            config=config,
+            state_store=store,
+            create_one=create_one,
+            on_discard_sandbox=_noop_discard,
+            reconcile_state=state,
+        )
+    )
+
+    async def fast_is_idle() -> bool:
+        return (await store.snapshot_counters("pool")).idle_count == 1
+
+    try:
+        await asyncio.wait_for(slow_started.wait(), timeout=2)
+        await _eventually(fast_is_idle)
+        assert not reconcile_task.done()
+        assert await store.try_take_idle("pool") == "fast"
+    finally:
+        release_slow.set()
+        await asyncio.wait_for(reconcile_task, timeout=2)
+
+    assert await store.try_take_idle("pool") == "slow"
+
+
+@pytest.mark.asyncio
+async def test_async_reconcile_cancellation_discards_uncommitted_warmup() -> None:
+    store = InMemoryAsyncPoolStateStore()
+    config = AsyncPoolConfig(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=2,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+    )
+    state = ReconcileState(degraded_threshold=3)
+    slow_started = asyncio.Event()
+    discard_started = asyncio.Event()
+    release_discard = asyncio.Event()
+    discarded: list[str] = []
+    calls = 0
+
+    async def create_one() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            slow_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return "late"
+        await slow_started.wait()
+        return "fast"
+
+    async def discard(sandbox_id: str) -> None:
+        discard_started.set()
+        await release_discard.wait()
+        discarded.append(sandbox_id)
+
+    reconcile_task = asyncio.create_task(
+        run_async_reconcile_tick(
+            config=config,
+            state_store=store,
+            create_one=create_one,
+            on_discard_sandbox=discard,
+            reconcile_state=state,
+        )
+    )
+
+    async def fast_is_idle() -> bool:
+        return (await store.snapshot_counters("pool")).idle_count == 1
+
+    try:
+        await asyncio.wait_for(slow_started.wait(), timeout=2)
+        await _eventually(fast_is_idle)
+        reconcile_task.cancel()
+        await asyncio.wait_for(discard_started.wait(), timeout=2)
+        reconcile_task.cancel()
+        release_discard.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(reconcile_task, timeout=2)
+    finally:
+        release_discard.set()
+        reconcile_task.cancel()
+        await asyncio.gather(reconcile_task, return_exceptions=True)
+
+    assert await store.try_take_idle("pool") == "fast"
+    assert await store.try_take_idle("pool") is None
+    assert discarded == ["late"]
+
+
+@pytest.mark.asyncio
 async def test_async_acquire_fail_fast_stale_idle_raises_and_kills_candidate() -> None:
     store = InMemoryAsyncPoolStateStore()
     await store.put_idle("pool", "stale-1")

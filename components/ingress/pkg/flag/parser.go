@@ -16,6 +16,7 @@ package flag
 
 import (
 	"flag"
+	"time"
 )
 
 var (
@@ -39,6 +40,13 @@ func InitFlags() {
 	flag.StringVar(&FastPathEndpoint, "fastpath-endpoint", "", "FastPath v2 gRPC endpoint; a non-empty value enables fleets routing")
 	flag.StringVar(&FastPathAccessMode, "fastpath-access-mode", "direct-fastlet-proxy", "FastPath fleets data-plane mode: central-proxy or direct-fastlet-proxy")
 	flag.IntVar(&FastPathWaitTimeoutMillis, "fastpath-wait-timeout-millis", 2000, "Bounded FastPath readiness wait for one ingress request")
+
+	flag.DurationVar(&NetworkReadinessShadowWindow, "network-readiness-shadow-window", time.Minute, "Shadow connectivity assessment window")
+	flag.IntVar(&NetworkReadinessShadowMaxTargets, "network-readiness-shadow-max-targets", 1024, "Maximum distinct upstream targets retained per shadow window")
+	flag.Uint64Var(&NetworkReadinessShadowMinAttempts, "network-readiness-shadow-min-attempts", 20, "Minimum connection attempts required for a shadow assessment")
+	flag.IntVar(&NetworkReadinessShadowMinTargets, "network-readiness-shadow-min-targets", 5, "Minimum distinct upstream targets required for a shadow assessment")
+	flag.IntVar(&NetworkReadinessShadowMinSignalTargets, "network-readiness-shadow-min-signal-targets", 2, "Minimum distinct upstream targets with timeout or unreachable results required for a degraded shadow assessment")
+	flag.Float64Var(&NetworkReadinessShadowDegradedFailureRatio, "network-readiness-shadow-failure-ratio", 0.2, "Timeout or unreachable ratio reported as degraded in shadow mode")
 
 	flag.Parse()
 }

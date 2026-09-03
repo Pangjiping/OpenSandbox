@@ -91,6 +91,10 @@ sink:
 hostPaths:
   # -- Pod-log host path used only by the container-logs Source.
   logs: /var/log/pods
+  # -- Host cgroup v2 hierarchy used only by the syscalls Source.
+  cgroup: /sys/fs/cgroup
+  # -- Host tracefs used only by the syscalls Source.
+  tracing: /sys/kernel/tracing
   # -- Host path for checkpoint state (must match config.stateDir).
   state: /var/lib/opensandbox/nodeagent
   # -- Host path for file sink data (must match sink.file.path).

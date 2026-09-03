@@ -81,7 +81,7 @@ class _FakeAsyncClient:
     def __init__(self):
         self.built = None
         self.response = _FakeStreamingResponse()
-        self.raise_connect_error = False
+        self.connection_error: httpx.RequestError | None = None
         self.raise_generic_error = False
 
     def build_request(
@@ -102,8 +102,8 @@ class _FakeAsyncClient:
         return self.built
 
     async def send(self, req, stream: bool = True):
-        if self.raise_connect_error:
-            raise httpx.ConnectError("connection refused")
+        if self.connection_error:
+            raise self.connection_error
         if self.raise_generic_error:
             raise RuntimeError("unexpected proxy error")
         return self.response
@@ -278,6 +278,100 @@ def test_proxy_openapi_operation_ids_are_unique(client: TestClient) -> None:
     assert len(operation_ids) == 20
     assert len(set(operation_ids)) == len(operation_ids)
     assert duplicate_warnings == []
+
+
+@pytest.mark.parametrize("prefix", ["", "/v1"])
+@pytest.mark.parametrize("suffix", ["", "/{full_path}"])
+@pytest.mark.parametrize("method", ["get", "post", "put", "delete", "patch"])
+def test_proxy_openapi_describes_transparent_responses(
+    client: TestClient,
+    prefix: str,
+    suffix: str,
+    method: str,
+) -> None:
+    app = cast(Any, client.app)
+    app.openapi_schema = None
+    schema = app.openapi()
+    path = f"{prefix}/sandboxes/{{sandbox_id}}/proxy/{{port}}{suffix}"
+    responses = schema["paths"][path][method]["responses"]
+
+    for status_code in ("default", "200"):
+        assert responses[status_code]["description"]
+        assert responses[status_code]["content"] == {"*/*": {}}
+    assert responses["422"]["content"] == {
+        "application/json": {"schema": {"$ref": "#/components/schemas/HTTPValidationError"}}
+    }
+
+
+@pytest.mark.parametrize(
+    "request_path",
+    [
+        "/sandboxes/sbx-123/proxy/44772",
+        "/sandboxes/sbx-123/proxy/44772/nested/path",
+        "/v1/sandboxes/sbx-123/proxy/44772",
+        "/v1/sandboxes/sbx-123/proxy/44772/nested/path",
+    ],
+)
+@pytest.mark.parametrize(
+    ("status_code", "content_type", "body"),
+    [
+        (200, "text/html; charset=utf-8", b"<h1>backend</h1>"),
+        (200, "text/event-stream", b"data: backend\n\n"),
+        (302, "text/plain; charset=utf-8", b"redirect"),
+        (405, "application/json", b'{"error":"backend method"}'),
+        (503, "application/octet-stream", b"\x00\xffbackend"),
+    ],
+)
+def test_proxy_preserves_backend_status_body_and_media_type(
+    client: TestClient,
+    auth_headers: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    request_path: str,
+    status_code: int,
+    content_type: str,
+    body: bytes,
+) -> None:
+    class StubService:
+        @staticmethod
+        def get_endpoint(
+            sandbox_id: str,
+            port: int,
+            resolve_internal: bool = False,
+            use_proxy_host: bool = False,
+        ) -> Endpoint:
+            return Endpoint(endpoint="127.0.0.1:44772")
+
+    monkeypatch.setattr(lifecycle, "sandbox_service", StubService())
+    fake_client = _FakeAsyncClient()
+    fake_client.response = _FakeStreamingResponse(
+        status_code=status_code,
+        headers={"content-type": content_type},
+        chunks=[body],
+    )
+    _set_http_client(client, fake_client)
+
+    response = client.get(request_path, headers=auth_headers, follow_redirects=False)
+
+    assert response.status_code == status_code
+    assert response.content == body
+    assert response.headers["content-type"] == content_type
+    assert fake_client.response.aclose_called is True
+
+
+@pytest.mark.parametrize("prefix", ["", "/v1"])
+@pytest.mark.parametrize("suffix", ["", "/nested/path"])
+def test_proxy_invalid_port_preserves_validation_error(
+    client: TestClient,
+    auth_headers: dict,
+    prefix: str,
+    suffix: str,
+) -> None:
+    response = client.get(
+        f"{prefix}/sandboxes/sbx-123/proxy/not-a-port{suffix}", headers=auth_headers
+    )
+
+    assert response.status_code == 422
+    assert response.headers["content-type"] == "application/json"
 
 
 @pytest.mark.parametrize(
@@ -1069,10 +1163,15 @@ def test_proxy_websocket_relays_messages_and_forwards_safe_headers(
     assert lowered_headers["x-trace"] == "trace-ws"
 
 
-def test_proxy_maps_connect_error_to_502(
+@pytest.mark.parametrize(
+    "connection_error",
+    [httpx.ConnectError("connection refused"), httpx.ConnectTimeout("connection timed out")],
+)
+def test_proxy_maps_connect_failure_to_502(
     client: TestClient,
     auth_headers: dict,
     monkeypatch,
+    connection_error: httpx.RequestError,
 ) -> None:
     class StubService:
         @staticmethod
@@ -1081,7 +1180,7 @@ def test_proxy_maps_connect_error_to_502(
 
     monkeypatch.setattr(lifecycle, "sandbox_service", StubService())
     fake_client = _FakeAsyncClient()
-    fake_client.raise_connect_error = True
+    fake_client.connection_error = connection_error
     _set_http_client(client, fake_client)
 
     response = client.get(
@@ -1090,7 +1189,9 @@ def test_proxy_maps_connect_error_to_502(
     )
 
     assert response.status_code == 502
-    assert "Could not connect to the backend sandbox" in response.json()["message"]
+    payload = response.json()
+    assert payload["code"] == "BACKEND_CONNECTION_FAILED"
+    assert "Could not connect to the backend sandbox" in payload["message"]
 
 
 def test_proxy_maps_unexpected_error_to_500(

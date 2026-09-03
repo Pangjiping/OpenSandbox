@@ -43,7 +43,9 @@ Two flows happen concurrently:
   `warmup_concurrency`. Kotlin reconciles once per second, admits at most
   `warmup_create_qps` new creates per tick, and independently limits post-create
   readiness and preparation work with `warmup_concurrency`. A successful warmup is
-  published to the idle buffer with a TTL of `idle_timeout`.
+  published to the idle buffer with a TTL of `idle_timeout`. Within a Python
+  reconcile tick, each successful warmup is published as soon as it completes;
+  slower peers in the same tick do not delay its availability.
 - **Acquire (any node).** `acquire()` pops an idle ID from the store, connects a
   `Sandbox` client to it, optionally runs a health check and a `renew()` to the
   caller-supplied timeout, and hands it to the caller. Non-leader nodes can acquire

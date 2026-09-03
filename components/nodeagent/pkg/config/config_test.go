@@ -17,6 +17,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/alibaba/opensandbox/nodeagent/pkg/api"
 )
 
 func TestLoadFileConfig(t *testing.T) {
@@ -83,6 +85,32 @@ func TestLoadDoesNotValidateDisabledContainerLogSettings(t *testing.T) {
 
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load() validated settings for a disabled Source: %v", err)
+	}
+}
+
+func TestLoadValidatesOnlyEnabledSyscallSettings(t *testing.T) {
+	t.Setenv("NODE_NAME", "node-1")
+	t.Setenv("NODEAGENT_CLUSTER_ID", "prod-a")
+	t.Setenv("NODEAGENT_SOURCES", "custom-source")
+	t.Setenv("NODEAGENT_STATE_DIR", t.TempDir())
+	t.Setenv("NODEAGENT_SYSCALL_CGROUP_ROOT", "relative")
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() validated a disabled syscalls Source: %v", err)
+	}
+
+	t.Setenv("NODEAGENT_SOURCES", api.SourceNameSyscalls)
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "NODEAGENT_SYSCALL_CGROUP_ROOT") {
+		t.Fatalf("Load() error = %v, want syscall cgroup root error", err)
+	}
+}
+
+func TestValidateRejectsFileSinkInsideSyscallCgroupRoot(t *testing.T) {
+	cfg := validConfig()
+	cfg.Sources = []string{api.SourceNameSyscalls}
+	cfg.SyscallCgroupRoot = "/host/sys/fs/cgroup"
+	cfg.FilePath = "/host/sys/fs/cgroup/output"
+	if err := errorsContaining(cfg.validate(), "must not overlap active state or source paths"); err == "" {
+		t.Fatal("validate() accepted a file sink inside the cgroup source root")
 	}
 }
 

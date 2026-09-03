@@ -43,6 +43,34 @@ func TestStoreFiltersAndRetainsIdentity(t *testing.T) {
 	}
 }
 
+func TestStoreExposesSandboxContainerRuntimeIdentity(t *testing.T) {
+	s := New(fake.NewSimpleClientset(), "node-1", "prod-a")
+	view, err := s.ForSource("syscalls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.upsert(&corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "plain", Namespace: "team-a", UID: types.UID("u1"), Labels: map[string]string{SandboxIDLabel: "sb-1"}},
+		Spec: corev1.PodSpec{
+			NodeName:   "node-1",
+			Containers: []corev1.Container{{Name: ContainerName}},
+		},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+			Name:         ContainerName,
+			ContainerID:  "containerd://0123456789abcdef",
+			RestartCount: 3,
+		}}},
+	})
+
+	resource, found := view.GetByUID("u1")
+	if !found {
+		t.Fatal("sandbox resource was not stored")
+	}
+	if resource.ContainerRuntime != "containerd" || resource.ContainerID != "0123456789abcdef" || resource.ContainerRestartCount != 3 {
+		t.Fatalf("runtime identity=%+v", resource)
+	}
+}
+
 func TestStoreStaleOnlyAfterThresholdAndClearsOnRelist(t *testing.T) {
 	s := New(fake.NewSimpleClientset(), "node-1", "prod-a")
 	s.markWatchFailed()

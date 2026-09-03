@@ -282,6 +282,10 @@ export default defineConfig({
               text: "Execd Path Migration",
               link: "/reference/execd-path-migration",
             },
+            {
+              text: "Snapshot Store Migration",
+              link: "/reference/snapshot-store-migration",
+            },
           ],
         },
       ],

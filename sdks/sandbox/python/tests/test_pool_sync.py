@@ -98,6 +98,72 @@ def test_reconcile_batch_failures_only_advance_backoff_once() -> None:
     )
 
 
+def test_reconcile_commits_fast_warmup_before_slow_peer_finishes() -> None:
+    store = InMemoryPoolStateStore()
+    config = PoolConfig(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=2,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfigSync(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+    )
+    state = ReconcileState(degraded_threshold=3)
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    reconcile_finished = threading.Event()
+    reconcile_errors: list[BaseException] = []
+    call_lock = threading.Lock()
+    calls = 0
+
+    def create_one() -> str:
+        nonlocal calls
+        with call_lock:
+            calls += 1
+            call = calls
+        if call == 1:
+            slow_started.set()
+            if not release_slow.wait(timeout=2):
+                raise TimeoutError("slow warmup was never released")
+            return "slow"
+        if not slow_started.wait(timeout=2):
+            raise TimeoutError("slow warmup never started")
+        return "fast"
+
+    def reconcile(warmup_executor: ThreadPoolExecutor) -> None:
+        try:
+            run_reconcile_tick(
+                config=config,
+                state_store=store,
+                create_one=create_one,
+                on_discard_sandbox=lambda _sandbox_id: None,
+                reconcile_state=state,
+                warmup_executor=warmup_executor,
+            )
+        except BaseException as exc:
+            reconcile_errors.append(exc)
+        finally:
+            reconcile_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        reconcile_thread = threading.Thread(target=reconcile, args=(executor,))
+        reconcile_thread.start()
+        try:
+            assert slow_started.wait(timeout=2)
+            _eventually(lambda: store.snapshot_counters("pool").idle_count == 1)
+            assert not reconcile_finished.is_set()
+            assert store.try_take_idle("pool") == "fast"
+        finally:
+            release_slow.set()
+            reconcile_thread.join(timeout=2)
+            assert not reconcile_thread.is_alive()
+
+    assert reconcile_finished.is_set()
+    assert not reconcile_errors, reconcile_errors
+    assert store.try_take_idle("pool") == "slow"
+
+
 def test_acquire_fail_fast_empty_raises_pool_empty() -> None:
     pool = _create_pool(max_idle=0)
     pool.start()

@@ -389,10 +389,13 @@ async def _proxy_http_request(
             # after client.send() must release the acquired pool connection.
             await _close_backend_response(resp)
             raise
-    except httpx.ConnectError as e:
+    except (httpx.ConnectError, httpx.ConnectTimeout) as e:
         raise HTTPException(
             status_code=502,
-            detail=f"Could not connect to the backend sandbox {endpoint}: {e}",
+            detail={
+                "code": "BACKEND_CONNECTION_FAILED",
+                "message": f"Could not connect to the backend sandbox {endpoint}: {e}",
+            },
         ) from e
     except HTTPException:
         raise
@@ -605,9 +608,26 @@ async def proxy_sandbox_endpoint_request(
 
 
 _PROXY_HTTP_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH")
+_PROXY_OPENAPI_EXTRA = {
+    "responses": {
+        "200": {
+            "description": "Response from the sandbox service; body and media type are backend-defined.",
+            "content": {"*/*": {}},
+        },
+        "default": {
+            "description": (
+                "Response from the sandbox service with a backend-defined status, body, "
+                "and media type. Server-generated errors may also be returned."
+            ),
+            "content": {"*/*": {}},
+        },
+    }
+}
 
 # Keep the multi-method route first for runtime dispatch so 405 responses retain
 # the complete Allow header. The method-specific routes provide unique OpenAPI IDs.
+# Merge response metadata via openapi_extra after FastAPI adds validation errors;
+# responses={"default": ...} would suppress its automatic 422 response.
 router.add_api_route(
     "/sandboxes/{sandbox_id}/proxy/{port}",
     proxy_sandbox_endpoint_root,
@@ -620,6 +640,8 @@ for _method in _PROXY_HTTP_METHODS:
         "/sandboxes/{sandbox_id}/proxy/{port}",
         proxy_sandbox_endpoint_root,
         methods=[_method],
+        response_class=StreamingResponse,
+        openapi_extra=_PROXY_OPENAPI_EXTRA,
     )
 
 router.add_api_route(
@@ -634,6 +656,8 @@ for _method in _PROXY_HTTP_METHODS:
         "/sandboxes/{sandbox_id}/proxy/{port}/{full_path:path}",
         proxy_sandbox_endpoint_request,
         methods=[_method],
+        response_class=StreamingResponse,
+        openapi_extra=_PROXY_OPENAPI_EXTRA,
     )
 
 

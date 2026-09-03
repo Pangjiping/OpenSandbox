@@ -17,7 +17,9 @@
       "type": "object",
       "required": ["state", "fileData"],
       "properties": {
+        "cgroup": { "$ref": "#/definitions/absolutePath" },
         "logs": { "$ref": "#/definitions/absolutePath" },
+        "tracing": { "$ref": "#/definitions/absolutePath" },
         "state": { "$ref": "#/definitions/absolutePath" },
         "fileData": { "$ref": "#/definitions/absolutePath" }
       }
@@ -98,6 +100,22 @@
         "properties": {
           "hostPaths": { "required": ["logs"] },
           "config": { "required": ["maxLineBytes", "partialTimeout", "endedStateRetention"] }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["config"],
+        "properties": {
+          "config": {
+            "required": ["sources"],
+            "properties": { "sources": { "contains": { "const": "syscalls" } } }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "hostPaths": { "required": ["cgroup", "tracing"] }
         }
       }
     },
