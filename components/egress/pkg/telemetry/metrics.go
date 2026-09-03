@@ -34,6 +34,7 @@ var (
 
 	dnsQueryDur     metric.Float64Histogram
 	dnsQueryFailed  metric.Int64Counter
+	dnsReplyFailed  metric.Int64Counter
 	policyDenied    metric.Int64Counter
 	nftUpdates      metric.Int64Counter
 	nftUpdateFailed metric.Int64Counter
@@ -48,6 +49,17 @@ const (
 	DNSFailureUpstreamError = "upstream_error"
 	DNSFailureEmptyResponse = "empty_response"
 	DNSFailureRcode         = "rcode"
+)
+
+// Bounded stage values for RecordDNSReplyFailed, mirroring the decision point
+// in serveDNS. A closed set keeps the counter's cardinality fixed: error
+// strings and queried names must never reach an attribute.
+const (
+	DNSReplyStageMalformed     = "malformed"
+	DNSReplyStageUnknownSource = "unknown_source"
+	DNSReplyStageDeny          = "deny"
+	DNSReplyStageUpstreamError = "upstream_error"
+	DNSReplyStageAnswer        = "answer"
 )
 
 // Bounded operation values for RecordNftablesUpdateFailed.
@@ -125,6 +137,14 @@ func registerEgressMetrics() error {
 		"egress.dns.query.failed_total",
 		metric.WithDescription("DNS queries the proxy could not resolve, by reason. "+
 			"Distinct from egress.policy.denied_total, which counts deliberate policy denials."),
+	)
+	if err != nil {
+		return err
+	}
+	dnsReplyFailed, err = meter.Int64Counter(
+		"egress.dns.reply.failed_total",
+		metric.WithDescription("DNS reply writes that failed after a decision, by stage. "+
+			"A nonzero count means a query was handled but its answer never reached the client."),
 	)
 	if err != nil {
 		return err
@@ -220,6 +240,18 @@ func RecordDNSQueryFailed(reason string) {
 		return
 	}
 	dnsQueryFailed.Add(context.Background(), 1, egressMetricOptWith(attribute.String("reason", reason)))
+}
+
+// RecordDNSReplyFailed counts a reply write that failed after the proxy had
+// already decided the answer. stage must be one of the DNSReplyStage*
+// constants. Together with the per-query reply-write log line this turns
+// "queries handled but answers never reaching the client" — previously a
+// silent window — into an observable condition.
+func RecordDNSReplyFailed(stage string) {
+	if dnsReplyFailed == nil {
+		return
+	}
+	dnsReplyFailed.Add(context.Background(), 1, egressMetricOptWith(attribute.String("stage", stage)))
 }
 
 func RecordDNSDenied() {

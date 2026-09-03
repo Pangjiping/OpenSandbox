@@ -103,6 +103,9 @@ func TestFailureCountersCarryBoundedAttributeWithoutSharingState(t *testing.T) {
 	RecordDNSQueryFailed(DNSFailureRcode)
 	RecordDNSQueryFailed(DNSFailureUpstreamError)
 	RecordNftablesUpdateFailed(NftOpDynamicAdd)
+	RecordDNSReplyFailed(DNSReplyStageAnswer)
+	RecordDNSReplyFailed(DNSReplyStageAnswer)
+	RecordDNSReplyFailed(DNSReplyStageDeny)
 
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
@@ -112,6 +115,12 @@ func TestFailureCountersCarryBoundedAttributeWithoutSharingState(t *testing.T) {
 		DNSFailureUpstreamError: 2,
 		DNSFailureRcode:         1,
 	}, dns, "each reason must be its own stream")
+
+	reply := counterByAttr(t, &rm, "egress.dns.reply.failed_total", "stage")
+	assert.Equal(t, map[string]int64{
+		DNSReplyStageAnswer: 2,
+		DNSReplyStageDeny:   1,
+	}, reply, "each stage must be its own stream")
 
 	nft := counterByAttr(t, &rm, "egress.nftables.updates.failed_total", "operation")
 	assert.Equal(t, map[string]int64{NftOpDynamicAdd: 1}, nft)
