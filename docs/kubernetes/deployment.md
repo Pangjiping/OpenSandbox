@@ -69,6 +69,15 @@ Use an external secret manager instead of creating the Secret manually in produc
 
 The chart installs the server into `opensandbox-system`, while the default `configToml` creates sandbox and pool resources in `opensandbox`. If you change `[kubernetes].namespace` in `configToml`, create that namespace instead of `opensandbox` before submitting workloads.
 
+::: warning Single-active Server default
+The chart defaults to `server.replicaCount: 1`. Keep one active Lifecycle Server
+unless you deliberately use the PostgreSQL-backed Kubernetes public snapshot
+topology documented below. That exception coordinates public snapshots only; it
+does not provide general multi-replica Server HA. The Server Deployment uses the
+`Recreate` strategy so an upgrade stops the active Server before starting its
+replacement; expect a brief API interruption during upgrades.
+:::
+
 ### Use PostgreSQL for server persistence
 
 Create a Secret containing the PostgreSQL connection string:
@@ -155,7 +164,7 @@ curl --fail http://127.0.0.1:8080/health
 |-------|---------|-------|
 | `server.image.repository` | Server image registry and repository | Override for a private mirror or custom build. |
 | `server.image.tag` | Server image version | The release install command pins it to `APP_VERSION`. |
-| `server.replicaCount` | Number of server Pods | Defaults to `2`. |
+| `server.replicaCount` | Number of server Pods | Defaults to `1`; multi-replica Server HA is not supported yet. |
 | `server.env` | Additional container environment variables | Use it with `secretKeyRef` for `OPENSANDBOX_SERVER_API_KEY`. |
 | `configToml` | Complete server configuration | Mounted at `/etc/opensandbox/config.toml`; overriding it replaces the complete default TOML, including the workload namespace. |
 | `server.gateway.enabled` | Deploy the ingress gateway with the server | Defaults to `false`. |

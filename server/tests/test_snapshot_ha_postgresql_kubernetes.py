@@ -156,6 +156,13 @@ class _SharedK8sClient:
         self._observe_barriers = [Barrier(2), Barrier(2)] if force_create_conflict else []
         self._delete_barrier = Barrier(2) if force_create_conflict else None
         self.objects: dict[str, dict] = {}
+        self.workloads = {SANDBOX_ID: {}}
+        self.pods = {
+            f"{SANDBOX_ID}-0": {
+                "spec": {},
+                "status": {"phase": "Running"},
+            }
+        }
         self.create_attempts = 0
         self.successful_creates = 0
         self.delete_attempts = 0
@@ -181,7 +188,11 @@ class _SharedK8sClient:
             self.successful_creates += 1
             return deepcopy(stored)
 
-    def get_custom_object(self, *, name: str, **kwargs):
+    def get_custom_object(self, *, name: str, plural: str, **kwargs):
+        if plural == "batchsandboxes":
+            workload = self.workloads.get(name)
+            return deepcopy(workload) if workload is not None else None
+
         barrier = None
         with self._lock:
             if self._observe_count < len(self._observe_barriers) * 2:
@@ -193,6 +204,13 @@ class _SharedK8sClient:
         with self._lock:
             obj = self.objects.get(name)
             return deepcopy(obj) if obj is not None else None
+
+    def read_pod(self, namespace: str, name: str):
+        pod = self.pods.get(name)
+        return deepcopy(pod) if pod is not None else None
+
+    def list_pods(self, namespace: str, label_selector: str = ""):
+        return [deepcopy(pod) for pod in self.pods.values()]
 
     def delete_custom_object(self, *, name: str, **kwargs) -> None:
         with self._lock:
