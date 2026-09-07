@@ -30,6 +30,7 @@ import okhttp3.mockwebserver.SocketPolicy
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -38,6 +39,26 @@ import java.time.Duration
 import java.util.concurrent.atomic.AtomicReference
 
 class EndpointReadinessTest {
+    @Test
+    fun `health timeout does not report a recovered endpoint error`() {
+        val budget = ReadinessBudget(Duration.ofSeconds(1), Duration.ofMillis(1))
+        var attempts = 0
+        budget.endpoint {
+            if (++attempts == 1) throw unavailable()
+            "published"
+        }
+
+        val error = assertThrows(SandboxReadyTimeoutException::class.java) {
+            budget.health("test health context") {
+                Thread.sleep(1100)
+                true
+            }
+        }
+        assertNull(error.cause)
+        assertFalse(error.message!!.contains("starting"))
+        assertTrue(error.message!!.contains("health check timed out"))
+    }
+
     @Test
     fun `bounded request preserves caller telemetry context`() {
         val key = ContextKey.named<String>("readiness-test")

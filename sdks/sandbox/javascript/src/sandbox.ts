@@ -525,7 +525,8 @@ export class Sandbox {
               await sandboxes.deleteSandbox(sandboxId);
             }
           } catch {
-                } finally {
+            // Preserve the caller's abort error if sandbox cleanup fails.
+          } finally {
             await connectionConfig.closeTransport().catch(() => undefined);
           }
         })();
@@ -535,7 +536,8 @@ export class Sandbox {
         try {
           await sandboxes.deleteSandbox(sandboxId);
         } catch {
-          }
+          // Preserve the original creation error if sandbox cleanup fails.
+        }
       }
       await connectionConfig.closeTransport();
       throw err;

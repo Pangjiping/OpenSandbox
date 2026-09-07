@@ -83,6 +83,7 @@ internal class ReadinessBudget(timeout: Duration, private val interval: Duration
         action: () -> Boolean,
     ) {
         this.context = context
+        lastError = null
         while (true) {
             try {
                 attempts++

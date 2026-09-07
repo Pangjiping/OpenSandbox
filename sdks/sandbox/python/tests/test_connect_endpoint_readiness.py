@@ -23,6 +23,7 @@ import pytest
 from opensandbox.config import ConnectionConfig
 from opensandbox.config.connection_sync import ConnectionConfigSync
 from opensandbox.exceptions import SandboxApiException, SandboxReadyTimeoutException
+from opensandbox.internal.readiness import ReadinessBudget
 from opensandbox.sandbox import Sandbox
 from opensandbox.sync.sandbox import SandboxSync
 
@@ -417,3 +418,30 @@ def test_sync_transport_maps_httpcore_exception_subclasses(monkeypatch):
             transport.handle_request(request)
     assert actual.value.__cause__ is error
     assert actual.value.request is request
+
+
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.asyncio
+async def test_health_timeout_does_not_report_previous_endpoint_error(sync):
+    budget = ReadinessBudget(timedelta(0), timedelta(milliseconds=1))
+    budget.last_error = RuntimeError("previous endpoint failure")
+    calls = 0
+
+    def probe():
+        nonlocal calls
+        calls += 1
+        return True
+
+    async def async_probe():
+        return probe()
+
+    with pytest.raises(SandboxReadyTimeoutException) as raised:
+        if sync:
+            budget.health_sync(probe, "test health context")
+        else:
+            await budget.health(async_probe, "test health context")
+
+    assert calls == 0
+    assert raised.value.__cause__ is None
+    assert "previous endpoint failure" not in str(raised.value)
+    assert "health check timed out" in str(raised.value)

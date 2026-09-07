@@ -31,7 +31,10 @@ export class ReadinessBudget {
     return remaining;
   }
 
-  healthContext(context: string): void { this.context = context; }
+  healthContext(context: string): void {
+    this.context = context;
+    this.lastError = undefined;
+  }
   attempt(): void { this.attempts++; }
 
   record(error: unknown): void { this.lastError = error; }

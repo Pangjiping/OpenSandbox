@@ -87,3 +87,36 @@ test("connect and standalone health checks share probe retry semantics", async (
     await sb.close();
   }
 });
+
+
+test("health timeout does not report a recovered endpoint error", async () => {
+  let attempts = 0;
+  const opts = options(async () => {
+    if (++attempts === 1) throw unavailable();
+    return { endpoint: "localhost:44772", headers: {} };
+  }, { healthCheck: () => new Promise(() => {}) });
+  await assert.rejects(Sandbox.connect(opts), error => {
+    assert.ok(error instanceof SandboxReadyTimeoutException);
+    assert.equal(error.cause, undefined);
+    assert.doesNotMatch(error.message, /starting/);
+    assert.match(error.message, /health check timed out/);
+    return true;
+  });
+});
+
+test("late endpoint rejection is handled after timeout or caller abort", async () => {
+  for (const cancel of [false, true]) {
+    const controller = new AbortController();
+    const reason = new Error("caller stopped");
+    let rejectEndpoint;
+    const endpoint = new Promise((_, reject) => { rejectEndpoint = reject; });
+    const connecting = Sandbox.connect(options(() => endpoint, { signal: controller.signal }));
+    const rejected = assert.rejects(connecting, error =>
+      cancel ? error === reason : error instanceof SandboxReadyTimeoutException);
+    if (cancel) controller.abort(reason);
+    await rejected;
+    rejectEndpoint(new Error("late endpoint failure"));
+    // node:test fails on unhandled rejections, including after a test completes.
+    await new Promise(resolve => setImmediate(resolve));
+  }
+});

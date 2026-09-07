@@ -118,6 +118,7 @@ class ReadinessBudget:
 
     async def health(self, action: Callable[[], Awaitable[bool]], context: str) -> None:
         self.context = context
+        self.last_error = None
         while True:
             try:
                 self.attempts += 1
@@ -156,6 +157,7 @@ class ReadinessBudget:
 
     def health_sync(self, action: Callable[[], bool], context: str) -> None:
         self.context = context
+        self.last_error = None
         while True:
             try:
                 self.attempts += 1
