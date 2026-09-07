@@ -167,9 +167,14 @@ func getTerminalPodFailureReasonAndMessage(pod *corev1.Pod) (string, string, boo
 // terminatedMainContainerFailure reports whether the sandbox's main container
 // terminated with a non-zero exit code under a restart policy that will not
 // restart it (Never). RestartPolicyAlways and RestartPolicyOnFailure pods are
-// excluded because the kubelet restarts the container instead.
+// excluded because the kubelet restarts the container instead. Pods that are
+// already terminating are excluded too: deletion, eviction, or node drain may
+// signal-kill the main container, and the resulting non-zero exit must not turn
+// into a sticky terminal failure that blocks replacement of the deleted pod.
 func terminatedMainContainerFailure(pod *corev1.Pod) (string, string, bool) {
-	if pod.Spec.RestartPolicy != corev1.RestartPolicyNever || len(pod.Spec.Containers) == 0 {
+	if pod.DeletionTimestamp != nil ||
+		pod.Spec.RestartPolicy != corev1.RestartPolicyNever ||
+		len(pod.Spec.Containers) == 0 {
 		return "", "", false
 	}
 	mainName := pod.Spec.Containers[0].Name
