@@ -65,7 +65,8 @@ class ConnectionConfigSync(BaseModel):
         description=(
             "Shared httpx transport instance used by all HTTP clients within "
             "a Sandbox/Manager instance. When unset the SDK builds a "
-            "deadline-aware transport honoring `retry_policy`."
+            "deadline-aware transport honoring `retry_policy`. Caller-provided "
+            "transports must honor request timeouts."
         ),
     )
     retry_policy: RetryPolicy = Field(

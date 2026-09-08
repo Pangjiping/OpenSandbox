@@ -356,6 +356,7 @@ func (s *Sandbox) GetSignedEndpoint(ctx context.Context, port int, expires int64
 }
 
 // ReadyOptions configures WaitUntilReady behavior.
+// Timely timeout requires custom health checks and transports to honor context cancellation.
 type ReadyOptions struct {
 	Timeout         time.Duration
 	PollingInterval time.Duration

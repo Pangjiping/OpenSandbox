@@ -73,6 +73,9 @@ class Sandbox:
     environments, combining lifecycle management with high-level operations for file system
     access, command execution, and real-time monitoring.
 
+    Custom health checks and transports must not block the event loop. Readiness
+    timeout requests cancellation, but custom code that suppresses it may continue.
+
     Key Features:
 
     - **Secure Isolation**: Complete Linux OS access in isolated containers

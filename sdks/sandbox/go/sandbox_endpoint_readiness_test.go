@@ -113,6 +113,45 @@ type readinessRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f readinessRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestReadinessRejectsLateCustomResults(t *testing.T) {
+	for _, phase := range []string{"health", "transport"} {
+		t.Run(phase, func(t *testing.T) {
+			calls := 0
+			finished := false
+			block := func(ctx context.Context) {
+				calls++
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+					t.Fatal("readiness context was not cancelled")
+				}
+				finished = true
+			}
+			client := &http.Client{Transport: readinessRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if phase == "transport" {
+					block(r.Context())
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"endpoint":"localhost:44772","headers":{}}`)),
+				}, nil
+			})}
+			_, err := ConnectSandbox(context.Background(), ConnectionConfig{Domain: "localhost:8080", HTTPClient: client}, "sb", ReadyOptions{
+				Timeout: 50 * time.Millisecond,
+				HealthCheck: func(ctx context.Context, _ *Sandbox) (bool, error) {
+					block(ctx)
+					return true, nil
+				},
+			})
+			var timeout *SandboxReadyTimeoutError
+			require.ErrorAs(t, err, &timeout)
+			require.True(t, finished)
+			require.Equal(t, 1, calls)
+		})
+	}
+}
+
 func TestConnectEndpointSharesHealthDeadline(t *testing.T) {
 	var endpointDeadline time.Time
 	client := &http.Client{Transport: readinessRoundTripper(func(r *http.Request) (*http.Response, error) {

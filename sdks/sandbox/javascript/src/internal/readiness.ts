@@ -19,6 +19,7 @@ export class ReadinessBudget {
   private lastError: unknown;
   private context?: string;
   private attempts = 0;
+  private timedOut = false;
 
   constructor(private readonly seconds: number, private readonly caller?: AbortSignal) {
     this.deadline = performance.now() + seconds * 1000;
@@ -27,7 +28,7 @@ export class ReadinessBudget {
   remaining(): number {
     this.caller?.throwIfAborted();
     const remaining = this.deadline - performance.now();
-    if (remaining <= 0) throw this.timeout();
+    if (this.timedOut || remaining <= 0) throw this.timeout();
     return remaining;
   }
 
@@ -53,7 +54,10 @@ export class ReadinessBudget {
     const controller = new AbortController();
     const onAbort = () => controller.abort(this.caller?.reason);
     this.caller?.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => controller.abort(this.timeout()), remaining);
+    const timer = setTimeout(() => {
+      this.timedOut = true;
+      controller.abort(this.timeout());
+    }, remaining);
     let rejectAbort: (() => void) | undefined;
     try {
       const aborted = new Promise<never>((_, reject) => {

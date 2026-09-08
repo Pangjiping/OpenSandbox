@@ -117,6 +117,71 @@ def connect(request):
     return run
 
 
+@pytest.mark.parametrize("resume", [False, True], ids=["connect", "resume"])
+@pytest.mark.parametrize("phase", ["health", "transport"])
+@pytest.mark.parametrize(
+    "result", [True, False, RuntimeError("late custom failure")],
+    ids=["late-success", "late-false", "late-error"],
+)
+def test_sync_rejects_late_custom_results_on_calling_thread(
+    monkeypatch, resume, phase, result
+):
+    from threading import get_ident
+    from types import SimpleNamespace
+
+    from opensandbox.internal import readiness
+
+    now = 0.0
+    calls = []
+    threads = []
+    closed = []
+    respond = responder(calls, failures=0)
+    caller_thread = get_ident()
+
+    def slow_operation():
+        nonlocal now
+        # Advance the budget deterministically instead of depending on scheduling.
+        now += 0.35
+        threads.append(get_ident())
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def handle(request):
+        response = respond(request)
+        if phase == "transport" and request.method == "GET":
+            slow_operation()
+        return response
+
+    class Transport(httpx.MockTransport):
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    monkeypatch.setattr(readiness, "time", SimpleNamespace(monotonic=lambda: now))
+    transport = Transport(handle)
+    config = ConnectionConfigSync(domain="localhost:8080", transport=transport)
+    method = SandboxSync.resume if resume else SandboxSync.connect
+    timeout_key = "resume_timeout" if resume else "connect_timeout"
+    try:
+        with pytest.raises(SandboxReadyTimeoutException):
+            method(
+                "sb",
+                connection_config=config,
+                health_check=lambda _: slow_operation(),
+                **{timeout_key: timedelta(milliseconds=50)},
+            )
+        assert threads == [caller_thread]
+        endpoints = [path.rsplit("/", 1)[-1] for path in calls if "/endpoints/" in path]
+        assert endpoints == (["44772", "18080"] if phase == "health" else ["44772"])
+        assert not closed, "caller-provided transports must remain open"
+        request = httpx.Request("GET", "http://localhost")
+        readiness.constrain_readiness_request(request)
+        assert readiness.DEADLINE_EXTENSION not in request.extensions
+    finally:
+        transport.close()
+
+
 @pytest.mark.parametrize(
     "code,status", [("SANDBOX_NOT_FOUND", 404), (CODE, 401), (CODE, 403)]
 )
@@ -387,6 +452,24 @@ async def test_timeout_does_not_wait_for_probe_that_suppresses_cancellation():
     finally:
         release.set()
         await asyncio.wait_for(finished.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_blocking_async_probe_finishes_before_timeout_is_reported():
+    calls = []
+    finished = []
+
+    async def probe():
+        calls.append(True)
+        time.sleep(0.1)
+        finished.append(True)
+        return True
+
+    budget = ReadinessBudget(timedelta(milliseconds=50), timedelta(milliseconds=1))
+    with pytest.raises(SandboxReadyTimeoutException):
+        await budget.health(probe, "blocking probe")
+    assert calls == [True]
+    assert finished == [True]
 
 
 def test_sync_transport_maps_httpcore_exception_subclasses(monkeypatch):

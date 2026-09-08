@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as schedule } from "node:timers";
 import { Sandbox, SandboxApiException, SandboxError, SandboxReadyTimeoutException } from "../dist/index.js";
 
 const unavailable = (code = "KUBERNETES::POD_IP_NOT_AVAILABLE", statusCode = 404) =>
@@ -16,6 +17,31 @@ function options(resolve, extra = {}) {
     },
     ...extra,
   };
+}
+
+for (const result of [true, false, new Error("late custom failure")]) {
+  test(`late custom result ${String(result)} is rejected after the callback finishes`, async (t) => {
+    let now = 0;
+    t.mock.method(performance, "now", () => now);
+    for (const phase of ["health", "endpoint"]) {
+      let calls = 0;
+      const block = () => {
+        calls++;
+        now += 100;
+        if (result instanceof Error) throw result;
+        return result;
+      };
+      const opts = options(async () => {
+        if (phase === "endpoint") block();
+        return { endpoint: "localhost:44772", headers: {} };
+      }, {
+        readyTimeoutSeconds: 0.05,
+        healthCheck: block,
+      });
+      await assert.rejects(Sandbox.connect(opts), SandboxReadyTimeoutException);
+      assert.equal(calls, 1);
+    }
+  });
 }
 
 test("connect/resume retry only unresolved endpoint and keep fresh headers", async () => {
@@ -89,7 +115,14 @@ test("connect and standalone health checks share probe retry semantics", async (
 });
 
 
-test("health timeout does not report a recovered endpoint error", async () => {
+test("health timeout does not report a recovered endpoint error", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  t.mock.method(globalThis, "setTimeout", (callback, delay) => schedule(() => {
+    // Exercise a timer firing just before the monotonic deadline.
+    now += delay >= 1 ? delay - 0.25 : delay;
+    callback();
+  }, 0));
   let attempts = 0;
   const opts = options(async () => {
     if (++attempts === 1) throw unavailable();

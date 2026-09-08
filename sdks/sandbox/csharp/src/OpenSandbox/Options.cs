@@ -184,6 +184,8 @@ public class SandboxConnectOptions
 
     /// <summary>
     /// Total endpoint publication and health check budget in seconds.
+    /// Custom checks and handlers must return tasks without synchronous blocking.
+    /// Timeout stops awaiting a task but does not guarantee that its work has stopped.
     /// </summary>
     public int? ReadyTimeoutSeconds { get; set; }
 

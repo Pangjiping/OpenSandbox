@@ -85,6 +85,9 @@ class SandboxSync:
 
     - **Blocking**: Do not call these methods directly from an asyncio event loop thread.
       If you need non-blocking behavior, prefer the async :class:`~opensandbox.sandbox.Sandbox`.
+    - **Readiness timeouts**: Custom health checks and transports cannot be interrupted.
+      They must bound their own blocking work; otherwise timeout is reported only
+      after they return or raise.
     - **Resource cleanup**: :meth:`destroy` terminates the remote sandbox and closes local
       HTTP resources. Use :meth:`close` alone when the sandbox should remain available.
 
@@ -431,7 +434,7 @@ class SandboxSync:
         Wait for the sandbox to pass health checks with polling.
 
         Args:
-            timeout: Maximum time to wait for health check to pass
+            timeout: Health-check budget; see class notes for custom-code limits.
             polling_interval: Time between health check attempts
 
         Raises:
@@ -630,7 +633,7 @@ class SandboxSync:
             sandbox_id: ID of the existing sandbox
             connection_config: Connection configuration
             health_check: Custom sync health check function
-            connect_timeout: Total budget for endpoint publication and health checks.
+            connect_timeout: Total endpoint/health-check budget; see class timeout notes.
             health_check_polling_interval: Polling interval used while waiting for readiness/health.
             skip_health_check: Skip health checks; endpoint publication is still awaited.
 
@@ -713,7 +716,8 @@ class SandboxSync:
             sandbox_id: ID of the paused sandbox to resume.
             connection_config: Connection configuration (shared transport, headers, timeouts).
             health_check: Optional custom sync health check function (falls back to ping).
-            resume_timeout: Total budget for endpoint publication and health checks after resuming.
+            resume_timeout: Total endpoint/health-check budget after the resume request
+                completes; see class timeout notes.
             health_check_polling_interval: Polling interval used while waiting for readiness/health.
             skip_health_check: Skip health checks; endpoint publication is still awaited.
         """

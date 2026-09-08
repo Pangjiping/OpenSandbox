@@ -48,12 +48,23 @@ class EndpointReadinessTest {
             "published"
         }
 
-        val error = assertThrows(SandboxReadyTimeoutException::class.java) {
-            budget.health("test health context") {
-                Thread.sleep(1100)
-                true
+        val caller = Thread.currentThread()
+        var healthThread: Thread? = null
+        var healthAttempts = 0
+        var finished = false
+        val error =
+            assertThrows(SandboxReadyTimeoutException::class.java) {
+                budget.health("test health context") {
+                    healthThread = Thread.currentThread()
+                    healthAttempts++
+                    Thread.sleep(1100)
+                    finished = true
+                    true
+                }
             }
-        }
+        assertSame(caller, healthThread)
+        assertEquals(1, healthAttempts)
+        assertTrue(finished)
         assertNull(error.cause)
         assertFalse(error.message!!.contains("starting"))
         assertTrue(error.message!!.contains("health check timed out"))

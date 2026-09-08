@@ -250,6 +250,7 @@ export interface SandboxConnectOptions {
   healthCheck?: (sbx: Sandbox) => boolean | Promise<boolean>;
   /**
    * Total budget for endpoint publication and health checks.
+   * Custom checks and adapters must not block the event loop.
    */
   readyTimeoutSeconds?: number;
   /**

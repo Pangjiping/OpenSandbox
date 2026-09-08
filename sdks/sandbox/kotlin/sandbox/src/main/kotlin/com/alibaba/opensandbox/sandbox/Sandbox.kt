@@ -692,6 +692,7 @@ class Sandbox internal constructor(
 
     /**
      * Waits for the sandbox to pass a custom health check with polling.
+     * Custom checks run on the calling thread and cannot be interrupted by this timeout.
      *
      * @param timeout Maximum time to wait for health check to pass
      * @param pollingInterval Time between health check attempts
@@ -797,6 +798,7 @@ class Sandbox internal constructor(
 
         /**
          * Total budget for endpoint publication and health checks.
+         * See [Sandbox.checkReady] for custom health-check timeout limits.
          */
         fun connectTimeout(timeout: Duration): Connector {
             this.connectTimeout = timeout
@@ -1567,6 +1569,7 @@ class Sandbox internal constructor(
 
         /**
          * Total budget for endpoint publication and health checks after resuming.
+         * See [Sandbox.checkReady] for custom health-check timeout limits.
          */
         fun resumeTimeout(timeout: Duration): Resumer {
             this.resumeTimeout = timeout

@@ -26,6 +26,43 @@ namespace OpenSandbox.Tests;
 
 public class EndpointReadinessTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SynchronousCustomOperationFinishesBeforeTimeoutIsReported(bool fails)
+    {
+        using var budget = new ReadinessBudget(0.05, default);
+        var callerThread = Environment.CurrentManagedThreadId;
+        var operationThread = 0;
+        var finished = false;
+        await Assert.ThrowsAsync<SandboxReadyTimeoutException>(() => budget.Run<bool>(_ =>
+        {
+            operationThread = Environment.CurrentManagedThreadId;
+            Thread.Sleep(100);
+            finished = true;
+            if (fails) throw new InvalidOperationException("late failure");
+            return Task.FromResult(true);
+        }));
+        Assert.Equal(callerThread, operationThread);
+        Assert.True(finished);
+    }
+
+    [Fact]
+    public async Task TimeoutStopsWaitingForUncooperativeTask()
+    {
+        using var budget = new ReadinessBudget(0.05, default);
+        var work = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            await Assert.ThrowsAsync<SandboxReadyTimeoutException>(() => budget.Run(_ => work.Task).WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.False(work.Task.IsCompleted);
+        }
+        finally
+        {
+            work.TrySetResult(true);
+        }
+    }
+
     private static SandboxApiException Unavailable(string code = "KUBERNETES::POD_IP_NOT_AVAILABLE", int status = 404) =>
         new("starting", statusCode: status, error: new SandboxError(code));
 
