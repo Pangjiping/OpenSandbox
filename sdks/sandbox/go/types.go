@@ -548,9 +548,10 @@ type CreateSessionRequest struct {
 	Cwd string `json:"cwd,omitempty"`
 }
 
-// RunCommandRequest is the request body for executing a shell command.
+// RunCommandRequest executes exactly one of Command (shell text) or Argv (literal arguments).
 type RunCommandRequest struct {
-	Command    string            `json:"command"`
+	Command    string            `json:"command,omitempty"`
+	Argv       []string          `json:"argv,omitempty"`
 	Cwd        string            `json:"cwd,omitempty"`
 	Background bool              `json:"background,omitempty"`
 	Timeout    int64             `json:"timeout,omitempty"`
