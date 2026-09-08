@@ -28,6 +28,7 @@ from opensandbox_server.api.schema import (
     RenewSandboxExpirationResponse,
     Sandbox,
 )
+from opensandbox_server.integrations.otel import instrument_lifecycle
 from opensandbox_server.services.diagnostics import DiagnosticResult
 from opensandbox_server.services.extension_service import ExtensionService
 from opensandbox_server.services.fleets.fleet_service import FleetSandboxService
@@ -54,6 +55,7 @@ class CompositeSandboxService(SandboxService, ExtensionService):
         self._fleets.close()
         self._kubernetes.close()
 
+    @instrument_lifecycle("create")
     async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         return await self._kubernetes.create_sandbox(request)
 
@@ -82,15 +84,19 @@ class CompositeSandboxService(SandboxService, ExtensionService):
     ) -> Sandbox:
         return self._backend(sandbox_id).patch_sandbox_metadata(sandbox_id, patch)
 
+    @instrument_lifecycle("delete")
     def delete_sandbox(self, sandbox_id: str) -> None:
         self._backend(sandbox_id).delete_sandbox(sandbox_id)
 
+    @instrument_lifecycle("pause")
     def pause_sandbox(self, sandbox_id: str) -> None:
         self._backend(sandbox_id).pause_sandbox(sandbox_id)
 
+    @instrument_lifecycle("resume")
     def resume_sandbox(self, sandbox_id: str) -> None:
         self._backend(sandbox_id).resume_sandbox(sandbox_id)
 
+    @instrument_lifecycle("renew")
     def renew_expiration(
         self, sandbox_id: str, request: RenewSandboxExpirationRequest
     ) -> RenewSandboxExpirationResponse:
