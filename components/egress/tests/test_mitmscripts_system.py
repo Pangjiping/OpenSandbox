@@ -1784,6 +1784,17 @@ class SystemAddonPathTraversalTest(unittest.TestCase):
 
         self.assertNotIn("Private-Token", flow.request.headers._values)
 
+    def test_method_outside_scope_no_injection(self) -> None:
+        """A matching host and path do not override the binding's method scope."""
+        system = self._make_system_with_vault()
+        flow = _Flow()
+        flow.request.method = "POST"
+        flow.request.path = "/api/v8/projects/123/variables"
+
+        system.requestheaders(flow)
+
+        self.assertNotIn("Private-Token", flow.request.headers._values)
+
     def test_double_encoded_path_outside_binding_scope_is_allowed(self) -> None:
         """Ambiguous paths pass through when no credential binding matches."""
         system = self._make_system_with_vault()

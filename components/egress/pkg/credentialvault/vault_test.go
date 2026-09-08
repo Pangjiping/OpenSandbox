@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/stretchr/testify/require"
 )
@@ -247,6 +248,68 @@ func TestCredentialVaultAllowsDefaultAllowPolicyForCompatibility(t *testing.T) {
 	state, err := store.Create(testCredentialVaultRequest(), pol)
 	require.NoError(t, err)
 	require.Len(t, state.Bindings, 1)
+}
+
+func TestCredentialVaultScopedMatchEnforcementRejectsImplicitMethodOrPath(t *testing.T) {
+	t.Setenv(constants.EnvCredentialVaultRequireScopedMatch, "true")
+	store := NewStore(nil, func() bool { return true })
+	pol := testCredentialPolicy(t, `{"defaultAction":"deny","egress":[{"action":"allow","target":"code.example.com"}]}`)
+
+	req := testCredentialVaultRequest()
+	req.Bindings[0].Match.Methods = nil
+	_, err := store.Create(req, pol)
+	require.ErrorContains(t, err, "match.methods must be explicit")
+
+	req = testCredentialVaultRequest()
+	req.Bindings[0].Match.Paths = nil
+	_, err = store.Create(req, pol)
+	require.ErrorContains(t, err, "match.paths must be explicit")
+
+	req = testCredentialVaultRequest()
+	req.Bindings[0].Match.Paths = []string{"/*"}
+	_, err = store.Create(req, pol)
+	require.ErrorContains(t, err, "match.paths must not contain /*")
+
+	state, err := store.Create(testCredentialVaultRequest(), pol)
+	require.NoError(t, err)
+	require.Equal(t, []string{"GET"}, state.Bindings[0].Match.Methods)
+	require.Equal(t, []string{"/api/v8/*"}, state.Bindings[0].Match.Paths)
+}
+
+func TestCredentialVaultScopedMatchEnforcementAppliesToPatch(t *testing.T) {
+	t.Setenv(constants.EnvCredentialVaultRequireScopedMatch, "true")
+	store := NewStore(nil, func() bool { return true })
+	pol := testCredentialPolicy(t, `{"defaultAction":"deny","egress":[{"action":"allow","target":"code.example.com"}]}`)
+	_, err := store.Create(testCredentialVaultRequest(), pol)
+	require.NoError(t, err)
+
+	wideBinding := testCredentialVaultRequest().Bindings[0]
+	wideBinding.Name = "wide-binding"
+	wideBinding.Match.Methods = nil
+	wideBinding.Match.Paths = nil
+	_, err = store.Patch(MutationRequest{
+		Bindings: &BindingMutationSet{Add: []Binding{wideBinding}},
+	}, pol)
+	require.ErrorContains(t, err, "match.methods must be explicit")
+
+	state, err := store.Sanitized()
+	require.NoError(t, err)
+	require.Equal(t, int64(1), state.Revision)
+	require.Len(t, state.Bindings, 1)
+}
+
+func TestCredentialVaultKeepsCompatibilityDefaultsWhenScopedMatchEnforcementIsOff(t *testing.T) {
+	t.Setenv(constants.EnvCredentialVaultRequireScopedMatch, "")
+	store := NewStore(nil, func() bool { return true })
+	pol := testCredentialPolicy(t, `{"defaultAction":"deny","egress":[{"action":"allow","target":"code.example.com"}]}`)
+	req := testCredentialVaultRequest()
+	req.Bindings[0].Match.Methods = nil
+	req.Bindings[0].Match.Paths = nil
+
+	state, err := store.Create(req, pol)
+	require.NoError(t, err)
+	require.Equal(t, []string{"GET", "POST", "PUT", "PATCH", "DELETE"}, state.Bindings[0].Match.Methods)
+	require.Equal(t, []string{"/*"}, state.Bindings[0].Match.Paths)
 }
 
 func TestCredentialVaultDefaultAllowRespectsExplicitDenyRule(t *testing.T) {

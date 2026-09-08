@@ -302,6 +302,12 @@ content-type: application/json
 | --- | --- | --- |
 | `OPENSANDBOX_EGRESS_CREDENTIAL_VAULT_REQUIRE_TLS` | off | When enabled (`true`/`1`/`on`), credential vault write operations (create, patch, delete) require TLS, loopback transport, or `X-Forwarded-Proto: https` from a configured trusted proxy. When disabled (default), any authenticated request is accepted regardless of transport. Enable this in deployments where the egress sidecar is directly reachable from untrusted networks without a TLS-terminating reverse proxy. |
 | `OPENSANDBOX_EGRESS_CREDENTIAL_VAULT_TRUSTED_PROXY_CIDRS` | empty | Comma-separated IP addresses or CIDRs allowed to assert `X-Forwarded-Proto: https`. Forwarded transport headers from all other peers are ignored. Configure this when TLS terminates at a reverse proxy before the egress sidecar. |
+| `OPENSANDBOX_EGRESS_CREDENTIAL_VAULT_REQUIRE_SCOPED_MATCH` | off | When enabled, every credential binding must explicitly provide non-empty `match.methods` and `match.paths`, and paths cannot contain the host-wide `/*` pattern. Vault create and patch requests that omit either field are rejected instead of receiving compatibility defaults. Enable this for control planes that translate higher-level API tool definitions into Credential Vault bindings. |
+
+The scoped-match setting is a fail-closed integration guard. It does not infer
+methods or paths from another platform's API tool definition. The caller that
+creates the vault must still copy the intended methods and paths into each
+binding and verify the sanitized binding readback.
 
 
 ## SDK Quick Reference
