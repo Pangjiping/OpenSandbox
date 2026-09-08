@@ -29,6 +29,24 @@ namespace OpenSandbox.Tests;
 public class CommandsAdapterTests
 {
     [Fact]
+    public async Task RunArgv_ShouldPreserveArgumentsAndOptions()
+    {
+        string[] argv = ["tool", "", "a b", "$HOME", "x'y", "中文"];
+        var handler = new StubHttpMessageHandler(async (request, cancellationToken) =>
+        {
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+            body.RootElement.TryGetProperty("command", out _).Should().BeFalse();
+            body.RootElement.GetProperty("argv").EnumerateArray().Select(x => x.GetString()).Should().Equal(argv);
+            body.RootElement.GetProperty("cwd").GetString().Should().Be("$DIR");
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("data: {\"type\":\"execution_complete\"}\n\n", Encoding.UTF8, "text/event-stream")
+            };
+        });
+        await CreateAdapter(handler).RunAsync(argv, new RunCommandOptions { WorkingDirectory = "$DIR" });
+    }
+
+    [Fact]
     public async Task GetCommandStatusAsync_ShouldParseStatusResponse()
     {
         var httpHandler = new StubHttpMessageHandler((request, _) =>
