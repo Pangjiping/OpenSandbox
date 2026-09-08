@@ -253,3 +253,21 @@ test("execd client error message carries unstructured JSON error body", async ()
     },
   );
 });
+
+test("native argv preserves literals and execution options", async () => {
+  const argv = ["tool", "", "a b", "$HOME", "x'y", "中文"];
+  for (const background of [false, true]) {
+    let body;
+    const adapter = new CommandsAdapter({}, {
+      baseUrl: "http://localhost",
+      fetch: async (_url, init) => {
+        body = JSON.parse(init.body);
+        return new Response('data: {"type":"execution_complete"}\n\n', {headers: {"content-type": "text/event-stream"}});
+      },
+    });
+    await adapter.run(argv, {background, workingDirectory: "$DIR", envs: {DIR: "/tmp"}, timeoutSeconds: 2});
+    assert.deepEqual(body, {argv, background, cwd: "$DIR", envs: {DIR: "/tmp"}, timeout: 2000});
+    await assert.rejects(adapter.run([]), /argv/);
+    await assert.rejects(adapter.run(["tool", "\0"]), /argv/);
+  }
+});
