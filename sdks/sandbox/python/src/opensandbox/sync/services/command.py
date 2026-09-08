@@ -46,7 +46,7 @@ class CommandsSync(Protocol):
 
     def run(
         self,
-        command: str,
+        command: str | list[str],
         *,
         opts: RunCommandOpts | None = None,
         handlers: ExecutionHandlersSync | None = None,
@@ -58,7 +58,7 @@ class CommandsSync(Protocol):
         and optional handlers.
 
         Args:
-            command: Shell command text to execute
+            command: Shell text or a native argv list
             opts: Command execution options (e.g. background, working_directory)
             handlers: Optional handlers for streaming events
 
