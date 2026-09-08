@@ -156,7 +156,7 @@ for the complete `[otel]` settings.
 Business metrics — sandbox lifecycle (create, delete, pause, resume, renew),
 snapshots, server-proxy traffic, and access-renew outcomes — are exported under
 the `server.` prefix; the full inventory lives in the
-[Server OpenTelemetry reference](https://github.com/opensandbox-group/OpenSandbox/blob/main/server/docs/opentelemetry.md).
+[Server OpenTelemetry reference](/components/server-opentelemetry).
 
 ### Run the server
 

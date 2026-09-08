@@ -1,19 +1,22 @@
-# OpenTelemetry — Server
+---
+title: Server OpenTelemetry Metrics
+description: Metric names, units, and attribute contract for the OpenSandbox server's business lifecycle telemetry.
+---
+
+# Server OpenTelemetry Metrics
 
 Meter: `opensandbox.server` · Prefix: `server.` · Durations: `ms`
 
-Conventions: counters end in `.count` (no `_total`); duration histograms end in `.duration`; attribute keys are `snake_case` with the closed value sets below. Sandbox IDs, tenant IDs, API keys, and raw paths never become attributes.
+Counters end in `.count` (no `_total`); duration histograms end in `.duration`; attribute keys are `snake_case` with the closed value sets below. Sandbox IDs, tenant IDs, API keys, and raw paths never become attributes.
 
-## Metrics
-
-### General
+## General
 
 | Metric | Type | Unit | Attributes | Description |
 |---|---|---|---|---|
 | `server.http.request.duration` | Histogram | `ms` | `http_method`, `http_route`, `http_status_code` | Inbound HTTP request latency by route template. |
 | `opensandbox.sandbox.create.duration` | Histogram | `ms` | `sdk.language`, `sdk.version`, `success` | SDK-reported create latency (client-observed, includes polling), ingested via `POST /metrics/events`. |
 
-### Sandbox lifecycle
+## Sandbox lifecycle
 
 | Metric | Type | Unit | Attributes | Description |
 |---|---|---|---|---|
@@ -24,10 +27,10 @@ Conventions: counters end in `.count` (no `_total`); duration histograms end in 
 | `server.sandbox.pause.count` | Counter | — | `runtime`, `result` | |
 | `server.sandbox.resume.count` | Counter | — | `runtime`, `result` | |
 | `server.sandbox.renew.count` | Counter | — | `runtime`, `result` | Renewals via the API and the access-renew pipeline. |
-| `server.sandbox.active` | Gauge | — | `state`, `runtime` | Current sandbox count by lifecycle state. |
+| `server.sandbox.active` | Gauge | — | `state`, `runtime` | Current sandbox count by lifecycle state, aggregated across tenant namespaces. |
 | `server.sandbox.orphan_cleaned.count` | Counter | — | `runtime` | Orphaned sidecars/volumes cleaned at startup. |
 
-### Snapshots
+## Snapshots
 
 | Metric | Type | Unit | Attributes | Description |
 |---|---|---|---|---|
@@ -35,14 +38,14 @@ Conventions: counters end in `.count` (no `_total`); duration histograms end in 
 | `server.snapshot.create.duration` | Histogram | `ms` | `runtime`, `result` | Runtime snapshot creation in the async worker. |
 | `server.snapshot.delete.count` | Counter | — | `runtime`, `result` | Counted at terminal state. |
 
-### Proxy
+## Proxy
 
 | Metric | Type | Unit | Attributes | Description |
 |---|---|---|---|---|
 | `server.proxy.request.count` | Counter | — | `proxy_type`, `http_method`, `http_status_code` | Server-proxy traffic to sandbox endpoints. |
 | `server.proxy.request.duration` | Histogram | `ms` | `proxy_type`, `http_method`, `http_status_code` | HTTP: up to response headers. WebSocket: whole session, status is the handshake outcome (101/401/404/500/502). |
 
-### Access renew
+## Access renew
 
 | Metric | Type | Unit | Attributes | Description |
 |---|---|---|---|---|
@@ -64,12 +67,6 @@ Conventions: counters end in `.count` (no `_total`); duration histograms end in 
 - HTTP/proxy: `1 … 60000` ms (standard ladder).
 - Lifecycle (create/delete/snapshot): `100 … 300000` ms (longer tail for K8s cold starts).
 
-## Traces (phase 1)
-
-- Root span per inbound HTTP request (route template, method, status).
-- Span per sandbox lifecycle operation covering downstream runtime and snapshot store calls.
-- W3C context propagation to execd/egress over HTTP where supported.
-
 ## Configuration
 
-`[otel]` settings in [configuration.md](../configuration.md): `enabled`, `endpoint`, export interval. No endpoint configured means no export.
+`[otel]` settings in the [Server configuration reference](https://github.com/opensandbox-group/OpenSandbox/blob/main/server/configuration.md#otel): `enabled`, `endpoint`, export interval. No endpoint configured means no export.

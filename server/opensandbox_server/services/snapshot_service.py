@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 import logging
 from math import ceil
 from time import perf_counter
+from typing import Optional
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -366,8 +367,8 @@ class PersistedSnapshotService(SnapshotService):
                 reason="snapshot_runtime_failed",
                 message=str(exc),
             )
-            self._complete_snapshot(record, runtime_status)
-            self._record_snapshot_create(runtime_status, started_at)
+            terminal_state = self._complete_snapshot(record, runtime_status)
+            self._record_snapshot_create(terminal_state, started_at)
             return
 
         if runtime_status is None:
@@ -377,16 +378,22 @@ class PersistedSnapshotService(SnapshotService):
                 message="Snapshot runtime did not return a final status.",
             )
 
-        self._complete_snapshot(record, runtime_status)
-        self._record_snapshot_create(runtime_status, started_at)
+        terminal_state = self._complete_snapshot(record, runtime_status)
+        self._record_snapshot_create(terminal_state, started_at)
 
     @staticmethod
-    def _record_snapshot_create(runtime_status, started_at: float) -> None:
+    def _record_snapshot_create(terminal_state, started_at: float) -> None:
+        # Duration only: the terminal-state counter is recorded by
+        # _complete_snapshot, which owns the persisted result (a runtime
+        # READY without an image is persisted as FAILED).
+        if terminal_state is None:
+            return
         record_snapshot_operation(
             "create",
             runtime=get_config().runtime.type.lower(),
-            result="success" if runtime_status.state == SnapshotState.READY else "error",
+            result="success" if terminal_state == SnapshotState.READY else "error",
             duration_ms=(perf_counter() - started_at) * 1000.0,
+            count=False,
         )
 
     def _log_worker_failure(self, future: Future) -> None:
@@ -395,11 +402,17 @@ class PersistedSnapshotService(SnapshotService):
         except Exception as exc:  # noqa: BLE001
             logger.exception("Snapshot worker exited unexpectedly: %s", exc)
 
-    def _complete_snapshot(self, record: SnapshotRecord, runtime_status) -> None:
+    def _complete_snapshot(self, record: SnapshotRecord, runtime_status) -> Optional[SnapshotState]:
+        """Apply the runtime's terminal status and record the terminal-state metric.
+
+        Returns the persisted terminal state when a create transition was
+        applied (for duration attribution), ``None`` when nothing transitioned
+        here (missing record, already terminal, raced, or delete-instead).
+        """
         current_record = self._snapshot_repository.get(record.id)
         if current_record is None:
             self._cleanup_runtime_artifact(record.id, runtime_status.image, record.namespace)
-            return
+            return None
 
         if current_record.status.state == SnapshotState.DELETING:
             self._cleanup_runtime_artifact(current_record.id, runtime_status.image, current_record.namespace)
@@ -409,14 +422,14 @@ class PersistedSnapshotService(SnapshotService):
                 runtime=get_config().runtime.type.lower(),
                 result="success",
             )
-            return
+            return None
 
         if current_record.status.state != SnapshotState.CREATING:
-            return
+            return None
 
         updated = self._build_runtime_status_record(current_record, runtime_status)
         if updated is None:
-            return
+            return None
 
         updated_applied = self._snapshot_repository.update_if_state(
             updated,
@@ -427,12 +440,16 @@ class PersistedSnapshotService(SnapshotService):
                 "Snapshot %s was already transitioned before worker completion; skipping update",
                 current_record.id,
             )
-            return
+            return None
+        # The built record owns the result: a runtime READY without a
+        # restorable image is persisted as FAILED.
+        terminal_state = updated.status.state
         record_snapshot_operation(
             "create",
             runtime=get_config().runtime.type.lower(),
-            result="success" if runtime_status.state == SnapshotState.READY else "error",
+            result="success" if terminal_state == SnapshotState.READY else "error",
         )
+        return terminal_state
 
     def recover_unfinished_snapshots(self) -> None:
         while True:

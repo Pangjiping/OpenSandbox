@@ -434,16 +434,19 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
         except (TypeError, json.JSONDecodeError):
             mount_keys = []
 
+        removal_failed = False
         try:
             state = container.attrs.get("State", {})
             if state.get("Running", False):
                 container.kill()
         except DockerException as exc:
+            removal_failed = True
             logger.warning("Failed to stop expired sandbox %s: %s", sandbox_id, exc)
 
         try:
             container.remove(force=True)
         except DockerException as exc:
+            removal_failed = True
             logger.warning("Failed to remove expired sandbox %s: %s", sandbox_id, exc)
 
         managed_volumes_raw = labels.get(SANDBOX_MANAGED_VOLUMES_LABEL, "[]")
@@ -462,7 +465,7 @@ class DockerSandboxService(DockerDiagnosticsMixin, DockerRuntimeMixin, DockerVol
         record_lifecycle_operation(
             "delete",
             runtime="docker",
-            result="success",
+            result="error" if removal_failed else "success",
             duration_ms=(time.perf_counter() - started_at) * 1000.0,
             trigger=metric_trigger,
         )

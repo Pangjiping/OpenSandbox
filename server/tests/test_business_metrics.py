@@ -341,3 +341,155 @@ def test_record_functions_noop_without_setup() -> None:
         record_snapshot_operation("create", runtime="docker", result="success")
         record_proxy_request(proxy_type="http", method="GET", status_code=200, duration_ms=1.0)
         record_access_renew_outcome("extended")
+
+
+# ---------------------------------------------------------------------------
+# review regressions
+# ---------------------------------------------------------------------------
+
+def test_lifecycle_decorators_live_on_implementations_not_composite() -> None:
+    """Exactly one layer instruments each call path (no double counting)."""
+    from opensandbox_server.services.composite_service import CompositeSandboxService
+    from opensandbox_server.services.docker.docker_service import DockerSandboxService
+    from opensandbox_server.services.fleets.fleet_service import FleetSandboxService
+    from opensandbox_server.services.k8s.kubernetes_service import KubernetesSandboxService
+
+    for operation in ("create_sandbox", "delete_sandbox", "pause_sandbox", "resume_sandbox", "renew_expiration"):
+        assert hasattr(getattr(KubernetesSandboxService, operation), "__wrapped__")
+        assert hasattr(getattr(FleetSandboxService, operation), "__wrapped__")
+        assert hasattr(getattr(DockerSandboxService, operation), "__wrapped__")
+        # The composite is a pure pass-through; instrumented backends cover it.
+        assert not hasattr(getattr(CompositeSandboxService, operation), "__wrapped__")
+
+
+def test_snapshot_worker_records_count_once_and_uses_persisted_result(tmp_path) -> None:
+    """READY without a restorable image persists as FAILED; count once, duration once."""
+    from opensandbox_server.repositories.snapshots.sqlite import SQLiteSnapshotRepository
+    from opensandbox_server.services.snapshot_models import SnapshotState
+    from opensandbox_server.services.snapshot_runtime import SnapshotRuntimeStatus
+    from opensandbox_server.services.snapshot_service import PersistedSnapshotService
+
+    class _ReadyNoImageRuntime:
+        def supports_create_snapshot(self) -> bool:
+            return True
+
+        def create_snapshot_unsupported_message(self) -> str:
+            return ""
+
+        def preflight_create_snapshot(self, sandbox_id, *, namespace=None) -> None:
+            return None
+
+        def create_snapshot(self, snapshot_id, sandbox_id, *, namespace=None):
+            return SnapshotRuntimeStatus(state=SnapshotState.READY, image=None)
+
+        def get_snapshot_status(self, snapshot_id):
+            return None
+
+        def delete_snapshot(self, snapshot_id, image=None, *, namespace=None) -> None:
+            return None
+
+        def inspect_snapshot(self, snapshot_id, image=None, *, namespace=None):
+            return SnapshotRuntimeStatus(state=SnapshotState.FAILED, image=None)
+
+    class _ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):
+            from concurrent.futures import Future
+
+            future = Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:  # noqa: BLE001
+                future.set_exception(exc)
+            return future
+
+        def shutdown(self, wait: bool = True) -> None:
+            pass
+
+    from opensandbox_server.api.schema import CreateSnapshotRequest
+
+    class _SandboxService:
+        @staticmethod
+        def get_sandbox(sandbox_id):
+            return {"id": sandbox_id, "status": {"state": "Running"}}
+
+    repo = SQLiteSnapshotRepository(tmp_path / "snapshots.db")
+    service = PersistedSnapshotService(
+        repo,
+        _SandboxService(),
+        snapshot_runtime=_ReadyNoImageRuntime(),
+        snapshot_executor=_ImmediateExecutor(),
+    )
+
+    with patch("opensandbox_server.services.snapshot_service.record_snapshot_operation") as record:
+        created = service.create_snapshot("sbx-001", CreateSnapshotRequest(name="n"))
+
+    # The response reflects the accepted CREATING record; the inline worker
+    # already persisted the terminal state.
+    persisted = repo.get(created.id)
+    assert persisted is not None
+    assert persisted.status.state == SnapshotState.FAILED
+    create_calls = [c for c in record.call_args_list if c.args[0] == "create"]
+    assert len(create_calls) == 2
+    count_call, duration_call = create_calls
+    assert count_call.kwargs["result"] == "error"
+    assert "duration_ms" not in count_call.kwargs
+    assert duration_call.kwargs["count"] is False
+    assert duration_call.kwargs["result"] == "error"
+    assert duration_call.kwargs["duration_ms"] >= 0
+
+
+def test_sandbox_active_gauge_sweeps_tenant_namespaces_and_dedupes() -> None:
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+
+    class _Status:
+        def __init__(self, state):
+            self.state = state
+
+    class _Item:
+        def __init__(self, sandbox_id, state):
+            self.id = sandbox_id
+            self.status = _Status(state)
+
+    class _Pagination:
+        has_next_page = False
+
+    class _Response:
+        items = [_Item("sbx-1", "Running"), _Item("flt-2", "Paused")]
+        pagination = _Pagination()
+
+    class _Service:
+        def list_sandboxes(self, request):
+            return _Response()
+
+    class _TenantProvider:
+        supports_enumeration = True
+
+        @staticmethod
+        def list_tenants():
+            from types import SimpleNamespace
+
+            return [SimpleNamespace(namespace="tenant-a")]
+
+    fake_lifecycle = MagicMock()
+    fake_lifecycle.sandbox_service = _Service()
+    fake_main = MagicMock()
+    fake_main.tenant_provider = _TenantProvider()
+    with patch.dict(
+        "sys.modules",
+        {
+            "opensandbox_server.api.lifecycle": fake_lifecycle,
+            "opensandbox_server.main": fake_main,
+        },
+    ), patch.object(
+        otel_metrics, "_configured_runtime_label", return_value="kubernetes"
+    ):
+        otel_metrics._register_sandbox_active_gauge(provider)
+        collected = _collect(reader)
+
+    # Same service listed for default + tenant namespaces; IDs dedupe.
+    running = collected[("server.sandbox.active", (("runtime", "kubernetes"), ("state", "running")))]
+    paused = collected[("server.sandbox.active", (("runtime", "fleets"), ("state", "paused")))]
+    assert running.value == 1
+    assert paused.value == 1
+    provider.shutdown()

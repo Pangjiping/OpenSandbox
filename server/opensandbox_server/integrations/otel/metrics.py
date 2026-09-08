@@ -173,6 +173,21 @@ def _runtime_label_for_sandbox_id(sandbox_id: str) -> str:
     return runtime_type
 
 
+def _tenant_entries() -> list:
+    """Tenant entries for cross-namespace gauge aggregation; empty when N/A."""
+    try:
+        from opensandbox_server.main import tenant_provider
+    except Exception:
+        return []
+    if tenant_provider is None or not getattr(tenant_provider, "supports_enumeration", False):
+        return []
+    try:
+        return tenant_provider.list_tenants()
+    except Exception:
+        logger.warning("Failed to list tenants for server.sandbox.active", exc_info=True)
+        return []
+
+
 def _sandbox_active_observations() -> list:
     from opensandbox_server.api.lifecycle import sandbox_service
     from opensandbox_server.api.schema import (
@@ -180,25 +195,47 @@ def _sandbox_active_observations() -> list:
         PaginationRequest,
         SandboxFilter,
     )
+    from opensandbox_server.tenants.context import set_current_tenant
 
     counts: dict = {}
-    page = 1
-    while page <= 100:
-        response = sandbox_service.list_sandboxes(
-            ListSandboxesRequest(
-                filter=SandboxFilter(state=None, metadata=None),
-                pagination=PaginationRequest(page=page, pageSize=200),
+    seen_ids: set = set()
+
+    def _collect() -> None:
+        page = 1
+        while page <= 100:
+            response = sandbox_service.list_sandboxes(
+                ListSandboxesRequest(
+                    filter=SandboxFilter(state=None, metadata=None),
+                    pagination=PaginationRequest(page=page, pageSize=200),
+                )
             )
-        )
-        for item in response.items or []:
-            state = (item.status.state or "").lower()
-            if state not in _ACTIVE_SANDBOX_STATES:
-                continue
-            key = (_runtime_label_for_sandbox_id(item.id), state)
-            counts[key] = counts.get(key, 0) + 1
-        if not (response.pagination and response.pagination.has_next_page):
-            break
-        page += 1
+            for item in response.items or []:
+                if item.id in seen_ids:
+                    continue
+                state = (item.status.state or "").lower()
+                if state not in _ACTIVE_SANDBOX_STATES:
+                    continue
+                seen_ids.add(item.id)
+                key = (_runtime_label_for_sandbox_id(item.id), state)
+                counts[key] = counts.get(key, 0) + 1
+            if not (response.pagination and response.pagination.has_next_page):
+                break
+            page += 1
+
+    # Default context (default namespace / docker), then each tenant namespace:
+    # metric collection runs without a request tenant, so multi-tenant
+    # deployments need an explicit per-namespace sweep. Sandbox IDs dedupe
+    # overlaps between the default namespace and tenant entries.
+    _collect()
+    for entry in _tenant_entries():
+        if not getattr(entry, "namespace", None):
+            continue
+        set_current_tenant(entry)
+        try:
+            _collect()
+        finally:
+            set_current_tenant(None)
+
     return [
         Observation(count, {"state": state, "runtime": runtime})
         for (runtime, state), count in counts.items()
@@ -256,26 +293,29 @@ def setup_otel_metrics(config: OtelConfig) -> None:
         export_interval_millis=config.export_interval_millis,
     )
     resource = Resource.create({"service.name": config.service_name})
-    views = [
-        View(
-            instrument_name=name,
-            aggregation=ExplicitBucketHistogramAggregation(
-                boundaries=list(
-                    _LIFECYCLE_DURATION_BOUNDARIES
-                    if name != "server.proxy.request.duration"
-                    else _HTTP_REQUEST_DURATION_BOUNDARIES
-                )
-            ),
+    views = []
+    for name in (
+        _CREATE_DURATION_HISTOGRAM_NAME,
+        _HTTP_REQUEST_DURATION_HISTOGRAM_NAME,
+        "server.sandbox.create.duration",
+        "server.sandbox.delete.duration",
+        "server.snapshot.create.duration",
+        "server.proxy.request.duration",
+    ):
+        boundaries = (
+            _HTTP_REQUEST_DURATION_BOUNDARIES
+            if name in (
+                _HTTP_REQUEST_DURATION_HISTOGRAM_NAME,
+                "server.proxy.request.duration",
+            )
+            else _LIFECYCLE_DURATION_BOUNDARIES
         )
-        for name in (
-            _CREATE_DURATION_HISTOGRAM_NAME,
-            _HTTP_REQUEST_DURATION_HISTOGRAM_NAME,
-            "server.sandbox.create.duration",
-            "server.sandbox.delete.duration",
-            "server.snapshot.create.duration",
-            "server.proxy.request.duration",
+        views.append(
+            View(
+                instrument_name=name,
+                aggregation=ExplicitBucketHistogramAggregation(boundaries=list(boundaries)),
+            )
         )
-    ]
     provider = MeterProvider(
         resource=resource,
         metric_readers=[reader],
@@ -554,15 +594,21 @@ def record_snapshot_operation(
     runtime: str,
     result: str,
     duration_ms: Optional[float] = None,
+    count: bool = True,
 ) -> None:
-    """Record a snapshot operation at terminal state. Never raises."""
+    """Record a snapshot operation at terminal state. Never raises.
+
+    ``count=False`` records only the duration sample; the terminal-state
+    counter is owned by the repository transition site.
+    """
     instruments = _business_instruments
     if instruments is None:
         return
     try:
-        counter = instruments.snapshot_counters.get(operation)
-        if counter is not None:
-            counter.add(1, {"runtime": runtime, "result": result})
+        if count:
+            counter = instruments.snapshot_counters.get(operation)
+            if counter is not None:
+                counter.add(1, {"runtime": runtime, "result": result})
         if duration_ms is not None:
             histogram = instruments.snapshot_durations.get(operation)
             if histogram is not None:
