@@ -18,8 +18,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.session import ServerSession
+from mcp.server.mcpserver import Context, MCPServer
 from opensandbox import Sandbox, SandboxManager
 from opensandbox.config import ConnectionConfig
 from opensandbox.models.execd import Execution, RunCommandOpts
@@ -87,13 +86,13 @@ class FileReadResponse(BaseModel):
 
 
 def register_tools(
-    mcp: FastMCP,
+    mcp: MCPServer,
     *,
     prefix: str = "",
     state: ServerState | None = None,
     connection_config: ConnectionConfig | None = None,
 ) -> ServerState:
-    """Register sandbox tools on a FastMCP instance."""
+    """Register sandbox tools on an MCP server instance."""
     config = (connection_config or ConnectionConfig()).with_transport_if_missing()
     state = state or ServerState(connection_config=config)
     name_prefix = f"{prefix}_" if prefix else ""
@@ -128,7 +127,7 @@ def register_tools(
     @tool()
     async def sandbox_create(
         image: str,
-        ctx: Context[ServerSession, None] | None = None,
+        ctx: Context[None, None] | None = None,
         *,
         auth_username: str | None = None,
         auth_password: str | None = None,
@@ -319,7 +318,7 @@ def register_tools(
 
     @tool()
     async def sandbox_list(
-        ctx: Context[ServerSession, None] | None = None,
+        ctx: Context[None, None] | None = None,
         *,
         filter: SandboxFilter | None = None,
     ) -> PagedSandboxInfos:
@@ -729,9 +728,9 @@ def register_tools(
     return state
 
 
-def create_server(connection_config: ConnectionConfig | None = None) -> FastMCP:
+def create_server(connection_config: ConnectionConfig | None = None) -> MCPServer:
     """Create the MCP server instance for OpenSandbox."""
-    mcp = FastMCP(
+    mcp = MCPServer(
         "OpenSandbox Sandbox",
         instructions=(
             "Use these tools to create and manage isolated sandboxes. "

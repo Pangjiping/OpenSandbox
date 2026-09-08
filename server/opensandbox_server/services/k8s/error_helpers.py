@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import HTTPException, status
 
 from opensandbox_server.services.constants import SandboxErrorCodes
@@ -41,3 +43,30 @@ def _build_k8s_api_error(action: str, exc: Exception) -> HTTPException:
 
 def _is_not_found_error(exc: Exception) -> bool:
     return "not found" in str(exc).lower()
+
+
+def _build_quota_exceeded_error(message: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": SandboxErrorCodes.K8S_QUOTA_EXCEEDED,
+            "message": f"Namespace ResourceQuota exceeded: {message}",
+        },
+    )
+
+
+def _quota_rejection_message(exc: Exception) -> str | None:
+    """Extract the K8s message when exc is a 403 quota admission rejection, else None."""
+    from kubernetes.client import ApiException
+
+    if not isinstance(exc, ApiException) or getattr(exc, "status", None) != 403:
+        return None
+    body = str(getattr(exc, "body", "") or "")
+    if "exceeded quota" not in body.lower():
+        return None
+    try:
+        parsed = json.loads(body)
+        message = str(parsed.get("message") or body)
+    except ValueError:
+        message = body
+    return message

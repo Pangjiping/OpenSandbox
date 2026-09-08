@@ -73,6 +73,7 @@ snapshot_service = create_snapshot_service(sandbox_service)
         202: {"description": "Sandbox created and provisioned successfully"},
         400: {"model": ErrorResponse, "description": "The request was invalid or malformed"},
         401: {"model": ErrorResponse, "description": "Authentication credentials are missing or invalid"},
+        403: {"model": ErrorResponse, "description": "Namespace ResourceQuota exhausted — the sandbox was not admitted (KUBERNETES::QUOTA_EXCEEDED)"},
         409: {"model": ErrorResponse, "description": "The operation conflicts with the current state"},
         429: {
             "model": ErrorResponse,

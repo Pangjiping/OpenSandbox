@@ -56,12 +56,18 @@ from opensandbox_server.services.endpoint_auth import generate_egress_token, gen
 from opensandbox_server.services.extension_service import ExtensionService
 from opensandbox_server.services.helpers import format_ingress_endpoint
 from opensandbox_server.services.k8s.create_helpers import _build_create_workload_context
-from opensandbox_server.services.k8s.error_helpers import _build_k8s_api_error, _is_not_found_error
+from opensandbox_server.services.k8s.error_helpers import (
+    _build_k8s_api_error,
+    _build_quota_exceeded_error,
+    _is_not_found_error,
+    _quota_rejection_message,
+)
 from opensandbox_server.services.k8s.k8s_diagnostics import K8sDiagnosticsMixin
 from opensandbox_server.services.k8s.endpoint_resolver import _attach_egress_auth_headers, _attach_secure_access_headers
 from opensandbox_server.services.k8s.list_helpers import _build_list_sandboxes_response
 from opensandbox_server.services.k8s.status_helpers import (
     _is_pool_capacity_exhausted_status,
+    _is_quota_exhausted_status,
     _is_unschedulable_status,
     _normalize_create_status,
 )
@@ -323,6 +329,13 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                                 f"{current_message or current_reason or 'no failure details'}"
                             ),
                         },
+                    )
+                if _is_quota_exhausted_status(status_info):
+                    # Quota admission rejection is terminal (controller cannot
+                    # create the Pod until quota is raised) — fail fast instead
+                    # of blind-waiting until POD_READY_TIMEOUT.
+                    raise _build_quota_exceeded_error(
+                        current_message or current_reason or "no quota details"
                     )
 
                 now = time.time()
@@ -952,6 +965,10 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                 # Preflight failed; no CR. PVCs are safe to sweep.
                 raise
             except Exception as create_ex:
+                # A 403 quota admission rejection is terminal and deserves a
+                # clean 4xx (not the generic 500 API_ERROR) — classify it up
+                # front, roll back as below, then raise the mapped error.
+                quota_error_message = _quota_rejection_message(create_ex)
                 # CR may exist with partial state. Attempt rollback so the
                 # ``finally`` can sweep PVCs cleanly. A 404 from the rollback
                 # means the CR is already gone (e.g. the provider's own
@@ -986,6 +1003,8 @@ class KubernetesSandboxService(K8sDiagnosticsMixin, SandboxService, ExtensionSer
                             f"the next delete_sandbox to sweep. create_ex={create_ex}, "
                             f"rollback_ex={rb_ex}"
                         )
+                if quota_error_message:
+                    raise _build_quota_exceeded_error(quota_error_message)
                 raise
 
             logger.info(

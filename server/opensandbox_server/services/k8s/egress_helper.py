@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 from opensandbox_server.services.constants import (
     EGRESS_MODE_ENV,
     EGRESS_RULES_ENV,
+    OTEL_EXPORTER_OTLP_ENDPOINT,
     OPEN_SANDBOX_EGRESS_AUTH_HEADER,
     OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT,
     OPENSANDBOX_EGRESS_SANDBOX_ID,
@@ -87,6 +88,7 @@ def apply_egress_to_spec(
     IPv6 is handled in execd init (``prep_execd_init_for_egress``); Pod-level sysctls are not modified.
 
     ``sandbox_id`` is injected as ``OPENSANDBOX_EGRESS_SANDBOX_ID`` when provided.
+    ``egress.otlp_endpoint`` is injected as ``OTEL_EXPORTER_OTLP_ENDPOINT`` when configured.
     """
     if egress_settings is None:
         return
@@ -99,6 +101,10 @@ def apply_egress_to_spec(
         {"name": EGRESS_RULES_ENV, "value": policy_payload},
         {"name": EGRESS_MODE_ENV, "value": egress_settings.mode},
     ]
+    if egress_settings.otlp_endpoint:
+        env.append(
+            {"name": OTEL_EXPORTER_OTLP_ENDPOINT, "value": egress_settings.otlp_endpoint}
+        )
     if sandbox_id:
         env.append({"name": OPENSANDBOX_EGRESS_SANDBOX_ID, "value": sandbox_id})
     if egress_settings.credential_proxy_enabled:
