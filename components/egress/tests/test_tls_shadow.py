@@ -94,6 +94,41 @@ class TLSShadowTest(unittest.TestCase):
             self.system._observe_tls_shadow(f, self.vault())
         self.assertEqual(self.system.ctx.log.messages, [])
 
+    def test_accepted_empty_wildcard_language_does_not_poison_vault(self):
+        import tls_shadow
+
+        for size in (252, 253):
+            base = ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * (size - 192)])
+            wildcard = "*." + base
+            self.assertEqual(
+                self.system._normalize_active_vault_host(wildcard, "test"), wildcard
+            )
+            impossible = self.vault(wildcard).bindings
+            self.assertEqual(
+                tls_shadow.project("api.example.com", impossible), "no_binding_host"
+            )
+            for bindings in (
+                impossible + self.vault().bindings,
+                self.vault().bindings + impossible,
+            ):
+                self.assertEqual(
+                    tls_shadow.project("api.example.com", bindings), "binding_host"
+                )
+        base = ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 59])
+        self.assertEqual(
+            tls_shadow.project("x." + base, self.vault("*." + base).bindings),
+            "binding_host",
+        )
+        for malformed in (
+            "*.*." + base[:-1],
+            "*." + base + "dddd",
+            "*." + "a" * 64 + "." + "b" * 63 + "." + "c" * 63 + "." + "d" * 59,
+        ):
+            self.assertEqual(
+                tls_shadow.project("api.example.com", self.vault(malformed).bindings),
+                "invalid_snapshot",
+            )
+
     def test_fleet_absence_does_not_claim_passthrough(self):
         self.system._set_fleet_mode(True)
         self.system._observe_tls_shadow(self.flow(), None)

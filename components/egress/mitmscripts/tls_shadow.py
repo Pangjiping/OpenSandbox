@@ -49,6 +49,15 @@ def project(
             if "https" not in match["schemes"]:
                 continue
             for text in match["hosts"]:
+                if text.startswith("*.") and len(text[2:]) > 251:
+                    # Legacy Vault accepts 252/253-byte suffixes. A proper
+                    # subdomain would exceed the 253-byte DNS limit, so this
+                    # selector has no members. Still validate the suffix:
+                    # malformed or oversized hosts must remain unavailable.
+                    suffix = parse_canonical(text[2:])
+                    if suffix.wildcard:
+                        return "invalid_snapshot"
+                    continue
                 selector = parse_canonical(text)
                 matched = selector.matches(host.text) or matched
     except (KeyError, TypeError, ValueError, AttributeError):
