@@ -67,8 +67,44 @@ opensandbox-server init-config ~/.sandbox.toml --example docker
 
 2. Edit the file for your environment. Full reference: [configuration.md](https://github.com/opensandbox-group/OpenSandbox/blob/main/server/configuration.md) (all keys, defaults, validation, env vars).
 
-   Topics covered there include: Docker `network_mode` / `host_ip` (e.g. server in Docker Compose), `[egress]` when clients send `networkPolicy`, `[ingress]`, `[secure_runtime]`, Kubernetes `workload_provider` / `batchsandbox_template_file`, `[agent_sandbox]`, TTL caps, `[renew_intent]`.
+   Topics covered there include: Docker `network_mode` / `host_ip` and `[proxy] resolve_internal` (e.g. server in Docker Compose), `[egress]` when clients send `networkPolicy`, `[ingress]`, `[secure_runtime]`, Kubernetes `workload_provider` / `batchsandbox_template_file`, `[agent_sandbox]`, TTL caps, `[renew_intent]`.
    The server-wide persistence backend is configured under `[store]`; by default OpenSandbox uses a local SQLite database at `~/.opensandbox/opensandbox.db` for server-managed metadata such as snapshot records. PostgreSQL can be selected for externally managed persistence; see the [store configuration](https://github.com/opensandbox-group/OpenSandbox/blob/main/server/configuration.md#store).
+
+### Fleets workload and network policy
+
+Fleets images/templates must include and start execd on port `44772`. Do not
+declare execd as a runtime Infra Component: Ingress resolves its raw port just
+like other workload ports. See [Ingress](/components/ingress).
+
+`POST /v1/sandboxes` accepts `networkPolicy` for Fleets. The server includes its
+JSON in the initial FastPath `egress` action binding. The selected SandboxPool
+must declare the `egress` Action Handler and run a compatible egress process.
+The handler is shared by the Fastlet's sandboxes, with separate per-sandbox policy
+state. It is not execd injection and does not require an execd Infra Component.
+
+Runtime policy operations use the authenticated lifecycle API, not a public
+endpoint to the Fastlet's port `18080`:
+
+```http
+PUT /v1/sandboxes/flt-<id>/networkpolicy
+OPEN-SANDBOX-API-KEY: <api-key>
+Content-Type: application/json
+
+{"defaultAction":"deny","egress":[{"action":"allow","target":"example.com"}]}
+```
+
+GET on the same path reads the persisted policy. PUT replaces the complete
+policy; it does not merge rules. Unrelated action bindings retain their values
+and order. Concurrent writes are protected by Sandbox UID/generation fences
+and return `409` on conflict. Other tenants' sandboxes return `404`.
+
+For Fleets, `200` means intent was committed, not that network enforcement has
+already converged. `mode` is derived from that intent; `enforcementMode` is not
+reported. An absent/cleared binding resets a configured Actions handler to
+deny-first. This response does not prove that a pool without an egress handler
+enforces any policy. Use an explicit `{"defaultAction":"allow","egress":[]}`
+to allow all. No PATCH/DELETE rule-management or SDK additions are included in
+this increment. For non-Fleets IDs, GET/PUT proxy the existing sidecar `/policy`.
 
 ### PostgreSQL persistence
 
@@ -223,6 +259,8 @@ Response:
   "entrypoint": ["python", "-m", "http.server", "8000"]
 }
 ```
+
+**Resource limits**: The request above limits the sandbox to 0.5 CPU cores (`500m`) and 512 MiB of memory (`512Mi`). With the Docker runtime, invalid CPU or memory limits return HTTP 400 (`INVALID_PARAMETER`).
 
 **Other lifecycle calls** (same `OPEN-SANDBOX-API-KEY` header): `GET /v1/sandboxes/{id}`, `POST /v1/sandboxes/{id}/pause`, `POST /v1/sandboxes/{id}/resume`, `GET /v1/sandboxes/{id}/endpoints/{port}` (append `?use_server_proxy=true` when needed), `POST .../renew-expiration`, `DELETE /v1/sandboxes/{id}`. Full request/response shapes: **Swagger UI** above or OpenAPI under [specs/](/api/).
 

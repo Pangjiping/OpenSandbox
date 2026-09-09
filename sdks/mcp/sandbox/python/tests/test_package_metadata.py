@@ -15,9 +15,13 @@
 from importlib.metadata import metadata
 
 
-def test_published_metadata_keeps_mcp_v1_upper_bound() -> None:
-    """Prevent releases from installing the incompatible MCP 2 API."""
+def test_published_metadata_pins_mcp_2() -> None:
+    """Keep releases on the MCP 2 API now that the server has migrated."""
     requirements = metadata("opensandbox-mcp").get_all("Requires-Dist") or []
     normalized = {requirement.replace(" ", "") for requirement in requirements}
 
-    assert "mcp[cli]<2" in normalized
+    mcp_entries = {r for r in normalized if r.startswith("mcp[")}
+    assert mcp_entries, f"no mcp requirement found in: {sorted(normalized)}"
+    entry = mcp_entries.pop()
+    assert ">=2" in entry, entry
+    assert "<3" in entry, entry

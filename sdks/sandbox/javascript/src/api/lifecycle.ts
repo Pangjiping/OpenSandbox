@@ -100,13 +100,17 @@ export interface paths {
         put?: never;
         /**
          * Create a sandbox
-         * @description Creates a new sandbox from a container image or restores one from a
-         *     persistent sandbox snapshot with optional resource limits, environment
-         *     variables, and metadata.
+         * @description Creates a new sandbox from a container image, restores one from a
+         *     persistent sandbox snapshot, or allocates one from a pre-configured
+         *     Pool, with optional resource limits, environment variables, and metadata.
          *
-         *     Exactly one startup source must be provided:
+         *     Standard mode requires exactly one startup source:
          *     - `image` to provision directly from a container image.
          *     - `snapshotId` to restore from a previously created snapshot.
+         *
+         *     Pool mode uses `extensions.poolRef` to select the pre-created Pod and
+         *     schedules a per-allocation task; `image` and `snapshotId` are not
+         *     required.
          *
          *     When `image` is provided, `entrypoint` is required. When `snapshotId` is
          *     provided, `entrypoint` is optional. If omitted, the server defaults the
@@ -154,6 +158,21 @@ export interface paths {
                 };
                 400: components["responses"]["BadRequest"];
                 401: components["responses"]["Unauthorized"];
+                /**
+                 * @description Namespace ResourceQuota exhausted — the sandbox was not admitted.
+                 *
+                 *     The returned `ErrorResponse.code` is `KUBERNETES::QUOTA_EXCEEDED` and
+                 *     `message` carries the Kubernetes admission rejection details.
+                 */
+                403: {
+                    headers: {
+                        "X-Request-ID": components["headers"]["XRequestId"];
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ErrorResponse"];
+                    };
+                };
                 409: components["responses"]["Conflict"];
                 /** @description Pool capacity remained unavailable before the acquisition timeout */
                 429: {
@@ -1155,8 +1174,11 @@ export interface components {
          *     sandbox entrypoint to `["tail", "-f", "/dev/null"]`.
          *
          *     **Pool mode**: When `extensions.poolRef` is set, the sandbox is created from
-         *     a pre-configured pool. In this case `image`, `entrypoint`, and
-         *     `resourceLimits` are all optional (defined by the Pool CRD template).
+         *     a pre-configured on-demand Pool. In this case `image` and `resourceLimits`
+         *     are optional and defined by the Pool CRD template. `entrypoint` is also
+         *     optional; when omitted, the server creates a per-allocation task using
+         *     `['tail', '-f', '/dev/null']`. The Pool must run task-executor and provide
+         *     bootstrap plus execd.
          *     `snapshotId`, `networkPolicy`, `platform`, `volumes`, and
          *     `credentialProxy.enabled` must not be provided together with `poolRef`.
          *
@@ -1236,9 +1258,10 @@ export interface components {
              *     execd; callers must not depend on the internal transport mechanism.
              *     The configuration is not included in Sandbox responses.
              *
-             *     Not supported together with `extensions.poolRef`, because pooled
-             *     sandboxes have already started execd before allocation. Runtimes that
-             *     do not implement lifecycle hook transport reject this field.
+             *     Not supported together with `extensions.poolRef`, because Pool Pods
+             *     are pre-created before request-specific lifecycle hooks are known.
+             *     Runtimes that do not implement lifecycle hook transport reject this
+             *     field.
              */
             lifecycle?: components["schemas"]["SandboxLifecycle"];
             /**
@@ -1248,6 +1271,9 @@ export interface components {
              *
              *     Optional when `snapshotId` is provided. If omitted for snapshot
              *     restore, the server defaults to `["tail", "-f", "/dev/null"]`.
+             *
+             *     Optional when `extensions.poolRef` is provided. If omitted for Pool
+             *     mode, the server uses the same default in a per-allocation task.
              *
              *     Explicitly specifies the user's expected main process, allowing the sandbox management
              *     service to reliably inject control processes before executing this command.

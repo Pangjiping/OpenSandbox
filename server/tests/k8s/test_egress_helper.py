@@ -27,6 +27,7 @@ from opensandbox_server.config import (
 from opensandbox_server.services.constants import (
     EGRESS_MODE_ENV,
     EGRESS_RULES_ENV,
+    OTEL_EXPORTER_OTLP_ENDPOINT,
     OPEN_SANDBOX_EGRESS_AUTH_HEADER,
     OPENSANDBOX_EGRESS_MITMPROXY_TRANSPARENT,
     OPENSANDBOX_EGRESS_SANDBOX_ID,
@@ -55,6 +56,7 @@ def _egress_settings(
     disable_ipv6: bool = True,
     resource_requests: Optional[dict[str, str]] = None,
     resource_limits: Optional[dict[str, str]] = None,
+    otlp_endpoint: Optional[str] = None,
 ) -> EgressWorkloadSettings:
     return EgressWorkloadSettings(
         network_policy=network_policy,
@@ -66,6 +68,7 @@ def _egress_settings(
         disable_ipv6=disable_ipv6,
         resource_requests=resource_requests,
         resource_limits=resource_limits,
+        otlp_endpoint=otlp_endpoint,
     )
 
 
@@ -558,6 +561,44 @@ class TestApplyEgressToSpec:
 
         env_names = {e["name"] for e in containers[0]["env"]}
         assert OPENSANDBOX_EGRESS_SANDBOX_ID not in env_names
+
+    def test_otlp_endpoint_injected_as_env(self):
+        """egress.otlp_endpoint is injected as OTEL_EXPORTER_OTLP_ENDPOINT."""
+        containers: list = []
+        network_policy = NetworkPolicy(
+            default_action="deny",
+            egress=[NetworkRule(action="allow", target="example.com")],
+        )
+
+        apply_egress_to_spec(
+            containers,
+            _egress_settings(
+                network_policy,
+                otlp_endpoint="http://otel-collector.observability:4318",
+            ),
+        )
+
+        env_by_name = {e["name"]: e["value"] for e in containers[0]["env"]}
+        assert (
+            env_by_name[OTEL_EXPORTER_OTLP_ENDPOINT]
+            == "http://otel-collector.observability:4318"
+        )
+
+    def test_otlp_endpoint_omitted_when_not_configured(self):
+        """Without otlp_endpoint, OTEL_EXPORTER_OTLP_ENDPOINT is not set."""
+        containers: list = []
+        network_policy = NetworkPolicy(
+            default_action="deny",
+            egress=[NetworkRule(action="allow", target="example.com")],
+        )
+
+        apply_egress_to_spec(
+            containers,
+            _egress_settings(network_policy),
+        )
+
+        env_names = {e["name"] for e in containers[0]["env"]}
+        assert OTEL_EXPORTER_OTLP_ENDPOINT not in env_names
 
 
 class TestPrepExecdInitForEgress:

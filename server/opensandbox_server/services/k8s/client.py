@@ -23,7 +23,7 @@ from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
 from kubernetes import client, config
-from kubernetes.client import ApiException, CoreV1Api, CustomObjectsApi, NodeV1Api
+from kubernetes.client import ApiException, CoreV1Api, CustomObjectsApi, NodeV1Api, V1APIResourceList
 
 from opensandbox_server.config import KubernetesRuntimeConfig
 from opensandbox_server.services.k8s.informer import WorkloadInformer
@@ -203,6 +203,7 @@ class K8sClient:
         namespace: str,
         plural: str,
         label_selector: str = "",
+        ignore_not_found: bool = True,
     ) -> List[Dict[str, Any]]:
         """List namespaced custom resources, returning the items list.
 
@@ -236,9 +237,39 @@ class K8sClient:
             )
             return resp.get("items", [])
         except ApiException as e:
-            if e.status == 404:
+            if e.status == 404 and ignore_not_found:
                 return []
             raise
+
+    def custom_resource_exists(self, group: str, version: str, plural: str) -> bool:
+        """Distinguish an uninstalled API from a failed namespaced list."""
+        if self._read_limiter:
+            self._read_limiter.acquire()
+        try:
+            resources = self.get_custom_objects_api().get_api_resources(
+                group, version, _request_timeout=(10, 30)
+            )
+        except ApiException as exc:
+            if exc.status == 404:
+                return False
+            raise
+        if not isinstance(resources, V1APIResourceList) or resources.resources is None:
+            raise TypeError("API discovery returned an invalid APIResourceList response")
+        return any(resource.name == plural for resource in resources.resources)
+
+    def invalidate_custom_objects(
+        self, group: str, version: str, plural: str, namespace: str
+    ) -> None:
+        """Invalidate reads after a mutation performed by an external control plane."""
+        informer = self._lookup_informer(group, version, plural, namespace)
+        if informer:
+            informer.invalidate()
+
+    def stop_informers(self) -> None:
+        with self._informers_lock:
+            for informer in self._informers.values():
+                informer.stop()
+            self._informers.clear()
 
     def delete_custom_object(
         self,

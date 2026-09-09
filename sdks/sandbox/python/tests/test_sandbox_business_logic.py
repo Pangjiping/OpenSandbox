@@ -166,6 +166,41 @@ async def test_check_ready_succeeds_after_retries_without_real_sleep(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_check_ready_limits_final_sleep_to_remaining_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [0.0]
+    sleep_calls: list[float] = []
+
+    def _monotonic() -> float:
+        return clock[0]
+
+    async def _sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        clock[0] += seconds
+
+    async def _always_false(_: Sandbox) -> bool:
+        return False
+
+    monkeypatch.setattr("opensandbox.sandbox.time.time", _monotonic)
+    monkeypatch.setattr("opensandbox.sandbox.time.monotonic", _monotonic)
+    monkeypatch.setattr("opensandbox.sandbox.asyncio.sleep", _sleep)
+    sbx = _make_sandbox(
+        health_service=_HealthServiceStub(),
+        sandbox_service=_SandboxServiceStub(),
+        custom_health_check=_always_false,
+    )
+
+    with pytest.raises(SandboxReadyTimeoutException):
+        await sbx.check_ready(
+            timeout=timedelta(milliseconds=10),
+            polling_interval=timedelta(milliseconds=200),
+        )
+
+    assert sleep_calls == [0.01]
+
+
+@pytest.mark.asyncio
 async def test_check_ready_timeout_raises() -> None:
     async def _always_false(_: Sandbox) -> bool:
         return False
@@ -399,7 +434,7 @@ async def _assert_parallel_endpoint_resolution(
 
 @pytest.mark.parametrize("flow", ["create", "connect", "resume"])
 @pytest.mark.asyncio
-async def test_sandbox_resolves_endpoints_in_parallel(
+async def test_sandbox_endpoint_resolution_order(
     monkeypatch: pytest.MonkeyPatch, flow: str
 ) -> None:
     gate = _GatedEndpointServiceStub()
@@ -472,7 +507,19 @@ async def test_sandbox_resolves_endpoints_in_parallel(
             connection_config=ConnectionConfig(),
         )
 
-    await _assert_parallel_endpoint_resolution(gate, _op)
+    if flow == "create":
+        await _assert_parallel_endpoint_resolution(gate, _op)
+    else:
+        task = asyncio.create_task(_op())
+        await asyncio.wait_for(gate.execd_entered.wait(), timeout=1)
+        try:
+            assert not gate.egress_entered.is_set()
+        finally:
+            gate.release.set()
+        sandbox = await asyncio.wait_for(task, timeout=1)
+        assert gate.egress_entered.is_set()
+        await sandbox.close()
+
 
 
 @pytest.mark.parametrize("flow", ["create", "connect", "resume"])

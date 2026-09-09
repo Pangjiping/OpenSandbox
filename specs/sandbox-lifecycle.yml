@@ -49,6 +49,86 @@ tags:
   - name: Metrics
     description: Best-effort SDK telemetry ingestion for server-side aggregation
 paths:
+  /sandboxes/{sandboxId}/networkpolicy:
+    parameters:
+      - $ref: '#/components/parameters/SandboxId'
+    get:
+      tags: [Sandboxes]
+      operationId: getSandboxNetworkPolicy
+      summary: Read sandbox network policy
+      description: |
+        For Fleets, reads persisted egress Action Binding intent in the tenant's
+        Sandbox CR, not live enforcement state. An absent binding defaults to
+        deny-first when an egress handler is configured; this is not proof of
+        enforcement on a pool without that handler. Other backends proxy the
+        sandbox-side egress service. Requires lifecycle API authentication.
+      responses:
+        '200':
+          description: Policy intent (Fleets) or sidecar policy (other backends).
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          description: Policy state is temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags: [Sandboxes]
+      operationId: replaceSandboxNetworkPolicy
+      summary: Replace the complete sandbox network policy
+      description: |
+        Replaces defaultAction and all rules, rather than merging them. Fleets
+        commits the egress binding through FastPath, preserving unrelated bindings
+        with UID/generation conflict protection. Success does not imply handler
+        convergence. Other backends proxy the sandbox-side egress service.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NetworkPolicy'
+      responses:
+        '200':
+          description: Committed policy intent; Fleets omits enforcementMode.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyStatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          description: FastPath or policy state is temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /metrics/events:
     post:
       tags: [Metrics]
@@ -149,13 +229,17 @@ paths:
       tags: [Sandboxes]
       summary: Create a sandbox
       description: |
-        Creates a new sandbox from a container image or restores one from a
-        persistent sandbox snapshot with optional resource limits, environment
-        variables, and metadata.
+        Creates a new sandbox from a container image, restores one from a
+        persistent sandbox snapshot, or allocates one from a pre-configured
+        Pool, with optional resource limits, environment variables, and metadata.
 
-        Exactly one startup source must be provided:
+        Standard mode requires exactly one startup source:
         - `image` to provision directly from a container image.
         - `snapshotId` to restore from a previously created snapshot.
+
+        Pool mode uses `extensions.poolRef` to select the pre-created Pod and
+        schedules a per-allocation task; `image` and `snapshotId` are not
+        required.
 
         When `image` is provided, `entrypoint` is required. When `snapshotId` is
         provided, `entrypoint` is optional. If omitted, the server defaults the
@@ -286,6 +370,23 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Namespace ResourceQuota exhausted — the sandbox was not admitted.
+
+            The returned `ErrorResponse.code` is `KUBERNETES::QUOTA_EXCEEDED` and
+            `message` carries the Kubernetes admission rejection details.
+
+            This fail-fast behavior applies when the `agent-sandbox` workload
+            provider is used. With the default `batchsandbox` provider, quota
+            exhaustion currently waits for the sandbox creation timeout.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
         '409':
           $ref: '#/components/responses/Conflict'
         '429':
@@ -1374,8 +1475,11 @@ components:
         sandbox entrypoint to `["tail", "-f", "/dev/null"]`.
 
         **Pool mode**: When `extensions.poolRef` is set, the sandbox is created from
-        a pre-configured pool. In this case `image`, `entrypoint`, and
-        `resourceLimits` are all optional (defined by the Pool CRD template).
+        a pre-configured on-demand Pool. In this case `image` and `resourceLimits`
+        are optional and defined by the Pool CRD template. `entrypoint` is also
+        optional; when omitted, the server creates a per-allocation task using
+        `['tail', '-f', '/dev/null']`. The Pool must run task-executor and provide
+        bootstrap plus execd.
         `snapshotId`, `networkPolicy`, `platform`, `volumes`, and
         `credentialProxy.enabled` must not be provided together with `poolRef`.
 
@@ -1464,9 +1568,10 @@ components:
             execd; callers must not depend on the internal transport mechanism.
             The configuration is not included in Sandbox responses.
 
-            Not supported together with `extensions.poolRef`, because pooled
-            sandboxes have already started execd before allocation. Runtimes that
-            do not implement lifecycle hook transport reject this field.
+            Not supported together with `extensions.poolRef`, because Pool Pods
+            are pre-created before request-specific lifecycle hooks are known.
+            Runtimes that do not implement lifecycle hook transport reject this
+            field.
 
         entrypoint:
           type: array
@@ -1480,6 +1585,9 @@ components:
 
             Optional when `snapshotId` is provided. If omitted for snapshot
             restore, the server defaults to `["tail", "-f", "/dev/null"]`.
+
+            Optional when `extensions.poolRef` is provided. If omitted for Pool
+            mode, the server uses the same default in a per-allocation task.
 
             Explicitly specifies the user's expected main process, allowing the sandbox management
             service to reliably inject control processes before executing this command.
@@ -1629,6 +1737,28 @@ components:
         - endpoint
       additionalProperties: false
 
+    PolicyStatusResponse:
+      type: object
+      description: |
+        Policy intent for Fleets, or the sidecar policy for other backends.
+        Fleets does not report live enforcement state or enforcementMode.
+      properties:
+        status:
+          type: string
+          example: ok
+        mode:
+          type: string
+          description: Mode derived from the returned policy.
+          example: deny_all
+        enforcementMode:
+          type: string
+          description: Optional sidecar enforcement backend; omitted for Fleets.
+        reason:
+          type: string
+          description: Optional context returned by the sidecar.
+        policy:
+          $ref: '#/components/schemas/NetworkPolicy'
+      additionalProperties: false
     NetworkPolicy:
       type: object
       description: |

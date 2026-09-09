@@ -24,8 +24,10 @@ from typing import Optional
 
 from opensandbox_server.config import AppConfig, get_config
 from opensandbox_server.services.docker import DockerSandboxService
+from opensandbox_server.services.fleets import FleetSandboxService
 from opensandbox_server.services.k8s import KubernetesSandboxService
 from opensandbox_server.services.sandbox_service import SandboxService
+from opensandbox_server.services.composite_service import CompositeSandboxService
 
 logger = logging.getLogger(__name__)
 
@@ -54,11 +56,10 @@ def create_sandbox_service(
 
     # Service implementation registry
     # Add new implementations here as they are created
-    implementations: dict[str, type[SandboxService]] = {
+    implementations = {
         "docker": DockerSandboxService,
         "kubernetes": KubernetesSandboxService,
-        # Future implementations can be added here:
-        # "containerd": ContainerdSandboxService,
+        "fleets": FleetSandboxService,
     }
 
     if selected_type not in implementations:
@@ -68,5 +69,10 @@ def create_sandbox_service(
             f"Supported types: {supported_types}"
         )
 
-    implementation_class = implementations[selected_type]
-    return implementation_class(config=active_config)
+    if selected_type == "kubernetes":
+        implementation = KubernetesSandboxService(config=active_config)
+        return CompositeSandboxService(
+            implementation,
+            FleetSandboxService(active_config, k8s_client=implementation.k8s_client),
+        )
+    return implementations[selected_type](config=active_config)

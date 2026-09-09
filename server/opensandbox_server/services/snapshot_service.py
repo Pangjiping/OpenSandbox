@@ -123,6 +123,14 @@ class PersistedSnapshotService(SnapshotService):
 
     def create_snapshot(self, sandbox_id: str, request: CreateSnapshotRequest) -> Snapshot:
         sandbox = self._sandbox_service.get_sandbox(sandbox_id)
+        if sandbox_id.startswith("flt-"):
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail={
+                    "code": "SNAPSHOT::NOT_IMPLEMENTED",
+                    "message": "Fleets does not support sandbox snapshots.",
+                },
+            )
         self._ensure_source_sandbox_running(sandbox)
 
         if not self._snapshot_runtime.supports_create_snapshot():
