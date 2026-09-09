@@ -24,7 +24,7 @@ install-golint:
 
 .PHONY: golint
 golint: fmt install-golint
-	"$$(go env GOPATH)/bin/golangci-lint" run -v ./...
+	golangci-lint run -v ./...
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "dev")
 GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
