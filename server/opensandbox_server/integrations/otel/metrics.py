@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -513,6 +514,18 @@ def measure_lifecycle_operation(
             trigger=trigger,
         )
         raise
+    except asyncio.CancelledError:
+        # Cancellation bypasses ``except Exception``; record the interrupted
+        # call without classifying it, then let cancellation propagate.
+        record_lifecycle_operation(
+            operation,
+            runtime=runtime,
+            result="error",
+            duration_ms=(perf_counter() - started_at) * 1000.0,
+            source=source,
+            trigger=trigger,
+        )
+        raise
     except Exception:
         record_lifecycle_operation(
             operation,
@@ -671,6 +684,9 @@ def instrument_proxy_http(func):
             return response
         except HTTPException as exc:
             status_code = exc.status_code
+            raise
+        except asyncio.CancelledError:
+            status_code = 499
             raise
         except Exception:
             status_code = 500

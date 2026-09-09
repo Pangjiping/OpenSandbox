@@ -27,7 +27,7 @@ Counters end in `.count` (no `_total`); duration histograms end in `.duration`; 
 | `server.sandbox.pause.count` | Counter | — | `runtime`, `result` | |
 | `server.sandbox.resume.count` | Counter | — | `runtime`, `result` | |
 | `server.sandbox.renew.count` | Counter | — | `runtime`, `result` | Renewals via the API and the access-renew pipeline. |
-| `server.sandbox.active` | Gauge | — | `state`, `runtime` | Current sandbox count by lifecycle state, aggregated across tenant namespaces. |
+| `server.sandbox.active` | Gauge | — | `state`, `runtime` | Current sandbox count by lifecycle state. Namespace sweep covers the default namespace plus enumerable tenant providers (file-backed/config); HTTP per-key providers are not swept — their namespaces are not a complete inventory. |
 | `server.sandbox.orphan_cleaned.count` | Counter | — | `runtime` | Orphaned sidecars/volumes cleaned at startup. |
 
 ## Snapshots
@@ -43,7 +43,7 @@ Counters end in `.count` (no `_total`); duration histograms end in `.duration`; 
 | Metric | Type | Unit | Attributes | Description |
 |---|---|---|---|---|
 | `server.proxy.request.count` | Counter | — | `proxy_type`, `http_method`, `http_status_code` | Server-proxy traffic to sandbox endpoints. |
-| `server.proxy.request.duration` | Histogram | `ms` | `proxy_type`, `http_method`, `http_status_code` | HTTP: up to response headers. WebSocket: whole session, status is the handshake outcome (101/401/404/500/502). |
+| `server.proxy.request.duration` | Histogram | `ms` | `proxy_type`, `http_method`, `http_status_code` | HTTP: up to response headers; cancelled clients record 499. WebSocket: whole session, status is the handshake outcome (101/401/404/500/502). |
 
 ## Access renew
 
