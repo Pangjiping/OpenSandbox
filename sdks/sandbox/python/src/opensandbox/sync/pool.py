@@ -33,6 +33,7 @@ from opensandbox.exceptions import (
     PoolNotRunningException,
     PoolStateStoreUnavailableException,
 )
+from opensandbox.internal.readiness import is_readiness_auth_error
 from opensandbox.pool_types import (
     AcquirePolicy,
     IdleEntry,
@@ -262,6 +263,15 @@ class SandboxPoolSync:
                     )
                     raise
                 except Exception as exc:
+                    # Auth/permission verdicts (401/403) are credential problems shared
+                    # by every idle candidate, not a fault of this sandbox: keep the
+                    # candidate, flush already-condemned kills, and surface the original
+                    # error instead of burning retries (and healthy sandboxes).
+                    if is_readiness_auth_error(exc):
+                        self._schedule_kill_discarded_alive(
+                            pool_name, tuple(pending_kill), source="acquire"
+                        )
+                        raise
                     # Connect / readiness / health-check failure — the idle candidate itself
                     # is unusable. Remove it, fire-and-forget the remote kill on the warmup
                     # executor so a slow DELETE (up to the lifecycle client's request_timeout,
