@@ -89,7 +89,7 @@ func mergeEnvs(base []string, extra map[string]string) []string {
 
 // mergeExtraEnvs merges environment maps from file and request-level overrides.
 func mergeExtraEnvs(fromFile, fromRequest map[string]string) map[string]string {
-	if len(fromRequest) == 0 && runtime.GOOS != "windows" {
+	if len(fromRequest) == 0 && runtime.GOOS != goosWindows {
 		return fromFile
 	}
 

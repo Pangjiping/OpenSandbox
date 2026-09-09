@@ -27,6 +27,8 @@ import (
 	"github.com/alibaba/opensandbox/execd/pkg/util/pathutil"
 )
 
+const goosWindows = "windows"
+
 func (r *ExecuteCodeRequest) commandContent() string {
 	if r.Argv == nil {
 		return r.Code
@@ -79,7 +81,7 @@ func nativeCommand(ctx context.Context, argv []string, cwd string, env []string)
 
 func resolveExecutable(name, cwd string, env []string) (string, error) {
 	original := name
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		ext := filepath.Ext(name)
 		if strings.EqualFold(ext, ".bat") || strings.EqualFold(ext, ".cmd") {
 			return name, fmt.Errorf("native argv requires an executable, not a batch file")
@@ -91,7 +93,7 @@ func resolveExecutable(name, cwd string, env []string) (string, error) {
 	if filepath.IsAbs(name) {
 		return name, nil
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		if filepath.VolumeName(name) != "" {
 			return name, fmt.Errorf("drive-relative executable paths require an absolute path")
 		}
@@ -101,7 +103,7 @@ func resolveExecutable(name, cwd string, env []string) (string, error) {
 		}
 	}
 	separators := string(os.PathSeparator)
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		separators += "/:"
 	}
 	if strings.ContainsAny(name, separators) {
@@ -110,7 +112,7 @@ func resolveExecutable(name, cwd string, env []string) (string, error) {
 	path := ""
 	for _, entry := range env {
 		key, value, ok := strings.Cut(entry, "=")
-		if ok && (key == "PATH" || runtime.GOOS == "windows" && strings.EqualFold(key, "PATH")) {
+		if ok && (key == "PATH" || runtime.GOOS == goosWindows && strings.EqualFold(key, "PATH")) {
 			path = value
 		}
 	}
@@ -120,7 +122,7 @@ func resolveExecutable(name, cwd string, env []string) (string, error) {
 		}
 		candidate := filepath.Join(dir, name)
 		info, err := os.Stat(candidate)
-		if err == nil && !info.IsDir() && (runtime.GOOS == "windows" || info.Mode()&0111 != 0) {
+		if err == nil && !info.IsDir() && (runtime.GOOS == goosWindows || info.Mode()&0111 != 0) {
 			return candidate, nil
 		}
 	}
