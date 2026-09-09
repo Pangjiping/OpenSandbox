@@ -454,7 +454,14 @@ class SandboxSync:
             f"ConnectionConfig(domain={self.connection_config.get_domain()}, "
             f"use_server_proxy={self.connection_config.use_server_proxy})"
         )
-        budget.health_sync(self._probe_health, context)
+        # Fast-fail on 401/403 applies only to the built-in /ping probe: a custom
+        # health_check may legitimately poll an app whose authorization becomes
+        # available asynchronously, so it keeps the retry-until-deadline behavior.
+        budget.health_sync(
+            self._probe_health,
+            context,
+            auth_fail_fast=self._custom_health_check is None,
+        )
 
     @classmethod
     def create(

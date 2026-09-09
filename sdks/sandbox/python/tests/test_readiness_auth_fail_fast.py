@@ -101,3 +101,60 @@ def test_sync_is_healthy_still_returns_false(status):
     sb = SandboxSync.connect("sb", connection_config=config, skip_health_check=True)
     assert sb.is_healthy() is False
     sb.close()
+
+
+# --- Custom health_check callbacks keep the retry-until-deadline behavior: ---
+# --- their 401/403 may be an app-side authorization that is pending.       ---
+
+
+@pytest.mark.asyncio
+async def test_async_custom_check_401_keeps_retrying_until_success():
+    calls = {"n": 0}
+
+    async def custom(_sbx):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise SandboxApiException(
+                "app auth pending", status_code=401, request_id="custom-401"
+            )
+        return True
+
+    sbx = Sandbox(
+        "sb",
+        sandbox_service=None,
+        filesystem_service=None,
+        command_service=None,
+        health_service=None,
+        metrics_service=None,
+        egress_service=None,
+        connection_config=ConnectionConfig(api_key="k"),
+        custom_health_check=custom,
+    )
+    await sbx.check_ready(timedelta(seconds=2), timedelta(milliseconds=1))
+    assert calls["n"] == 2
+
+
+def test_sync_custom_check_401_keeps_retrying_until_success():
+    calls = {"n": 0}
+
+    def custom(_sbx):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise SandboxApiException(
+                "app auth pending", status_code=401, request_id="custom-401"
+            )
+        return True
+
+    sbx = SandboxSync(
+        "sb",
+        sandbox_service=None,
+        filesystem_service=None,
+        command_service=None,
+        health_service=None,
+        metrics_service=None,
+        egress_service=None,
+        connection_config=ConnectionConfigSync(api_key="k"),
+        custom_health_check=custom,
+    )
+    sbx.check_ready(timedelta(seconds=2), timedelta(milliseconds=1))
+    assert calls["n"] == 2

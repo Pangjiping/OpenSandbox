@@ -121,7 +121,13 @@ class ReadinessBudget:
                 self.last_error = error
             await asyncio.sleep(min(self.interval, self.remaining()))
 
-    async def health(self, action: Callable[[], Awaitable[bool]], context: str) -> None:
+    async def health(
+        self,
+        action: Callable[[], Awaitable[bool]],
+        context: str,
+        *,
+        auth_fail_fast: bool = True,
+    ) -> None:
         self.context = context
         self.last_error = None
         while True:
@@ -131,7 +137,7 @@ class ReadinessBudget:
                     return
                 self.last_error = None
             except Exception as error:
-                if is_readiness_auth_error(error):
+                if auth_fail_fast and is_readiness_auth_error(error):
                     raise
                 self.remaining()
                 self.last_error = error
@@ -162,7 +168,13 @@ class ReadinessBudget:
                 self.last_error = error
             time.sleep(min(self.interval, self.remaining()))
 
-    def health_sync(self, action: Callable[[], bool], context: str) -> None:
+    def health_sync(
+        self,
+        action: Callable[[], bool],
+        context: str,
+        *,
+        auth_fail_fast: bool = True,
+    ) -> None:
         self.context = context
         self.last_error = None
         while True:
@@ -172,7 +184,7 @@ class ReadinessBudget:
                     return
                 self.last_error = None
             except Exception as error:
-                if is_readiness_auth_error(error):
+                if auth_fail_fast and is_readiness_auth_error(error):
                     raise
                 self.remaining()
                 self.last_error = error
