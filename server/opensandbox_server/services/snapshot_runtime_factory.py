@@ -53,6 +53,7 @@ def create_snapshot_runtime(
             k8s_client,
             namespace=namespace,
             wait_timeout_seconds=kubernetes_config.snapshot_create_timeout_seconds,
+            postgresql_ha_enabled=active_config.store.type == "postgresql",
         )
 
     if runtime_type == "fleets":
