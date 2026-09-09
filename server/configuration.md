@@ -164,6 +164,7 @@ Kubernetes workloads are created by a **workload provider**. There is **no** `[b
 | `kubernetes.workload_provider` | `"batchsandbox"` or **omit** (factory default is `batchsandbox`) | `"agent-sandbox"` |
 | Template file | **`kubernetes.batchsandbox_template_file`** — path to **BatchSandbox** CR YAML | **`agent_sandbox.template_file`** in [`[agent_sandbox]`](#agent_sandbox--only-with-kubernetes--agent-sandbox) |
 | Image pull policy | **`kubernetes.image_pull_policy`** — writes `imagePullPolicy` into the BatchSandbox pod template main container | Not currently used |
+| Per-request image auth | `image.auth` in the create request — creates a per-sandbox imagePullSecret owned by the BatchSandbox CR | Same — owned by the Sandbox CR |
 | Extra TOML table | None | **`[agent_sandbox]`** is required (see below) |
 
 **BatchSandbox-only config keys in `config.py`:** `batchsandbox_template_file` and `image_pull_policy` on `KubernetesRuntimeConfig`. Everything else in the `[kubernetes]` table (namespace, kubeconfig, informer, API QPS, `sandbox_create_*`, `execd_init_resources`, …) applies to **whichever** provider you select.

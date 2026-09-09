@@ -31,6 +31,10 @@ from opensandbox_server.services.k8s.agent_sandbox_template import AgentSandboxT
 from opensandbox_server.services.validators import ensure_egress_runtime_compatible
 from opensandbox_server.services.k8s.client import K8sClient
 from opensandbox_server.services.k8s.egress_helper import apply_egress_to_spec
+from opensandbox_server.services.k8s.image_pull_secret_helper import (
+    build_image_pull_secret,
+    build_image_pull_secret_name,
+)
 from opensandbox_server.services.k8s.provider_common import (
     _build_execd_init_container,
     _build_main_container,
@@ -160,6 +164,10 @@ class AgentSandboxProvider(WorkloadProvider):
 
         self._apply_platform_node_selector(pod_spec, platform)
 
+        if image_spec.auth:
+            secret_name = build_image_pull_secret_name(sandbox_id)
+            pod_spec["imagePullSecrets"] = [{"name": secret_name}]
+
         resource_name = self._resource_name(sandbox_id)
         spec = {
             "replicas": 1,
@@ -205,12 +213,47 @@ class AgentSandboxProvider(WorkloadProvider):
             body=sandbox,
         )
 
+        if image_spec.auth:
+            secret = build_image_pull_secret(
+                sandbox_id=sandbox_id,
+                image_uri=image_spec.uri,
+                auth=image_spec.auth,
+                owner_uid=created["metadata"]["uid"],
+                owner_name=created["metadata"]["name"],
+                owner_api_version=f"{self.group}/{self.version}",
+                owner_kind="Sandbox",
+            )
+            try:
+                self.k8s_client.create_secret(namespace=namespace, body=secret)
+                logger.info(f"Created imagePullSecret for sandbox {sandbox_id}")
+            except Exception:
+                logger.warning(
+                    f"Failed to create imagePullSecret for sandbox {sandbox_id}, "
+                    "rolling back Sandbox CR"
+                )
+                try:
+                    self.k8s_client.delete_custom_object(
+                        group=self.group,
+                        version=self.version,
+                        namespace=namespace,
+                        plural=self.plural,
+                        name=created["metadata"]["name"],
+                        grace_period_seconds=0,
+                    )
+                except Exception as del_exc:
+                    logger.warning(f"Failed to rollback Sandbox {sandbox_id}: {del_exc}")
+                raise
+
         return {
             "name": created["metadata"]["name"],
             "uid": created["metadata"]["uid"],
             "apiVersion": f"{self.group}/{self.version}",
             "kind": "Sandbox",
         }
+
+    def supports_image_auth(self) -> bool:
+        """agent-sandbox supports per-request image pull authentication."""
+        return True
 
     def _apply_platform_node_selector(
         self,

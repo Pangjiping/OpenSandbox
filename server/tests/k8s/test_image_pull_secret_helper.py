@@ -56,11 +56,15 @@ class TestBuildImagePullSecret:
         assert secret.kind == "Secret"
 
     def test_owner_reference(self):
+        # owner_name may differ from sandbox_id (DNS1035 "sandbox-" prefix
+        # for digit-leading ids); the ref must carry the CR name, not the id,
+        # or K8s GC deletes the Secret as an orphaned dependent.
         secret = build_image_pull_secret(
             sandbox_id="sid",
             image_uri="registry.example.com/img:tag",
             auth=self._auth(),
             owner_uid="uid-abc",
+            owner_name="sandbox-sid",
             owner_api_version="sandbox.opensandbox.io/v1alpha1",
             owner_kind="BatchSandbox",
         )
@@ -70,8 +74,22 @@ class TestBuildImagePullSecret:
         assert ref.uid == "uid-abc"
         assert ref.api_version == "sandbox.opensandbox.io/v1alpha1"
         assert ref.kind == "BatchSandbox"
-        assert ref.name == "sid"
+        assert ref.name == "sandbox-sid"
         assert ref.controller is False
+
+    def test_owner_reference_defaults_to_sandbox_id(self):
+        # BatchSandbox calls without owner_name: its CR is named after the
+        # id verbatim, so the default equals the actual CR name.
+        secret = build_image_pull_secret(
+            sandbox_id="sid",
+            image_uri="registry.example.com/img:tag",
+            auth=self._auth(),
+            owner_uid="uid-abc",
+            owner_api_version="sandbox.opensandbox.io/v1alpha1",
+            owner_kind="BatchSandbox",
+        )
+        ref = secret.metadata.owner_references[0]
+        assert ref.name == "sid"
 
     def test_private_registry_extracted_from_image_uri(self):
         secret = build_image_pull_secret(

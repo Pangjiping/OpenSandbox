@@ -18,6 +18,7 @@ Helpers for creating Kubernetes imagePullSecrets.
 
 import base64
 import json
+from typing import Optional
 
 from kubernetes.client import V1ObjectMeta, V1OwnerReference, V1Secret
 
@@ -38,6 +39,7 @@ def build_image_pull_secret(
     owner_uid: str,
     owner_api_version: str,
     owner_kind: str,
+    owner_name: Optional[str] = None,
 ) -> V1Secret:
     """
     Build a kubernetes.io/dockerconfigjson Secret for image pull auth.
@@ -52,6 +54,12 @@ def build_image_pull_secret(
         owner_uid: UID of the owning CR
         owner_api_version: apiVersion of the owning CR (e.g. "sandbox.opensandbox.io/v1alpha1")
         owner_kind: Kind of the owning CR (e.g. "BatchSandbox")
+        owner_name: Name of the owning CR. Defaults to sandbox_id, which is
+            only valid when the CR is named after the id verbatim
+            (BatchSandbox). Providers that rename the CR — agent-sandbox
+            prefixes digit-leading ids with "sandbox-" for DNS1035 — must
+            pass the actual CR name, or K8s GC deletes the Secret as an
+            orphan
 
     Returns:
         V1Secret ready to be created via CoreV1Api
@@ -92,7 +100,7 @@ def build_image_pull_secret(
                 V1OwnerReference(
                     api_version=owner_api_version,
                     kind=owner_kind,
-                    name=sandbox_id,
+                    name=owner_name if owner_name is not None else sandbox_id,
                     uid=owner_uid,
                     controller=False,
                 )
