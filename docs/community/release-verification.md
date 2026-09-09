@@ -156,10 +156,10 @@ The component can be `execd`, `ingress`, `egress`, `controller`,
 component name `server`.
 
 ::: tip Code Interpreter Image Verification
-The standalone `code-interpreter` environment image is published and maintained from [opensandbox-group/code-interpreter](https://github.com/opensandbox-group/code-interpreter).
+The standalone `code-interpreter` environment image is published and maintained from [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images).
 - **Existing image releases** (such as `v1.1.0` and earlier) continue using the OpenSandbox workflow identity (`.github/workflows/publish-components.yml`).
-- **New releases** from `opensandbox-group/code-interpreter` use its `release.yml` workflow identity.
-Users and operators verifying signatures or provenance for new releases must follow the verification documentation in [opensandbox-group/code-interpreter](https://github.com/opensandbox-group/code-interpreter).
+- **New releases** from `opensandbox-group/sandbox-images` use its `release.yml` workflow identity.
+Users and operators verifying signatures or provenance for new releases must follow the verification documentation in [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images).
 :::
 
 ```bash

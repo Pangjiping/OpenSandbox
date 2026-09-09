@@ -18,7 +18,7 @@
 #
 # External image pins:
 # OpenSandbox does not own or release the code-interpreter sandbox image, which is maintained
-# in https://github.com/opensandbox-group/code-interpreter. However, code-interpreter is
+# in https://github.com/opensandbox-group/sandbox-images. However, code-interpreter is
 # retained here to support updating consumer image pins across documentation, examples, and
 # tests when new external image versions are released.
 #

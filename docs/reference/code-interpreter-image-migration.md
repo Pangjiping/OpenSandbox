@@ -13,13 +13,13 @@ Historically, the source Dockerfiles, environment setup scripts, and build tooli
 
 To separate platform runtime and SDK governance from specific sandbox userland environment implementations, the container image implementation has been extracted into a dedicated repository:
 
-- **New repository**: [opensandbox-group/code-interpreter](https://github.com/opensandbox-group/code-interpreter)
+- **New repository**: [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images)
 
 ## Scope of Separation
 
 ### Extracted to Dedicated Repository
 
-The following components and artifacts are now developed, versioned, and published from [opensandbox-group/code-interpreter](https://github.com/opensandbox-group/code-interpreter):
+The following components and artifacts are now developed, versioned, and published from [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images):
 
 - Dockerfiles (`Dockerfile`, `Dockerfile_base`)
 - Environment bootstrap and lifecycle scripts (`code-interpreter.sh`, `code-interpreter-env.sh`, `jupyter_notebook_config.py`)
@@ -51,10 +51,10 @@ This migration is purely structural for monorepo maintenance. Container image co
 Operators and users who verify container image signatures or build provenance should note the workflow identity:
 
 - **Existing image releases** (such as `v1.1.0` and earlier) were published by the OpenSandbox monorepo and continue using the OpenSandbox workflow identity (`publish-components.yml`).
-- **New releases** from [opensandbox-group/code-interpreter](https://github.com/opensandbox-group/code-interpreter) use that repository's `release.yml` workflow identity.
-- Users verifying Cosign signatures or provenance attestations for new releases must follow the verification documentation in [opensandbox-group/code-interpreter](https://github.com/opensandbox-group/code-interpreter).
+- **New releases** from [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images) use that repository's `release.yml` workflow identity.
+- Users verifying Cosign signatures or provenance attestations for new releases must follow the verification documentation in [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images).
 
 ## Contributing and Reporting Issues
 
-- **Container Image Issues or Requests**: If you need new pre-installed packages, updated language versions, or custom kernels in the `code-interpreter` environment image, please submit an issue or pull request at [opensandbox-group/code-interpreter](https://github.com/opensandbox-group/code-interpreter).
+- **Container Image Issues or Requests**: If you need new pre-installed packages, updated language versions, or custom kernels in the `code-interpreter` environment image, please submit an issue or pull request at [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images).
 - **SDK or Lifecycle Platform Issues**: For SDK bugs, lifecycle control plane features, or `execd` daemon issues, continue contributing to [opensandbox-group/OpenSandbox](https://github.com/opensandbox-group/OpenSandbox).

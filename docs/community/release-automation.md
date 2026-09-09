@@ -40,7 +40,7 @@ Script path:
 - `helm/opensandbox-node-agent`
 - `helm` (alias of `helm/opensandbox`)
 
-The `opensandbox/code-interpreter` sandbox container image is published and versioned independently from its dedicated repository: [opensandbox-group/code-interpreter](https://github.com/opensandbox-group/code-interpreter).
+The `opensandbox/code-interpreter` sandbox container image is published and versioned independently from its dedicated repository: [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images).
 
 The `java/sandbox` target publishes the Kotlin/JVM SDK release train, including
 `sandbox`, `sandbox-api`, `sandbox-pool-redis`, `code-interpreter`, and
