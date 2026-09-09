@@ -44,9 +44,11 @@ type UpperEntry struct {
 }
 
 // NewUpperManager creates an upper directory manager. As part of startup it
-// reclaims stale directories left under root by a previous execd lifetime:
-// the session table lives only in memory, so every existing child of root is
-// orphaned by definition and gets removed.
+// reclaims stale session directories left under root by a previous execd
+// lifetime: the session table lives only in memory, so every execd-allocated
+// child of root is orphaned by definition and gets removed. Children without
+// the execd session layout are left untouched (root is operator-configured
+// and must stay safe to point at a directory shared with other data).
 func NewUpperManager(root string, maxBytes int64) (*UpperManager, error) {
 	if root == "" {
 		return nil, errors.New("upper: root path is required")
@@ -64,13 +66,18 @@ func NewUpperManager(root string, maxBytes int64) (*UpperManager, error) {
 	return m, nil
 }
 
-// reclaimStale is a startup-only sweep that removes every child of root left
-// behind by a previous execd lifetime (crash, OOM, container restart, or a
-// pooled sandbox whose agent is restarted between occupants). Session state
-// is memory-only and dies with the process, so no correct behavior depends
-// on stale upper directories surviving a restart; leaving them would leak
-// disk and expose one occupant's session data to the next. Call it only
-// before the manager tracks any live entry.
+// reclaimStale is a startup-only sweep that removes session directories
+// left under root by a previous execd lifetime (crash, OOM, container
+// restart, or a pooled sandbox whose agent is restarted between occupants).
+// Session state is memory-only and dies with the process, so no correct
+// behavior depends on stale upper directories surviving a restart; leaving
+// them would leak disk and expose one occupant's session data to the next.
+// Call it only before the manager tracks any live entry.
+//
+// Only children with the execd-allocated layout (a directory containing an
+// upper/ subdirectory) are reclaimed: upper_root is operator-configured,
+// and pointing it at a directory shared with other data — valid before this
+// sweep existed — must not erase unrelated children on upgrade.
 //
 // Children whose removal fails — e.g. an upper still referenced by a mount
 // from the previous lifetime — are registered as released entries so the
@@ -85,26 +92,30 @@ func (m *UpperManager) reclaimStale() {
 
 	var removed int
 	var failed int
+	var skipped int
 	for _, child := range children {
 		path := filepath.Join(m.root, child.Name())
+		if !dirExists(filepath.Join(path, "upper")) {
+			// Not an execd-allocated session directory; never touch it.
+			skipped++
+			continue
+		}
 		if err := m.removeAll(path); err != nil {
 			failed++
 			log.Warn("upper: reclaim stale session dir %s: %v", path, err)
-			if dirExists(filepath.Join(path, "upper")) {
-				m.entries[child.Name()] = &UpperEntry{
-					UpperDir: filepath.Join(path, "upper"),
-					WorkDir:  filepath.Join(path, "work"),
-					InUse:    false,
-				}
+			m.entries[child.Name()] = &UpperEntry{
+				UpperDir: filepath.Join(path, "upper"),
+				WorkDir:  filepath.Join(path, "work"),
+				InUse:    false,
 			}
 			continue
 		}
 		removed++
 	}
-	if removed > 0 || failed > 0 {
+	if removed > 0 || failed > 0 || skipped > 0 {
 		log.Info(
-			"upper: reclaimed %d stale session dir(s) under %s (%d failed)",
-			removed, m.root, failed,
+			"upper: reclaimed %d stale session dir(s) under %s (%d failed, %d unrecognized skipped)",
+			removed, m.root, failed, skipped,
 		)
 	}
 }

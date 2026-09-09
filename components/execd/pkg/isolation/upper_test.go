@@ -53,7 +53,8 @@ func TestNewUpperManager_ReclaimsStaleChildren(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "isolation")
 
 	// Simulate a previous execd lifetime: one session-layout residue with
-	// payload, one bare session-layout residue, and one junk child.
+	// payload, one bare session-layout residue, and unrelated children that
+	// a shared upper_root must never lose.
 	staleID := "00000000000000000000000000000001"
 	staleUpper := filepath.Join(root, staleID, "upper")
 	if err := os.MkdirAll(staleUpper, 0o755); err != nil {
@@ -75,6 +76,9 @@ func TestNewUpperManager_ReclaimsStaleChildren(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "junk.txt"), []byte("junk"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "shared-data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	mgr, err := NewUpperManager(root, 8<<30)
 	if err != nil {
@@ -84,10 +88,19 @@ func TestNewUpperManager_ReclaimsStaleChildren(t *testing.T) {
 	for _, p := range []string{
 		filepath.Join(root, staleID),
 		filepath.Join(root, bareID),
-		filepath.Join(root, "junk.txt"),
 	} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Errorf("stale child %s should be reclaimed at startup", p)
+			t.Errorf("stale session dir %s should be reclaimed at startup", p)
+		}
+	}
+
+	// Children without the execd session layout must survive the sweep.
+	for _, p := range []string{
+		filepath.Join(root, "junk.txt"),
+		filepath.Join(root, "shared-data"),
+	} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("unrecognized child %s must not be touched: %v", p, err)
 		}
 	}
 
