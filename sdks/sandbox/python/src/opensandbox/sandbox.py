@@ -429,6 +429,12 @@ class Sandbox:
         except Exception:
             return False
 
+    async def _probe_health(self) -> bool:
+        """Probe readiness without hiding authentication failures."""
+        if self._custom_health_check:
+            return await self._custom_health_check(self)
+        return await self._health_service.ping(self.id)
+
     async def check_ready(
         self,
         timeout: timedelta,
@@ -452,7 +458,7 @@ class Sandbox:
             f"ConnectionConfig(domain={self.connection_config.get_domain()}, "
             f"use_server_proxy={self.connection_config.use_server_proxy})"
         )
-        await budget.health(self.is_healthy, context)
+        await budget.health(self._probe_health, context)
 
     @classmethod
     async def create(

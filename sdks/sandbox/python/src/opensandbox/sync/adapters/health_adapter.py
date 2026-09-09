@@ -23,7 +23,10 @@ import httpx
 
 from opensandbox.adapters.converter.response_handler import handle_api_error
 from opensandbox.config.connection_sync import ConnectionConfigSync
-from opensandbox.internal.readiness import constrain_readiness_request
+from opensandbox.internal.readiness import (
+    constrain_readiness_request,
+    is_readiness_auth_error,
+)
 from opensandbox.models.sandboxes import SandboxEndpoint
 from opensandbox.sync.services.health import HealthSync
 
@@ -60,5 +63,7 @@ class HealthAdapterSync(HealthSync):
             handle_api_error(response_obj, "Ping")
             return True
         except Exception as e:
+            if is_readiness_auth_error(e):
+                raise
             logger.debug(f"Health check failed for sandbox {sandbox_id}: {e}")
             return False

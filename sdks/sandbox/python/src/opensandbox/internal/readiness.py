@@ -51,6 +51,11 @@ def constrain_readiness_request(request: httpx.Request) -> None:
         }
 
 
+def is_readiness_auth_error(error: Exception) -> bool:
+    """Authentication failures cannot recover by polling the same credentials."""
+    return isinstance(error, SandboxApiException) and error.status_code in (401, 403)
+
+
 class ReadinessBudget:
     def __init__(self, timeout: timedelta, interval: timedelta) -> None:
         self.timeout = timeout
@@ -126,6 +131,8 @@ class ReadinessBudget:
                     return
                 self.last_error = None
             except Exception as error:
+                if is_readiness_auth_error(error):
+                    raise
                 self.remaining()
                 self.last_error = error
             await asyncio.sleep(min(self.interval, self.remaining()))
@@ -165,6 +172,8 @@ class ReadinessBudget:
                     return
                 self.last_error = None
             except Exception as error:
+                if is_readiness_auth_error(error):
+                    raise
                 self.remaining()
                 self.last_error = error
             time.sleep(min(self.interval, self.remaining()))
