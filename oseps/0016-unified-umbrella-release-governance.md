@@ -131,6 +131,8 @@ versioning. The `code-interpreter` **SDK library**
 and *is* part of the umbrella; it is not the same thing as the
 `sandboxes/code-interpreter` image.
 
+> **Migration note**: The standalone `code-interpreter` image source historically located at `sandboxes/code-interpreter/` has been migrated to its own repository at [opensandbox-group/code-interpreter](https://github.com/opensandbox-group/code-interpreter) (see `docs/reference/code-interpreter-image-migration.md`). The SDK libraries remain in this monorepo.
+
 **No component versions exist separately.** Any change that ships
 triggers a new umbrella snapshot; the component participates by
 being rebuilt at the new umbrella version, not by cutting an
