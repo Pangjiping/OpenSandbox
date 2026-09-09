@@ -18,7 +18,7 @@ Helpers for creating Kubernetes imagePullSecrets.
 
 import base64
 import json
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from kubernetes.client import V1ObjectMeta, V1OwnerReference, V1Secret
 
@@ -30,6 +30,21 @@ IMAGE_AUTH_SECRET_PREFIX = "opensandbox-image-auth"
 def build_image_pull_secret_name(sandbox_id: str) -> str:
     """Derive a deterministic imagePullSecret name from sandbox_id."""
     return f"{IMAGE_AUTH_SECRET_PREFIX}-{sandbox_id}"
+
+
+def merge_image_pull_secrets(
+    existing: Optional[List[Dict[str, Any]]],
+    secret_name: str,
+) -> List[Dict[str, Any]]:
+    """
+    Append secret_name to a pod spec's imagePullSecrets without dropping
+    entries that are already present (e.g. provided by the sandbox
+    template), deduplicating by name.
+    """
+    merged = [dict(entry) for entry in (existing or [])]
+    if not any(entry.get("name") == secret_name for entry in merged):
+        merged.append({"name": secret_name})
+    return merged
 
 
 def build_image_pull_secret(

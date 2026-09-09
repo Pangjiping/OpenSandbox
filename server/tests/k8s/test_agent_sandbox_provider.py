@@ -839,6 +839,52 @@ spec:
         pull_secrets = body["spec"]["podTemplate"]["spec"].get("imagePullSecrets")
         assert pull_secrets == [{"name": f"{IMAGE_AUTH_SECRET_PREFIX}-test-id"}]
 
+    def test_create_workload_with_image_auth_preserves_template_pull_secrets(
+        self, mock_k8s_client, tmp_path
+    ):
+        # The template merge replaces lists wholesale, so the per-request
+        # secret must be appended to the merged spec, not assigned to the
+        # pre-merge pod spec — otherwise template-provided imagePullSecrets
+        # (e.g. for pulling a private execd image) are dropped.
+        template_file = tmp_path / "agent_template.yaml"
+        template_file.write_text(
+            """
+spec:
+  podTemplate:
+    spec:
+      imagePullSecrets:
+        - name: template-regcred
+"""
+        )
+        app_config = _app_config()
+        app_config.agent_sandbox.template_file = str(template_file)
+        provider = AgentSandboxProvider(mock_k8s_client, app_config)
+        mock_k8s_client.create_custom_object.return_value = {
+            "metadata": {"name": "test-id", "uid": "uid-123"}
+        }
+
+        provider.create_workload(
+            sandbox_id="test-id",
+            namespace="test-ns",
+            image_spec=ImageSpec(
+                uri="registry.example.com/img:tag",
+                auth=ImageAuth(username="user", password="pass"),
+            ),
+            entrypoint=["/bin/bash"],
+            env={},
+            resource_limits={},
+            labels={},
+            expires_at=datetime(2025, 12, 31, tzinfo=timezone.utc),
+            execd_image="execd:latest",
+        )
+
+        body = mock_k8s_client.create_custom_object.call_args.kwargs["body"]
+        pull_secrets = body["spec"]["podTemplate"]["spec"]["imagePullSecrets"]
+        assert pull_secrets == [
+            {"name": "template-regcred"},
+            {"name": f"{IMAGE_AUTH_SECRET_PREFIX}-test-id"},
+        ]
+
     def test_create_workload_with_image_auth_creates_secret(self, mock_k8s_client):
         # CR name gets a "sandbox-" prefix for digit-leading ids; the Secret's
         # ownerReference must carry the CR name (not sandbox_id) or K8s GC

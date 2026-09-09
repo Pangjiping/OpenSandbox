@@ -34,6 +34,7 @@ from opensandbox_server.services.k8s.egress_helper import apply_egress_to_spec
 from opensandbox_server.services.k8s.image_pull_secret_helper import (
     build_image_pull_secret,
     build_image_pull_secret_name,
+    merge_image_pull_secrets,
 )
 from opensandbox_server.services.k8s.provider_common import (
     _build_execd_init_container,
@@ -164,10 +165,6 @@ class AgentSandboxProvider(WorkloadProvider):
 
         self._apply_platform_node_selector(pod_spec, platform)
 
-        if image_spec.auth:
-            secret_name = build_image_pull_secret_name(sandbox_id)
-            pod_spec["imagePullSecrets"] = [{"name": secret_name}]
-
         resource_name = self._resource_name(sandbox_id)
         spec = {
             "replicas": 1,
@@ -198,6 +195,13 @@ class AgentSandboxProvider(WorkloadProvider):
         else:
             sandbox["spec"]["shutdownTime"] = expires_at.isoformat()
         merged_pod_spec = sandbox.get("spec", {}).get("podTemplate", {}).get("spec", {})
+        if image_spec.auth:
+            # Inject after the template merge: assigning before it would let
+            # the runtime override replace template-provided imagePullSecrets.
+            merged_pod_spec["imagePullSecrets"] = merge_image_pull_secrets(
+                merged_pod_spec.get("imagePullSecrets"),
+                build_image_pull_secret_name(sandbox_id),
+            )
         ensure_egress_runtime_compatible(
             egress_settings.network_policy if egress_settings is not None else None,
             effective_runtime_class=merged_pod_spec.get("runtimeClassName"),

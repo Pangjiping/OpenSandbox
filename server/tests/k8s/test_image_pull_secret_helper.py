@@ -20,6 +20,7 @@ from opensandbox_server.services.k8s.image_pull_secret_helper import (
     IMAGE_AUTH_SECRET_PREFIX,
     build_image_pull_secret,
     build_image_pull_secret_name,
+    merge_image_pull_secrets,
 )
 
 
@@ -30,6 +31,28 @@ class TestBuildImagePullSecretName:
 
     def test_different_ids_produce_different_names(self):
         assert build_image_pull_secret_name("id-1") != build_image_pull_secret_name("id-2")
+
+
+class TestMergeImagePullSecrets:
+
+    def test_appends_when_no_existing_secrets(self):
+        assert merge_image_pull_secrets(None, "s1") == [{"name": "s1"}]
+        assert merge_image_pull_secrets([], "s1") == [{"name": "s1"}]
+
+    def test_preserves_existing_and_appends(self):
+        existing = [{"name": "s1"}, {"name": "s2"}]
+        assert merge_image_pull_secrets(existing, "s3") == [
+            {"name": "s1"},
+            {"name": "s2"},
+            {"name": "s3"},
+        ]
+
+    def test_dedupes_by_name(self):
+        existing = [{"name": "s1"}, {"name": "s2"}]
+        assert merge_image_pull_secrets(existing, "s1") == [
+            {"name": "s1"},
+            {"name": "s2"},
+        ]
 
 
 class TestBuildImagePullSecret:
