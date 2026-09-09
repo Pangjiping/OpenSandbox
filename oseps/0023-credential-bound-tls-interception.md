@@ -4,7 +4,7 @@ authors:
   - "@hpliStartAgain"
 creation-date: 2026-09-04
 last-updated: 2026-09-09
-status: draft
+status: implementing
 ---
 
 # OSEP-0023: Credential-Bound TLS Interception
@@ -796,6 +796,12 @@ compare `all` with the would-be credential-bound decision using counters only;
 it does not change traffic.
 
 ### Phased Implementation
+
+Implementation has started with the internal host-selector algebra and shared
+Go/Python conformance vectors. The control plane owns non-transitional UTS #46
+normalization; the addon consumes canonical ASCII selectors and matches ASCII
+wire SNI. These helpers are not yet connected to the legacy Vault or TLS hooks.
+The public interception mode remains unavailable until the later phases pass.
 
 1. **Decision telemetry and red tests**
    - Add fail-closed tests that distinguish authoritative empty from lookup
