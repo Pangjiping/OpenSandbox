@@ -81,8 +81,11 @@ class Receiver:
     The validator runs outside the state lock so teardown never waits for it.
     A concurrent state change invalidates a validation still in progress.
     The future adapter must serialize policy/vault writes before calling here.
-    Retries recognize the active, pending, and most recently aborted identities;
-    retired epochs are rejected rather than kept in an unbounded replay ledger.
+    Retries recognize active, pending, and all successfully aborted identities.
+    Abort metadata (never payloads) is retained until close, without eviction.
+    The lifetime abort budget bounds memory: exhaustion rejects new candidates,
+    preserving active state and exact retries. The adapter must provision this
+    budget and arrange fenced recovery rather than silently clearing history.
     Recovery after proxy-process loss must reinstall the coordinator's selected
     state before readiness; fencing old transport sessions belongs to the adapter.
     """
@@ -94,6 +97,7 @@ class Receiver:
         validate: Callable[[Snapshot], None],
         *,
         max_snapshot_bytes: int,
+        max_abort_records: int = 1024,
     ) -> None:
         # Reuse the wire-field checks without inventing another identity grammar.
         Revision(control_generation, subject_generation, 1, 0, 0, "0" * 64)
@@ -101,6 +105,8 @@ class Receiver:
             raise TypeError("snapshot validator required")
         if type(max_snapshot_bytes) is not int or max_snapshot_bytes <= 0:
             raise ValueError("positive snapshot byte budget required")
+        if type(max_abort_records) is not int or max_abort_records <= 0:
+            raise ValueError("positive abort history budget required")
         self._control = control_generation
         self._subject = subject_generation
         self._validate = validate
@@ -108,7 +114,8 @@ class Receiver:
         self._lock = threading.Lock()
         self._active: Snapshot | None = None
         self._pending: Snapshot | None = None
-        self._aborted: Revision | None = None
+        self._aborted: dict[int, Revision] = {}
+        self._abort_limit = max_abort_records
         self._highest_epoch = 0
         self._serial = 0
         self._closed = False
@@ -134,6 +141,8 @@ class Receiver:
             raise RevisionError("another revision is prepared")
         if snapshot.revision.decision_epoch <= self._highest_epoch:
             raise RevisionError("stale or conflicting revision")
+        if len(self._aborted) >= self._abort_limit:
+            raise RevisionError("abort history capacity exhausted")
         return False
 
     def prepare(self, revision: Revision, payload: bytes) -> Revision:
@@ -167,7 +176,6 @@ class Receiver:
                 raise RevisionError("receiver changed during validation")
             self._pending = snapshot
             self._highest_epoch = revision.decision_epoch
-            self._aborted = None
             self._serial += 1
         return revision
 
@@ -194,16 +202,26 @@ class Receiver:
             self._check(revision)
             if self._active is not None and self._active.revision == revision:
                 raise RevisionError("revision already committed")
-            if self._aborted == revision:
+            retired = self._aborted.get(revision.decision_epoch)
+            if retired == revision:
                 return revision
-            if self._pending is not None and self._pending.revision == revision:
-                self._pending = None
-            elif revision.decision_epoch <= self._highest_epoch:
+            pending_matches = (
+                self._pending is not None and self._pending.revision == revision
+            )
+            if retired is not None or (
+                not pending_matches and revision.decision_epoch <= self._highest_epoch
+            ):
                 raise RevisionError("stale or conflicting revision")
+            # A prepared candidate must always retain room for its own abort.
+            reserved = int(self._pending is not None and not pending_matches)
+            if len(self._aborted) + 1 + reserved > self._abort_limit:
+                raise RevisionError("abort history capacity exhausted")
+            if pending_matches:
+                self._pending = None
             # Abort may overtake prepare or arrive while validation is running.
             # Retire that epoch so delayed work cannot stage it afterwards.
             self._highest_epoch = max(self._highest_epoch, revision.decision_epoch)
-            self._aborted = revision
+            self._aborted[revision.decision_epoch] = revision
             self._serial += 1
             return revision
 
@@ -224,5 +242,5 @@ class Receiver:
         with self._lock:
             self._closed = True
             self._active = self._pending = None
-            self._aborted = None
+            self._aborted.clear()
             self._serial += 1

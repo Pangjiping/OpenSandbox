@@ -90,6 +90,88 @@ class RevisionReceiverTest(unittest.TestCase):
             self.store.abort(one)
         self.assertEqual(self.store.readback(), one)
 
+    def test_prior_abort_retries_survive_later_transitions(self):
+        one, data = self.candidate()
+        self.store.prepare(one, data)
+        self.store.abort(one)
+        two, data = self.candidate(2, 2)
+        self.store.prepare(two, data)
+        self.assertEqual(self.store.abort(one), one)
+        self.store.commit(two)
+        three, data = self.candidate(3, 3)
+        self.store.prepare(three, data)
+        self.store.abort(three)
+        four, data = self.candidate(4, 4)
+        self.store.prepare(four, data)
+        for retired in (one, three, one):
+            self.assertEqual(self.store.abort(retired), retired)
+        for changes in ({"digest": "0" * 64}, {"policy_epoch": 2}):
+            with self.assertRaises(receiver.RevisionError):
+                self.store.abort(dataclasses.replace(one, **changes))
+        self.assertEqual(self.store.readback(), two)
+        self.store.commit(four)  # retries did not discard the pending snapshot
+        self.assertEqual(self.store.readback(), four)
+
+    def test_abort_history_capacity_preserves_retries_and_pending_reservation(self):
+        store = receiver.Receiver(
+            "control-a",
+            "subject-a",
+            self.validate,
+            max_snapshot_bytes=1024,
+            max_abort_records=2,
+        )
+        one, data = self.candidate()
+        store.prepare(one, data)
+        two, _ = self.candidate(2, 2)
+        store.abort(two)
+        three, data = self.candidate(3, 3)
+        with self.assertRaisesRegex(receiver.RevisionError, "capacity"):
+            store.abort(three)  # reserve the last slot for the pending tuple
+        store.abort(one)
+        validated = len(self.validated)
+        with self.assertRaisesRegex(receiver.RevisionError, "capacity"):
+            store.prepare(three, data)
+        self.assertEqual(len(self.validated), validated)
+        for retired in (one, two, one):
+            self.assertEqual(store.abort(retired), retired)
+        self.assertIsNone(store.readback())
+        store.close()
+        with self.assertRaises(receiver.RevisionError):
+            store.abort(one)
+
+    def test_full_abort_history_preserves_active_state_and_retries(self):
+        store = receiver.Receiver(
+            "control-a",
+            "subject-a",
+            self.validate,
+            max_snapshot_bytes=1024,
+            max_abort_records=1,
+        )
+        one, data = self.candidate()
+        store.prepare(one, data)
+        store.commit(one)
+        two, _ = self.candidate(2, 2)
+        store.abort(two)
+        self.assertEqual(store.prepare(one, data), one)
+        self.assertEqual(store.commit(one), one)
+        self.assertEqual(store.acquire().revision, one)
+        three, _ = self.candidate(3, 3)
+        with self.assertRaisesRegex(receiver.RevisionError, "capacity"):
+            store.abort(three)
+        self.assertEqual(store.abort(two), two)
+        self.assertEqual(store.readback(), one)
+
+    def test_abort_history_budget_requires_positive_integer(self):
+        for limit in (True, False, 0, -1, 1.5, "2", None):
+            with self.subTest(limit=limit), self.assertRaises(ValueError):
+                receiver.Receiver(
+                    "control-a",
+                    "subject-a",
+                    self.validate,
+                    max_snapshot_bytes=1024,
+                    max_abort_records=limit,
+                )
+
     def test_identity_conflict_stale_and_delete_recreate_aba(self):
         for field in ("control_generation", "subject_generation"):
             key, payload = self.candidate(**{field: "old-generation"})
