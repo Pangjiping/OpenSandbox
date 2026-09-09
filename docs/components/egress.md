@@ -41,6 +41,8 @@ The egress control is implemented as a **Sidecar** that shares the network names
 
 Dynamic entries initially use the DNS TTL plus a short safety margin, clamped to 60–360 seconds. The sidecar polls active TCP connections every 30 seconds and renews only DNS-authorized remote IPs that are still in use. When activity ends, one final six-minute renewal provides a bounded reconnect window before the entry expires normally. This means an active TCP connection can keep an IP authorized beyond its original DNS TTL; UDP and QUIC entries are not connection-tracked and continue to expire according to DNS-driven TTL updates.
 
+The sidecar renews timed elements by ensuring each element exists, deleting it, and adding it with the requested timeout in one nft transaction. This also handles missing or expired elements and avoids relying on repeated `add element` commands to update existing timeouts, which older kernels do not support. DNS answers and TCP activity use the same update path. Renewal does not make client-side DNS caches valid indefinitely: once the final reconnect window expires and tracking is cleared, a new DNS lookup is required.
+
 ### Kubernetes Service Access Under `defaultAction: deny`
 
 In Kubernetes deployments that use `defaultAction: deny`, reaching an in-cluster Service usually needs two separate allowances:
