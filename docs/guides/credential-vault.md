@@ -57,13 +57,44 @@ At a high level:
    substitutions.
 6. Secret values are redacted from vault responses and response headers.
 
-Requests that do not match any credential binding are forwarded unchanged.
-Credential path-safety checks apply only after a binding matches and the request
-would otherwise receive credentials.
+When the active-vault check succeeds, requests that do not match any credential
+binding are forwarded unchanged. Credential path-safety checks apply only after
+a binding matches and the request would otherwise receive credentials. The
+active-vault check itself runs before binding selection for every intercepted
+flow, including requests to hosts that would not match a binding.
 
 The active vault used by the MITM process is served over a local Unix domain
 socket inside the sidecar. The sandbox workload cannot fetch this active state
 over the normal server proxy path.
+
+Each new flow conditionally reads that private endpoint with the cached opaque
+snapshot tag in `If-None-Match`. A `304 Not Modified` response reuses the same
+immutable in-process snapshot without rendering or transferring secret values;
+a `200 OK` response carries a fully validated replacement snapshot and a new
+opaque `ETag`. Successful create and patch responses are acknowledged only after
+the store has changed that tag, so the next flow immediately observes the new
+credentials without a cache-TTL delay.
+
+The opaque tag is separate from the public vault revision. Deleting a vault and
+creating it again can reset the public revision to `1`, but the recreated vault
+receives a different tag and cannot reuse plaintext from the deleted snapshot.
+A `404 Not Found` from the private endpoint is the normal "no active vault"
+result: the MITM process clears its cached snapshot and continues without
+credential injection.
+
+::: warning Runtime availability dependency
+The private active-vault socket is a hard availability dependency for all
+traffic intercepted by Credential Proxy, not only traffic that ultimately
+matches a credential binding. A timeout, refused connection, unexpected EOF,
+`5xx` response, malformed snapshot, or invalid `ETag` clears the affected
+plaintext cache and fails the request closed before any upstream forwarding.
+Small requests whose bodies are safely buffered receive a local `503 Service
+Unavailable` response. Requests that are already streaming, may cross the
+streaming threshold, or have an unknown body length are terminated instead,
+because mitmproxy cannot safely synthesize a local response after streaming has
+started. Operators should monitor the sidecar and private socket as part of the
+egress data plane's availability.
+:::
 
 ## Persistence Across Pause and Resume
 

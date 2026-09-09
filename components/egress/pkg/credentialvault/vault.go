@@ -16,6 +16,8 @@ package credentialvault
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +30,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
 	"github.com/alibaba/opensandbox/egress/pkg/log"
@@ -64,12 +68,15 @@ var (
 	}
 )
 
+var activeSnapshotTagFallback atomic.Uint64
+
 type Store struct {
 	mu           sync.RWMutex
 	exists       bool
 	revision     int64
 	credentials  map[string]record
 	bindings     map[string]Binding
+	activeTag    string
 	mitmGate     *mitmproxy.HealthGate
 	requireToken func() bool
 	sources      *SourceRegistry
@@ -257,6 +264,7 @@ func (v *Store) Create(req CreateRequest, pol *policy.NetworkPolicy) (State, err
 	v.revision = 1
 	v.credentials = credentials
 	v.bindings = bindings
+	v.activeTag = newActiveSnapshotTag()
 	return v.sanitizedLocked(), nil
 }
 
@@ -287,6 +295,7 @@ func (v *Store) Patch(req MutationRequest, pol *policy.NetworkPolicy) (State, er
 	v.revision = nextRevision
 	v.credentials = credentials
 	v.bindings = bindings
+	v.activeTag = newActiveSnapshotTag()
 	return v.sanitizedLocked(), nil
 }
 
@@ -300,6 +309,7 @@ func (v *Store) Delete() error {
 	v.revision = 0
 	v.credentials = make(map[string]record)
 	v.bindings = make(map[string]Binding)
+	v.activeTag = ""
 	return nil
 }
 
@@ -343,10 +353,25 @@ func (v *Store) ActiveSnapshot() (ActiveSnapshot, error) {
 }
 
 func (v *Store) ActiveSnapshotWithContext(ctx context.Context) (ActiveSnapshot, error) {
+	snapshot, _, _, err := v.ActiveSnapshotIfChanged(ctx, "")
+	return snapshot, err
+}
+
+// ActiveSnapshotIfChanged atomically compares the caller's opaque snapshot tag
+// with the active vault and renders credentials only when the tag differs.
+// The comparison and rendering share one read lock so a mutation cannot make
+// the returned revision and snapshot disagree.
+func (v *Store) ActiveSnapshotIfChanged(
+	ctx context.Context,
+	knownTag string,
+) (ActiveSnapshot, string, bool, error) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	if !v.exists {
-		return ActiveSnapshot{}, ErrNotFound
+		return ActiveSnapshot{}, "", false, ErrNotFound
+	}
+	if knownTag != "" && knownTag == v.activeTag {
+		return ActiveSnapshot{Revision: v.revision}, v.activeTag, false, nil
 	}
 	snapshot := ActiveSnapshot{
 		Revision: v.revision,
@@ -362,11 +387,11 @@ func (v *Store) ActiveSnapshotWithContext(ctx context.Context) (ActiveSnapshot, 
 		b := v.bindings[name]
 		headers, values, err := renderInjectionHeaders(ctx, b.Auth, v.credentials)
 		if err != nil {
-			return ActiveSnapshot{}, err
+			return ActiveSnapshot{}, "", false, err
 		}
 		substitutions, substitutionValues, err := renderSubstitutions(ctx, b.Auth, v.credentials)
 		if err != nil {
-			return ActiveSnapshot{}, err
+			return ActiveSnapshot{}, "", false, err
 		}
 		snapshot.Bindings = append(snapshot.Bindings, ActiveBinding{
 			Name:          b.Name,
@@ -390,7 +415,20 @@ func (v *Store) ActiveSnapshotWithContext(ctx context.Context) (ActiveSnapshot, 
 		}
 		return snapshot.Redactions[i] < snapshot.Redactions[j]
 	})
-	return snapshot, nil
+	return snapshot, v.activeTag, true, nil
+}
+
+func newActiveSnapshotTag() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err == nil {
+		return hex.EncodeToString(value[:])
+	}
+	return fmt.Sprintf(
+		"fallback-%x-%x-%x",
+		os.Getpid(),
+		time.Now().UnixNano(),
+		activeSnapshotTagFallback.Add(1),
+	)
 }
 
 func (v *Store) ValidateActiveAgainstPolicy(pol *policy.NetworkPolicy) error {

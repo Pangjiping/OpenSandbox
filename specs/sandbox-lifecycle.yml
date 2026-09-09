@@ -49,6 +49,86 @@ tags:
   - name: Metrics
     description: Best-effort SDK telemetry ingestion for server-side aggregation
 paths:
+  /sandboxes/{sandboxId}/networkpolicy:
+    parameters:
+      - $ref: '#/components/parameters/SandboxId'
+    get:
+      tags: [Sandboxes]
+      operationId: getSandboxNetworkPolicy
+      summary: Read sandbox network policy
+      description: |
+        For Fleets, reads persisted egress Action Binding intent in the tenant's
+        Sandbox CR, not live enforcement state. An absent binding defaults to
+        deny-first when an egress handler is configured; this is not proof of
+        enforcement on a pool without that handler. Other backends proxy the
+        sandbox-side egress service. Requires lifecycle API authentication.
+      responses:
+        '200':
+          description: Policy intent (Fleets) or sidecar policy (other backends).
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          description: Policy state is temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags: [Sandboxes]
+      operationId: replaceSandboxNetworkPolicy
+      summary: Replace the complete sandbox network policy
+      description: |
+        Replaces defaultAction and all rules, rather than merging them. Fleets
+        commits the egress binding through FastPath, preserving unrelated bindings
+        with UID/generation conflict protection. Success does not imply handler
+        convergence. Other backends proxy the sandbox-side egress service.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NetworkPolicy'
+      responses:
+        '200':
+          description: Committed policy intent; Fleets omits enforcementMode.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyStatusResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '503':
+          description: FastPath or policy state is temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /metrics/events:
     post:
       tags: [Metrics]
@@ -1657,6 +1737,28 @@ components:
         - endpoint
       additionalProperties: false
 
+    PolicyStatusResponse:
+      type: object
+      description: |
+        Policy intent for Fleets, or the sidecar policy for other backends.
+        Fleets does not report live enforcement state or enforcementMode.
+      properties:
+        status:
+          type: string
+          example: ok
+        mode:
+          type: string
+          description: Mode derived from the returned policy.
+          example: deny_all
+        enforcementMode:
+          type: string
+          description: Optional sidecar enforcement backend; omitted for Fleets.
+        reason:
+          type: string
+          description: Optional context returned by the sidecar.
+        policy:
+          $ref: '#/components/schemas/NetworkPolicy'
+      additionalProperties: false
     NetworkPolicy:
       type: object
       description: |
