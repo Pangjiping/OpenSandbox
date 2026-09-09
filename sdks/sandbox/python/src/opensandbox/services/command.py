@@ -48,7 +48,7 @@ class Commands(Protocol):
         handlers: ExecutionHandlers | None = None,
     ) -> Execution:
         """
-        Execute a shell command in the sandbox environment.
+        Execute shell text or native executable arguments in the sandbox.
 
         The command can be executed in foreground (streaming) or background mode
         based on the request configuration.

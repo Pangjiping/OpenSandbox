@@ -251,7 +251,7 @@ class CommandsAdapter(Commands):
         opts: RunCommandOpts | None = None,
         handlers: ExecutionHandlers | None = None,
     ) -> Execution:
-        """Execute a shell command within the sandbox.
+        """Execute shell text or native executable arguments in the sandbox.
 
         This method uses direct httpx streaming to handle SSE responses
         from the execd service.
@@ -273,7 +273,7 @@ class CommandsAdapter(Commands):
             )
 
         except Exception as e:
-            logger.error(f"Failed to run command (length: {len(command)})", exc_info=e)
+            logger.error("Failed to run command", exc_info=e)
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
     async def interrupt(self, execution_id: str) -> None:

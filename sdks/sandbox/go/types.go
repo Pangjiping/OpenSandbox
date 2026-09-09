@@ -550,7 +550,9 @@ type CreateSessionRequest struct {
 
 // RunCommandRequest executes exactly one of Command (shell text) or Argv (literal arguments).
 type RunCommandRequest struct {
-	Command    string            `json:"command,omitempty"`
+	Command string `json:"command,omitempty"`
+	// Argv must contain a non-empty executable at index 0; no element may contain NUL.
+	// These constraints are validated by the server.
 	Argv       []string          `json:"argv,omitempty"`
 	Cwd        string            `json:"cwd,omitempty"`
 	Background bool              `json:"background,omitempty"`

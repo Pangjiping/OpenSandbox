@@ -1063,7 +1063,7 @@ export interface components {
             envs?: {
                 [key: string]: string;
             };
-        };
+        } & (unknown | unknown);
         /** @description Command execution status (foreground or background) */
         CommandStatusResponse: {
             /**

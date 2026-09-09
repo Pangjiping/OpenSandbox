@@ -515,7 +515,7 @@ def test_execution_converter_to_api_run_command_request() -> None:
         argv, RunCommandOpts(background=True, working_directory="$DIR", envs={"DIR": "/tmp"})
     ).to_dict()
     assert native == {"argv": argv, "background": True, "cwd": "$DIR", "envs": {"DIR": "/tmp"}}
-    for invalid in ([], [""], ["tool", "\0"], ["tool", None]):
+    for invalid in ([], [""], ["tool", "\0"], ["tool", None], ("tool", "arg"), None, 123):
         with pytest.raises(InvalidArgumentException):
             ExecutionConverter.to_api_run_command_request(invalid, RunCommandOpts())
 

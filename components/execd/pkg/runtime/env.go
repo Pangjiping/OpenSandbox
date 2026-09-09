@@ -55,7 +55,7 @@ func loadExtraEnvFromFile() map[string]string {
 			log.Warn("EXECD_ENVS: skip malformed line: %s", line)
 			continue
 		}
-		envs[envKey(kv[0])] = os.ExpandEnv(kv[1])
+		envs[pathutil.EnvKey(kv[0])] = os.ExpandEnv(kv[1])
 	}
 
 	return envs
@@ -71,12 +71,12 @@ func mergeEnvs(base []string, extra map[string]string) []string {
 	for _, kv := range base {
 		pair := strings.SplitN(kv, "=", 2)
 		if len(pair) == 2 {
-			merged[envKey(pair[0])] = pair[1]
+			merged[pathutil.EnvKey(pair[0])] = pair[1]
 		}
 	}
 
 	for k, v := range extra {
-		merged[envKey(k)] = v
+		merged[pathutil.EnvKey(k)] = v
 	}
 
 	out := make([]string, 0, len(merged))
@@ -95,18 +95,11 @@ func mergeExtraEnvs(fromFile, fromRequest map[string]string) map[string]string {
 
 	merged := make(map[string]string, len(fromFile)+len(fromRequest))
 	for k, v := range fromFile {
-		merged[envKey(k)] = v
+		merged[pathutil.EnvKey(k)] = v
 	}
 	for k, v := range fromRequest {
-		merged[envKey(k)] = v
+		merged[pathutil.EnvKey(k)] = v
 	}
 
 	return merged
-}
-
-func envKey(key string) string {
-	if runtime.GOOS == "windows" {
-		return strings.ToUpper(key)
-	}
-	return key
 }

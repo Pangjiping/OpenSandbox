@@ -52,7 +52,7 @@ class CommandsSync(Protocol):
         handlers: ExecutionHandlersSync | None = None,
     ) -> Execution:
         """
-        Execute a shell command in the sandbox environment.
+        Execute shell text or native executable arguments in the sandbox.
 
         The command can be executed in streaming mode (SSE) based on request configuration
         and optional handlers.

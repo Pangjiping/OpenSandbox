@@ -237,7 +237,7 @@ class CommandsAdapterSync(CommandsSync):
             )
 
         except Exception as e:
-            logger.error(f"Failed to run command (length: {len(command)})", exc_info=e)
+            logger.error("Failed to run command", exc_info=e)
             raise ExceptionConverter.to_sandbox_exception(e) from e
 
     def interrupt(self, execution_id: str) -> None:

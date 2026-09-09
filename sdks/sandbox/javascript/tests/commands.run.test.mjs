@@ -271,3 +271,20 @@ test("native argv preserves literals and execution options", async () => {
     await assert.rejects(adapter.run(["tool", "\0"]), /argv/);
   }
 });
+
+test("native argv rejects invalid inputs before transport", async () => {
+  const sparse = ["tool"];
+  sparse.length = 2;
+  let requests = 0;
+  const adapter = new CommandsAdapter({}, {
+    baseUrl: "http://localhost",
+    fetch: async () => { requests++; throw new Error("unexpected request"); },
+  });
+  for (const input of [null, 123, {0: "tool", length: 1}, sparse, [], [""], ["tool", null], ["tool", "\0"]]) {
+    await assert.rejects(adapter.run(input), /argv requires/);
+    await assert.rejects(async () => {
+      for await (const _ of adapter.runStream(input)) { /* consume */ }
+    }, /argv requires/);
+  }
+  assert.equal(requests, 0);
+});

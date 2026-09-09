@@ -69,7 +69,7 @@ internal sealed class CommandsAdapter : IExecdCommands
         CancellationToken cancellationToken = default)
     {
         ValidateRunOptions(options);
-        if (argv.Count == 0 || string.IsNullOrEmpty(argv[0]) || argv.Any(arg => arg is null || arg.Contains('\0')))
+        if (argv is null || argv.Count == 0 || string.IsNullOrEmpty(argv[0]) || argv.Any(arg => arg is null || arg.Contains('\0')))
             throw new InvalidArgumentException("Argv requires a non-empty executable and strings without NUL");
         var request = BuildRunCommandRequest(null, options);
         request.Argv = argv.ToArray();

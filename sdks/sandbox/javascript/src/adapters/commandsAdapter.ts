@@ -147,8 +147,15 @@ export class CommandsAdapter implements ExecdCommands {
   ): StreamingExecutionSpec<ApiRunCommandRequest> {
     if (typeof command === "string") {
       assertNonBlank(command, "command");
-    } else if (!command.length || !command[0] || command.some(arg => typeof arg !== "string" || arg.includes("\0"))) {
-      throw new Error("argv requires a non-empty executable and strings without NUL");
+    } else {
+      if (!Array.isArray(command) || !command.length || !command[0]) {
+        throw new Error("argv requires a non-empty executable and strings without NUL");
+      }
+      for (const arg of command) {
+        if (typeof arg !== "string" || arg.includes("\0")) {
+          throw new Error("argv requires a non-empty executable and strings without NUL");
+        }
+      }
     }
     return {
       pathname: "/command",

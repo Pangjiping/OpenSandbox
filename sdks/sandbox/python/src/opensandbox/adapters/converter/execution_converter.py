@@ -80,7 +80,9 @@ class ExecutionConverter:
                 envs_payload[key] = value
             envs = envs_payload
 
-        if not isinstance(command, str) and (
+        if not isinstance(command, (str, list)):
+            raise InvalidArgumentException("command must be shell text or an argv list")
+        if isinstance(command, list) and (
             not command or not command[0]
             or any(not isinstance(arg, str) or "\0" in arg for arg in command)
         ):

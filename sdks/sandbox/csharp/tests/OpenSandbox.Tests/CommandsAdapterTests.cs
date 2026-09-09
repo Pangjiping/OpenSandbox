@@ -20,6 +20,7 @@ using OpenSandbox.Adapters;
 using OpenSandbox.Core;
 using OpenSandbox.Internal;
 using OpenSandbox.Models;
+using OpenSandbox.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -29,7 +30,28 @@ namespace OpenSandbox.Tests;
 public class CommandsAdapterTests
 {
     [Fact]
-    public async Task RunArgv_ShouldPreserveArgumentsAndOptions()
+    public async Task NativeArgv_ShouldRejectInvalidInputsBeforeSending()
+    {
+        var requests = 0;
+        var handler = new StubHttpMessageHandler((_, _) =>
+        {
+            requests++;
+            throw new InvalidOperationException("Unexpected request");
+        });
+        IExecdCommands commands = CreateAdapter(handler);
+        IReadOnlyList<string>[] invalid = [null!, [], [""], ["tool", null!], ["tool", "\0"]];
+        foreach (var argv in invalid)
+        {
+            await Assert.ThrowsAsync<InvalidArgumentException>(() => commands.RunAsync(argv));
+            Assert.Throws<InvalidArgumentException>(() => commands.RunStreamAsync(argv));
+        }
+        requests.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RunArgv_ShouldPreserveArgumentsAndOptions(bool streaming)
     {
         string[] argv = ["tool", "", "a b", "$HOME", "x'y", "中文"];
         var handler = new StubHttpMessageHandler(async (request, cancellationToken) =>
@@ -43,7 +65,16 @@ public class CommandsAdapterTests
                 Content = new StringContent("data: {\"type\":\"execution_complete\"}\n\n", Encoding.UTF8, "text/event-stream")
             };
         });
-        await CreateAdapter(handler).RunAsync(argv, new RunCommandOptions { WorkingDirectory = "$DIR" });
+        IExecdCommands commands = CreateAdapter(handler);
+        var options = new RunCommandOptions { WorkingDirectory = "$DIR" };
+        if (streaming)
+        {
+            await foreach (var _ in commands.RunStreamAsync(argv, options)) { }
+        }
+        else
+        {
+            await commands.RunAsync(argv, options);
+        }
     }
 
     [Fact]

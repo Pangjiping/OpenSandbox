@@ -1899,6 +1899,11 @@ components:
 
     RunCommandRequest:
       type: object
+      # Nest oneOf under allOf so openapi-python-client preserves RunCommandRequest.
+      allOf:
+        - oneOf:
+            - required: [command]
+            - required: [argv]
       description: Execute exactly one of command (shell text) or argv (native arguments).
       properties:
         command:
