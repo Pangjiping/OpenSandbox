@@ -69,36 +69,12 @@ per-exchange cap — has bigger problems than a percentile.
 Note both successful and failed lookups feed this histogram, so its tail mixes slow
 resolutions with exhausted retry chains.
 
-## TLS shadow request samples
+## TLS shadow implementation
 
-`egress.mitm.shadow.requests_total` is an opt-in diagnostic counter for
-OSEP-0023. Set `OPENSANDBOX_EGRESS_MITMPROXY_SHADOW=true` on egress and configure
-the normal OTLP metrics endpoint. No samples are produced by default.
-
-| `decision` | `reason` | Meaning at the existing HTTPS/443 request Vault lookup |
-|---|---|---|
-| `decrypt` | `binding_host` | SNI is covered by an HTTPS binding host selector; method/path do not affect this host-level projection |
-| `passthrough` | `no_binding_host` | Validated Vault has no HTTPS selector covering SNI |
-| `passthrough` | `no_vault` | Sidecar active-Vault API returned authoritative absence; not proof of a future startup empty-snapshot transaction |
-| `unavailable` | `unknown_subject_or_vault` | Fleet 404 cannot distinguish an unknown source identity from absent Vault state |
-| `unavailable` | `lookup_failed` | The existing lookup failed; no cached result is used to guess |
-| `unavailable` | `missing_sni`, `invalid_sni` | No usable ASCII SNI in this observed request |
-| `unavailable` | `invalid_snapshot`, `observer_error` | Shadow projection could not interpret the sample |
-
-Only these fixed reasons and decisions plus existing shared attributes are
-exported. No hostname, path, credential, revision, or fleet subject ID is added.
-The Python addon emits a fixed outcome through its existing stdout pipe; Go
-consumes it as a metric instead of forwarding it to the application log sink.
-Unknown outcomes are discarded. Operator addons and the child process remain
-trusted diagnostic producers; this is not an audit record.
-
-Delivery is best effort. Process failure, pipe/log filtering, or exporter
-failure can lose observations; no-exporter deployments must not expect a stored
-log substitute. These are request-weighted observations after TLS termination,
-not ClientHello-time decisions: pooled requests count repeatedly, while opaque
-connections and failed handshakes never reach this hook. Shadow failures never
-change traffic. Evaluate `unavailable` alongside other outcomes rather than
-treating missing samples as successful pass-through.
+The system addon emits fixed outcomes through the existing child stdout pipe;
+the Go relay consumes them via `RecordTLSShadow` as bounded-label OTLP samples.
+Unknown outcomes are discarded. The operator contract is maintained in
+[Egress: TLS shadow observations](../../../docs/components/egress.md#experimental-tls-shadow-observations).
 
 ## Failure Signals
 

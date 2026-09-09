@@ -211,8 +211,32 @@ or to prove OSEP revision acknowledgement or enforcement correctness.
 `decision=decrypt|passthrough|unavailable` is a hypothetical SNI/HTTPS-host-scope
 projection at the existing request lookup. Lookup errors are `unavailable`,
 never a successful no-binding result. Network-policy outcomes and DLP coverage
-are not inferred. See the [metric reference](https://github.com/opensandbox-group/OpenSandbox/blob/main/components/egress/docs/opentelemetry.md)
-for the bounded reasons and delivery limitations.
+are not inferred.
+
+| `decision` | `reason` | Meaning at the existing HTTPS/443 request Vault lookup |
+|---|---|---|
+| `decrypt` | `binding_host` | SNI is covered by an HTTPS binding host selector; method/path do not affect this host-level projection |
+| `passthrough` | `no_binding_host` | Validated Vault has no HTTPS selector covering SNI |
+| `passthrough` | `no_vault` | Sidecar active-Vault API returned authoritative absence; not proof of a future startup empty-snapshot transaction |
+| `unavailable` | `unknown_subject_or_vault` | Fleet 404 cannot distinguish an unknown source identity from absent Vault state |
+| `unavailable` | `lookup_failed` | The existing lookup failed; no cached result is used to guess |
+| `unavailable` | `missing_sni`, `invalid_sni` | No usable ASCII SNI in this observed request |
+| `unavailable` | `invalid_snapshot`, `observer_error` | Shadow projection could not interpret the sample |
+
+Only these fixed reasons and decisions plus existing shared attributes are
+exported. No hostname, path, credential, revision, or fleet subject ID is added.
+The Python addon emits a fixed outcome through its existing stdout pipe; Go
+consumes it as a metric instead of forwarding it to the application log sink.
+Unknown outcomes are discarded. Operator addons and the child process remain
+trusted diagnostic producers; this is not an audit record.
+
+Delivery is best effort. Process failure, pipe/log filtering, or exporter
+failure can lose observations; no-exporter deployments must not expect a stored
+log substitute. These are request-weighted observations after TLS termination,
+not ClientHello-time decisions: pooled requests count repeatedly, while opaque
+connections and failed handshakes never reach this hook. Shadow failures never
+change traffic. Evaluate `unavailable` alongside other outcomes rather than
+treating missing samples as successful pass-through.
 
 #### Enabling export from the server
 
