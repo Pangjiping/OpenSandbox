@@ -187,7 +187,32 @@ See [Credential Vault](/guides/credential-vault) for full API usage, binding rul
 
 ### Observability (OpenTelemetry)
 
-Egress can export **OTLP metrics**; application logs use the **native zap** logger (JSON to stdout by default, configurable via `OPENSANDBOX_LOG_OUTPUT` / `OPENSANDBOX_EGRESS_LOG_LEVEL`). The credential proxy's log lines from mitmdump are piped into the same zap sink at warn level, so they land in the egress log file when `OPENSANDBOX_LOG_OUTPUT` points at one; mitmproxy's own flow logs are not forwarded. OTLP log export is not used.
+Egress can export **OTLP metrics**; application logs use the **native zap** logger (JSON to stdout by default, configurable via `OPENSANDBOX_LOG_OUTPUT` / `OPENSANDBOX_EGRESS_LOG_LEVEL`). The credential proxy's log lines from mitmdump are piped into the same zap sink at warn level; shadow outcome records described below are consumed as metrics instead. mitmproxy's own flow logs are not forwarded. OTLP log export is not used.
+
+#### Experimental TLS shadow observations
+
+Operators may set `OPENSANDBOX_EGRESS_MITMPROXY_SHADOW=true` directly on the
+egress process to collect `egress.mitm.shadow.requests_total` through the
+existing OTLP exporter. It defaults to off; this is not the public
+`credentialProxy.interceptionMode` option and is not forwarded through SDK
+sandbox environment settings. Enable it only for targeted diagnostic windows:
+it adds host matching and one fixed-format child-process record per sample.
+
+Samples are **HTTPS/443 request-header observations**, not TLS connection
+counts. They reuse the request's existing validated Vault result/ETag check;
+the observer performs no extra Vault lookup, retains no snapshot, and does not
+change TLS interception, credential injection, or rejection. A pooled
+connection may contribute many samples, and a binding change between handshake
+and request may change the projection. Early `ignore_hosts`/no-SNI/ECH opaque
+traffic, failed handshakes (including CA failures), and noncanonical ports are
+not represented. Do not use these samples to estimate total handshake savings
+or to prove OSEP revision acknowledgement or enforcement correctness.
+
+`decision=decrypt|passthrough|unavailable` is a hypothetical SNI/HTTPS-host-scope
+projection at the existing request lookup. Lookup errors are `unavailable`,
+never a successful no-binding result. Network-policy outcomes and DLP coverage
+are not inferred. See the [metric reference](https://github.com/opensandbox-group/OpenSandbox/blob/main/components/egress/docs/opentelemetry.md)
+for the bounded reasons and delivery limitations.
 
 #### Enabling export from the server
 
