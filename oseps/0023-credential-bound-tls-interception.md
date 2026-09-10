@@ -799,6 +799,15 @@ it does not change traffic.
 
 ### Phased Implementation
 
+The Go transaction coordinator is also an isolated in-memory foundation. It
+allocates decision epochs, checks exact acknowledgements, blocks reads/mutations
+while an outcome is uncertain, and reconciles through metadata-only readback or
+exact commit/abort retries. Its transport is injected; no authenticated IPC or
+public Vault mutation path uses it yet. Local close cancels pending transport and
+fences completion, but the future adapter must also fence the remote session and
+tear down receiver/connections. Startup/recovery and atomic public-store
+finalization under the shared mutation barrier remain integration work.
+
 The proxy-side transaction receiver is an in-memory foundation: it validates
 generation/epoch/digest identities, stages immutable bytes, and implements
 commit, abort, and metadata-only readback. It is not connected to the live addon
