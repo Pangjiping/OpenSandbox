@@ -17,6 +17,7 @@ package nftables
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"net/netip"
 	"sort"
 	"strings"
@@ -35,12 +36,41 @@ const (
 	domainRefreshInterval = 30 * time.Second
 	domainLookupTimeout   = 5 * time.Second
 	domainRefreshBudget   = 20 * time.Second
+	// domainRefreshLead is how far ahead of lease expiry a domain becomes
+	// due for revalidation: two ticks absorb the jittered interval (up to
+	// 1.5x) plus lookup latency while still leaving a spare tick before the
+	// lease actually lapses. Domains with longer-lived leases are not
+	// queried at all, which keeps revalidation volume proportional to the
+	// number of leases about to expire instead of the number of tracked
+	// domains (issue #1805).
+	domainRefreshLead = 2 * domainRefreshInterval
+	// domainBackoffMax caps the exponential retry delay for a domain whose
+	// revalidation keeps failing; domainBackoffMaxStep bounds the shift so
+	// the delay calculation cannot overflow.
+	domainBackoffMax     = 10 * time.Minute
+	domainBackoffMaxStep = 5
 )
 
 type resolvedDomain struct {
 	addresses    map[netip.Addr]struct{}
 	lastObserved time.Time
 	lastAttempt  time.Time
+	failures     int
+	retryAt      time.Time
+}
+
+// nextExpiry returns the earliest dynamic-lease expiry across the entry's
+// observed addresses. An address the tracker no longer carries (expired and
+// inactive) yields the zero time, making the domain immediately due.
+func (e *resolvedDomain) nextExpiry(tracker *connectionTracker) time.Time {
+	var earliest time.Time
+	for address := range e.addresses {
+		expiresAt := tracker.dynamicIPs[address]
+		if earliest.IsZero() || expiresAt.Before(earliest) {
+			earliest = expiresAt
+		}
+	}
+	return earliest
 }
 
 func (m *Manager) AddResolvedDomain(ctx context.Context, domain string, ips []ResolvedIP) error {
@@ -90,13 +120,16 @@ func (m *Manager) AddResolvedDomain(ctx context.Context, domain string, ips []Re
 
 func (m *Manager) StartDomainRefresh(ctx context.Context, lookup func(context.Context, string) ([]ResolvedIP, error)) {
 	safego.Go(func() {
-		ticker := time.NewTicker(domainRefreshInterval)
-		defer ticker.Stop()
 		for {
+			// Per-tick jitter (uniform in [interval/2, 3*interval/2), mean
+			// interval): batch-started sidecars must not tick in phase and
+			// pulse the shared resolver in sync (issue #1805).
+			timer := time.NewTimer(domainRefreshInterval/2 + time.Duration(rand.Int64N(int64(domainRefreshInterval))))
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-ticker.C:
+			case <-timer.C:
 				m.refreshDomains(ctx, lookup)
 			}
 		}
@@ -110,8 +143,16 @@ func (m *Manager) refreshDomains(ctx context.Context, lookup func(context.Contex
 		lastAttempt time.Time
 	}
 	m.mu.Lock()
+	now := m.tracker.now()
+	due := now.Add(domainRefreshLead)
 	candidates := make([]candidate, 0, len(m.domains))
 	for domain, entry := range m.domains {
+		// Only query domains whose earliest observed-address lease expires
+		// within the lead window (or has already lapsed), unless a previous
+		// failure put the domain on backoff.
+		if now.Before(entry.retryAt) || entry.nextExpiry(m.tracker).After(due) {
+			continue
+		}
 		candidates = append(candidates, candidate{domain, entry, entry.lastAttempt})
 	}
 	m.mu.Unlock()
@@ -150,7 +191,17 @@ func (m *Manager) refreshDomains(ctx context.Context, lookup func(context.Contex
 				}
 				lookupCancel()
 				if err != nil {
-					log.Warnf("[dns] domain revalidation failed for %q: %v", item.domain, err)
+					var retryIn time.Duration
+					m.mu.Lock()
+					if m.domains[item.domain] == item.entry {
+						item.entry.failures++
+						step := min(item.entry.failures, domainBackoffMaxStep)
+						retryIn = min(domainRefreshInterval*time.Duration(1<<step), domainBackoffMax)
+						item.entry.retryAt = m.tracker.now().Add(retryIn)
+					}
+					m.mu.Unlock()
+					log.Warnf("[dns] domain revalidation failed for %q (next retry in %s): %v",
+						item.domain, retryIn.Round(time.Second), err)
 					continue
 				}
 				m.applyDomainRefresh(batchCtx, item.domain, item.entry, ips)
@@ -166,6 +217,8 @@ func (m *Manager) applyDomainRefresh(ctx context.Context, domain string, entry *
 	if ctx.Err() != nil || m.domains[domain] != entry || m.domainPolicy == nil || m.domainPolicy.Evaluate(domain) != policy.ActionAllow {
 		return
 	}
+	entry.failures = 0
+	entry.retryAt = time.Time{}
 	var confirmed []ResolvedIP
 	addresses := make(map[netip.Addr]struct{})
 	now := m.tracker.now()
