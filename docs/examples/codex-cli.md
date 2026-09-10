@@ -55,7 +55,7 @@ codex exec --json "Remember this for later: my favorite sandbox number is 42." -
 Turn 2 — resume that session with a follow-up prompt; the model recalls the context of the previous turns, so the reply is `42`:
 
 ```shell
-codex exec resume "0199a213-81c0-7800-8aa1-bbab2a035a53" "What is my favorite sandbox number? Reply with just the number."
+codex exec resume "0199a213-81c0-7800-8aa1-bbab2a035a53" "What is my favorite sandbox number? Reply with just the number." --skip-git-repo-check
 ```
 
 ::: tip
@@ -71,7 +71,7 @@ Codex applies its own sandbox policy to model-generated shell commands; these fl
 - `--sandbox workspace-write` (or `-s workspace-write`) lets model-generated commands write inside the workspace — the usual choice for autonomous runs.
 - `--sandbox read-only` keeps the run strictly read-only.
 - `-a never` / `--ask-for-approval never` never pauses for human approval, so a non-interactive run cannot block on a person.
-- `--dangerously-bypass-approvals-and-sandbox` (alias `--yolo`) runs every command without approvals or sandboxing. The Codex CLI documents it as safe only "inside an externally hardened environment" — an ephemeral OpenSandbox container is exactly that.
+- `--dangerously-bypass-approvals-and-sandbox` (alias `--yolo`) runs every command without approvals or sandboxing. The Codex CLI documents it as safe only "inside an externally hardened environment" — in OpenSandbox terms, that means a sandbox running a hardened runtime (gVisor, Kata), not the default runc; see [Secure Container Runtimes](/guides/secure-container).
 
 ::: warning
 `--full-auto` is deprecated — prefer `--sandbox workspace-write`; Codex prints a warning when the old flag is used.
