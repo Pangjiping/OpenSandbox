@@ -24,6 +24,8 @@ sandboxes and wrap the verdict in PoolAcquireFailedException.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -43,6 +45,24 @@ from opensandbox.pool import (
     SandboxPoolAsync,
 )
 from opensandbox.sync.pool import SandboxPoolSync
+
+
+async def _eventually(cond, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cond():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition did not become true")
+
+
+def _eventually_sync(cond, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cond():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition did not become true")
 
 
 def _auth_error(status: int = 401) -> SandboxApiException:
@@ -83,11 +103,13 @@ async def test_async_acquire_401_surfaces_auth_error_and_keeps_idles() -> None:
     await store.put_idle("pool", "idle-2")
     manager = _KillRecorderAsync()
     connect_calls = {"n": 0}
+    connected: list[str] = []
 
     class _AuthFailingSandbox:
         @classmethod
         async def connect(cls, sandbox_id: str, *args: Any, **kwargs: Any):
             connect_calls["n"] += 1
+            connected.append(sandbox_id)
             raise _auth_error(401)
 
     async def _manager_factory(config: Any) -> _KillRecorderAsync:
@@ -109,9 +131,16 @@ async def test_async_acquire_401_surfaces_auth_error_and_keeps_idles() -> None:
         with pytest.raises(SandboxApiException) as exc_info:
             await pool.acquire(policy=AcquirePolicy.FAIL_FAST)
         assert exc_info.value.status_code == 401
-        # No retry against the next candidate, and no healthy idle destroyed.
+        # No retry against the next candidate...
         assert connect_calls["n"] == 1
-        assert manager.killed == []
+        # ...and the taken candidate gets an explicit disposition: it was already
+        # popped from the store by try_take, so leaving it alive would leak it
+        # untracked. It is killed; the remaining idle stays tracked.
+        assert connected == ["idle-1"]
+        # kill 是 fire-and-forget,等后台任务落地
+        await _eventually(lambda: manager.killed == ["idle-1"])
+        snapshot = await store.snapshot_counters("pool")
+        assert snapshot.idle_count == 1
     finally:
         await pool.shutdown(False)
 
@@ -122,11 +151,13 @@ def test_sync_acquire_401_surfaces_auth_error_and_keeps_idles() -> None:
     store.put_idle("pool", "idle-2")
     manager = _KillRecorderSync()
     connect_calls = {"n": 0}
+    connected: list[str] = []
 
     class _AuthFailingSandbox:
         @classmethod
         def connect(cls, sandbox_id: str, *args: Any, **kwargs: Any):
             connect_calls["n"] += 1
+            connected.append(sandbox_id)
             raise _auth_error(401)
 
     pool = SandboxPoolSync(
@@ -146,6 +177,8 @@ def test_sync_acquire_401_surfaces_auth_error_and_keeps_idles() -> None:
             pool.acquire(policy=AcquirePolicy.FAIL_FAST)
         assert exc_info.value.status_code == 401
         assert connect_calls["n"] == 1
-        assert manager.killed == []
+        assert connected == ["idle-1"]
+        _eventually_sync(lambda: manager.killed == ["idle-1"])
+        assert store.snapshot_counters("pool").idle_count == 1
     finally:
         pool.shutdown(False)

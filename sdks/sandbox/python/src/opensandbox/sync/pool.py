@@ -263,13 +263,18 @@ class SandboxPoolSync:
                     )
                     raise
                 except Exception as exc:
-                    # Auth/permission verdicts (401/403) are credential problems shared
-                    # by every idle candidate, not a fault of this sandbox: keep the
-                    # candidate, flush already-condemned kills, and surface the original
-                    # error instead of burning retries (and healthy sandboxes).
+                    # Auth/permission verdicts (401/403) cannot be fixed by
+                    # re-probing, so surface the original error instead of burning
+                    # retries. The taken candidate still needs a disposition, though:
+                    # try_take already removed it from the store, and leaving it alive
+                    # would leak it untracked (the renew-failure path below documents
+                    # the same trap). Kill this one candidate together with the
+                    # already-condemned ones; warmup replaces the slot. A per-sandbox
+                    # token failure (direct-mode X-EXECD-ACCESS-TOKEN after execd
+                    # restart / snapshot resume) is also cleaned up this way.
                     if is_readiness_auth_error(exc):
                         self._schedule_kill_discarded_alive(
-                            pool_name, tuple(pending_kill), source="acquire"
+                            pool_name, (*pending_kill, sandbox_id), source="acquire"
                         )
                         raise
                     # Connect / readiness / health-check failure — the idle candidate itself
