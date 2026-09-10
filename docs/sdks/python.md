@@ -181,6 +181,30 @@ finally:
     await pool.shutdown(graceful=True)
 ```
 
+Warmup admission and health checks are aligned across SDKs:
+
+- `warmup_create_qps` (default `10`) caps new warmup creates admitted per reconcile
+  tick. The tick returns immediately after admitting: every warmup task creates,
+  validates, renews, and commits its sandbox independently, so a slow warmup never
+  delays its peers or the next tick. Already-admitted in-flight warmups count
+  toward `max_idle` together with idle sandboxes, so concurrent replenish work
+  cannot overshoot the target. `warmup_concurrency` bounds how many warmup tasks
+  run at once (an asyncio semaphore for `SandboxPoolAsync`, executor threads for
+  `SandboxPoolSync`); admitted-but-queued tasks count toward `max_idle` too.
+- After `warmup_sandbox_preparer` runs once, an optional
+  `warmup_post_prepare_health_check` callback is retried at
+  `warmup_health_check_polling_interval` until it returns `True` or
+  `warmup_post_prepare_health_check_timeout` (default `30 s`) elapses; the
+  preparer is never rerun. A timeout raises `SandboxReadyTimeoutException` and the
+  warmup sandbox is killed instead of being committed to the idle buffer.
+- `degraded_threshold` (default `3`) still controls the `HEALTHY → DEGRADED`
+  diagnostic state, but replenish no longer pauses with exponential backoff;
+  `snapshot().backoff_active` is always `False`. The primary lock is renewed by an
+  independent heartbeat at an interval no greater than
+  `min(reconcile_interval, primary_lock_ttl / 3)`, so a long reconcile cadence
+  cannot let the lease expire. A warmup whose commit finds the lease lost kills
+  its sandbox instead of publishing it.
+
 ::: tip AcquirePolicy
 `AcquirePolicy` controls what happens when the idle buffer is empty **or** the first idle candidate fails its readiness check:
 
@@ -251,6 +275,10 @@ For async pools, pass a `redis.asyncio` client to `AsyncRedisPoolStateStore`.
   `release_all_idle_parallel(max_workers=50)` for bounded parallel cleanup. The
   worker count must be positive, and the call waits for every drained ID to receive
   a best-effort kill attempt.
+- Use `warmup_sandbox_preparer` if you need to prepare a sandbox after warmup
+  readiness succeeds and before it is put into the idle pool. Add
+  `warmup_post_prepare_health_check` when the prepared service needs a separate
+  validation window; retries never rerun the preparer.
 - Configure `primary_lock_ttl` greater than `warmup_ready_timeout` plus expected
   warmup preparer time and buffer.
 - Redis outages are surfaced as pool state store errors. The pool fails closed; it

@@ -297,7 +297,7 @@ class _RenewTrackingSyncSandbox:
 
 def test_sync_create_one_sandbox_renews_before_returning_id() -> None:
     """Warmup pipeline must renew the sandbox to ``idle_timeout`` after preparer runs and
-    before returning the id to the reconciler. Otherwise the store stamps an expiry the
+    before committing the id to the idle store. Otherwise the store stamps an expiry the
     server-side TTL has already partially elapsed against, and ``acquire_min_remaining_ttl``
     overestimates remaining TTL by the warmup duration.
     """
@@ -310,10 +310,11 @@ def test_sync_create_one_sandbox_renews_before_returning_id() -> None:
         def close(self) -> None:  # pragma: no cover
             return None
 
+    store = InMemoryPoolStateStore()
     pool = SandboxPoolSync(
         pool_name="warm-renew",
         max_idle=1,
-        state_store=InMemoryPoolStateStore(),
+        state_store=store,
         connection_config=ConnectionConfigSync(),
         creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
         idle_timeout=timedelta(minutes=5),
@@ -321,10 +322,11 @@ def test_sync_create_one_sandbox_renews_before_returning_id() -> None:
         sandbox_factory=_RenewTrackingSyncSandbox,  # type: ignore[arg-type]
     )
 
-    # _create_one_sandbox short-circuits unless the pool is running.
+    # _run_warmup_task short-circuits unless the pool is running.
     pool._lifecycle_state = PoolLifecycleState.RUNNING
-    sandbox_id = pool._create_one_sandbox()
+    sandbox_id = pool._run_warmup_task()
     assert sandbox_id == "warm-1"
+    assert store.try_take_idle("warm-renew") == "warm-1"
     assert _RenewTrackingSyncSandbox.last_instance is not None
     assert _RenewTrackingSyncSandbox.last_instance.renewed == [timedelta(minutes=5)], (
         "expected renew([5min]) before putIdle, got "
@@ -371,10 +373,11 @@ async def test_async_create_one_sandbox_renews_before_returning_id() -> None:
     async def _factory(_: Any) -> _AsyncManager:
         return _AsyncManager()
 
+    store = InMemoryAsyncPoolStateStore()
     pool = SandboxPoolAsync(
         pool_name="warm-renew",
         max_idle=1,
-        state_store=InMemoryAsyncPoolStateStore(),
+        state_store=store,
         connection_config=ConnectionConfig(),
         creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
         idle_timeout=timedelta(minutes=5),
@@ -383,8 +386,9 @@ async def test_async_create_one_sandbox_renews_before_returning_id() -> None:
     )
 
     pool._lifecycle_state = PoolLifecycleState.RUNNING
-    sandbox_id = await pool._create_one_sandbox()
+    sandbox_id = await pool._run_warmup_task()
     assert sandbox_id == "warm-1"
+    assert await store.try_take_idle("warm-renew") == "warm-1"
     assert _RenewTrackingAsyncSandbox.last_instance is not None
     assert _RenewTrackingAsyncSandbox.last_instance.renewed == [timedelta(minutes=5)], (
         "expected renew([5min]) before putIdle, got "

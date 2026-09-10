@@ -33,6 +33,7 @@ from opensandbox.exceptions import (
     PoolNotRunningException,
     PoolStateStoreUnavailableException,
 )
+from opensandbox.internal.readiness import ReadinessBudget
 from opensandbox.manager import SandboxManager
 from opensandbox.pool_types import (
     AcquirePolicy,
@@ -86,6 +87,10 @@ class SandboxPoolAsync:
         warmup_health_check: Callable[[Sandbox], Awaitable[bool]] | None = None,
         warmup_sandbox_preparer: Callable[[Sandbox], Awaitable[None]] | None = None,
         warmup_skip_health_check: bool = False,
+        warmup_create_qps: int = 10,
+        warmup_post_prepare_health_check: Callable[[Sandbox], Awaitable[bool]]
+        | None = None,
+        warmup_post_prepare_health_check_timeout: timedelta = timedelta(seconds=30),
         idle_timeout: timedelta = timedelta(hours=24),
         drain_timeout: timedelta = timedelta(seconds=30),
         acquire_min_remaining_ttl: timedelta | None = None,
@@ -116,6 +121,9 @@ class SandboxPoolAsync:
             warmup_health_check=warmup_health_check,
             warmup_sandbox_preparer=warmup_sandbox_preparer,
             warmup_skip_health_check=warmup_skip_health_check,
+            warmup_create_qps=warmup_create_qps,
+            warmup_post_prepare_health_check=warmup_post_prepare_health_check,
+            warmup_post_prepare_health_check_timeout=warmup_post_prepare_health_check_timeout,
             idle_timeout=idle_timeout,
             drain_timeout=drain_timeout,
             acquire_min_remaining_ttl=acquire_min_remaining_ttl,
@@ -136,6 +144,15 @@ class SandboxPoolAsync:
         self._in_flight_condition = asyncio.Condition()
         self._stop_event = asyncio.Event()
         self._scheduler_task: asyncio.Task[None] | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
+        self._primary_owned = False
+        self._warming_count = 0
+        # Bounds concurrent warmup work (create + readiness + prepare + renew),
+        # mirroring the Kotlin warmup executor's worker cap. Admission (QPS) is
+        # bounded separately by warmup_create_qps in the reconcile plan.
+        self._warmup_slots = asyncio.Semaphore(
+            max(1, int(self._config.warmup_concurrency or 1))
+        )
         self._sandbox_manager: SandboxManager | None = None
         self._warmup_tasks: set[asyncio.Task[str | None]] = set()
 
@@ -163,6 +180,12 @@ class SandboxPoolAsync:
                 self._scheduler_task = asyncio.create_task(
                     self._run_scheduler(stop_event),
                     name=f"sandbox-pool-reconcile-{self._config.pool_name}",
+                )
+                # Aligned with the Kotlin SDK: renew the primary lease independently of
+                # reconcile work, at an interval no greater than one third of the TTL.
+                self._heartbeat_task = asyncio.create_task(
+                    self._run_primary_heartbeat(stop_event),
+                    name=f"sandbox-pool-heartbeat-{self._config.pool_name}",
                 )
             except Exception:
                 await self._stop_reconcile(wait_for_warmup=True)
@@ -395,9 +418,7 @@ class SandboxPoolAsync:
         if max_workers <= 0:
             raise ValueError("max_workers must be positive")
 
-        cleanup_task = asyncio.create_task(
-            self._release_all_idle_parallel(max_workers)
-        )
+        cleanup_task = asyncio.create_task(self._release_all_idle_parallel(max_workers))
         cancellation: asyncio.CancelledError | None = None
         cleanup_failure: BaseException | None = None
         while not cleanup_task.done():
@@ -560,18 +581,25 @@ class SandboxPoolAsync:
             try:
                 if self._lifecycle_state != PoolLifecycleState.RUNNING:
                     return
-                if await self._state_store.get_destroy_state(
-                    self._config.pool_name
-                ) != PoolDestroyState.ACTIVE:
+                if (
+                    await self._state_store.get_destroy_state(self._config.pool_name)
+                    != PoolDestroyState.ACTIVE
+                ):
                     await self._stop_after_pool_namespace_destroyed()
                     return
-                await run_async_reconcile_tick(
-                    config=self._config.with_max_idle(await self._resolve_max_idle()),
-                    state_store=self._state_store,
-                    create_one=self._create_one_sandbox,
-                    on_discard_sandbox=self._discard_sandbox_callback,
-                    reconcile_state=self._reconcile_state,
-                )
+                try:
+                    self._primary_owned = await run_async_reconcile_tick(
+                        config=self._config.with_max_idle(
+                            await self._resolve_max_idle()
+                        ),
+                        state_store=self._state_store,
+                        on_discard_sandbox=self._discard_sandbox_callback,
+                        submit_warmups=self._submit_warmups,
+                        warming_count=self._warming_count,
+                    )
+                except Exception:
+                    self._primary_owned = False
+                    raise
             except Exception as exc:
                 logger.error(
                     f"Async pool reconcile tick failed unexpectedly: pool_name={self._config.pool_name}",
@@ -580,31 +608,101 @@ class SandboxPoolAsync:
             finally:
                 await self._end_operation()
 
-    async def _create_one_sandbox(self) -> str | None:
-        await self._begin_operation()
-        task = asyncio.current_task()
-        if task is not None:
+    async def _run_primary_heartbeat(self, stop_event: asyncio.Event) -> None:
+        """Renew the primary lock independently of reconcile ticks.
+
+        Aligned with the Kotlin SDK: the interval is ``min(reconcile_interval,
+        primary_lock_ttl / 3)`` so a long reconcile cadence cannot let the lease
+        expire. The heartbeat only renews while this node is the current primary;
+        a failed renewal clears ownership until the next tick re-acquires it.
+        """
+        interval = min(
+            self._config.reconcile_interval.total_seconds(),
+            self._config.primary_lock_ttl.total_seconds() / 3,
+        )
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                return
+            except (asyncio.TimeoutError, TimeoutError):
+                pass
+            if not self._primary_owned:
+                continue
+            try:
+                renewed = await self._state_store.renew_primary_lock(
+                    self._config.pool_name,
+                    str(self._config.owner_id),
+                    self._config.primary_lock_ttl,
+                )
+            except Exception as exc:
+                # Keep periodic heartbeats alive after transient store failures.
+                logger.error(
+                    f"Pool primary heartbeat failed: pool_name={self._config.pool_name}",
+                    exc_info=exc,
+                )
+                continue
+            if not renewed:
+                self._primary_owned = False
+                logger.debug(
+                    "Pool primary heartbeat skipped (not current owner): "
+                    f"pool_name={self._config.pool_name} owner_id={self._config.owner_id}"
+                )
+
+    def _submit_warmups(self, count: int) -> None:
+        """Admit ``count`` warmup tasks and return immediately.
+
+        Aligned with the Kotlin SDK's admission model: the reconcile tick only
+        plans and admits; each admitted task then creates, validates, renews, and
+        commits its sandbox independently of the tick. The warming counter is
+        incremented synchronously here (before any task can start) so the next
+        tick's deficit calculation already accounts for these admissions.
+        """
+        if count <= 0:
+            return
+        if self._lifecycle_state != PoolLifecycleState.RUNNING:
+            return
+        for _ in range(count):
+            self._warming_count += 1
+            task = asyncio.create_task(self._run_warmup_task())
             self._warmup_tasks.add(task)  # type: ignore[arg-type]
+            task.add_done_callback(self._on_warmup_task_done)
+
+    def _on_warmup_task_done(self, task: asyncio.Task[str | None]) -> None:
+        self._warming_count -= 1
+        self._warmup_tasks.discard(task)
+
+    async def _run_warmup_task(self) -> str | None:
+        """One admitted warmup: create → validate → renew → commit.
+
+        Runs detached from the reconcile tick. Committing renews the primary
+        lock first (a lost lease drops and kills the sandbox, mirroring the
+        Kotlin leader-epoch fence) and then publishes the ID to the idle store.
+        Failures are recorded on the reconcile state; cancellation is not.
+        """
+        await self._begin_operation()
         try:
             await self._ensure_pool_namespace_active()
             sandbox = await self._build_warmup_sandbox()
             try:
-                if self._config.warmup_sandbox_preparer is not None:
-                    await self._config.warmup_sandbox_preparer(sandbox)
-                if self._lifecycle_state != PoolLifecycleState.RUNNING:
-                    try:
-                        await sandbox.kill()
-                    except Exception:
-                        pass
-                    return None
-                # The server-side TTL has been ticking since sandbox creation;
-                # readiness wait and `warmup_sandbox_preparer` can both consume meaningful time.
-                # Renew right before handing the id back to the reconciler so the store's
-                # stamped expiry actually matches what the server will honor — otherwise
-                # `acquire_min_remaining_ttl` overestimates remaining TTL by the warmup duration.
-                await sandbox.renew(self._config.idle_timeout)
+                async with self._warmup_slots:
+                    if self._config.warmup_sandbox_preparer is not None:
+                        await self._config.warmup_sandbox_preparer(sandbox)
+                    await self._wait_post_prepare_healthy(sandbox)
+                    if self._lifecycle_state != PoolLifecycleState.RUNNING:
+                        try:
+                            await sandbox.kill()
+                        except Exception:
+                            pass
+                        return None
+                    # The server-side TTL has been ticking since sandbox creation;
+                    # readiness wait and `warmup_sandbox_preparer` can both consume
+                    # meaningful time. Renew right before committing so the store's
+                    # stamped expiry actually matches what the server will honor —
+                    # otherwise `acquire_min_remaining_ttl` overestimates remaining
+                    # TTL by the warmup duration.
+                    await sandbox.renew(self._config.idle_timeout)
                 await self._ensure_pool_namespace_active_after_create(sandbox)
-                return sandbox.id
+                return await self._commit_warmup_sandbox(sandbox)
             except BaseException:
                 try:
                     await sandbox.kill()
@@ -613,10 +711,88 @@ class SandboxPoolAsync:
                 raise
             finally:
                 await sandbox.close()
+        except asyncio.CancelledError:
+            # Shutdown cancellation is not a warmup failure.
+            raise
+        except Exception as exc:
+            self._reconcile_state.record_failure(str(exc))
+            return None
         finally:
-            if task is not None:
-                self._warmup_tasks.discard(task)  # type: ignore[arg-type]
             await self._end_operation()
+
+    async def _commit_warmup_sandbox(self, sandbox: Sandbox) -> str | None:
+        """Commit a renewed warmup sandbox to the idle buffer.
+
+        The primary lock is renewed before publishing: if the lease was lost the
+        sandbox is killed instead of committed, mirroring the Kotlin leader-epoch
+        commit fence.
+        """
+        pool_name = self._config.pool_name
+        owner_id = str(self._config.owner_id)
+        ttl = self._config.primary_lock_ttl
+        sandbox_id = sandbox.id
+        try:
+            lock_renewed = await self._state_store.renew_primary_lock(
+                pool_name, owner_id, ttl
+            )
+        except Exception as exc:
+            logger.warning(
+                "Warmup commit dropped (primary lock renewal failed): "
+                f"pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
+            )
+            lock_renewed = False
+        if not lock_renewed:
+            try:
+                await sandbox.kill()
+            except Exception as exc:
+                logger.warning(
+                    "Best-effort kill after lost primary lock failed: "
+                    f"pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
+                )
+            self._reconcile_state.record_failure(
+                "primary lock lost during warmup commit"
+            )
+            return None
+        try:
+            await self._state_store.put_idle(pool_name, sandbox_id)
+        except Exception as exc:
+            logger.warning(
+                f"Warmup commit failed; dropped newly created sandbox: "
+                f"pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
+            )
+            try:
+                await self._state_store.remove_idle(pool_name, sandbox_id)
+            except Exception:
+                pass
+            try:
+                await sandbox.kill()
+            except Exception as kill_exc:
+                logger.warning(
+                    "Best-effort kill after failed commit failed: "
+                    f"pool_name={pool_name} sandbox_id={sandbox_id} error={kill_exc}"
+                )
+            self._reconcile_state.record_failure(f"warmup commit failed: {exc}")
+            return None
+        self._reconcile_state.record_success()
+        return sandbox_id
+
+    async def _wait_post_prepare_healthy(self, sandbox: Sandbox) -> None:
+        """Re-validate readiness after the warmup preparer, if configured.
+
+        Aligned with the Kotlin SDK's ``warmupPostPrepareHealthCheck`` stage: poll the
+        caller-provided check at ``warmup_health_check_polling_interval`` until it
+        returns True or ``warmup_post_prepare_health_check_timeout`` elapses. The
+        preparer is never rerun; a timeout raises :class:`SandboxReadyTimeoutException`
+        so the surrounding warmup failure path kills the sandbox.
+        """
+        check = self._config.warmup_post_prepare_health_check
+        if check is None:
+            return
+        budget = ReadinessBudget(
+            self._config.warmup_post_prepare_health_check_timeout,
+            self._config.warmup_health_check_polling_interval,
+        )
+        await budget.health(lambda: check(sandbox), context="post-prepare health check")
 
     async def _build_warmup_sandbox(self) -> Sandbox:
         if self._config.sandbox_creator is not None:
@@ -677,7 +853,9 @@ class SandboxPoolAsync:
                     finally:
                         await sandbox.close()
                     raise
-            await self._ensure_pool_namespace_active_after_create(sandbox, policy=policy)
+            await self._ensure_pool_namespace_active_after_create(
+                sandbox, policy=policy
+            )
             return sandbox
 
         spec = self._creation_spec
@@ -989,6 +1167,20 @@ class SandboxPoolAsync:
             except (asyncio.TimeoutError, TimeoutError):
                 task.cancel()
             self._scheduler_task = None
+        heartbeat = self._heartbeat_task
+        if heartbeat is not None and heartbeat is not current:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug(
+                    "Pool primary heartbeat task ended with error: "
+                    f"pool_name={self._config.pool_name}"
+                )
+            self._heartbeat_task = None
+        self._primary_owned = False
         warmup_tasks = list(self._warmup_tasks)
         if wait_for_warmup and warmup_tasks:
             await asyncio.gather(*warmup_tasks, return_exceptions=True)

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
@@ -39,35 +38,138 @@ from opensandbox.pool import (
     PoolCreationSpec,
     PooledSandboxCreateContext,
     PooledSandboxCreateReason,
+    PoolState,
+    calculate_warmup_plan,
 )
 from opensandbox.sync.pool import SandboxPoolSync
 
 
-def test_degraded_backoff_caps_at_one_day() -> None:
+def test_replenish_backoff_disabled_degraded_state_tracked() -> None:
+    """Aligned with the Kotlin SDK: fixed create admission replaces replenish backoff,
+    so ``is_backoff_active`` is always False while DEGRADED is still tracked."""
     state = ReconcileState(degraded_threshold=1)
 
     for _ in range(20):
         state.record_failure("boom")
 
     assert state.failure_count == 20
-    assert state.is_backoff_active(datetime.now(timezone.utc) + timedelta(hours=23))
-    assert not state.is_backoff_active(datetime.now(timezone.utc) + timedelta(hours=25))
+    assert state.state == PoolState.DEGRADED
+    assert state.last_error == "boom"
+    assert not state.is_backoff_active(datetime.now(timezone.utc))
+    assert not state.is_backoff_active(datetime.now(timezone.utc) + timedelta(hours=23))
+
+    state.record_success()
+
+    assert state.state == PoolState.HEALTHY
+    assert state.failure_count == 0
+    assert state.last_error is None
 
 
-def test_degraded_backoff_starts_at_thirty_seconds() -> None:
-    state = ReconcileState(degraded_threshold=1)
+def test_warmup_plan_caps_submissions_at_create_qps() -> None:
+    # Aligned with the Kotlin WarmupPlan: idle + warming both count toward the target.
+    assert calculate_warmup_plan(0, 0, 10, 10) == (10, 10)
+    assert calculate_warmup_plan(0, 4, 10, 10) == (6, 6)
+    assert calculate_warmup_plan(2, 0, 10, 3) == (8, 3)
+    assert calculate_warmup_plan(7, 3, 10, 10) == (0, 0)
+    assert calculate_warmup_plan(12, 0, 10, 10) == (0, 0)
 
-    state.record_failure("boom")
-
-    assert state.is_backoff_active(datetime.now(timezone.utc) + timedelta(seconds=29))
-    assert not state.is_backoff_active(
-        datetime.now(timezone.utc) + timedelta(seconds=31)
-    )
+    with pytest.raises(ValueError, match="warmup_create_qps must be positive"):
+        calculate_warmup_plan(0, 0, 10, 0)
+    with pytest.raises(ValueError, match="warming_count must be >= 0"):
+        calculate_warmup_plan(0, -1, 10, 10)
 
 
-def test_reconcile_batch_failures_only_advance_backoff_once() -> None:
+def test_reconcile_caps_creates_per_tick_at_warmup_create_qps() -> None:
     store = InMemoryPoolStateStore()
     config = PoolConfig(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=10,
+        warmup_concurrency=10,
+        warmup_create_qps=3,
+        state_store=store,
+        connection_config=ConnectionConfigSync(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+    )
+    submitted: list[int] = []
+
+    primary_owned = run_reconcile_tick(
+        config=config,
+        state_store=store,
+        on_discard_sandbox=lambda _sandbox_id: None,
+        submit_warmups=submitted.append,
+    )
+
+    assert primary_owned is True
+    # The tick only admits; it must not create or commit anything itself.
+    assert submitted == [3]
+    assert store.snapshot_counters("pool").idle_count == 0
+
+
+def test_reconcile_counts_in_flight_warmups_toward_target() -> None:
+    store = InMemoryPoolStateStore()
+    config = PoolConfig(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=4,
+        warmup_concurrency=4,
+        state_store=store,
+        connection_config=ConnectionConfigSync(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+    )
+    submitted: list[int] = []
+
+    primary_owned = run_reconcile_tick(
+        config=config,
+        state_store=store,
+        on_discard_sandbox=lambda _sandbox_id: None,
+        submit_warmups=submitted.append,
+        warming_count=2,
+    )
+
+    # deficit = 4 - 0 idle - 2 warming = 2, so only two more admissions this tick.
+    assert primary_owned is True
+    assert submitted == [2]
+
+
+def test_reconcile_returns_false_when_not_primary() -> None:
+    class NotPrimaryStore(InMemoryPoolStateStore):
+        def try_acquire_primary_lock(
+            self, pool_name: str, owner_id: str, ttl: timedelta
+        ) -> bool:
+            return False
+
+    store = NotPrimaryStore()
+    config = PoolConfig(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=1,
+        state_store=store,
+        connection_config=ConnectionConfigSync(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+    )
+    submitted: list[int] = []
+
+    primary_owned = run_reconcile_tick(
+        config=config,
+        state_store=store,
+        on_discard_sandbox=lambda _sandbox_id: None,
+        submit_warmups=submitted.append,
+    )
+
+    assert primary_owned is False
+    assert submitted == []
+    assert store.snapshot_counters("pool").idle_count == 0
+
+
+def test_reconcile_batch_failures_track_degraded_without_backoff() -> None:
+    class FailingSandbox(FakeSandbox):
+        @classmethod
+        def create(cls, *args: Any, **kwargs: Any) -> FailingSandbox:
+            raise RuntimeError("boom")
+
+    store = InMemoryPoolStateStore()
+    pool = SandboxPoolSync(
         pool_name="pool",
         owner_id="owner-1",
         max_idle=10,
@@ -75,32 +177,172 @@ def test_reconcile_batch_failures_only_advance_backoff_once() -> None:
         state_store=store,
         connection_config=ConnectionConfigSync(),
         creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        # One immediate tick only, so exactly one admission batch runs.
+        reconcile_interval=timedelta(seconds=3600),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        sandbox_manager_factory=lambda config: FakeManager(),  # type: ignore[arg-type,return-value]
+        sandbox_factory=FailingSandbox,  # type: ignore[arg-type]
     )
-    state = ReconcileState(degraded_threshold=3)
+    pool.start()
+    try:
+        # The tick returns immediately; the 10 admitted warmups fail asynchronously.
+        _eventually(lambda: pool._warming_count == 0)
 
-    def fail_create() -> str:
-        raise RuntimeError("boom")
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        run_reconcile_tick(
-            config=config,
-            state_store=store,
-            create_one=fail_create,
-            on_discard_sandbox=lambda _sandbox_id: None,
-            reconcile_state=state,
-            warmup_executor=executor,
-        )
-
-    assert state.failure_count == 10
-    assert state.is_backoff_active(datetime.now(timezone.utc) + timedelta(seconds=29))
-    assert not state.is_backoff_active(
-        datetime.now(timezone.utc) + timedelta(seconds=31)
-    )
+        assert pool._reconcile_state.failure_count == 10
+        assert pool._reconcile_state.state == PoolState.DEGRADED
+        # Replenish backoff is gone: failures no longer pause the next tick's admissions.
+        assert not pool._reconcile_state.is_backoff_active(datetime.now(timezone.utc))
+    finally:
+        pool.shutdown(False)
 
 
-def test_reconcile_commits_fast_warmup_before_slow_peer_finishes() -> None:
+def test_warmup_post_prepare_health_check_retries_until_healthy() -> None:
+    FakeSandbox.reset()
     store = InMemoryPoolStateStore()
-    config = PoolConfig(
+    attempts: list[str] = []
+
+    def post_prepare_check(sandbox: FakeSandbox) -> bool:
+        attempts.append(sandbox.id)
+        return len(attempts) >= 2
+
+    pool = SandboxPoolSync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=1,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfigSync(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(milliseconds=20),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        warmup_health_check_polling_interval=timedelta(milliseconds=5),
+        warmup_post_prepare_health_check=post_prepare_check,
+        sandbox_manager_factory=lambda config: FakeManager(),  # type: ignore[arg-type,return-value]
+        sandbox_factory=FakeSandbox,  # type: ignore[arg-type]
+    )
+    pool.start()
+    try:
+        _eventually(lambda: store.snapshot_counters("pool").idle_count == 1)
+        assert len(attempts) >= 2
+        assert FakeSandbox.last_created is not None
+        assert (
+            FakeSandbox.last_created.renewed
+        )  # reached the renew stage after the check
+    finally:
+        pool.shutdown(False)
+
+
+def test_warmup_post_prepare_health_check_timeout_kills_and_skips_commit() -> None:
+    FakeSandbox.reset()
+    store = InMemoryPoolStateStore()
+
+    def post_prepare_check(sandbox: FakeSandbox) -> bool:
+        return False
+
+    pool = SandboxPoolSync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=1,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfigSync(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(milliseconds=20),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        warmup_health_check_polling_interval=timedelta(milliseconds=5),
+        warmup_post_prepare_health_check=post_prepare_check,
+        warmup_post_prepare_health_check_timeout=timedelta(milliseconds=30),
+        sandbox_manager_factory=lambda config: FakeManager(),  # type: ignore[arg-type,return-value]
+        sandbox_factory=FakeSandbox,  # type: ignore[arg-type]
+    )
+    pool.start()
+    try:
+        _eventually(
+            lambda: FakeSandbox.last_created is not None
+            and FakeSandbox.last_created.killed
+        )
+        assert store.snapshot_counters("pool").idle_count == 0
+        assert FakeSandbox.last_created is not None
+        assert not FakeSandbox.last_created.renewed  # timed out before renew stage
+    finally:
+        pool.shutdown(False)
+
+
+def test_primary_heartbeat_renews_independently_and_stops_when_lock_lost() -> None:
+    class CountingRenewStore(InMemoryPoolStateStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.renew_calls = 0
+
+        def renew_primary_lock(
+            self, pool_name: str, owner_id: str, ttl: timedelta
+        ) -> bool:
+            self.renew_calls += 1
+            # First two renewals succeed (the initial tick), then the lease is lost.
+            return self.renew_calls <= 2
+
+    FakeSandbox.reset()
+    store = CountingRenewStore()
+    pool = SandboxPoolSync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=1,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfigSync(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        # One immediate tick only; the heartbeat interval becomes ttl / 3 = 0.1s.
+        reconcile_interval=timedelta(seconds=3600),
+        primary_lock_ttl=timedelta(milliseconds=300),
+        drain_timeout=timedelta(milliseconds=50),
+        sandbox_manager_factory=lambda config: FakeManager(),  # type: ignore[arg-type,return-value]
+        sandbox_factory=FakeSandbox,  # type: ignore[arg-type]
+    )
+    pool.start()
+    try:
+        # Initial tick: plan renew (1) + per-commit renew (2). Heartbeat fires at ~0.1s,
+        # observes the lost lease (renew 3 returns False), and stops renewing.
+        _eventually(lambda: store.renew_calls >= 3, timeout=2.0)
+        time.sleep(0.3)
+        assert store.renew_calls == 3
+    finally:
+        pool.shutdown(False)
+
+
+def test_reconcile_tick_does_not_block_on_slow_warmup() -> None:
+    """Kotlin-aligned admission model: the tick returns after submitting; each warmup
+    commits independently, and in-flight admissions count toward max_idle so the next
+    tick does not overshoot while a slow warmup is still running."""
+
+    class SlowFirstSandbox(FakeSandbox):
+        slow_started = threading.Event()
+        release_slow = threading.Event()
+
+        @classmethod
+        def reset(cls) -> None:
+            super().reset()
+            cls.slow_started = threading.Event()
+            cls.release_slow = threading.Event()
+
+        @classmethod
+        def create(cls, *args: Any, **kwargs: Any) -> SlowFirstSandbox:
+            cls.created_count += 1
+            ordinal = cls.created_count
+            sandbox = cls(f"created-{ordinal}")
+            cls.last_created = sandbox
+            if ordinal == 1:
+                cls.slow_started.set()
+                assert cls.release_slow.wait(timeout=2), "slow warmup never released"
+            else:
+                assert cls.slow_started.wait(timeout=2), "slow warmup never started"
+            return sandbox
+
+    SlowFirstSandbox.reset()
+    store = InMemoryPoolStateStore()
+    pool = SandboxPoolSync(
         pool_name="pool",
         owner_id="owner-1",
         max_idle=2,
@@ -108,60 +350,28 @@ def test_reconcile_commits_fast_warmup_before_slow_peer_finishes() -> None:
         state_store=store,
         connection_config=ConnectionConfigSync(),
         creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(milliseconds=20),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        sandbox_manager_factory=lambda config: FakeManager(),  # type: ignore[arg-type,return-value]
+        sandbox_factory=SlowFirstSandbox,  # type: ignore[arg-type]
     )
-    state = ReconcileState(degraded_threshold=3)
-    slow_started = threading.Event()
-    release_slow = threading.Event()
-    reconcile_finished = threading.Event()
-    reconcile_errors: list[BaseException] = []
-    call_lock = threading.Lock()
-    calls = 0
-
-    def create_one() -> str:
-        nonlocal calls
-        with call_lock:
-            calls += 1
-            call = calls
-        if call == 1:
-            slow_started.set()
-            if not release_slow.wait(timeout=2):
-                raise TimeoutError("slow warmup was never released")
-            return "slow"
-        if not slow_started.wait(timeout=2):
-            raise TimeoutError("slow warmup never started")
-        return "fast"
-
-    def reconcile(warmup_executor: ThreadPoolExecutor) -> None:
-        try:
-            run_reconcile_tick(
-                config=config,
-                state_store=store,
-                create_one=create_one,
-                on_discard_sandbox=lambda _sandbox_id: None,
-                reconcile_state=state,
-                warmup_executor=warmup_executor,
-            )
-        except BaseException as exc:
-            reconcile_errors.append(exc)
-        finally:
-            reconcile_finished.set()
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        reconcile_thread = threading.Thread(target=reconcile, args=(executor,))
-        reconcile_thread.start()
-        try:
-            assert slow_started.wait(timeout=2)
-            _eventually(lambda: store.snapshot_counters("pool").idle_count == 1)
-            assert not reconcile_finished.is_set()
-            assert store.try_take_idle("pool") == "fast"
-        finally:
-            release_slow.set()
-            reconcile_thread.join(timeout=2)
-            assert not reconcile_thread.is_alive()
-
-    assert reconcile_finished.is_set()
-    assert not reconcile_errors, reconcile_errors
-    assert store.try_take_idle("pool") == "slow"
+    pool.start()
+    try:
+        # The first tick admitted both warmups and returned; the slow one is still
+        # running, yet the fast peer ("created-2") is already committed and acquirable.
+        assert SlowFirstSandbox.slow_started.wait(timeout=2)
+        _eventually(lambda: store.try_take_idle("pool") == "created-2")
+        assert not SlowFirstSandbox.release_slow.is_set()
+        # The slow sandbox commits once released.
+        SlowFirstSandbox.release_slow.set()
+        _eventually(
+            lambda: "created-1"
+            in {entry.sandbox_id for entry in store.snapshot_idle_entries("pool")}
+        )
+    finally:
+        SlowFirstSandbox.release_slow.set()
+        pool.shutdown(False)
 
 
 def test_acquire_fail_fast_empty_raises_pool_empty() -> None:

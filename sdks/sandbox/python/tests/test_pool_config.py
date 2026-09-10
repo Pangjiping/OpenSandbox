@@ -234,3 +234,81 @@ def test_async_pool_facade_forwards_acquire_min_remaining_ttl() -> None:
 
     assert pool._config.acquire_min_remaining_ttl == timedelta(seconds=10)
     assert pool._config.idle_timeout == timedelta(seconds=30)
+
+
+def test_warmup_create_qps_defaults_and_validation() -> None:
+    config = PoolConfig(**_sync_kwargs())  # type: ignore[arg-type]
+    assert config.warmup_create_qps == 10
+    assert config.warmup_post_prepare_health_check is None
+    assert config.warmup_post_prepare_health_check_timeout == timedelta(seconds=30)
+
+    with pytest.raises(ValueError, match="warmup_create_qps must be positive"):
+        PoolConfig(**_sync_kwargs(), warmup_create_qps=0)  # type: ignore[arg-type]
+
+
+def test_async_warmup_create_qps_defaults_and_validation() -> None:
+    config = AsyncPoolConfig(**_async_kwargs())  # type: ignore[arg-type]
+    assert config.warmup_create_qps == 10
+    assert config.warmup_post_prepare_health_check is None
+    assert config.warmup_post_prepare_health_check_timeout == timedelta(seconds=30)
+
+    with pytest.raises(ValueError, match="warmup_create_qps must be positive"):
+        AsyncPoolConfig(**_async_kwargs(), warmup_create_qps=-1)  # type: ignore[arg-type]
+
+
+def test_warmup_post_prepare_health_check_timeout_must_be_positive() -> None:
+    with pytest.raises(
+        ValueError, match="warmup_post_prepare_health_check_timeout must be positive"
+    ):
+        PoolConfig(  # type: ignore[arg-type]
+            **_sync_kwargs(),
+            warmup_post_prepare_health_check_timeout=timedelta(0),
+        )
+
+    with pytest.raises(
+        ValueError, match="warmup_post_prepare_health_check_timeout must be positive"
+    ):
+        AsyncPoolConfig(  # type: ignore[arg-type]
+            **_async_kwargs(),
+            warmup_post_prepare_health_check_timeout=timedelta(seconds=-1),
+        )
+
+
+def test_pool_facades_forward_warmup_admission_arguments() -> None:
+    def post_prepare(_sandbox: SandboxSync) -> bool:
+        return True
+
+    async def async_post_prepare(_sandbox: Sandbox) -> bool:
+        return True
+
+    sync_pool = SandboxPoolSync(
+        pool_name="test",
+        max_idle=1,
+        state_store=InMemoryPoolStateStore(),
+        connection_config=ConnectionConfigSync(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        warmup_create_qps=7,
+        warmup_post_prepare_health_check=post_prepare,
+        warmup_post_prepare_health_check_timeout=timedelta(seconds=5),
+    )
+    async_pool = SandboxPoolAsync(
+        pool_name="test",
+        max_idle=1,
+        state_store=InMemoryAsyncPoolStateStore(),
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        warmup_create_qps=7,
+        warmup_post_prepare_health_check=async_post_prepare,
+        warmup_post_prepare_health_check_timeout=timedelta(seconds=5),
+    )
+
+    assert sync_pool._config.warmup_create_qps == 7
+    assert sync_pool._config.warmup_post_prepare_health_check is post_prepare
+    assert sync_pool._config.warmup_post_prepare_health_check_timeout == timedelta(
+        seconds=5
+    )
+    assert async_pool._config.warmup_create_qps == 7
+    assert async_pool._config.warmup_post_prepare_health_check is async_post_prepare
+    assert async_pool._config.warmup_post_prepare_health_check_timeout == timedelta(
+        seconds=5
+    )

@@ -66,9 +66,7 @@ _FALLTHROUGH_POLICIES: frozenset[AcquirePolicy] = frozenset(
 )
 
 
-def effective_max_idle_attempts(
-    policy: AcquirePolicy, max_acquire_retries: int
-) -> int:
+def effective_max_idle_attempts(policy: AcquirePolicy, max_acquire_retries: int) -> int:
     """Return the per-acquire cap on idle candidates for ``policy``.
 
     Single-shot policies always try exactly one; retry policies use the configured budget
@@ -83,6 +81,27 @@ def effective_max_idle_attempts(
 def policy_falls_through_to_direct_create(policy: AcquirePolicy) -> bool:
     """Return whether ``policy``, after exhausting its idle budget, should direct-create."""
     return policy in _FALLTHROUGH_POLICIES
+
+
+def calculate_warmup_plan(
+    idle_count: int, warming_count: int, max_idle: int, warmup_create_qps: int
+) -> tuple[int, int]:
+    """Point-in-time replenish plan shared by the sync and async reconcile ticks.
+
+    Aligned with the Kotlin SDK's ``WarmupPlan``: both idle sandboxes and
+    already-admitted warmups count toward the target, and ``warmup_create_qps``
+    caps new warmup admissions in the current tick. Returns ``(deficit, to_submit)``.
+    """
+    if idle_count < 0:
+        raise ValueError("idle_count must be >= 0")
+    if warming_count < 0:
+        raise ValueError("warming_count must be >= 0")
+    if max_idle < 0:
+        raise ValueError("max_idle must be >= 0")
+    if warmup_create_qps <= 0:
+        raise ValueError("warmup_create_qps must be positive")
+    deficit = max(0, max_idle - idle_count - warming_count)
+    return deficit, min(deficit, warmup_create_qps)
 
 
 class PoolState(Enum):
@@ -349,6 +368,9 @@ class PoolConfig:
     warmup_health_check: Callable[[SandboxSync], bool] | None = None
     warmup_sandbox_preparer: Callable[[SandboxSync], None] | None = None
     warmup_skip_health_check: bool = False
+    warmup_create_qps: int = 10
+    warmup_post_prepare_health_check: Callable[[SandboxSync], bool] | None = None
+    warmup_post_prepare_health_check_timeout: timedelta = timedelta(seconds=30)
     idle_timeout: timedelta = timedelta(hours=24)
     drain_timeout: timedelta = timedelta(seconds=30)
     acquire_min_remaining_ttl: timedelta | None = None
@@ -389,6 +411,12 @@ class PoolConfig:
             self.warmup_health_check_polling_interval,
             "warmup_health_check_polling_interval must be positive",
         )
+        if self.warmup_create_qps <= 0:
+            raise ValueError("warmup_create_qps must be positive")
+        _require_positive(
+            self.warmup_post_prepare_health_check_timeout,
+            "warmup_post_prepare_health_check_timeout must be positive",
+        )
         _require_positive(self.idle_timeout, "idle_timeout must be positive")
         if self.drain_timeout.total_seconds() < 0:
             raise ValueError("drain_timeout must be non-negative")
@@ -427,6 +455,9 @@ class AsyncPoolConfig:
     warmup_health_check: Callable[[Sandbox], Awaitable[bool]] | None = None
     warmup_sandbox_preparer: Callable[[Sandbox], Awaitable[None]] | None = None
     warmup_skip_health_check: bool = False
+    warmup_create_qps: int = 10
+    warmup_post_prepare_health_check: Callable[[Sandbox], Awaitable[bool]] | None = None
+    warmup_post_prepare_health_check_timeout: timedelta = timedelta(seconds=30)
     idle_timeout: timedelta = timedelta(hours=24)
     drain_timeout: timedelta = timedelta(seconds=30)
     acquire_min_remaining_ttl: timedelta | None = None
@@ -466,6 +497,12 @@ class AsyncPoolConfig:
         _require_positive(
             self.warmup_health_check_polling_interval,
             "warmup_health_check_polling_interval must be positive",
+        )
+        if self.warmup_create_qps <= 0:
+            raise ValueError("warmup_create_qps must be positive")
+        _require_positive(
+            self.warmup_post_prepare_health_check_timeout,
+            "warmup_post_prepare_health_check_timeout must be positive",
         )
         _require_positive(self.idle_timeout, "idle_timeout must be positive")
         if self.drain_timeout.total_seconds() < 0:

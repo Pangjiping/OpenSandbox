@@ -23,7 +23,6 @@ import httpx
 import pytest
 
 from opensandbox._async_pool_reconciler import run_async_reconcile_tick
-from opensandbox._pool_reconciler import ReconcileState
 from opensandbox.config import ConnectionConfig
 from opensandbox.exceptions import (
     PoolAcquireFailedException,
@@ -39,6 +38,7 @@ from opensandbox.pool import (
     PoolCreationSpec,
     PooledSandboxCreateContext,
     PooledSandboxCreateReason,
+    PoolState,
     SandboxPoolAsync,
 )
 
@@ -184,9 +184,14 @@ async def test_release_all_idle_parallel_finishes_kills_before_cancellation() ->
 
 
 @pytest.mark.asyncio
-async def test_async_reconcile_batch_failures_only_advance_backoff_once() -> None:
+async def test_async_reconcile_batch_failures_track_degraded_without_backoff() -> None:
+    class FailingAsyncSandbox(FakeAsyncSandbox):
+        @classmethod
+        async def create(cls, *args: Any, **kwargs: Any) -> FakeAsyncSandbox:
+            raise RuntimeError("boom")
+
     store = InMemoryAsyncPoolStateStore()
-    config = AsyncPoolConfig(
+    pool = SandboxPoolAsync(
         pool_name="pool",
         owner_id="owner-1",
         max_idle=10,
@@ -194,85 +199,298 @@ async def test_async_reconcile_batch_failures_only_advance_backoff_once() -> Non
         state_store=store,
         connection_config=ConnectionConfig(),
         creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        # One immediate tick only, so exactly one admission batch runs.
+        reconcile_interval=timedelta(seconds=3600),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        sandbox_manager_factory=lambda config: _manager_factory(FakeAsyncManager()),
+        sandbox_factory=FailingAsyncSandbox,  # type: ignore[arg-type]
     )
-    state = ReconcileState(degraded_threshold=3)
+    await pool.start()
+    try:
+        # The tick returns immediately; the 10 admitted warmups fail asynchronously.
+        # Track admission calls: waiting on the warming counter alone can miss the
+        # whole batch (it drops back to zero within one loop turn), and a first-
+        # check-is-true condition would never yield to the event loop at all.
+        submitted: list[int] = []
+        original_submit = pool._submit_warmups
 
-    async def fail_create() -> str:
-        raise RuntimeError("boom")
+        def tracking_submit(count: int) -> None:
+            submitted.append(count)
+            original_submit(count)
 
-    await run_async_reconcile_tick(
+        pool._submit_warmups = tracking_submit
+
+        async def _tick_ran() -> bool:
+            return bool(submitted)
+
+        async def _warmups_done() -> bool:
+            return pool._warming_count == 0
+
+        await _eventually(_tick_ran)
+        await _eventually(_warmups_done)
+
+        assert submitted == [10]
+        assert pool._reconcile_state.failure_count == 10
+        assert pool._reconcile_state.state == PoolState.DEGRADED
+        # Replenish backoff is gone: failures no longer pause the next tick's admissions.
+        assert not pool._reconcile_state.is_backoff_active(datetime.now(timezone.utc))
+    finally:
+        await pool.shutdown(False)
+
+
+@pytest.mark.asyncio
+async def test_async_reconcile_caps_creates_per_tick_at_warmup_create_qps() -> None:
+    store = InMemoryAsyncPoolStateStore()
+    config = AsyncPoolConfig(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=10,
+        warmup_concurrency=10,
+        warmup_create_qps=3,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+    )
+    submitted: list[int] = []
+
+    primary_owned = await run_async_reconcile_tick(
         config=config,
         state_store=store,
-        create_one=fail_create,
         on_discard_sandbox=_noop_discard,
-        reconcile_state=state,
+        submit_warmups=submitted.append,
     )
 
-    assert state.failure_count == 10
-    assert state.is_backoff_active(datetime.now(timezone.utc) + timedelta(seconds=29))
-    assert not state.is_backoff_active(
-        datetime.now(timezone.utc) + timedelta(seconds=31)
-    )
+    assert primary_owned is True
+    # The tick only admits; it must not create or commit anything itself.
+    assert submitted == [3]
+    counters = await store.snapshot_counters("pool")
+    assert counters.idle_count == 0
 
 
 @pytest.mark.asyncio
-async def test_async_reconcile_commits_fast_warmup_before_slow_peer_finishes() -> (
-    None
+async def test_async_reconcile_counts_in_flight_warmups_toward_target() -> None:
+    store = InMemoryAsyncPoolStateStore()
+    config = AsyncPoolConfig(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=4,
+        warmup_concurrency=4,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+    )
+    submitted: list[int] = []
+
+    primary_owned = await run_async_reconcile_tick(
+        config=config,
+        state_store=store,
+        on_discard_sandbox=_noop_discard,
+        submit_warmups=submitted.append,
+        warming_count=2,
+    )
+
+    # deficit = 4 - 0 idle - 2 warming = 2, so only two more admissions this tick.
+    assert primary_owned is True
+    assert submitted == [2]
+
+
+@pytest.mark.asyncio
+async def test_async_reconcile_returns_false_when_not_primary() -> None:
+    class NotPrimaryStore(InMemoryAsyncPoolStateStore):
+        async def try_acquire_primary_lock(
+            self, pool_name: str, owner_id: str, ttl: timedelta
+        ) -> bool:
+            return False
+
+    store = NotPrimaryStore()
+    config = AsyncPoolConfig(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=1,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+    )
+    submitted: list[int] = []
+
+    primary_owned = await run_async_reconcile_tick(
+        config=config,
+        state_store=store,
+        on_discard_sandbox=_noop_discard,
+        submit_warmups=submitted.append,
+    )
+
+    assert primary_owned is False
+    assert submitted == []
+    counters = await store.snapshot_counters("pool")
+    assert counters.idle_count == 0
+
+
+@pytest.mark.asyncio
+async def test_async_warmup_post_prepare_health_check_retries_until_healthy() -> None:
+    FakeAsyncSandbox.reset()
+    store = InMemoryAsyncPoolStateStore()
+    attempts: list[str] = []
+
+    async def post_prepare_check(sandbox: FakeAsyncSandbox) -> bool:
+        attempts.append(sandbox.id)
+        return len(attempts) >= 2
+
+    pool = SandboxPoolAsync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=1,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(milliseconds=20),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        warmup_health_check_polling_interval=timedelta(milliseconds=5),
+        warmup_post_prepare_health_check=post_prepare_check,
+        sandbox_manager_factory=lambda config: _manager_factory(FakeAsyncManager()),
+        sandbox_factory=FakeAsyncSandbox,  # type: ignore[arg-type]
+    )
+    await pool.start()
+    try:
+
+        async def _idle_filled() -> bool:
+            counters = await store.snapshot_counters("pool")
+            return counters.idle_count == 1
+
+        await _eventually(_idle_filled)
+        assert len(attempts) >= 2
+        assert FakeAsyncSandbox.last_created is not None
+        assert FakeAsyncSandbox.last_created.renewed
+    finally:
+        await pool.shutdown(False)
+
+
+@pytest.mark.asyncio
+async def test_async_warmup_post_prepare_health_check_timeout_kills_and_skips_commit() -> (
+    None,
 ):
+    FakeAsyncSandbox.reset()
     store = InMemoryAsyncPoolStateStore()
-    config = AsyncPoolConfig(
+
+    async def post_prepare_check(sandbox: FakeAsyncSandbox) -> bool:
+        return False
+
+    pool = SandboxPoolAsync(
         pool_name="pool",
         owner_id="owner-1",
-        max_idle=2,
+        max_idle=1,
         warmup_concurrency=2,
         state_store=store,
         connection_config=ConnectionConfig(),
         creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(milliseconds=20),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        warmup_health_check_polling_interval=timedelta(milliseconds=5),
+        warmup_post_prepare_health_check=post_prepare_check,
+        warmup_post_prepare_health_check_timeout=timedelta(milliseconds=30),
+        sandbox_manager_factory=lambda config: _manager_factory(FakeAsyncManager()),
+        sandbox_factory=FakeAsyncSandbox,  # type: ignore[arg-type]
     )
-    state = ReconcileState(degraded_threshold=3)
-    slow_started = asyncio.Event()
-    release_slow = asyncio.Event()
-    calls = 0
-
-    async def create_one() -> str:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            slow_started.set()
-            await release_slow.wait()
-            return "slow"
-        await slow_started.wait()
-        return "fast"
-
-    reconcile_task = asyncio.create_task(
-        run_async_reconcile_tick(
-            config=config,
-            state_store=store,
-            create_one=create_one,
-            on_discard_sandbox=_noop_discard,
-            reconcile_state=state,
-        )
-    )
-
-    async def fast_is_idle() -> bool:
-        return (await store.snapshot_counters("pool")).idle_count == 1
-
+    await pool.start()
     try:
-        await asyncio.wait_for(slow_started.wait(), timeout=2)
-        await _eventually(fast_is_idle)
-        assert not reconcile_task.done()
-        assert await store.try_take_idle("pool") == "fast"
-    finally:
-        release_slow.set()
-        await asyncio.wait_for(reconcile_task, timeout=2)
 
-    assert await store.try_take_idle("pool") == "slow"
+        async def _created_killed() -> bool:
+            last = FakeAsyncSandbox.last_created
+            return last is not None and last.killed
+
+        await _eventually(_created_killed)
+        counters = await store.snapshot_counters("pool")
+        assert counters.idle_count == 0
+        assert FakeAsyncSandbox.last_created is not None
+        assert not FakeAsyncSandbox.last_created.renewed
+    finally:
+        await pool.shutdown(False)
 
 
 @pytest.mark.asyncio
-async def test_async_reconcile_cancellation_discards_uncommitted_warmup() -> None:
+async def test_async_primary_heartbeat_renews_independently_and_stops_when_lock_lost() -> (
+    None,
+):
+    class CountingRenewStore(InMemoryAsyncPoolStateStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.renew_calls = 0
+
+        async def renew_primary_lock(
+            self, pool_name: str, owner_id: str, ttl: timedelta
+        ) -> bool:
+            self.renew_calls += 1
+            # First two renewals succeed (the initial tick), then the lease is lost.
+            return self.renew_calls <= 2
+
+    FakeAsyncSandbox.reset()
+    store = CountingRenewStore()
+    pool = SandboxPoolAsync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=1,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        # One immediate tick only; the heartbeat interval becomes ttl / 3 = 0.1s.
+        reconcile_interval=timedelta(seconds=3600),
+        primary_lock_ttl=timedelta(milliseconds=300),
+        drain_timeout=timedelta(milliseconds=50),
+        sandbox_manager_factory=lambda config: _manager_factory(FakeAsyncManager()),
+        sandbox_factory=FakeAsyncSandbox,  # type: ignore[arg-type]
+    )
+    await pool.start()
+    try:
+
+        async def _renew_reached() -> bool:
+            return store.renew_calls >= 3
+
+        # Initial tick: plan renew (1) + per-commit renew (2). Heartbeat fires at ~0.1s,
+        # observes the lost lease (renew 3 returns False), and stops renewing.
+        await _eventually(_renew_reached)
+        await asyncio.sleep(0.3)
+        assert store.renew_calls == 3
+    finally:
+        await pool.shutdown(False)
+
+
+@pytest.mark.asyncio
+async def test_async_reconcile_tick_does_not_block_on_slow_warmup() -> None:
+    """Kotlin-aligned admission model: the tick returns after submitting; each warmup
+    commits independently, and in-flight admissions count toward max_idle so the next
+    tick does not overshoot while a slow warmup is still running."""
+
+    class SlowFirstAsyncSandbox(FakeAsyncSandbox):
+        slow_started = asyncio.Event()
+        release_slow = asyncio.Event()
+
+        @classmethod
+        def reset(cls) -> None:
+            super().reset()
+            cls.slow_started = asyncio.Event()
+            cls.release_slow = asyncio.Event()
+
+        @classmethod
+        async def create(cls, *args: Any, **kwargs: Any) -> FakeAsyncSandbox:
+            cls.created_count += 1
+            ordinal = cls.created_count
+            sandbox = cls(f"created-{ordinal}")
+            cls.last_created = sandbox
+            if ordinal == 1:
+                cls.slow_started.set()
+                await cls.release_slow.wait()
+            else:
+                await cls.slow_started.wait()
+            return sandbox
+
+    SlowFirstAsyncSandbox.reset()
     store = InMemoryAsyncPoolStateStore()
-    config = AsyncPoolConfig(
+    pool = SandboxPoolAsync(
         pool_name="pool",
         owner_id="owner-1",
         max_idle=2,
@@ -280,61 +498,85 @@ async def test_async_reconcile_cancellation_discards_uncommitted_warmup() -> Non
         state_store=store,
         connection_config=ConnectionConfig(),
         creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(milliseconds=20),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        sandbox_manager_factory=lambda config: _manager_factory(FakeAsyncManager()),
+        sandbox_factory=SlowFirstAsyncSandbox,  # type: ignore[arg-type]
     )
-    state = ReconcileState(degraded_threshold=3)
-    slow_started = asyncio.Event()
-    discard_started = asyncio.Event()
-    release_discard = asyncio.Event()
-    discarded: list[str] = []
-    calls = 0
-
-    async def create_one() -> str:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            slow_started.set()
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                return "late"
-        await slow_started.wait()
-        return "fast"
-
-    async def discard(sandbox_id: str) -> None:
-        discard_started.set()
-        await release_discard.wait()
-        discarded.append(sandbox_id)
-
-    reconcile_task = asyncio.create_task(
-        run_async_reconcile_tick(
-            config=config,
-            state_store=store,
-            create_one=create_one,
-            on_discard_sandbox=discard,
-            reconcile_state=state,
-        )
-    )
-
-    async def fast_is_idle() -> bool:
-        return (await store.snapshot_counters("pool")).idle_count == 1
-
+    await pool.start()
     try:
-        await asyncio.wait_for(slow_started.wait(), timeout=2)
-        await _eventually(fast_is_idle)
-        reconcile_task.cancel()
-        await asyncio.wait_for(discard_started.wait(), timeout=2)
-        reconcile_task.cancel()
-        release_discard.set()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(reconcile_task, timeout=2)
-    finally:
-        release_discard.set()
-        reconcile_task.cancel()
-        await asyncio.gather(reconcile_task, return_exceptions=True)
+        # The first tick admitted both warmups and returned; the slow one is still
+        # running, yet the fast peer ("created-2") is already committed and acquirable.
+        await asyncio.wait_for(SlowFirstAsyncSandbox.slow_started.wait(), timeout=2)
 
-    assert await store.try_take_idle("pool") == "fast"
-    assert await store.try_take_idle("pool") is None
-    assert discarded == ["late"]
+        async def _fast_committed() -> bool:
+            return await store.try_take_idle("pool") == "created-2"
+
+        await _eventually(_fast_committed)
+        assert not SlowFirstAsyncSandbox.release_slow.is_set()
+        # The slow sandbox commits once released.
+        SlowFirstAsyncSandbox.release_slow.set()
+
+        async def _slow_committed() -> bool:
+            entries = await store.snapshot_idle_entries("pool")
+            return any(entry.sandbox_id == "created-1" for entry in entries)
+
+        await _eventually(_slow_committed)
+    finally:
+        SlowFirstAsyncSandbox.release_slow.set()
+        await pool.shutdown(False)
+
+
+@pytest.mark.asyncio
+async def test_async_warmup_cancelled_during_prepare_kills_sandbox() -> None:
+    """Shutdown cancels in-flight warmup tasks; a sandbox already created by a
+    cancelled task must be killed instead of leaking until its server TTL."""
+
+    class SlowPreparedSandbox(FakeAsyncSandbox):
+        release_prepare = asyncio.Event()
+
+        @classmethod
+        def reset(cls) -> None:
+            super().reset()
+            cls.release_prepare = asyncio.Event()
+
+    async def preparer(sandbox: FakeAsyncSandbox) -> None:
+        await SlowPreparedSandbox.release_prepare.wait()
+
+    SlowPreparedSandbox.reset()
+    store = InMemoryAsyncPoolStateStore()
+    pool = SandboxPoolAsync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=1,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(seconds=3600),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        warmup_sandbox_preparer=preparer,
+        sandbox_manager_factory=lambda config: _manager_factory(FakeAsyncManager()),
+        sandbox_factory=SlowPreparedSandbox,  # type: ignore[arg-type]
+    )
+    await pool.start()
+    try:
+
+        async def _sandbox_created() -> bool:
+            return SlowPreparedSandbox.last_created is not None
+
+        await _eventually(_sandbox_created)
+    finally:
+        # Non-graceful shutdown cancels the warmup task while the preparer is still
+        # parked; the created sandbox must receive a kill before the pool stops.
+        await pool.shutdown(False)
+
+    counters = await store.snapshot_counters("pool")
+    assert counters.idle_count == 0
+    assert SlowPreparedSandbox.last_created is not None
+    assert SlowPreparedSandbox.last_created.killed
 
 
 @pytest.mark.asyncio
@@ -350,6 +592,7 @@ async def test_async_acquire_fail_fast_stale_idle_raises_and_kills_candidate() -
             await pool.acquire(policy=AcquirePolicy.FAIL_FAST)
         assert exc.value.error.code == "POOL_ACQUIRE_FAILED"
         assert (await store.snapshot_counters("pool")).idle_count == 0
+
         # Kill is now fire-and-forget (retry-loop must not block on slow DELETE) so wait for
         # the background task to observe the kill.
         async def _killed_stale_1() -> bool:
@@ -376,7 +619,9 @@ async def test_async_acquire_direct_create_when_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_acquire_does_not_direct_create_when_pool_namespace_is_destroying() -> None:
+async def test_async_acquire_does_not_direct_create_when_pool_namespace_is_destroying() -> (
+    None
+):
     FakeAsyncSandbox.reset()
     store = InMemoryAsyncPoolStateStore()
     pool = _create_pool(max_idle=0, store=store)
@@ -441,7 +686,9 @@ async def test_async_acquire_stopped_destroyed_pool_raises_pool_destroyed() -> N
 
 
 @pytest.mark.asyncio
-async def test_async_acquire_destroy_race_preserves_pool_destroyed_when_cleanup_fails() -> None:
+async def test_async_acquire_destroy_race_preserves_pool_destroyed_when_cleanup_fails() -> (
+    None
+):
     store = InMemoryAsyncPoolStateStore()
     await store.put_idle("pool", "id-1")
 
@@ -784,14 +1031,14 @@ async def test_async_acquire_retry_next_idle_empty_raises_pool_empty() -> None:
         await pool.shutdown(False)
 
 
-async def test_async_acquire_retry_next_idle_all_stale_bounds_retries_and_raises() -> None:
+async def test_async_acquire_retry_next_idle_all_stale_bounds_retries_and_raises() -> (
+    None
+):
     store = InMemoryAsyncPoolStateStore()
     manager = FakeAsyncManager()
     for i in range(5):
         await store.put_idle("pool", f"stale-{i}")
-    pool = _create_pool(
-        max_idle=0, store=store, manager=manager, max_acquire_retries=3
-    )
+    pool = _create_pool(max_idle=0, store=store, manager=manager, max_acquire_retries=3)
     await pool.start()
     try:
         with pytest.raises(PoolAcquireFailedException):
@@ -933,7 +1180,9 @@ async def test_async_acquire_retry_next_idle_renew_failure_kills_remote_without_
         await pool.shutdown(False)
 
 
-async def test_async_acquire_retry_next_idle_does_not_block_on_slow_stale_kill() -> None:
+async def test_async_acquire_retry_next_idle_does_not_block_on_slow_stale_kill() -> (
+    None
+):
     """Async counterpart of the sync slow-kill regression: stale-candidate kill must be
     scheduled as a background task so a slow DELETE does not stall the retry loop.
     """
@@ -950,9 +1199,7 @@ async def test_async_acquire_retry_next_idle_does_not_block_on_slow_stale_kill()
     await store.put_idle("pool", "healthy-x")
 
     manager = SlowKillManager()
-    pool = _create_pool(
-        max_idle=0, store=store, manager=manager, max_acquire_retries=5
-    )
+    pool = _create_pool(max_idle=0, store=store, manager=manager, max_acquire_retries=5)
     await pool.start()
     try:
         start = time.monotonic()

@@ -33,6 +33,7 @@ from opensandbox.exceptions import (
     PoolNotRunningException,
     PoolStateStoreUnavailableException,
 )
+from opensandbox.internal.readiness import ReadinessBudget
 from opensandbox.pool_types import (
     AcquirePolicy,
     IdleEntry,
@@ -85,6 +86,9 @@ class SandboxPoolSync:
         warmup_health_check: Callable[[SandboxSync], bool] | None = None,
         warmup_sandbox_preparer: Callable[[SandboxSync], None] | None = None,
         warmup_skip_health_check: bool = False,
+        warmup_create_qps: int = 10,
+        warmup_post_prepare_health_check: Callable[[SandboxSync], bool] | None = None,
+        warmup_post_prepare_health_check_timeout: timedelta = timedelta(seconds=30),
         idle_timeout: timedelta = timedelta(hours=24),
         drain_timeout: timedelta = timedelta(seconds=30),
         acquire_min_remaining_ttl: timedelta | None = None,
@@ -115,6 +119,9 @@ class SandboxPoolSync:
             warmup_health_check=warmup_health_check,
             warmup_sandbox_preparer=warmup_sandbox_preparer,
             warmup_skip_health_check=warmup_skip_health_check,
+            warmup_create_qps=warmup_create_qps,
+            warmup_post_prepare_health_check=warmup_post_prepare_health_check,
+            warmup_post_prepare_health_check_timeout=warmup_post_prepare_health_check_timeout,
             idle_timeout=idle_timeout,
             drain_timeout=drain_timeout,
             acquire_min_remaining_ttl=acquire_min_remaining_ttl,
@@ -135,6 +142,10 @@ class SandboxPoolSync:
         self._in_flight_condition = threading.Condition()
         self._stop_event = threading.Event()
         self._scheduler_thread: threading.Thread | None = None
+        self._heartbeat_thread: threading.Thread | None = None
+        self._primary_owned = False
+        self._warming_count = 0
+        self._warming_lock = threading.Lock()
         self._warmup_executor: ThreadPoolExecutor | None = None
         self._sandbox_manager: SandboxManagerSync | None = None
 
@@ -168,8 +179,17 @@ class SandboxPoolSync:
                     name=f"sandbox-pool-reconcile-{self._config.pool_name}",
                     daemon=True,
                 )
+                # Aligned with the Kotlin SDK: renew the primary lease independently of
+                # reconcile work, at an interval no greater than one third of the TTL.
+                self._heartbeat_thread = threading.Thread(
+                    target=self._run_primary_heartbeat,
+                    args=(stop_event,),
+                    name=f"sandbox-pool-heartbeat-{self._config.pool_name}",
+                    daemon=True,
+                )
                 self._lifecycle_state = PoolLifecycleState.RUNNING
                 self._scheduler_thread.start()
+                self._heartbeat_thread.start()
             except Exception:
                 self._stop_reconcile(wait_for_warmup=True)
                 self._close_provider()
@@ -532,17 +552,23 @@ class SandboxPoolSync:
         try:
             if self._lifecycle_state != PoolLifecycleState.RUNNING:
                 return
-            if self._state_store.get_destroy_state(self._config.pool_name) != PoolDestroyState.ACTIVE:
+            if (
+                self._state_store.get_destroy_state(self._config.pool_name)
+                != PoolDestroyState.ACTIVE
+            ):
                 self._stop_after_pool_namespace_destroyed()
                 return
-            run_reconcile_tick(
-                config=self._config.with_max_idle(self._resolve_max_idle()),
-                state_store=self._state_store,
-                create_one=self._create_one_sandbox,
-                on_discard_sandbox=self._discard_sandbox_callback,
-                reconcile_state=self._reconcile_state,
-                warmup_executor=executor,
-            )
+            try:
+                self._primary_owned = run_reconcile_tick(
+                    config=self._config.with_max_idle(self._resolve_max_idle()),
+                    state_store=self._state_store,
+                    on_discard_sandbox=self._discard_sandbox_callback,
+                    submit_warmups=self._submit_warmups,
+                    warming_count=self._warming_count,
+                )
+            except Exception:
+                self._primary_owned = False
+                raise
         except Exception as exc:
             logger.error(
                 f"Pool reconcile tick failed unexpectedly: pool_name={self._config.pool_name}",
@@ -551,7 +577,82 @@ class SandboxPoolSync:
         finally:
             self._end_operation()
 
-    def _create_one_sandbox(self) -> str | None:
+    def _run_primary_heartbeat(self, stop_event: threading.Event) -> None:
+        """Renew the primary lock independently of reconcile ticks.
+
+        Aligned with the Kotlin SDK: the interval is ``min(reconcile_interval,
+        primary_lock_ttl / 3)`` so a long reconcile cadence cannot let the lease
+        expire. The heartbeat only renews while this node is the current primary;
+        a failed renewal clears ownership until the next tick re-acquires it.
+        """
+        interval = min(
+            self._config.reconcile_interval.total_seconds(),
+            self._config.primary_lock_ttl.total_seconds() / 3,
+        )
+        while not stop_event.wait(interval):
+            if not self._primary_owned:
+                continue
+            try:
+                renewed = self._state_store.renew_primary_lock(
+                    self._config.pool_name,
+                    str(self._config.owner_id),
+                    self._config.primary_lock_ttl,
+                )
+            except Exception as exc:
+                # Keep periodic heartbeats alive after transient store failures.
+                logger.error(
+                    f"Pool primary heartbeat failed: pool_name={self._config.pool_name}",
+                    exc_info=exc,
+                )
+                continue
+            if not renewed:
+                self._primary_owned = False
+                logger.debug(
+                    "Pool primary heartbeat skipped (not current owner): "
+                    f"pool_name={self._config.pool_name} owner_id={self._config.owner_id}"
+                )
+
+    def _submit_warmups(self, count: int) -> None:
+        """Admit ``count`` warmup tasks on the warmup executor and return immediately.
+
+        Aligned with the Kotlin SDK's admission model: the reconcile tick only
+        plans and admits; each admitted task then creates, validates, renews, and
+        commits its sandbox independently of the tick. The warming counter is
+        incremented synchronously here (before submission) so the next tick's
+        deficit calculation already accounts for these admissions; queued-but-
+        unstarted tasks also count, which keeps total admissions deficit-bounded.
+        """
+        if count <= 0:
+            return
+        if self._lifecycle_state != PoolLifecycleState.RUNNING:
+            return
+        executor = self._warmup_executor
+        if executor is None:
+            return
+        for _ in range(count):
+            with self._warming_lock:
+                self._warming_count += 1
+            try:
+                future = executor.submit(self._run_warmup_task)
+            except RuntimeError:
+                # Executor is shutting down; stop admitting this tick.
+                with self._warming_lock:
+                    self._warming_count -= 1
+                return
+            future.add_done_callback(self._on_warmup_task_done)
+
+    def _on_warmup_task_done(self, future: object) -> None:
+        with self._warming_lock:
+            self._warming_count -= 1
+
+    def _run_warmup_task(self) -> str | None:
+        """One admitted warmup: create → validate → renew → commit.
+
+        Runs on the warmup executor, detached from the reconcile tick. Committing
+        renews the primary lock first (a lost lease drops and kills the sandbox,
+        mirroring the Kotlin leader-epoch fence) and then publishes the ID to the
+        idle store. Failures are recorded on the reconcile state.
+        """
         self._begin_operation()
         try:
             self._ensure_pool_namespace_active()
@@ -559,6 +660,7 @@ class SandboxPoolSync:
             try:
                 if self._config.warmup_sandbox_preparer is not None:
                     self._config.warmup_sandbox_preparer(sandbox)
+                self._wait_post_prepare_healthy(sandbox)
                 if self._lifecycle_state != PoolLifecycleState.RUNNING:
                     try:
                         sandbox.kill()
@@ -566,14 +668,15 @@ class SandboxPoolSync:
                         pass
                     return None
                 # The server-side TTL has been ticking since sandbox creation;
-                # readiness wait and `warmup_sandbox_preparer` can both consume meaningful time.
-                # Renew right before handing the id back to the reconciler so the store's
-                # stamped expiry actually matches what the server will honor — otherwise
-                # `acquire_min_remaining_ttl` overestimates remaining TTL by the warmup duration.
+                # readiness wait and `warmup_sandbox_preparer` can both consume
+                # meaningful time. Renew right before committing so the store's
+                # stamped expiry actually matches what the server will honor —
+                # otherwise `acquire_min_remaining_ttl` overestimates remaining
+                # TTL by the warmup duration.
                 sandbox.renew(self._config.idle_timeout)
                 self._ensure_pool_namespace_active_after_create(sandbox)
-                return sandbox.id
-            except Exception:
+                return self._commit_warmup_sandbox(sandbox)
+            except BaseException:
                 try:
                     sandbox.kill()
                 except Exception:
@@ -581,8 +684,85 @@ class SandboxPoolSync:
                 raise
             finally:
                 sandbox.close()
+        except Exception as exc:
+            self._reconcile_state.record_failure(str(exc))
+            return None
         finally:
             self._end_operation()
+
+    def _commit_warmup_sandbox(self, sandbox: SandboxSync) -> str | None:
+        """Commit a renewed warmup sandbox to the idle buffer.
+
+        The primary lock is renewed before publishing: if the lease was lost the
+        sandbox is killed instead of committed, mirroring the Kotlin leader-epoch
+        commit fence.
+        """
+        pool_name = self._config.pool_name
+        owner_id = str(self._config.owner_id)
+        ttl = self._config.primary_lock_ttl
+        sandbox_id = sandbox.id
+        try:
+            lock_renewed = self._state_store.renew_primary_lock(
+                pool_name, owner_id, ttl
+            )
+        except Exception as exc:
+            logger.warning(
+                "Warmup commit dropped (primary lock renewal failed): "
+                f"pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
+            )
+            lock_renewed = False
+        if not lock_renewed:
+            try:
+                sandbox.kill()
+            except Exception as exc:
+                logger.warning(
+                    "Best-effort kill after lost primary lock failed: "
+                    f"pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
+                )
+            self._reconcile_state.record_failure(
+                "primary lock lost during warmup commit"
+            )
+            return None
+        try:
+            self._state_store.put_idle(pool_name, sandbox_id)
+        except Exception as exc:
+            logger.warning(
+                f"Warmup commit failed; dropped newly created sandbox: "
+                f"pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
+            )
+            try:
+                self._state_store.remove_idle(pool_name, sandbox_id)
+            except Exception:
+                pass
+            try:
+                sandbox.kill()
+            except Exception as kill_exc:
+                logger.warning(
+                    "Best-effort kill after failed commit failed: "
+                    f"pool_name={pool_name} sandbox_id={sandbox_id} error={kill_exc}"
+                )
+            self._reconcile_state.record_failure(f"warmup commit failed: {exc}")
+            return None
+        self._reconcile_state.record_success()
+        return sandbox_id
+
+    def _wait_post_prepare_healthy(self, sandbox: SandboxSync) -> None:
+        """Re-validate readiness after the warmup preparer, if configured.
+
+        Aligned with the Kotlin SDK's ``warmupPostPrepareHealthCheck`` stage: poll the
+        caller-provided check at ``warmup_health_check_polling_interval`` until it
+        returns True or ``warmup_post_prepare_health_check_timeout`` elapses. The
+        preparer is never rerun; a timeout raises :class:`SandboxReadyTimeoutException`
+        so the surrounding warmup failure path kills the sandbox.
+        """
+        check = self._config.warmup_post_prepare_health_check
+        if check is None:
+            return
+        budget = ReadinessBudget(
+            self._config.warmup_post_prepare_health_check_timeout,
+            self._config.warmup_health_check_polling_interval,
+        )
+        budget.health_sync(lambda: check(sandbox), context="post-prepare health check")
 
     def _build_warmup_sandbox(self) -> SandboxSync:
         if self._config.sandbox_creator is not None:
@@ -941,6 +1121,16 @@ class SandboxPoolSync:
             thread.join(timeout=5)
         if join_scheduler:
             self._scheduler_thread = None
+        heartbeat = self._heartbeat_thread
+        if (
+            join_scheduler
+            and heartbeat is not None
+            and heartbeat is not threading.current_thread()
+        ):
+            heartbeat.join(timeout=5)
+        if join_scheduler:
+            self._heartbeat_thread = None
+        self._primary_owned = False
         executor = self._warmup_executor
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)

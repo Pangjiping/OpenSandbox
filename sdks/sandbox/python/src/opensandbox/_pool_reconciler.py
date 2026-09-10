@@ -13,20 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-"""Sandbox pool reconciliation logic."""
+"""Sandbox pool reconciliation logic.
+
+Aligned with the Kotlin ``PoolReconciler``: one tick only reaps expired idle,
+shrinks excess, computes the admission plan, and submits warmups through the
+caller-provided callback. The tick returns immediately; warmup tasks create,
+validate, renew, and commit their sandbox independently of the tick.
+"""
 
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
-from concurrent.futures import CancelledError, Executor, as_completed
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from opensandbox.pool_types import (
     PoolConfig,
     PoolState,
     PoolStateStore,
+    calculate_warmup_plan,
 )
 from opensandbox.pool_types import (
     reap_expired_idle_with_min_ttl as _reap_expired_idle_with_min_ttl,
@@ -37,22 +44,24 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ReconcileState:
+    """Mutable observation state for the reconcile loop.
+
+    Thread-safe for concurrent updates from warmup workers and reads from
+    ``snapshot()``, mirroring the Kotlin ``@Synchronized`` counterpart.
+    """
+
     degraded_threshold: int
-    backoff_base: timedelta = timedelta(seconds=30)
-    backoff_max: timedelta = timedelta(days=1)
     failure_count: int = 0
     state: PoolState = PoolState.HEALTHY
     last_error: str | None = None
-    backoff_until: datetime | None = None
-    backoff_attempts: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def record_success(self) -> None:
-        self.failure_count = 0
-        if self.state == PoolState.DEGRADED:
-            self.state = PoolState.HEALTHY
-        self.backoff_until = None
-        self.backoff_attempts = 0
-        self.last_error = None
+        with self._lock:
+            self.failure_count = 0
+            if self.state == PoolState.DEGRADED:
+                self.state = PoolState.HEALTHY
+            self.last_error = None
 
     def record_failure(self, error_message: str | None) -> None:
         self.record_failures(1, error_message)
@@ -60,62 +69,60 @@ class ReconcileState:
     def record_failures(self, count: int, error_message: str | None) -> None:
         if count <= 0:
             return
-        self.failure_count += count
-        self.last_error = error_message
-        if self.failure_count >= self.degraded_threshold:
-            self.state = PoolState.DEGRADED
-            self.backoff_attempts += 1
-            exponent = min(self.backoff_attempts - 1, 30)
-            delay = min(
-                self.backoff_base.total_seconds() * (1 << exponent),
-                self.backoff_max.total_seconds(),
-            )
-            self.backoff_until = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        with self._lock:
+            self.failure_count += count
+            self.last_error = error_message
+            if self.failure_count >= self.degraded_threshold:
+                self.state = PoolState.DEGRADED
 
     def is_backoff_active(self, now: datetime | None = None) -> bool:
-        until = self.backoff_until
-        if until is None:
-            return False
-        return (
-            self.state == PoolState.DEGRADED
-            and (now or datetime.now(timezone.utc)) < until
-        )
+        """Replenish backoff is intentionally disabled; fixed create admission provides
+        pressure control. Aligned with the Kotlin SDK's ``ReconcileState``."""
+        return False
 
 
 def run_reconcile_tick(
     *,
     config: PoolConfig,
     state_store: PoolStateStore,
-    create_one: Callable[[], str | None],
     on_discard_sandbox: Callable[[str], None],
-    reconcile_state: ReconcileState,
-    warmup_executor: Executor,
-) -> None:
+    submit_warmups: Callable[[int], None],
+    warming_count: int = 0,
+) -> bool:
+    """Run one reconcile tick: leader-gated reap / shrink / admission planning.
+
+    Returns whether this node holds the primary lock. Only the lock holder
+    performs idle maintenance writes. Warmup submission is non-blocking: the
+    caller-provided ``submit_warmups`` admits at most ``warmup_create_qps``
+    creates whose in-flight count already participates in the deficit; the tick
+    does not wait for them. The lock is not released at tick end — distributed
+    stores rely on TTL or renew failure.
+    """
     pool_name = config.pool_name
     owner_id = str(config.owner_id)
     ttl = config.primary_lock_ttl
 
     if not state_store.try_acquire_primary_lock(pool_name, owner_id, ttl):
         logger.debug(f"Reconcile skip (not primary): pool_name={pool_name}")
-        return
+        return False
     _run_primary_replenish_once(
         config=config,
         state_store=state_store,
-        create_one=create_one,
         on_discard_sandbox=on_discard_sandbox,
-        reconcile_state=reconcile_state,
-        warmup_executor=warmup_executor,
+        submit_warmups=submit_warmups,
+        warming_count=warming_count,
     )
+    # Do not release primary lock here; leader holds until renew fails or TTL expires.
+    return True
 
 
 def _run_primary_replenish_once(
     *,
     config: PoolConfig,
     state_store: PoolStateStore,
-    create_one: Callable[[], str | None],
     on_discard_sandbox: Callable[[str], None],
-    reconcile_state: ReconcileState,
-    warmup_executor: Executor,
+    submit_warmups: Callable[[int], None],
+    warming_count: int = 0,
 ) -> None:
     pool_name = config.pool_name
     owner_id = str(config.owner_id)
@@ -126,8 +133,8 @@ def _run_primary_replenish_once(
         state_store, pool_name, now, config.acquire_min_remaining_ttl
     )
     for sandbox_id in discarded_alive:
-        # Reaped near-expiry but server-side TTL has not yet elapsed; kill so the live
-        # sandbox does not linger past its pool membership and consume quota.
+        # Reaped near-expiry but server-side TTL has not elapsed; kill so the live sandbox
+        # does not linger past its pool membership and consume quota.
         on_discard_sandbox(sandbox_id)
     counters = state_store.snapshot_counters(pool_name)
     excess = max(0, counters.idle_count - config.max_idle)
@@ -136,85 +143,32 @@ def _run_primary_replenish_once(
         _shrink_excess_idle(config, state_store, on_discard_sandbox, to_remove)
         return
 
-    deficit = max(0, config.max_idle - counters.idle_count)
-    to_create = min(deficit, int(config.warmup_concurrency or 1))
-    if to_create == 0 or reconcile_state.is_backoff_active(now):
+    # Aligned with the Kotlin WarmupPlan: idle sandboxes and already-admitted warmups
+    # both count toward the target, and warmup_create_qps caps admissions per tick.
+    # Admission is bounded by the deficit, so queued submissions cannot overshoot.
+    deficit, to_submit = calculate_warmup_plan(
+        idle_count=counters.idle_count,
+        warming_count=warming_count,
+        max_idle=config.max_idle,
+        warmup_create_qps=config.warmup_create_qps,
+    )
+    if to_submit == 0:
         state_store.renew_primary_lock(pool_name, owner_id, ttl)
+        logger.debug(
+            f"Reconcile tick: pool_name={pool_name} idle={counters.idle_count} "
+            f"warming={warming_count} deficit={deficit} to_submit=0"
+        )
         return
+
+    logger.debug(
+        f"Reconcile tick: pool_name={pool_name} idle={counters.idle_count} "
+        f"warming={warming_count} deficit={deficit} create_qps={config.warmup_create_qps} "
+        f"to_submit={to_submit}"
+    )
 
     if not state_store.renew_primary_lock(pool_name, owner_id, ttl):
         return
-
-    futures = [warmup_executor.submit(create_one) for _ in range(to_create)]
-    failure_count = 0
-    last_error: str | None = None
-    created = 0
-    commit_failed = False
-    commit_error: str | None = None
-    accept_commits = True
-    dropped = 0
-    stop_reason: str | None = None
-    for future in as_completed(futures):
-        try:
-            sandbox_id = future.result()
-            if sandbox_id is None:
-                failure_count += 1
-                last_error = None
-                continue
-        except CancelledError:
-            failure_count += 1
-            last_error = "warmup future cancelled"
-            continue
-        except Exception as exc:
-            failure_count += 1
-            last_error = str(exc)
-            continue
-
-        if not accept_commits:
-            _discard(on_discard_sandbox, sandbox_id)
-            dropped += 1
-            continue
-        try:
-            lock_renewed = state_store.renew_primary_lock(pool_name, owner_id, ttl)
-        except Exception as exc:
-            lock_renewed = False
-            commit_failed = True
-            commit_error = str(exc)
-            stop_reason = "primary lock renewal failed"
-        if not lock_renewed:
-            accept_commits = False
-            stop_reason = stop_reason or "primary lock lost"
-            _discard(on_discard_sandbox, sandbox_id)
-            dropped += 1
-            continue
-        try:
-            state_store.put_idle(pool_name, sandbox_id)
-            created += 1
-        except Exception as exc:
-            accept_commits = False
-            stop_reason = "commit failed"
-            commit_failed = True
-            commit_error = str(exc)
-            try:
-                state_store.remove_idle(pool_name, sandbox_id)
-            except Exception:
-                pass
-            _discard(on_discard_sandbox, sandbox_id)
-            dropped += 1
-
-    reconcile_state.record_failures(failure_count, last_error)
-    if created > 0:
-        reconcile_state.record_success()
-    if commit_failed:
-        reconcile_state.record_failure(commit_error)
-
-    if dropped > 0:
-        error_detail = f" error={commit_error}" if commit_error else ""
-        logger.warning(
-            f"Reconcile {stop_reason}; dropped {dropped} newly created sandbox(es): pool_name={pool_name}{error_detail}"
-        )
-    if created > 0:
-        logger.debug(f"Reconcile created {created} sandboxes: pool_name={pool_name}")
+    submit_warmups(to_submit)
 
 
 def _shrink_excess_idle(
@@ -236,17 +190,13 @@ def _shrink_excess_idle(
         sandbox_id = state_store.try_take_idle(pool_name)
         if sandbox_id is None:
             return
-        _discard(on_discard_sandbox, sandbox_id)
+        try:
+            on_discard_sandbox(sandbox_id)
+        except Exception as exc:
+            logger.warning(
+                f"Reconcile shrink sandbox cleanup failed: pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
+            )
         removed += 1
 
     state_store.renew_primary_lock(pool_name, owner_id, ttl)
     logger.debug(f"Reconcile shrunk {removed} idle sandbox(es): pool_name={pool_name}")
-
-
-def _discard(on_discard_sandbox: Callable[[str], None], sandbox_id: str) -> None:
-    try:
-        on_discard_sandbox(sandbox_id)
-    except Exception as exc:
-        logger.warning(
-            f"Reconcile sandbox cleanup failed: sandbox_id={sandbox_id} error={exc}"
-        )
