@@ -133,6 +133,16 @@ try {
 
 The built-in `InMemoryPoolStateStore` is limited to one JavaScript process. To share a pool across processes, provide a distributed `PoolStateStore` whose idle-take, membership, and primary-lock operations are atomic.
 
+`acquireReadyTimeoutSeconds` and `warmupReadyTimeoutSeconds` bound each sandbox's
+health-check phase, including in-flight probes and polling delays. They do not
+bound the entire acquire or warmup operation, such as sandbox creation or
+preparation. Pass an `AbortSignal` to `pool.acquire({ signal })` to cancel an
+in-flight readiness check. SDK health probes receive the cancellation signal.
+Custom health-check callbacks, and `isHealthy()` probes on custom creator objects
+without `waitUntilReady()`, may continue running after timeout or cancellation,
+but their late results are ignored. The pool attempts to kill a sandbox that
+fails readiness and does not hand it to a caller or add it to the idle buffer.
+
 ## Usage Examples
 
 ### 1. Lifecycle Management
@@ -200,6 +210,15 @@ await sandbox.commands.run(
   handlers,
 );
 ```
+
+To execute a native program without shell parsing, pass an argument list. On Linux,
+this example prints literal `$HOME` and keeps `hello world` as one argument:
+
+```ts
+await sandbox.commands.run(["printf", "%s\n", "$HOME", "hello world"]);
+```
+
+Native argv execution requires an updated execd. See [command execution modes](/components/execd#command-execution) for executable lookup and platform behavior.
 
 ### 4. Comprehensive File Operations
 

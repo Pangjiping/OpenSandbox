@@ -18,8 +18,8 @@ import {
   PoolEmptyException,
   PoolNotRunningException,
   PoolStateStoreUnavailableException,
-  SandboxReadyTimeoutException,
 } from "./core/exceptions.js";
+import { ReadinessBudget } from "./internal/readiness.js";
 import { InMemoryPoolStateStore } from "./poolStore.js";
 import {
   AcquirePolicy,
@@ -681,26 +681,31 @@ export class SandboxPool {
     pollingIntervalMillis: number,
     signal?: AbortSignal,
   ): Promise<void> {
-    const deadline = Date.now() + timeoutSeconds * 1000;
-    let attempts = 0;
-    let lastError: unknown;
-    while (Date.now() < deadline) {
-      signal?.throwIfAborted();
-      attempts += 1;
-      let healthy = false;
-      try {
-        healthy = healthCheck ? await healthCheck(sandbox) : await sandbox.isHealthy();
-      } catch (error) {
-        lastError = error;
-        healthy = false;
-      }
-      if (healthy) return;
-      await sleep(pollingIntervalMillis, signal);
+    if (typeof sandbox.waitUntilReady === "function") {
+      await sandbox.waitUntilReady({
+        readyTimeoutSeconds: timeoutSeconds,
+        pollingIntervalMillis,
+        healthCheck,
+        signal,
+      });
+      return;
     }
-    throw new SandboxReadyTimeoutException({
-      message: `Sandbox health check timed out after ${timeoutSeconds}s (${attempts} attempts).`,
-      cause: lastError,
-    });
+
+    // Custom creators may return compatible objects with only isHealthy().
+    const budget = new ReadinessBudget(timeoutSeconds, signal);
+    budget.healthContext(`domain=${this.options.connectionConfig.domain}, useServerProxy=${this.options.connectionConfig.useServerProxy}`);
+    while (true) {
+      try {
+        budget.attempt();
+        const healthy = await budget.run(async () => healthCheck ? await healthCheck(sandbox) : await sandbox.isHealthy());
+        if (healthy) return;
+        budget.record("Health check returned false continuously.");
+      } catch (error) {
+        budget.remaining();
+        budget.record(error);
+      }
+      await budget.pause(pollingIntervalMillis);
+    }
   }
 
   private async renewAcquired(sandbox: Sandbox, timeoutSeconds?: number): Promise<void> {

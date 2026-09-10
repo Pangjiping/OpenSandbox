@@ -6,9 +6,12 @@ import {
   ConnectionConfig,
   InMemoryPoolStateStore,
   PoolEmptyException,
+  PoolAcquireFailedException,
   PoolLifecycleState,
   PooledSandboxCreateReason,
+  Sandbox,
   SandboxPool,
+  SandboxReadyTimeoutException,
 } from "../dist/index.js";
 
 async function eventually(check, timeoutMs = 2_000) {
@@ -20,7 +23,7 @@ async function eventually(check, timeoutMs = 2_000) {
   assert.fail("condition did not become true before timeout");
 }
 
-function createPoolFixture({ healthById = {}, renewFailureIds = new Set() } = {}) {
+function createPoolFixture({ healthById = {}, renewFailureIds = new Set(), sdkSandbox = false } = {}) {
   const calls = [];
   const sandboxes = {
     async createSandbox(request) {
@@ -49,7 +52,12 @@ function createPoolFixture({ healthById = {}, renewFailureIds = new Set() } = {}
       return {
         commands: {},
         files: {},
-        health: { async ping() { return healthById[sandboxId] ?? true; } },
+        health: {
+          async ping(signal) {
+            const probe = healthById[sandboxId];
+            return typeof probe === "function" ? await probe(signal) : probe ?? true;
+          },
+        },
         metrics: {},
       };
     },
@@ -65,18 +73,182 @@ function createPoolFixture({ healthById = {}, renewFailureIds = new Set() } = {}
   const created = [];
   const sandboxCreator = async () => {
     const id = `warm-${++nextId}`;
-    const sandbox = {
+    const sandbox = sdkSandbox ? await Sandbox.connect({
+      sandboxId: id,
+      connectionConfig,
+      adapterFactory,
+      skipHealthCheck: true,
+    }) : {
       id,
-      async isHealthy() { return true; },
-      async renew(timeoutSeconds) { calls.push({ method: "warmup-renew", id, timeoutSeconds }); },
-      async kill() { calls.push({ method: "creator-kill", id }); },
-      async close() { calls.push({ method: "creator-close", id }); },
+      async isHealthy() {
+        const probe = healthById[id];
+        return typeof probe === "function" ? await probe() : probe ?? true;
+      },
+      async close() {},
+    };
+    sandbox.renew = async (timeoutSeconds) => { calls.push({ method: "warmup-renew", id, timeoutSeconds }); };
+    sandbox.kill = async () => { calls.push({ method: "creator-kill", id }); };
+    const close = sandbox.close.bind(sandbox);
+    sandbox.close = async () => {
+      calls.push({ method: "creator-close", id });
+      await close();
     };
     created.push(sandbox);
     return sandbox;
   };
 
   return { adapterFactory, calls, connectionConfig, created, sandboxCreator, sandboxes };
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function within(promise, timeoutMs = 1_000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("operation did not settle")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+for (const creator of ["SDK instance", "custom object"]) {
+  const sdkSandbox = creator === "SDK instance";
+
+  test(`pool readiness bounds polling delays during acquire (${creator})`, async (t) => {
+    const fixture = createPoolFixture({ sdkSandbox, healthById: { "warm-1": false } });
+    const pool = SandboxPool.create({
+      poolName: "poll-budget-pool", maxIdle: 0,
+      connectionConfig: fixture.connectionConfig,
+      creationSpec: { image: "ubuntu", adapterFactory: fixture.adapterFactory },
+      sandboxCreator: fixture.sandboxCreator,
+      acquireReadyTimeoutSeconds: 0.02,
+      acquireHealthCheckPollingIntervalMillis: 2_000,
+    });
+    t.after(() => pool.shutdown(false));
+    await pool.start();
+
+    await assert.rejects(within(pool.acquire()), SandboxReadyTimeoutException);
+    assert.equal(fixture.calls.filter(call => call.method === "creator-kill").length, 1);
+    assert.equal(fixture.calls.filter(call => call.method === "creator-close").length, 1);
+    assert.equal((await pool.snapshot()).inFlightOperations, 0);
+  });
+
+  for (const source of ["built-in", "custom"]) {
+    for (const fromIdle of [false, true]) {
+      if (fromIdle && !sdkSandbox) continue; // Idle acquisition always reconnects an SDK instance.
+      test(`pool readiness times out a pending ${source} probe on ${fromIdle ? "idle" : "direct"} acquire (${creator})`, async (t) => {
+        const pending = deferred();
+        let probeSignal;
+        const probe = (signal) => { probeSignal = signal; return pending.promise; };
+        const id = fromIdle ? "idle" : "warm-1";
+        const fixture = createPoolFixture({ sdkSandbox, healthById: source === "built-in" ? { [id]: probe } : {} });
+        const store = new InMemoryPoolStateStore();
+        const pool = SandboxPool.create({
+          poolName: "pending-probe-pool", maxIdle: 0, stateStore: store,
+          connectionConfig: fixture.connectionConfig,
+          creationSpec: { image: "ubuntu", adapterFactory: fixture.adapterFactory },
+          sandboxCreator: fixture.sandboxCreator,
+          acquireReadyTimeoutSeconds: 0.02,
+          acquireHealthCheck: source === "custom" ? () => pending.promise : undefined,
+        });
+        t.after(async () => {
+          pending.resolve(true);
+          await pool.shutdown(false);
+        });
+        await pool.start();
+        if (fromIdle) await store.putIdle("pending-probe-pool", id);
+
+        await assert.rejects(within(pool.acquire({
+          policy: fromIdle ? AcquirePolicy.FAIL_FAST : AcquirePolicy.DIRECT_CREATE,
+          sandboxTimeoutSeconds: 60,
+        })), error => fromIdle
+          ? error instanceof PoolAcquireFailedException && error.cause instanceof SandboxReadyTimeoutException
+          : error instanceof SandboxReadyTimeoutException);
+        if (source === "built-in" && (sdkSandbox || fromIdle)) assert.equal(probeSignal.aborted, true);
+        await eventually(() => fixture.calls.some(call =>
+          fromIdle ? call.method === "kill" && call.sandboxId === id : call.method === "creator-kill" && call.id === id));
+        pending.resolve(true);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(fixture.calls.some(call => call.method === "renew" || call.method === "warmup-renew"), false);
+        assert.equal((await pool.snapshot()).inFlightOperations, 0);
+      });
+    }
+
+    test(`pool readiness cancels an in-flight ${source} probe with the caller's reason (${creator})`, async (t) => {
+      const pending = deferred();
+      const started = deferred();
+      let probeSignal;
+      const probe = (signal) => {
+        probeSignal = signal;
+        started.resolve();
+        return pending.promise;
+      };
+      const fixture = createPoolFixture({ sdkSandbox, healthById: source === "built-in" ? { "warm-1": probe } : {} });
+      const pool = SandboxPool.create({
+        poolName: "cancel-probe-pool", maxIdle: 0,
+        connectionConfig: fixture.connectionConfig,
+        creationSpec: { image: "ubuntu", adapterFactory: fixture.adapterFactory },
+        sandboxCreator: fixture.sandboxCreator,
+        acquireHealthCheck: source === "custom" ? () => probe() : undefined,
+      });
+      t.after(async () => {
+        pending.resolve(true);
+        await pool.shutdown(false);
+      });
+      await pool.start();
+      const controller = new AbortController();
+      const reason = new Error("request canceled");
+      const acquire = pool.acquire({ signal: controller.signal, sandboxTimeoutSeconds: 60 });
+      await within(started.promise);
+      controller.abort(reason);
+
+      await assert.rejects(within(acquire), error => error === reason);
+      if (source === "built-in" && sdkSandbox) assert.equal(probeSignal.aborted, true);
+      assert.equal(fixture.calls.filter(call => call.method === "creator-kill").length, 1);
+      assert.equal(fixture.calls.filter(call => call.method === "creator-close").length, 1);
+      pending.resolve(true);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(fixture.calls.some(call => call.method === "warmup-renew"), false);
+      assert.equal((await pool.snapshot()).inFlightOperations, 0);
+    });
+  }
+
+  test(`pool readiness releases a stalled warmup so the pool can replenish (${creator})`, async (t) => {
+    const pending = deferred();
+    const fixture = createPoolFixture({ sdkSandbox });
+    const pool = SandboxPool.create({
+      poolName: "warmup-recovery-pool", maxIdle: 1,
+      connectionConfig: fixture.connectionConfig,
+      creationSpec: { image: "ubuntu", adapterFactory: fixture.adapterFactory },
+      sandboxCreator: fixture.sandboxCreator,
+      warmupReadyTimeoutSeconds: 0.02,
+      reconcileIntervalSeconds: 0.01,
+      warmupHealthCheck: sandbox => sandbox.id === "warm-1" ? pending.promise : true,
+    });
+    t.after(async () => {
+      pending.resolve(true);
+      await pool.shutdown(false);
+    });
+    await pool.start();
+    await eventually(async () => (await pool.snapshot()).idleCount === 1);
+
+    assert.deepEqual((await pool.snapshotIdleEntries()).map(entry => entry.sandboxId), ["warm-2"]);
+    assert.equal(fixture.calls.filter(call => call.method === "creator-kill" && call.id === "warm-1").length, 1);
+    assert.equal(fixture.calls.filter(call => call.method === "creator-close" && call.id === "warm-1").length, 1);
+    pending.resolve(true);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fixture.calls.some(call => call.method === "warmup-renew" && call.id === "warm-1"), false);
+    assert.equal((await pool.snapshot()).inFlightOperations, 0);
+  });
 }
 
 test("InMemoryPoolStateStore atomically takes idle entries in FIFO order", async () => {
