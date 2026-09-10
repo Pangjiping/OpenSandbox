@@ -87,13 +87,17 @@ def run_reconcile_tick(
     state_store: PoolStateStore,
     on_discard_sandbox: Callable[[str], None],
     submit_warmups: Callable[[int], None],
+    on_primary_acquired: Callable[[], None] = lambda: None,
     warming_count: int = 0,
 ) -> bool:
     """Run one reconcile tick: leader-gated reap / shrink / admission planning.
 
     Returns whether this node holds the primary lock. Only the lock holder
-    performs idle maintenance writes. Warmup submission is non-blocking: the
-    caller-provided ``submit_warmups`` admits at most ``warmup_create_qps``
+    performs idle maintenance writes. ``on_primary_acquired`` fires right after
+    the lock is acquired and before any warmup admission, so the caller can
+    stamp admitted tasks with the current leadership generation (Kotlin calls
+    ``onPrimaryAcquired`` at the same point). Warmup submission is non-blocking:
+    the caller-provided ``submit_warmups`` admits at most ``warmup_create_qps``
     creates whose in-flight count already participates in the deficit; the tick
     does not wait for them. The lock is not released at tick end — distributed
     stores rely on TTL or renew failure.
@@ -105,6 +109,7 @@ def run_reconcile_tick(
     if not state_store.try_acquire_primary_lock(pool_name, owner_id, ttl):
         logger.debug(f"Reconcile skip (not primary): pool_name={pool_name}")
         return False
+    on_primary_acquired()
     _run_primary_replenish_once(
         config=config,
         state_store=state_store,

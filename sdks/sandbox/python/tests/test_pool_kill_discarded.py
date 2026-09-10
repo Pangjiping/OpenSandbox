@@ -153,9 +153,10 @@ def test_sync_kill_discarded_alive_logs_only_on_success(
     assert any("sandbox-ok" in msg for msg in debug_messages), (
         f"expected debug log for successful kill, got {debug_messages}"
     )
-    assert not any("Killed near-expiry idle sandbox" in msg and "sandbox-fail" in msg for msg in debug_messages), (
-        f"failed kill should not produce 'Killed' debug log, got {debug_messages}"
-    )
+    assert not any(
+        "Killed near-expiry idle sandbox" in msg and "sandbox-fail" in msg
+        for msg in debug_messages
+    ), f"failed kill should not produce 'Killed' debug log, got {debug_messages}"
 
 
 @pytest.mark.asyncio
@@ -217,9 +218,9 @@ async def test_async_kill_best_effort_returns_false_on_failure(
     debug_messages = [
         record.message for record in caplog.records if record.levelno == logging.DEBUG
     ]
-    assert not any("Killed near-expiry idle sandbox" in msg for msg in debug_messages), (
-        f"failed async kill should not produce 'Killed' debug log, got {debug_messages}"
-    )
+    assert not any(
+        "Killed near-expiry idle sandbox" in msg for msg in debug_messages
+    ), f"failed async kill should not produce 'Killed' debug log, got {debug_messages}"
 
 
 async def _async_returns(value: Any) -> Any:
@@ -257,7 +258,9 @@ def test_sync_schedule_kill_discarded_alive_does_not_block_caller() -> None:
         elapsed = time.monotonic() - start
 
         # Should return immediately — well below the slowest single kill (0.1s).
-        assert elapsed < 0.05, f"_schedule_kill_discarded_alive blocked for {elapsed:.3f}s"
+        assert elapsed < 0.05, (
+            f"_schedule_kill_discarded_alive blocked for {elapsed:.3f}s"
+        )
 
         # And the kills do happen, just on the executor.
         deadline = time.monotonic() + 1.0
@@ -324,7 +327,7 @@ def test_sync_create_one_sandbox_renews_before_returning_id() -> None:
 
     # _run_warmup_task short-circuits unless the pool is running.
     pool._lifecycle_state = PoolLifecycleState.RUNNING
-    sandbox_id = pool._run_warmup_task()
+    sandbox_id = pool._run_warmup_task(pool._leader_epoch)
     assert sandbox_id == "warm-1"
     assert store.try_take_idle("warm-renew") == "warm-1"
     assert _RenewTrackingSyncSandbox.last_instance is not None
@@ -386,7 +389,7 @@ async def test_async_create_one_sandbox_renews_before_returning_id() -> None:
     )
 
     pool._lifecycle_state = PoolLifecycleState.RUNNING
-    sandbox_id = await pool._run_warmup_task()
+    sandbox_id = await pool._run_warmup_task(pool._leader_epoch)
     assert sandbox_id == "warm-1"
     assert await store.try_take_idle("warm-renew") == "warm-1"
     assert _RenewTrackingAsyncSandbox.last_instance is not None
@@ -416,6 +419,9 @@ async def test_async_schedule_kill_discarded_alive_does_not_block_caller() -> No
 
     # Wait for the background tasks to complete.
     deadline = asyncio.get_event_loop().time() + 1.0
-    while sorted(manager.killed) != sorted(ids) and asyncio.get_event_loop().time() < deadline:
+    while (
+        sorted(manager.killed) != sorted(ids)
+        and asyncio.get_event_loop().time() < deadline
+    ):
         await asyncio.sleep(0.02)
     assert sorted(manager.killed) == sorted(ids)

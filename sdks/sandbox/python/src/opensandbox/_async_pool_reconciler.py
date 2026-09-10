@@ -45,12 +45,15 @@ async def run_async_reconcile_tick(
     state_store: AsyncPoolStateStore,
     on_discard_sandbox: Callable[[str], Awaitable[None]],
     submit_warmups: Callable[[int], None],
+    on_primary_acquired: Callable[[], None] = lambda: None,
     warming_count: int = 0,
 ) -> bool:
     """Async counterpart of ``run_reconcile_tick``.
 
-    Returns whether this node holds the primary lock. Warmup submission is
-    non-blocking; the tick does not wait for the admitted tasks.
+    Returns whether this node holds the primary lock. ``on_primary_acquired``
+    fires right after the lock is acquired and before any warmup admission.
+    Warmup submission is non-blocking; the tick does not wait for the admitted
+    tasks.
     """
     pool_name = config.pool_name
     owner_id = str(config.owner_id)
@@ -59,6 +62,7 @@ async def run_async_reconcile_tick(
     if not await state_store.try_acquire_primary_lock(pool_name, owner_id, ttl):
         logger.debug(f"Async reconcile skip (not primary): pool_name={pool_name}")
         return False
+    on_primary_acquired()
     await _run_primary_replenish_once(
         config=config,
         state_store=state_store,

@@ -144,6 +144,12 @@ class SandboxPoolSync:
         self._scheduler_thread: threading.Thread | None = None
         self._heartbeat_thread: threading.Thread | None = None
         self._primary_owned = False
+        # Leadership generation, bumped on every primary gained/lost transition.
+        # Warmups admitted under an older epoch are fenced at renew/commit time, so a
+        # stale warmup cannot publish after this node lost and reacquired the lease
+        # (mirrors the Kotlin leaderEpoch fence).
+        self._leader_epoch = 0
+        self._leader_lock = threading.Lock()
         self._warming_count = 0
         self._warming_lock = threading.Lock()
         self._warmup_executor: ThreadPoolExecutor | None = None
@@ -559,15 +565,20 @@ class SandboxPoolSync:
                 self._stop_after_pool_namespace_destroyed()
                 return
             try:
-                self._primary_owned = run_reconcile_tick(
+                # on_primary_acquired fires inside the tick, before warmup
+                # admission, so admitted tasks carry the current epoch.
+                primary_owned = run_reconcile_tick(
                     config=self._config.with_max_idle(self._resolve_max_idle()),
                     state_store=self._state_store,
                     on_discard_sandbox=self._discard_sandbox_callback,
                     submit_warmups=self._submit_warmups,
+                    on_primary_acquired=self._mark_primary_acquired,
                     warming_count=self._warming_count,
                 )
+                if not primary_owned:
+                    self._mark_primary_lost()
             except Exception:
-                self._primary_owned = False
+                self._mark_primary_lost()
                 raise
         except Exception as exc:
             logger.error(
@@ -606,11 +617,34 @@ class SandboxPoolSync:
                 )
                 continue
             if not renewed:
-                self._primary_owned = False
+                self._mark_primary_lost()
                 logger.debug(
                     "Pool primary heartbeat skipped (not current owner): "
                     f"pool_name={self._config.pool_name} owner_id={self._config.owner_id}"
                 )
+
+    def _mark_primary_acquired(self) -> None:
+        """Become the primary; bumps the leadership epoch (Kotlin markPrimaryAcquired)."""
+        with self._leader_lock:
+            if not self._primary_owned:
+                self._primary_owned = True
+                self._leader_epoch += 1
+
+    def _mark_primary_lost(self) -> None:
+        """Lose the primary; bumps the leadership epoch (Kotlin markPrimaryLost).
+
+        Warmups admitted under an older epoch are fenced at renew/commit time, so
+        they cannot publish across a lease loss even if this node reacquires the
+        lock with the same owner id.
+        """
+        with self._leader_lock:
+            if self._primary_owned:
+                self._primary_owned = False
+                self._leader_epoch += 1
+
+    def _leader_epoch_is_current(self, leader_epoch: int) -> bool:
+        with self._leader_lock:
+            return leader_epoch == self._leader_epoch
 
     def _submit_warmups(self, count: int) -> None:
         """Admit ``count`` warmup tasks on the warmup executor and return immediately.
@@ -621,6 +655,7 @@ class SandboxPoolSync:
         incremented synchronously here (before submission) so the next tick's
         deficit calculation already accounts for these admissions; queued-but-
         unstarted tasks also count, which keeps total admissions deficit-bounded.
+        Each task captures the current leadership epoch for commit fencing.
         """
         if count <= 0:
             return
@@ -629,11 +664,13 @@ class SandboxPoolSync:
         executor = self._warmup_executor
         if executor is None:
             return
+        with self._leader_lock:
+            leader_epoch = self._leader_epoch
         for _ in range(count):
             with self._warming_lock:
                 self._warming_count += 1
             try:
-                future = executor.submit(self._run_warmup_task)
+                future = executor.submit(self._run_warmup_task, leader_epoch)
             except RuntimeError:
                 # Executor is shutting down; stop admitting this tick.
                 with self._warming_lock:
@@ -645,13 +682,18 @@ class SandboxPoolSync:
         with self._warming_lock:
             self._warming_count -= 1
 
-    def _run_warmup_task(self) -> str | None:
+    def _run_warmup_task(self, leader_epoch: int) -> str | None:
         """One admitted warmup: create → validate → renew → commit.
 
-        Runs on the warmup executor, detached from the reconcile tick. Committing
-        renews the primary lock first (a lost lease drops and kills the sandbox,
-        mirroring the Kotlin leader-epoch fence) and then publishes the ID to the
-        idle store. Failures are recorded on the reconcile state.
+        Runs on a warmup executor thread, detached from the reconcile tick, so
+        ``warmup_concurrency`` bounds the whole pipeline including the create
+        call. The captured ``leader_epoch`` fences the task across lease
+        transitions: if this node lost and reacquired the primary lock while the
+        warmup ran, the sandbox is dropped and killed instead of published.
+        Committing renews the primary lock first (a lost lease drops and kills
+        the sandbox, mirroring the Kotlin leader-epoch commit fence) and then
+        publishes the ID to the idle store. Failures are recorded on the
+        reconcile state; leadership drops are not.
         """
         self._begin_operation()
         try:
@@ -661,7 +703,10 @@ class SandboxPoolSync:
                 if self._config.warmup_sandbox_preparer is not None:
                     self._config.warmup_sandbox_preparer(sandbox)
                 self._wait_post_prepare_healthy(sandbox)
-                if self._lifecycle_state != PoolLifecycleState.RUNNING:
+                if (
+                    self._lifecycle_state != PoolLifecycleState.RUNNING
+                    or not self._leader_epoch_is_current(leader_epoch)
+                ):
                     try:
                         sandbox.kill()
                     except Exception:
@@ -675,7 +720,7 @@ class SandboxPoolSync:
                 # TTL by the warmup duration.
                 sandbox.renew(self._config.idle_timeout)
                 self._ensure_pool_namespace_active_after_create(sandbox)
-                return self._commit_warmup_sandbox(sandbox)
+                return self._commit_warmup_sandbox(sandbox, leader_epoch)
             except BaseException:
                 try:
                     sandbox.kill()
@@ -690,17 +735,36 @@ class SandboxPoolSync:
         finally:
             self._end_operation()
 
-    def _commit_warmup_sandbox(self, sandbox: SandboxSync) -> str | None:
+    def _commit_warmup_sandbox(
+        self, sandbox: SandboxSync, leader_epoch: int
+    ) -> str | None:
         """Commit a renewed warmup sandbox to the idle buffer.
 
-        The primary lock is renewed before publishing: if the lease was lost the
-        sandbox is killed instead of committed, mirroring the Kotlin leader-epoch
-        commit fence.
+        Two fences apply before publishing, mirroring the Kotlin commit path: the
+        captured leadership epoch must still be current (the lease was not lost
+        and reacquired while this warmup ran), and the primary lock renewal must
+        succeed. Otherwise the sandbox is killed instead of committed. Leadership
+        drops are not recorded as failures (Kotlin counts them as DROPPED, not
+        FAILURE).
         """
         pool_name = self._config.pool_name
         owner_id = str(self._config.owner_id)
         ttl = self._config.primary_lock_ttl
         sandbox_id = sandbox.id
+        if not self._leader_epoch_is_current(leader_epoch):
+            logger.warning(
+                "Warmup commit dropped (leadership epoch changed): "
+                f"pool_name={pool_name} sandbox_id={sandbox_id} "
+                f"admitted_epoch={leader_epoch} current_epoch={self._leader_epoch}"
+            )
+            try:
+                sandbox.kill()
+            except Exception as exc:
+                logger.warning(
+                    "Best-effort kill after epoch fence failed: "
+                    f"pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
+                )
+            return None
         try:
             lock_renewed = self._state_store.renew_primary_lock(
                 pool_name, owner_id, ttl
@@ -719,9 +783,6 @@ class SandboxPoolSync:
                     "Best-effort kill after lost primary lock failed: "
                     f"pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
                 )
-            self._reconcile_state.record_failure(
-                "primary lock lost during warmup commit"
-            )
             return None
         try:
             self._state_store.put_idle(pool_name, sandbox_id)
@@ -1130,7 +1191,7 @@ class SandboxPoolSync:
             heartbeat.join(timeout=5)
         if join_scheduler:
             self._heartbeat_thread = None
-        self._primary_owned = False
+        self._mark_primary_lost()
         executor = self._warmup_executor
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)

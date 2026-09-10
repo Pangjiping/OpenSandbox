@@ -312,6 +312,50 @@ def test_primary_heartbeat_renews_independently_and_stops_when_lock_lost() -> No
         pool.shutdown(False)
 
 
+def test_sync_warmup_admitted_before_lease_loss_is_fenced_on_reacquire() -> None:
+    """A warmup admitted under leadership epoch N must not publish after this node
+    lost and reacquired the primary lock, even though renew_primary_lock succeeds
+    again for the same owner id (Kotlin leaderEpoch fence)."""
+    release_prepare = threading.Event()
+
+    def preparer(sandbox: FakeSandbox) -> None:
+        assert release_prepare.wait(timeout=2), "preparer never released"
+
+    FakeSandbox.reset()
+    store = InMemoryPoolStateStore()
+    pool = SandboxPoolSync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=1,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfigSync(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(seconds=3600),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        warmup_sandbox_preparer=preparer,
+        sandbox_manager_factory=lambda config: FakeManager(),  # type: ignore[arg-type,return-value]
+        sandbox_factory=FakeSandbox,  # type: ignore[arg-type]
+    )
+    pool.start()
+    try:
+        _eventually(lambda: FakeSandbox.last_created is not None)
+        # Simulate a full lease transition while the warmup is parked in its
+        # preparer: lose the primary, then reacquire it with the same owner id.
+        pool._mark_primary_lost()
+        pool._mark_primary_acquired()
+        release_prepare.set()
+        _eventually(lambda: pool._warming_count == 0)
+    finally:
+        release_prepare.set()
+        pool.shutdown(False)
+
+    assert store.snapshot_counters("pool").idle_count == 0
+    assert FakeSandbox.last_created is not None
+    assert FakeSandbox.last_created.killed
+
+
 def test_reconcile_tick_does_not_block_on_slow_warmup() -> None:
     """Kotlin-aligned admission model: the tick returns after submitting; each warmup
     commits independently, and in-flight admissions count toward max_idle so the next

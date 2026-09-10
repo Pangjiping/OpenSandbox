@@ -146,6 +146,11 @@ class SandboxPoolAsync:
         self._scheduler_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._primary_owned = False
+        # Leadership generation, bumped on every primary gained/lost transition.
+        # Warmups admitted under an older epoch are fenced at renew/commit time, so a
+        # stale warmup cannot publish after this node lost and reacquired the lease
+        # (mirrors the Kotlin leaderEpoch fence).
+        self._leader_epoch = 0
         self._warming_count = 0
         # Bounds concurrent warmup work (create + readiness + prepare + renew),
         # mirroring the Kotlin warmup executor's worker cap. Admission (QPS) is
@@ -588,17 +593,21 @@ class SandboxPoolAsync:
                     await self._stop_after_pool_namespace_destroyed()
                     return
                 try:
-                    self._primary_owned = await run_async_reconcile_tick(
+                    # on_primary_acquired fires inside the tick, before warmup
+                    # admission, so admitted tasks carry the current epoch.
+                    if not await run_async_reconcile_tick(
                         config=self._config.with_max_idle(
                             await self._resolve_max_idle()
                         ),
                         state_store=self._state_store,
                         on_discard_sandbox=self._discard_sandbox_callback,
                         submit_warmups=self._submit_warmups,
+                        on_primary_acquired=self._mark_primary_acquired,
                         warming_count=self._warming_count,
-                    )
+                    ):
+                        self._mark_primary_lost()
                 except Exception:
-                    self._primary_owned = False
+                    self._mark_primary_lost()
                     raise
             except Exception as exc:
                 logger.error(
@@ -642,11 +651,31 @@ class SandboxPoolAsync:
                 )
                 continue
             if not renewed:
-                self._primary_owned = False
+                self._mark_primary_lost()
                 logger.debug(
                     "Pool primary heartbeat skipped (not current owner): "
                     f"pool_name={self._config.pool_name} owner_id={self._config.owner_id}"
                 )
+
+    def _mark_primary_acquired(self) -> None:
+        """Become the primary; bumps the leadership epoch (Kotlin markPrimaryAcquired)."""
+        if not self._primary_owned:
+            self._primary_owned = True
+            self._leader_epoch += 1
+
+    def _mark_primary_lost(self) -> None:
+        """Lose the primary; bumps the leadership epoch (Kotlin markPrimaryLost).
+
+        Warmups admitted under an older epoch are fenced at renew/commit time, so
+        they cannot publish across a lease loss even if this node reacquires the
+        lock with the same owner id.
+        """
+        if self._primary_owned:
+            self._primary_owned = False
+            self._leader_epoch += 1
+
+    def _leader_epoch_is_current(self, leader_epoch: int) -> bool:
+        return leader_epoch == self._leader_epoch
 
     def _submit_warmups(self, count: int) -> None:
         """Admit ``count`` warmup tasks and return immediately.
@@ -655,15 +684,17 @@ class SandboxPoolAsync:
         plans and admits; each admitted task then creates, validates, renews, and
         commits its sandbox independently of the tick. The warming counter is
         incremented synchronously here (before any task can start) so the next
-        tick's deficit calculation already accounts for these admissions.
+        tick's deficit calculation already accounts for these admissions, and each
+        task captures the current leadership epoch for commit fencing.
         """
         if count <= 0:
             return
         if self._lifecycle_state != PoolLifecycleState.RUNNING:
             return
+        leader_epoch = self._leader_epoch
         for _ in range(count):
             self._warming_count += 1
-            task = asyncio.create_task(self._run_warmup_task())
+            task = asyncio.create_task(self._run_warmup_task(leader_epoch))
             self._warmup_tasks.add(task)  # type: ignore[arg-type]
             task.add_done_callback(self._on_warmup_task_done)
 
@@ -671,24 +702,34 @@ class SandboxPoolAsync:
         self._warming_count -= 1
         self._warmup_tasks.discard(task)
 
-    async def _run_warmup_task(self) -> str | None:
+    async def _run_warmup_task(self, leader_epoch: int) -> str | None:
         """One admitted warmup: create → validate → renew → commit.
 
-        Runs detached from the reconcile tick. Committing renews the primary
+        Runs detached from the reconcile tick inside a warmup slot, so
+        ``warmup_concurrency`` bounds the whole pipeline including the create
+        call (whose inline readiness loop is the expensive part). The captured
+        ``leader_epoch`` fences the task across lease transitions: if this node
+        lost and reacquired the primary lock while the warmup ran, the sandbox is
+        dropped and killed instead of published. Committing renews the primary
         lock first (a lost lease drops and kills the sandbox, mirroring the
-        Kotlin leader-epoch fence) and then publishes the ID to the idle store.
-        Failures are recorded on the reconcile state; cancellation is not.
+        Kotlin leader-epoch commit fence) and then publishes the ID to the idle
+        store. Failures are recorded on the reconcile state; cancellation and
+        leadership drops are not.
         """
         await self._begin_operation()
         try:
             await self._ensure_pool_namespace_active()
-            sandbox = await self._build_warmup_sandbox()
+            sandbox: Sandbox | None = None
             try:
                 async with self._warmup_slots:
+                    sandbox = await self._build_warmup_sandbox()
                     if self._config.warmup_sandbox_preparer is not None:
                         await self._config.warmup_sandbox_preparer(sandbox)
                     await self._wait_post_prepare_healthy(sandbox)
-                    if self._lifecycle_state != PoolLifecycleState.RUNNING:
+                    if (
+                        self._lifecycle_state != PoolLifecycleState.RUNNING
+                        or not self._leader_epoch_is_current(leader_epoch)
+                    ):
                         try:
                             await sandbox.kill()
                         except Exception:
@@ -702,15 +743,17 @@ class SandboxPoolAsync:
                     # TTL by the warmup duration.
                     await sandbox.renew(self._config.idle_timeout)
                 await self._ensure_pool_namespace_active_after_create(sandbox)
-                return await self._commit_warmup_sandbox(sandbox)
+                return await self._commit_warmup_sandbox(sandbox, leader_epoch)
             except BaseException:
-                try:
-                    await sandbox.kill()
-                except Exception:
-                    pass
+                if sandbox is not None:
+                    try:
+                        await sandbox.kill()
+                    except Exception:
+                        pass
                 raise
             finally:
-                await sandbox.close()
+                if sandbox is not None:
+                    await sandbox.close()
         except asyncio.CancelledError:
             # Shutdown cancellation is not a warmup failure.
             raise
@@ -720,17 +763,36 @@ class SandboxPoolAsync:
         finally:
             await self._end_operation()
 
-    async def _commit_warmup_sandbox(self, sandbox: Sandbox) -> str | None:
+    async def _commit_warmup_sandbox(
+        self, sandbox: Sandbox, leader_epoch: int
+    ) -> str | None:
         """Commit a renewed warmup sandbox to the idle buffer.
 
-        The primary lock is renewed before publishing: if the lease was lost the
-        sandbox is killed instead of committed, mirroring the Kotlin leader-epoch
-        commit fence.
+        Two fences apply before publishing, mirroring the Kotlin commit path: the
+        captured leadership epoch must still be current (the lease was not lost
+        and reacquired while this warmup ran), and the primary lock renewal must
+        succeed. Otherwise the sandbox is killed instead of committed. Leadership
+        drops are not recorded as failures (Kotlin counts them as DROPPED, not
+        FAILURE).
         """
         pool_name = self._config.pool_name
         owner_id = str(self._config.owner_id)
         ttl = self._config.primary_lock_ttl
         sandbox_id = sandbox.id
+        if not self._leader_epoch_is_current(leader_epoch):
+            logger.warning(
+                "Warmup commit dropped (leadership epoch changed): "
+                f"pool_name={pool_name} sandbox_id={sandbox_id} "
+                f"admitted_epoch={leader_epoch} current_epoch={self._leader_epoch}"
+            )
+            try:
+                await sandbox.kill()
+            except Exception as exc:
+                logger.warning(
+                    "Best-effort kill after epoch fence failed: "
+                    f"pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
+                )
+            return None
         try:
             lock_renewed = await self._state_store.renew_primary_lock(
                 pool_name, owner_id, ttl
@@ -749,9 +811,6 @@ class SandboxPoolAsync:
                     "Best-effort kill after lost primary lock failed: "
                     f"pool_name={pool_name} sandbox_id={sandbox_id} error={exc}"
                 )
-            self._reconcile_state.record_failure(
-                "primary lock lost during warmup commit"
-            )
             return None
         try:
             await self._state_store.put_idle(pool_name, sandbox_id)
@@ -1180,7 +1239,7 @@ class SandboxPoolAsync:
                     f"pool_name={self._config.pool_name}"
                 )
             self._heartbeat_task = None
-        self._primary_owned = False
+        self._mark_primary_lost()
         warmup_tasks = list(self._warmup_tasks)
         if wait_for_warmup and warmup_tasks:
             await asyncio.gather(*warmup_tasks, return_exceptions=True)

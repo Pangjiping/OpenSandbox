@@ -956,6 +956,127 @@ async def test_async_graceful_shutdown_restart_does_not_reuse_stop_event() -> No
 
 
 @pytest.mark.asyncio
+async def test_async_warmup_concurrency_bounds_create_and_readiness() -> None:
+    """``warmup_concurrency`` must bound the whole warmup pipeline, including the
+    create call whose inline readiness loop is the expensive part — not only the
+    post-create stages."""
+
+    class CountingCreateSandbox(FakeAsyncSandbox):
+        in_create = 0
+        max_in_create = 0
+
+        @classmethod
+        def reset(cls) -> None:
+            super().reset()
+            cls.in_create = 0
+            cls.max_in_create = 0
+
+        @classmethod
+        async def create(cls, *args: Any, **kwargs: Any) -> FakeAsyncSandbox:
+            cls.created_count += 1
+            cls.in_create += 1
+            cls.max_in_create = max(cls.max_in_create, cls.in_create)
+            await asyncio.sleep(0.02)
+            cls.in_create -= 1
+            sandbox = cls(f"created-{cls.created_count}")
+            cls.last_created = sandbox
+            return sandbox
+
+    CountingCreateSandbox.reset()
+    store = InMemoryAsyncPoolStateStore()
+    pool = SandboxPoolAsync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=3,
+        warmup_concurrency=1,
+        warmup_create_qps=3,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(seconds=3600),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        sandbox_manager_factory=lambda config: _manager_factory(FakeAsyncManager()),
+        sandbox_factory=CountingCreateSandbox,  # type: ignore[arg-type]
+    )
+    await pool.start()
+    try:
+
+        async def _all_committed() -> bool:
+            counters = await store.snapshot_counters("pool")
+            return counters.idle_count == 3
+
+        await _eventually(_all_committed)
+    finally:
+        await pool.shutdown(False)
+
+    assert CountingCreateSandbox.max_in_create == 1, (
+        "warmup_concurrency=1 must serialize creates, got "
+        f"{CountingCreateSandbox.max_in_create} concurrent"
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_warmup_admitted_before_lease_loss_is_fenced_on_reacquire() -> None:
+    """A warmup admitted under leadership epoch N must not publish after this node
+    lost and reacquired the primary lock, even though renew_primary_lock succeeds
+    again for the same owner id (Kotlin leaderEpoch fence)."""
+
+    class SlowPreparedSandbox(FakeAsyncSandbox):
+        release_prepare = asyncio.Event()
+
+        @classmethod
+        def reset(cls) -> None:
+            super().reset()
+            cls.release_prepare = asyncio.Event()
+
+    async def preparer(sandbox: FakeAsyncSandbox) -> None:
+        await SlowPreparedSandbox.release_prepare.wait()
+
+    SlowPreparedSandbox.reset()
+    store = InMemoryAsyncPoolStateStore()
+    pool = SandboxPoolAsync(
+        pool_name="pool",
+        owner_id="owner-1",
+        max_idle=1,
+        warmup_concurrency=2,
+        state_store=store,
+        connection_config=ConnectionConfig(),
+        creation_spec=PoolCreationSpec(image="ubuntu:22.04"),
+        reconcile_interval=timedelta(seconds=3600),
+        primary_lock_ttl=timedelta(seconds=5),
+        drain_timeout=timedelta(milliseconds=50),
+        warmup_sandbox_preparer=preparer,
+        sandbox_manager_factory=lambda config: _manager_factory(FakeAsyncManager()),
+        sandbox_factory=SlowPreparedSandbox,  # type: ignore[arg-type]
+    )
+    await pool.start()
+    try:
+
+        async def _sandbox_created() -> bool:
+            return SlowPreparedSandbox.last_created is not None
+
+        await _eventually(_sandbox_created)
+        # Simulate a full lease transition while the warmup is parked in its
+        # preparer: lose the primary, then reacquire it with the same owner id.
+        pool._mark_primary_lost()
+        pool._mark_primary_acquired()
+        SlowPreparedSandbox.release_prepare.set()
+
+        async def _warmup_settled() -> bool:
+            return pool._warming_count == 0 and not pool._warmup_tasks
+
+        await _eventually(_warmup_settled)
+    finally:
+        await pool.shutdown(False)
+
+    counters = await store.snapshot_counters("pool")
+    assert counters.idle_count == 0
+    assert SlowPreparedSandbox.last_created is not None
+    assert SlowPreparedSandbox.last_created.killed
+
+
+@pytest.mark.asyncio
 async def test_async_user_managed_transport_is_preserved_for_pool_resources() -> None:
     transport = _AsyncTransport()
     connection_config = ConnectionConfig(transport=transport)
