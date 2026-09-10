@@ -109,15 +109,16 @@ func (c *Coordinator) available() error {
 }
 
 // Confirmed returns a metadata copy, or nil for unknown initial state. It refuses
-// reads during a mutation or uncertainty; it never presents the previous revision
-// as authoritative when the receiver may already have committed a new one.
+// reads during a mutation or after commit may have reached the receiver. A failed
+// prepare can leave an abort retry pending, but prepare is inert, so the previous
+// confirmed revision remains authoritative while new mutations stay fenced.
 func (c *Coordinator) Confirmed() (*Identity, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.available(); err != nil {
 		return nil, err
 	}
-	if c.pending != nil {
+	if c.pending != nil && c.commitSent {
 		return nil, ErrIndeterminate
 	}
 	return copyIdentity(c.confirmed), nil

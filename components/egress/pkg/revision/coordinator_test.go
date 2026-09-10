@@ -120,19 +120,28 @@ func TestLostCommitAckRequiresExactReadback(t *testing.T) {
 }
 
 func TestFailedPrepareMustBeAbortedBeforeNextEpoch(t *testing.T) {
-	p := &peer{prepareErr: errors.New("secret"), abortErr: errors.New("lost abort ack")}
+	p := &peer{}
 	c := newTestCoordinator(t, p)
-	_, err := c.Apply(context.Background(), 1, 1, []byte("payload"))
+	previous, err := c.Apply(context.Background(), 1, 1, []byte("active"))
+	require.NoError(t, err)
+	p.prepareErr = errors.New("secret")
+	p.abortErr = errors.New("lost abort ack")
+	_, err = c.Apply(context.Background(), 1, 1, []byte("payload"))
+	require.ErrorIs(t, err, ErrIndeterminate)
+	confirmed, err := c.Confirmed()
+	require.NoError(t, err)
+	require.Equal(t, previous, *confirmed)
+	_, err = c.Apply(context.Background(), 2, 1, []byte("blocked"))
 	require.ErrorIs(t, err, ErrIndeterminate)
 	p.abortErr = nil
 	r, err := c.Reconcile(context.Background())
 	require.NoError(t, err)
-	require.Nil(t, r) // not an authoritative empty snapshot
-	require.Zero(t, p.commits)
+	require.Equal(t, previous, *r)
+	require.Equal(t, 1, p.commits)
 	p.prepareErr = nil
 	next, err := c.Apply(context.Background(), 1, 1, []byte("payload"))
 	require.NoError(t, err)
-	require.Equal(t, int64(2), next.DecisionEpoch)
+	require.Equal(t, int64(3), next.DecisionEpoch)
 }
 
 func TestBadPrepareAckIsAbortedNotCommitted(t *testing.T) {
