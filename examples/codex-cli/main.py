@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import json
 import os
 from datetime import timedelta
 
@@ -34,6 +35,19 @@ async def _print_execution_logs(execution) -> None:
         print(f"[stderr] {msg.text}")
     if execution.error:
         print(f"[error] {execution.error.name}: {execution.error.value}")
+
+
+def _jsonl_events(execution):
+    """Yield parsed events from the JSON Lines stream of `codex exec --json`."""
+    text = "\n".join(msg.text for msg in execution.logs.stdout)
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            yield json.loads(line)
+        except json.JSONDecodeError:
+            print(f"[headless] skipped non-JSON line: {line[:80]}")
 
 
 async def main() -> None:
@@ -80,6 +94,30 @@ async def main() -> None:
             'codex exec "Compute 1+1=?." --skip-git-repo-check'
         )
         await _print_execution_logs(run_exec)
+
+        # Headless run with structured output: --json turns stdout into a
+        # JSON Lines (JSONL) event stream. The first event, thread.started,
+        # carries the thread id, which is the session id that
+        # `codex exec resume` accepts.
+        headless_exec = await sandbox.commands.run(
+            'codex exec --json "Remember this for later: my favorite sandbox number is 42." '
+            "--skip-git-repo-check"
+        )
+        thread_id = ""
+        for event in _jsonl_events(headless_exec):
+            if event.get("type") == "thread.started":
+                thread_id = event.get("thread_id", "")
+                print(f"[headless] thread_id: {thread_id}")
+
+        # Resume the same session for a follow-up turn: the model recalls the
+        # context of the previous turns, so the reply is "42".
+        if thread_id:
+            resume_exec = await sandbox.commands.run(
+                f'codex exec resume "{thread_id}" '
+                '"What is my favorite sandbox number? Reply with just the number." '
+                "--skip-git-repo-check"
+            )
+            await _print_execution_logs(resume_exec)
 
         await sandbox.kill()
 
