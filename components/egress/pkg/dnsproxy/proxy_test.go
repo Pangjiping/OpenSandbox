@@ -15,6 +15,7 @@
 package dnsproxy
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/netip"
@@ -127,6 +128,67 @@ func TestForwardAddsEDNS0BufferSize(t *testing.T) {
 	require.Empty(t, failure, "a successful forward must not report a failure reason")
 	require.Len(t, resp.Answer, 1)
 	require.Equal(t, uint16(4096), <-seen)
+}
+
+func TestResolveDomain(t *testing.T) {
+	t.Setenv(constants.EnvNameserverExempt, "127.0.0.1")
+	resetNameserverExemptCache(t)
+	t.Cleanup(func() { resetNameserverExemptCache(t) })
+	for _, outcome := range []string{"success", "servfail", "truncated", "negative", "mixed-negative", "timeout"} {
+		t.Run(outcome, func(t *testing.T) {
+			conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = conn.Close() })
+			server := &dns.Server{PacketConn: conn, Handler: dns.HandlerFunc(func(writer dns.ResponseWriter, query *dns.Msg) {
+				response := new(dns.Msg)
+				response.SetReply(query)
+				if outcome == "negative" {
+					response.Rcode = dns.RcodeNameError
+				} else if query.Question[0].Qtype == dns.TypeA {
+					response.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 40}, A: net.ParseIP("192.0.2.1")}}
+				} else {
+					switch outcome {
+					case "success":
+						response.Answer = []dns.RR{&dns.AAAA{Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 50}, AAAA: net.ParseIP("2001:db8::1")}}
+					case "servfail":
+						response.Rcode = dns.RcodeServerFailure
+					case "truncated":
+						response.Truncated = true
+					case "mixed-negative":
+						response.Rcode = dns.RcodeNameError
+					case "timeout":
+						return
+					}
+				}
+				_ = writer.WriteMsg(response)
+			})}
+			ready := make(chan struct{})
+			server.NotifyStartedFunc = func() { close(ready) }
+			go func() { _ = server.ActivateAndServe() }()
+			t.Cleanup(func() { _ = server.Shutdown() })
+			<-ready
+			proxy := &Proxy{upstreams: []string{conn.LocalAddr().String()}, upstreamExchangeTimeout: 5 * time.Second}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			started := time.Now()
+			ips, err := proxy.ResolveDomain(ctx, "example.com")
+			require.Less(t, time.Since(started), 2*time.Second, "caller deadline must bound upstream exchange")
+			switch outcome {
+			case "success":
+				require.NoError(t, err)
+				require.Equal(t, []nftables.ResolvedIP{
+					{Addr: netip.MustParseAddr("192.0.2.1"), TTL: 40 * time.Second},
+					{Addr: netip.MustParseAddr("2001:db8::1"), TTL: 50 * time.Second},
+				}, ips)
+			case "negative":
+				require.NoError(t, err)
+				require.Empty(t, ips)
+			default:
+				require.Error(t, err)
+				require.Empty(t, ips, "partial A results must not renew after AAAA fails")
+			}
+		})
+	}
 }
 
 // A failed lookup has to be classifiable: serveDNS turns the reason into the

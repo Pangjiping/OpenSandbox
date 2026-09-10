@@ -315,10 +315,45 @@ func (p *Proxy) maybeNotifyResolved(domain string, resp *dns.Msg) {
 // constant) alongside the error. The reason is what the last attempted upstream failed
 // with: the loop keeps trying, so only the final outcome is reported.
 func (p *Proxy) forward(r *dns.Msg) (*dns.Msg, string, error) {
+	return p.forwardContext(context.Background(), r)
+}
+
+func (p *Proxy) ResolveDomain(ctx context.Context, domain string) ([]nftables.ResolvedIP, error) {
+	var ips []nftables.ResolvedIP
+	var nameError bool
+	for _, queryType := range []uint16{dns.TypeA, dns.TypeAAAA} {
+		query := new(dns.Msg)
+		query.SetQuestion(dns.Fqdn(domain), queryType)
+		response, _, err := p.forwardContext(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		if response.Truncated {
+			return nil, fmt.Errorf("truncated DNS response for %q", domain)
+		}
+		if response.Rcode == dns.RcodeNameError {
+			nameError = true
+			continue
+		}
+		ips = append(ips, extractResolvedIPs(response)...)
+	}
+	if nameError {
+		if len(ips) > 0 {
+			return nil, fmt.Errorf("inconsistent NXDOMAIN for %q with %d addresses", domain, len(ips))
+		}
+		return nil, nil
+	}
+	return ips, nil
+}
+
+func (p *Proxy) forwardContext(ctx context.Context, r *dns.Msg) (*dns.Msg, string, error) {
 	list := p.forwardUpstreams()
 	var lastErr error
 	lastFailure := telemetry.DNSFailureNoUpstreams
 	for _, upstream := range list {
+		if err := ctx.Err(); err != nil {
+			return nil, telemetry.DNSFailureUpstreamError, err
+		}
 		const upstreamUDPSize = 4096
 		query := r.Copy()
 		if query.IsEdns0() == nil {
@@ -329,7 +364,7 @@ func (p *Proxy) forward(r *dns.Msg) (*dns.Msg, string, error) {
 			Dialer:  p.dialerForUpstream(upstream),
 			UDPSize: upstreamUDPSize,
 		}
-		resp, _, err := c.Exchange(query, upstream)
+		resp, _, err := c.ExchangeContext(ctx, query, upstream)
 		if err != nil {
 			lastErr = err
 			lastFailure = telemetry.DNSFailureUpstreamError

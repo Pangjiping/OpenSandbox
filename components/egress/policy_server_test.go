@@ -61,11 +61,14 @@ func (s *stubNft) ApplyStatic(_ context.Context, p *policy.NetworkPolicy) error 
 	return s.err
 }
 
-func (s *stubNft) AddResolvedIPs(_ context.Context, _ []nftables.ResolvedIP) error {
+func (s *stubNft) AddResolvedDomain(_ context.Context, _ string, _ []nftables.ResolvedIP) error {
 	return nil
 }
 
 func (s *stubNft) StartConnectionRefresh(context.Context) {}
+
+func (s *stubNft) StartDomainRefresh(context.Context, func(context.Context, string) ([]nftables.ResolvedIP, error)) {
+}
 
 func (s *stubNft) RemoveEnforcement(_ context.Context) error {
 	return nil

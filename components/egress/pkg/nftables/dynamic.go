@@ -15,11 +15,181 @@
 package nftables
 
 import (
+	"context"
 	"fmt"
 	"net/netip"
+	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/alibaba/opensandbox/egress/pkg/log"
+	"github.com/alibaba/opensandbox/egress/pkg/policy"
+	"github.com/alibaba/opensandbox/internal/safego"
 )
+
+const (
+	maxResolvedDomains    = 128
+	maxDomainAddresses    = 64
+	domainRefreshWorkers  = 4
+	domainRefreshInterval = 30 * time.Second
+	domainLookupTimeout   = 5 * time.Second
+	domainRefreshBudget   = 20 * time.Second
+)
+
+type resolvedDomain struct {
+	addresses    map[netip.Addr]struct{}
+	lastObserved time.Time
+	lastAttempt  time.Time
+}
+
+func (m *Manager) AddResolvedDomain(ctx context.Context, domain string, ips []ResolvedIP) error {
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.domainPolicy == nil {
+		return fmt.Errorf("no nftables policy applied; dropping resolved domain %q", domain)
+	}
+	if domain == "" || m.domainPolicy.Evaluate(domain) != policy.ActionAllow {
+		return fmt.Errorf("resolved domain %q is no longer allowed", domain)
+	}
+	if err := m.addResolvedIPsLocked(ctx, ips); err != nil {
+		return err
+	}
+	if m.domainPolicy.DefaultAction == policy.ActionAllow || len(ips) == 0 {
+		return nil
+	}
+	entry := &resolvedDomain{addresses: make(map[netip.Addr]struct{}), lastObserved: m.tracker.now()}
+	for _, ip := range ips {
+		if ip.Addr.IsValid() && len(entry.addresses) < maxDomainAddresses {
+			entry.addresses[ip.Addr.Unmap()] = struct{}{}
+		}
+	}
+	if len(entry.addresses) == 0 {
+		return nil
+	}
+	if previous := m.domains[domain]; previous != nil {
+		entry.lastAttempt = previous.lastAttempt
+		for address := range previous.addresses {
+			if len(entry.addresses) < maxDomainAddresses {
+				entry.addresses[address] = struct{}{}
+			}
+		}
+	} else if len(m.domains) >= maxResolvedDomains {
+		var oldest string
+		for candidate, tracked := range m.domains {
+			if oldest == "" || tracked.lastObserved.Before(m.domains[oldest].lastObserved) {
+				oldest = candidate
+			}
+		}
+		delete(m.domains, oldest)
+	}
+	m.domains[domain] = entry
+	return nil
+}
+
+func (m *Manager) StartDomainRefresh(ctx context.Context, lookup func(context.Context, string) ([]ResolvedIP, error)) {
+	safego.Go(func() {
+		ticker := time.NewTicker(domainRefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.refreshDomains(ctx, lookup)
+			}
+		}
+	})
+}
+
+func (m *Manager) refreshDomains(ctx context.Context, lookup func(context.Context, string) ([]ResolvedIP, error)) {
+	type candidate struct {
+		domain      string
+		entry       *resolvedDomain
+		lastAttempt time.Time
+	}
+	m.mu.Lock()
+	candidates := make([]candidate, 0, len(m.domains))
+	for domain, entry := range m.domains {
+		candidates = append(candidates, candidate{domain, entry, entry.lastAttempt})
+	}
+	m.mu.Unlock()
+	sort.Slice(candidates, func(left, right int) bool {
+		return candidates[left].lastAttempt.Before(candidates[right].lastAttempt)
+	})
+	jobs := make(chan candidate, len(candidates))
+	for _, item := range candidates {
+		jobs <- item
+	}
+	close(jobs)
+	batchCtx, cancel := context.WithTimeout(ctx, domainRefreshBudget)
+	defer cancel()
+	var workers sync.WaitGroup
+	for worker := 0; worker < min(domainRefreshWorkers, len(candidates)); worker++ {
+		workers.Add(1)
+		safego.Go(func() {
+			defer workers.Done()
+			for item := range jobs {
+				if batchCtx.Err() != nil {
+					return
+				}
+				m.mu.Lock()
+				current := m.domains[item.domain] == item.entry
+				if current {
+					item.entry.lastAttempt = m.tracker.now()
+				}
+				m.mu.Unlock()
+				if !current {
+					continue
+				}
+				lookupCtx, lookupCancel := context.WithTimeout(batchCtx, domainLookupTimeout)
+				ips, err := lookup(lookupCtx, item.domain)
+				if err == nil {
+					err = lookupCtx.Err()
+				}
+				lookupCancel()
+				if err != nil {
+					log.Warnf("[dns] domain revalidation failed for %q: %v", item.domain, err)
+					continue
+				}
+				m.applyDomainRefresh(batchCtx, item.domain, item.entry, ips)
+			}
+		})
+	}
+	workers.Wait()
+}
+
+func (m *Manager) applyDomainRefresh(ctx context.Context, domain string, entry *resolvedDomain, ips []ResolvedIP) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ctx.Err() != nil || m.domains[domain] != entry || m.domainPolicy == nil || m.domainPolicy.Evaluate(domain) != policy.ActionAllow {
+		return
+	}
+	var confirmed []ResolvedIP
+	addresses := make(map[netip.Addr]struct{})
+	now := m.tracker.now()
+	for _, ip := range ips {
+		address := ip.Addr.Unmap()
+		if _, observed := entry.addresses[address]; observed {
+			if !m.tracker.dynamicIPs[address].After(now.Add(clampTTL(ip.TTL))) {
+				confirmed = append(confirmed, ip)
+			}
+			addresses[address] = struct{}{}
+		}
+	}
+	if len(addresses) == 0 {
+		delete(m.domains, domain)
+		return
+	}
+	updateCtx, cancel := context.WithTimeout(ctx, domainLookupTimeout)
+	defer cancel()
+	if err := m.addResolvedIPsLocked(updateCtx, confirmed); err != nil {
+		log.Warnf("[dns] domain revalidation nft update failed for %q: %v", domain, err)
+		return
+	}
+	entry.addresses = addresses
+}
 
 const (
 	dynAllowV4Set  = "dyn_allow_v4"

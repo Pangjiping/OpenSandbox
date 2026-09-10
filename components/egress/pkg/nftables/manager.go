@@ -55,10 +55,12 @@ type Options struct {
 }
 
 type Manager struct {
-	run     runner
-	opts    Options
-	mu      sync.Mutex
-	tracker *connectionTracker
+	run          runner
+	opts         Options
+	mu           sync.Mutex
+	tracker      *connectionTracker
+	domainPolicy *policy.NetworkPolicy
+	domains      map[string]*resolvedDomain
 }
 
 func NewManagerWithRunner(r runner) *Manager {
@@ -81,6 +83,7 @@ func newManager(r runner, opts Options) *Manager {
 		run:     r,
 		opts:    opts,
 		tracker: newConnectionTracker(),
+		domains: make(map[string]*resolvedDomain),
 	}
 }
 
@@ -103,6 +106,8 @@ func (m *Manager) ApplyStatic(ctx context.Context, p *policy.NetworkPolicy) erro
 			if fallback != script {
 				if _, retryErr := m.run(ctx, fallback); retryErr == nil {
 					m.tracker.clear()
+					m.domainPolicy = p
+					m.domains = make(map[string]*resolvedDomain)
 					telemetry.SetNftablesRuleCount(telemetry.NftRuleCountFromPolicy(p))
 					telemetry.RecordNftablesUpdate()
 					return nil
@@ -113,6 +118,8 @@ func (m *Manager) ApplyStatic(ctx context.Context, p *policy.NetworkPolicy) erro
 		return err
 	}
 	m.tracker.clear()
+	m.domainPolicy = p
+	m.domains = make(map[string]*resolvedDomain)
 	telemetry.SetNftablesRuleCount(telemetry.NftRuleCountFromPolicy(p))
 	telemetry.RecordNftablesUpdate()
 	log.Infof("nftables: static policy applied successfully")
@@ -126,6 +133,10 @@ func (m *Manager) AddResolvedIPs(ctx context.Context, ips []ResolvedIP) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.addResolvedIPsLocked(ctx, ips)
+}
+
+func (m *Manager) addResolvedIPsLocked(ctx context.Context, ips []ResolvedIP) error {
 	script := buildAddResolvedIPsScript(tableName, ips)
 	if script == "" {
 		return nil
@@ -166,14 +177,17 @@ func (m *Manager) RemoveEnforcement(ctx context.Context) error {
 	_, err := m.run(ctx, script)
 	if err != nil {
 		msg := strings.ToLower(err.Error())
-		if strings.Contains(msg, "no such file") || strings.Contains(msg, "does not exist") {
-			return nil
+		if !strings.Contains(msg, "no such file") && !strings.Contains(msg, "does not exist") {
+			telemetry.RecordNftablesUpdateFailed(telemetry.NftOpRemove)
+			return err
 		}
-		telemetry.RecordNftablesUpdateFailed(telemetry.NftOpRemove)
-		return err
+		log.Infof("nftables: table inet %s already absent", tableName)
+	} else {
+		log.Infof("nftables: removed table inet %s", tableName)
 	}
 	m.tracker.clear()
-	log.Infof("nftables: removed table inet %s", tableName)
+	m.domainPolicy = nil
+	m.domains = make(map[string]*resolvedDomain)
 	return nil
 }
 

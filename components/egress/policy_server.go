@@ -49,8 +49,9 @@ type policyUpdater interface {
 // nftApplier: static allow/deny sets plus dynamic DNS-learned entries; teardown on shutdown.
 type nftApplier interface {
 	ApplyStatic(context.Context, *policy.NetworkPolicy) error
-	AddResolvedIPs(context.Context, []nftables.ResolvedIP) error
+	AddResolvedDomain(context.Context, string, []nftables.ResolvedIP) error
 	StartConnectionRefresh(context.Context)
+	StartDomainRefresh(context.Context, func(context.Context, string) ([]nftables.ResolvedIP, error))
 	RemoveEnforcement(context.Context) error
 }
 
