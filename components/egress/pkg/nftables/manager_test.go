@@ -447,7 +447,7 @@ func TestDomainRefresh_SkipsFreshLeasesAndBacksOffFailures(t *testing.T) {
 	entry := manager.domains["example.com"]
 	require.NotNil(t, entry)
 	require.Equal(t, 1, entry.failures)
-	require.Equal(t, now.Add(time.Minute), entry.retryAt, "first failure must double the retry interval")
+	require.Equal(t, now.Add(domainRefreshInterval), entry.retryAt, "the first failure must retry at the base interval")
 
 	manager.refreshDomains(ctx, func(context.Context, string) ([]ResolvedIP, error) {
 		lookups++
@@ -465,6 +465,18 @@ func TestDomainRefresh_SkipsFreshLeasesAndBacksOffFailures(t *testing.T) {
 	require.NotNil(t, entry)
 	require.Zero(t, entry.failures)
 	require.True(t, entry.retryAt.IsZero(), "success must clear the backoff")
+
+	// Little lease left: the retry delay must be clamped so one retry stays
+	// possible before the earliest lease expires (less one lookup timeout).
+	now = now.Add(clampTTL(ips[0].TTL) - 30*time.Second)
+	manager.refreshDomains(ctx, func(context.Context, string) ([]ResolvedIP, error) {
+		lookups++
+		return nil, fmt.Errorf("upstream unavailable")
+	})
+	require.Equal(t, 3, lookups)
+	entry = manager.domains["example.com"]
+	require.Equal(t, 1, entry.failures)
+	require.Equal(t, now.Add(25*time.Second), entry.retryAt, "retry must stay possible before the lease lapses")
 }
 
 func TestApplyStatic_NormalizesOverlappingAllow(t *testing.T) {

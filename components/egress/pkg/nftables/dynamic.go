@@ -120,20 +120,29 @@ func (m *Manager) AddResolvedDomain(ctx context.Context, domain string, ips []Re
 
 func (m *Manager) StartDomainRefresh(ctx context.Context, lookup func(context.Context, string) ([]ResolvedIP, error)) {
 	safego.Go(func() {
+		timer := time.NewTimer(jitteredRefreshDelay())
+		defer timer.Stop()
 		for {
-			// Per-tick jitter (uniform in [interval/2, 3*interval/2), mean
-			// interval): batch-started sidecars must not tick in phase and
-			// pulse the shared resolver in sync (issue #1805).
-			timer := time.NewTimer(domainRefreshInterval/2 + time.Duration(rand.Int64N(int64(domainRefreshInterval))))
 			select {
 			case <-ctx.Done():
-				timer.Stop()
 				return
 			case <-timer.C:
-				m.refreshDomains(ctx, lookup)
 			}
+			// Arm the next deadline before the batch: a batch that consumes
+			// part of its budget then delays the following tick by only the
+			// remaining jitter, keeping the worst tick-to-tick gap at
+			// max(jitter, batch budget) rather than their sum.
+			timer.Reset(jitteredRefreshDelay())
+			m.refreshDomains(ctx, lookup)
 		}
 	})
+}
+
+// jitteredRefreshDelay returns a uniform [interval/2, 3*interval/2) delay
+// (mean interval). Per-tick jitter keeps batch-started sidecars from pulsing
+// the shared resolver in phase (issue #1805).
+func jitteredRefreshDelay() time.Duration {
+	return domainRefreshInterval/2 + time.Duration(rand.Int64N(int64(domainRefreshInterval)))
 }
 
 func (m *Manager) refreshDomains(ctx context.Context, lookup func(context.Context, string) ([]ResolvedIP, error)) {
@@ -194,10 +203,24 @@ func (m *Manager) refreshDomains(ctx context.Context, lookup func(context.Contex
 					var retryIn time.Duration
 					m.mu.Lock()
 					if m.domains[item.domain] == item.entry {
+						now := m.tracker.now()
 						item.entry.failures++
-						step := min(item.entry.failures, domainBackoffMaxStep)
+						// The first failure retries at the base interval (the
+						// pre-backoff cadence) so a single transient failure can
+						// still recover before the due lease lapses; exponential
+						// growth starts from the second failure.
+						step := min(item.entry.failures-1, domainBackoffMaxStep)
 						retryIn = min(domainRefreshInterval*time.Duration(1<<step), domainBackoffMax)
-						item.entry.retryAt = m.tracker.now().Add(retryIn)
+						// Clamp the delay so one retry stays possible before the
+						// earliest tracked lease expires (less one lookup
+						// timeout); once the lease has lapsed the full backoff
+						// applies.
+						if expiry := item.entry.nextExpiry(m.tracker); expiry.After(now) {
+							if budget := expiry.Sub(now) - domainLookupTimeout; budget < retryIn {
+								retryIn = max(budget, 0)
+							}
+						}
+						item.entry.retryAt = now.Add(retryIn)
 					}
 					m.mu.Unlock()
 					log.Warnf("[dns] domain revalidation failed for %q (next retry in %s): %v",
