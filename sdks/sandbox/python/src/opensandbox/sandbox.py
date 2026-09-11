@@ -429,6 +429,12 @@ class Sandbox:
         except Exception:
             return False
 
+    async def _probe_health(self) -> bool:
+        """Probe readiness without hiding authentication failures."""
+        if self._custom_health_check:
+            return await self._custom_health_check(self)
+        return await self._health_service.ping(self.id)
+
     async def check_ready(
         self,
         timeout: timedelta,
@@ -452,7 +458,14 @@ class Sandbox:
             f"ConnectionConfig(domain={self.connection_config.get_domain()}, "
             f"use_server_proxy={self.connection_config.use_server_proxy})"
         )
-        await budget.health(self.is_healthy, context)
+        # Fast-fail on 401/403 applies only to the built-in /ping probe: a custom
+        # health_check may legitimately poll an app whose authorization becomes
+        # available asynchronously, so it keeps the retry-until-deadline behavior.
+        await budget.health(
+            self._probe_health,
+            context,
+            auth_fail_fast=self._custom_health_check is None,
+        )
 
     @classmethod
     async def create(

@@ -25,6 +25,7 @@ import logging
 import httpx
 
 from opensandbox.config import ConnectionConfig
+from opensandbox.internal.readiness import is_readiness_auth_error
 from opensandbox.models.sandboxes import SandboxEndpoint
 from opensandbox.services.health import Health
 
@@ -101,5 +102,7 @@ class HealthAdapter(Health):
             return True
 
         except Exception as e:
+            if is_readiness_auth_error(e):
+                raise
             logger.debug(f"Health check failed for sandbox {sandbox_id}: {e}")
             return False
