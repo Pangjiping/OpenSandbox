@@ -77,7 +77,7 @@ func TestPoolBatchSandboxUpdateFilters(t *testing.T) {
 		{
 			name: "release-annotation",
 			update: func(e *event.UpdateEvent) {
-				e.ObjectNew.SetAnnotations(map[string]string{AnnoAllocReleaseKey: `{"pods":["warm-pod"]}`})
+				e.ObjectNew.SetAnnotations(map[string]string{annoAllocReleaseKey: `{"pods":["warm-pod"]}`})
 			},
 			want: true,
 		},

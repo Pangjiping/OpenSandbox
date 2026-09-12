@@ -22,9 +22,11 @@
 | `--listen-addr` (LISTEN_ADDR) | HTTP API 服务器的地址和端口。 | `0.0.0.0:5758` |
 | `--enable-sidecar-mode` (ENABLE_SIDECAR_MODE) | 如果为 `true`，则启用 sidecar 模式执行，任务将在指定主容器的 PID 命名空间内运行。需要 `nsenter` 和适当的权限。 | `false` |
 | `--main-container-name` (MAIN_CONTAINER_NAME) | 当 `enable-sidecar-mode` 为 `true` 时，指定应使用其 PID 命名空间的主容器的名称。 | `main` |
-| `--enable-container-mode` (ENABLE_CONTAINER_MODE) | 如果为 `true`，则启用使用 CRI 运行时的容器模式执行。（注意：当前实现可能只是占位符）。 | `false` |
-| `--cri-socket` (CRI_SOCKET) | 当 `enable-container-mode` 为 `true` 时，CRI 套接字的路径（例如 `containerd.sock`）。 | `/var/run/containerd/containerd.sock` |
-| `--reconcile-interval` | 内部任务管理器协调任务状态的间隔。 | `500ms` |
+| `--cri-socket` (CRI_SOCKET) | 容器运行器模式的 CRI 套接字路径。 | `/var/run/containerd/containerd.sock` |
+| `--log-dir` | task-executor 日志文件目录。 | `logs` |
+| `--log-max-size` | 日志文件轮转前的最大大小（MB）。 | `100` |
+| `--log-max-backups` | 轮转日志备份文件的最大数量。 | `10` |
+| `--log-max-age` | 轮转日志文件保留的最大天数。 | `7` |
 
 ## HTTP API 端点
 
