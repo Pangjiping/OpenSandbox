@@ -218,6 +218,8 @@ The Pool with the highest score is selected. If scores are tied, the Pool with t
 
 The controller loads Profile configuration from the ConfigMap into memory at startup and watches the ConfigMap for changes to support hot-reloading. If the ConfigMap does not exist or the `profiles` field is empty, a built-in default profile is used (containing `capacity`, `image`, `resource`, `nodeselector` predicates and the `resbalance` scorer).
 
+Known limitation: the watcher only handles add and update events (`ProfileStore.buildEventHandler` in `internal/controller/poolassign/profile_loader.go`). Deleting the ConfigMap after a custom configuration has loaded does not restore the built-in default profile; the last-loaded custom profiles remain active until the controller restarts. To revert to defaults, update the ConfigMap with an empty `profiles` field instead of deleting it.
+
 **Affected Components**
 
 - `BatchSandboxReconciler`: checks `PoolRef == "*"` at the Reconcile entry point and invokes AssignPool
