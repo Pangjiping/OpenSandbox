@@ -35,6 +35,14 @@ opensandbox-server:
     # -- Number of server replicas. Keep one active server; multi-replica HA is not supported yet.
     replicaCount: 1
 
+# Optional ingress gateway (components/ingress). When enabled, also announce it
+# from the server by setting opensandbox-server.server.gateway.* below
+# (enabled, host, gatewayRouteMode, secureAccess) so the server returns the
+# gateway address to clients.
+ingress-gateway:
+  # -- Whether the ingress gateway is enabled.
+  enabled: false
+
 # Optional node-level sandbox log collection. Configure the target in the
 # sub-chart values before enabling it.
 opensandbox-node-agent:

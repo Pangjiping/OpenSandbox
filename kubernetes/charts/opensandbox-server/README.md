@@ -83,11 +83,19 @@ helm install opensandbox-server ./kubernetes/charts/opensandbox-server \
   --create-namespace
 ```
 
-### Deploy server and ingress-gateway together
+### Ingress gateway announcement
 
-To run both the Lifecycle API server and the ingress gateway (components/ingress) in one release, set `server.gateway.enabled=true`. The chart will deploy the server and the gateway (Deployment, Service, RBAC), and write server config `[ingress] mode = "gateway"` so the server returns the correct gateway address to clients.
+The ingress gateway (components/ingress) is deployed by its own
+[`ingress-gateway` chart](../../../manifests/charts/ingress-gateway). This chart
+only announces the gateway to clients: set `server.gateway.enabled=true` to
+write server config `[ingress] mode = "gateway"` so the server returns the
+correct gateway address to clients.
 
 ```bash
+helm install ingress-gateway manifests/charts/ingress-gateway \
+  --namespace opensandbox-system \
+  --create-namespace
+
 helm install opensandbox-server ./kubernetes/charts/opensandbox-server \
   --namespace opensandbox-system \
   --create-namespace \
@@ -95,7 +103,8 @@ helm install opensandbox-server ./kubernetes/charts/opensandbox-server \
   --set server.gateway.host=gateway.example.com
 ```
 
-Optional: override gateway image, replicas, or resources (see `server.gateway.*` in Configuration).
+Keep `server.gateway.gatewayRouteMode` in sync with `gateway.gatewayRouteMode`
+of the ingress-gateway chart.
 
 ### OSEP-0011 secure-access keys
 
@@ -110,9 +119,10 @@ inline (plaintext in values — fine for local dev only):
 
 or from an existing Secret (`server.gateway.secureAccess.existingSecret`) with
 two data entries: `keys` (`a=<base64-secret>[,b=...]`) and `active-key` (`a`).
-The chart delivers the Secret to the server and gateway containers as
-environment variables, so key material stays out of values, the server
-ConfigMap, and pod args. The two forms are mutually exclusive.
+The chart delivers the Secret to the server container as environment variables,
+so key material stays out of values, the server ConfigMap, and pod args. Point
+the ingress-gateway chart at the same Secret via `gateway.secureAccess.existingSecret`
+for verification. The two forms are mutually exclusive.
 
 ## Configuration
 
@@ -128,31 +138,12 @@ The following table lists the configurable parameters of the chart and their def
 | server.affinity | object | `{}` | Affinity for the server pod. |
 | server.containerSecurityContext | object | `{}` | Container-level security context for the server container. |
 | server.env | list | `[]` | Additional environment variables for the server container. |
-| server.gateway.affinity | object | `{}` | Affinity for the ingress gateway pod. |
-| server.gateway.containerSecurityContext | object | `{}` | Container-level security context for the ingress gateway container. |
-| server.gateway.dataplaneNamespace | string | `"opensandbox"` | Namespace where the gateway dataplane workloads run. |
-| server.gateway.enabled | bool | `false` | Whether to deploy the ingress gateway alongside the server. |
-| server.gateway.env | list | `[]` | Additional environment variables for the ingress-gateway container (e.g. OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME for OTLP metrics). |
-| server.gateway.gatewayRouteMode | string | `"header"` | Gateway route mode: header or uri. |
+| server.gateway.enabled | bool | `false` | Whether the server announces an ingress gateway (config [ingress] mode = "gateway"). |
+| server.gateway.gatewayRouteMode | string | `"header"` | Gateway route mode: header or uri. Must match gateway.gatewayRouteMode in the ingress-gateway chart. |
 | server.gateway.host | string | `"opensandbox.example.com"` | Gateway host/address returned to clients when the gateway is enabled. |
-| server.gateway.image | object | `{"repository":"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/ingress","tag":"v1.0.10"}` | Gateway image configuration. |
-| server.gateway.image.repository | string | `"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/ingress"` | Gateway image repository. |
-| server.gateway.image.tag | string | `"v1.0.10"` | Gateway image tag. |
-| server.gateway.logLevel | string | `"info"` | Gateway log level. |
-| server.gateway.nodeSelector | object | `{}` | Node selector for the ingress gateway pod. |
-| server.gateway.podAnnotations | object | `{}` | Extra annotations for the ingress gateway pod. |
-| server.gateway.podLabels | object | `{}` | Extra labels for the ingress gateway pod. |
-| server.gateway.podSecurityContext | object | `{}` | Pod-level security context for the ingress gateway pod. |
-| server.gateway.port | int | `28888` | Gateway service port. |
-| server.gateway.priorityClassName | string | `""` | Priority class name for the ingress gateway pod. |
-| server.gateway.providerType | string | `"batchsandbox"` | Gateway provider type (e.g. batchsandbox). |
-| server.gateway.replicaCount | int | `2` | Number of gateway replicas. |
-| server.gateway.resources | object | `{"limits":{"cpu":"2","memory":"8Gi"},"requests":{"cpu":"1","memory":"4Gi"}}` | Resource requests and limits for the gateway. |
 | server.gateway.secureAccess.activeKey | string | `""` | Active signing key id, one character in [0-9a-z]. |
-| server.gateway.secureAccess.existingSecret | string | `""` | Name of an existing Secret holding the signing keys (keys + active-key), as an alternative to plaintext `keys` above (mutually exclusive). The Secret must carry two entries:   keys:       the key ring, "a=<base64-secret>[,b=<base64-secret>...]"   active-key: the active signing key id, one character in [0-9a-z] The chart wires it into both containers as environment variables (server: OPENSANDBOX_SECURE_ACCESS_*; gateway: $(...) expansion in the `--secure-access-keys` arg), so key material never appears in values, the server ConfigMap, or pod args. Env-sourced Secrets are read once at container start: after updating the Secret in place, `kubectl rollout restart` the server and gateway Deployments (or version the Secret name to get a spec-driven rollout). |
+| server.gateway.secureAccess.existingSecret | string | `""` | Name of an existing Secret holding the signing keys (keys + active-key), as an alternative to plaintext `keys` above (mutually exclusive). The Secret must carry two entries:   keys:       the key ring, "a=<base64-secret>[,b=<base64-secret>...]"   active-key: the active signing key id, one character in [0-9a-z] The chart wires it into the server as environment variables (OPENSANDBOX_SECURE_ACCESS_*), so key material never appears in values, the server ConfigMap, or pod args. The ingress-gateway chart consumes the same Secret for verification. Env-sourced Secrets are read once at container start: after updating the Secret in place, `kubectl rollout restart` the server Deployment (or version the Secret name to get a spec-driven rollout). |
 | server.gateway.secureAccess.keys | list | `[]` | List of signing keys. Each entry: { key_id: "a", key: "<base64-secret>" }. key_id must be exactly one character in [0-9a-z]. |
-| server.gateway.tolerations | list | `[]` | Tolerations for the ingress gateway pod. |
-| server.gateway.topologySpreadConstraints | list | `[]` | Topology spread constraints for the ingress gateway pod. |
 | server.image | object | `{"repository":"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/server","tag":"v0.2.2"}` | Server image configuration |
 | server.image.repository | string | `"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/server"` | Server image repository. |
 | server.image.tag | string | `"v0.2.2"` | Server image tag. Defaults to the chart appVersion when empty. |
@@ -180,7 +171,7 @@ Versioning note:
   `server.image.tag` explicitly or consume a Helm package release whose chart
   version was published for that purpose.
 
-**Gateway**: When `server.gateway.enabled=true`, the chart writes `[ingress] mode = "gateway"` in config.toml and deploys **components/ingress** Deployment/Service/RBAC; gateway `--mode` matches config. External access must be configured separately.
+**Gateway**: When `server.gateway.enabled=true`, the chart writes `[ingress] mode = "gateway"` in config.toml so the server returns the gateway address to clients. The gateway workload itself runs from the separate `ingress-gateway` chart (`manifests/charts/ingress-gateway`); its `--mode` must match `server.gateway.gatewayRouteMode`. External access must be configured separately.
 
 Set `[kubernetes].namespace` in config for the sandbox workload namespace and create that namespace before submitting workloads. Configure `OPENSANDBOX_SERVER_API_KEY` from a Secret in production. The container and its Service use port `80`; keep `[server].port = 80` when replacing `configToml`. The Service is `ClusterIP` unless `server.service.type` says otherwise.
 

@@ -133,19 +133,4 @@ key = {{ .key | quote }}
 
 {{- end }}
 
-{{/*
-Gateway fixed name (independent of server)
-*/}}
-{{- define "opensandbox-server.ingressGatewayFullname" -}}
-opensandbox-ingress-gateway
-{{- end }}
 
-{{- define "opensandbox-server.ingressGatewaySelectorLabels" -}}
-app.kubernetes.io/name: {{ include "opensandbox-server.ingressGatewayFullname" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
-
-{{- define "opensandbox-server.ingressGatewayImage" -}}
-{{- $tag := .Values.server.gateway.image.tag | default "v1.0.2" }}
-{{- printf "%s:%s" .Values.server.gateway.image.repository $tag }}
-{{- end }}

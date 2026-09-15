@@ -124,7 +124,7 @@ if [ "$COMPONENT" = "nodeagent" ]; then
 fi
 
 # Helm values: gateway ingress image uses repository + tag (not ingress:vX in one string).
-CHART_VALUES="kubernetes/charts/opensandbox-server/values.yaml"
+CHART_VALUES="manifests/charts/ingress-gateway/values.yaml"
 if [ "$COMPONENT" = "ingress" ]; then
   INGRESS_REPO='repository: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/ingress'
   if [ ! -f "$CHART_VALUES" ]; then
@@ -147,7 +147,7 @@ if [ "$COMPONENT" = "ingress" ]; then
     exit 1
   fi
   if ! cmp -s "$CHART_VALUES" "$tmpfile"; then
-    echo "Updated $CHART_VALUES (server.gateway.image tag for ingress)"
+    echo "Updated $CHART_VALUES (gateway.image tag for ingress)"
     updated=$((updated + 1))
   else
     echo "$CHART_VALUES already uses $NEW_VERSION"

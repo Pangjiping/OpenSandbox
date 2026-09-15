@@ -424,6 +424,7 @@ HELM_CHART_VERSION ?= $(VERSION)
 helm-lint: ## Lint all Helm charts and verify dependencies
 	@echo "Linting Helm charts..."
 	helm lint ../manifests/charts/base
+	helm lint ../manifests/charts/ingress-gateway
 	helm lint charts/opensandbox-controller
 	helm lint charts/opensandbox-server
 	helm lint charts/opensandbox-node-agent

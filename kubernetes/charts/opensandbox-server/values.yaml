@@ -70,41 +70,17 @@ server:
   # -- Topology spread constraints for the server pod.
   topologySpreadConstraints: []
 
-  # Gateway (components/ingress): when enabled, writes config [ingress] and deploys the gateway
+  # Ingress gateway announcement (components/ingress runs in its own
+  # ingress-gateway chart). When enabled, writes config [ingress] mode = "gateway"
+  # and wires secure-access env, so the server returns the gateway address to clients.
   gateway:
-    # -- Whether to deploy the ingress gateway alongside the server.
+    # -- Whether the server announces an ingress gateway (config [ingress] mode = "gateway").
     enabled: false
     # -- Gateway host/address returned to clients when the gateway is enabled.
     host: opensandbox.example.com
-    # -- Gateway route mode: header or uri.
+    # -- Gateway route mode: header or uri. Must match gateway.gatewayRouteMode
+    # in the ingress-gateway chart.
     gatewayRouteMode: "header"
-    # -- Gateway image configuration.
-    image:
-      # -- Gateway image repository.
-      repository: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/ingress
-      # -- Gateway image tag.
-      tag: "v1.0.10"
-    # -- Number of gateway replicas.
-    replicaCount: 2
-    # -- Gateway service port.
-    port: 28888
-    # -- Namespace where the gateway dataplane workloads run.
-    dataplaneNamespace: "opensandbox"
-    # -- Gateway provider type (e.g. batchsandbox).
-    providerType: "batchsandbox"
-    # -- Gateway log level.
-    logLevel: "info"
-    # -- Additional environment variables for the ingress-gateway container
-    # (e.g. OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME for OTLP metrics).
-    env: []
-    # -- Resource requests and limits for the gateway.
-    resources:
-      limits:
-        cpu: "2"
-        memory: 8Gi
-      requests:
-        cpu: "1"
-        memory: 4Gi
     # OSEP-0011 signing keys shared between server and ingress.
     # When keys are provided, the server signs route tokens with the active key
     # and the ingress gateway verifies them.
@@ -119,32 +95,14 @@ server:
       # The Secret must carry two entries:
       #   keys:       the key ring, "a=<base64-secret>[,b=<base64-secret>...]"
       #   active-key: the active signing key id, one character in [0-9a-z]
-      # The chart wires it into both containers as environment variables
-      # (server: OPENSANDBOX_SECURE_ACCESS_*; gateway: $(...) expansion in the
-      # `--secure-access-keys` arg), so key material never appears in values,
-      # the server ConfigMap, or pod args.
+      # The chart wires it into the server as environment variables
+      # (OPENSANDBOX_SECURE_ACCESS_*), so key material never appears in values,
+      # the server ConfigMap, or pod args. The ingress-gateway chart consumes the
+      # same Secret for verification.
       # Env-sourced Secrets are read once at container start: after updating
-      # the Secret in place, `kubectl rollout restart` the server and gateway
-      # Deployments (or version the Secret name to get a spec-driven rollout).
+      # the Secret in place, `kubectl rollout restart` the server Deployment
+      # (or version the Secret name to get a spec-driven rollout).
       existingSecret: ""
-    # -- Node selector for the ingress gateway pod.
-    nodeSelector: {}
-    # -- Pod-level security context for the ingress gateway pod.
-    podSecurityContext: {}
-    # -- Container-level security context for the ingress gateway container.
-    containerSecurityContext: {}
-    # -- Extra annotations for the ingress gateway pod.
-    podAnnotations: {}
-    # -- Extra labels for the ingress gateway pod.
-    podLabels: {}
-    # -- Priority class name for the ingress gateway pod.
-    priorityClassName: ""
-    # -- Topology spread constraints for the ingress gateway pod.
-    topologySpreadConstraints: []
-    # -- Tolerations for the ingress gateway pod.
-    tolerations: []
-    # -- Affinity for the ingress gateway pod.
-    affinity: {}
 
 # -- Server config (TOML). Mounted at /etc/opensandbox/config.toml.
 configToml: |
