@@ -1,7 +1,7 @@
 # OpenSandbox Manifests
 
-This directory contains the Helm chart sources for OpenSandbox, laid out after
-the Istio charts structure. Charts here are versioned sources: they are packaged
+This directory contains the Helm chart sources for OpenSandbox. Charts here are
+versioned sources: they are packaged
 and published to the Helm repository by CI (see
 `.github/workflows/publish-helm-chart.yml`). If you want to change how
 OpenSandbox is deployed, this is the right place.
@@ -42,7 +42,7 @@ All-in-one (umbrella):
 helm install opensandbox manifests/charts/opensandbox --namespace opensandbox-system --create-namespace
 ```
 
-Per-component (Istio-style, two releases for the minimal stack):
+Per-component (two releases for the minimal stack):
 
 ```bash
 helm install base manifests/charts/base

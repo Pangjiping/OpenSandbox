@@ -4,8 +4,7 @@ The bundle is synced from kubernetes/config/crd/bases by `make helm-gen-crds`;
 do not edit files/crds.yaml by hand.
 
 The bundle is split on "\n---\n" document separators (maintained by the sync
-target) so labels and annotations can be injected per CRD, following the same
-approach as Istio's base chart.
+target) so labels and annotations can be injected per CRD.
 */}}
 {{- if .Values.crds.install }}
 {{- range $doc := $.Files.Get "files/crds.yaml" | splitList "\n---\n" }}
