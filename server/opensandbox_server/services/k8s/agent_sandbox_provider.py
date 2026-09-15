@@ -382,7 +382,14 @@ class AgentSandboxProvider(WorkloadProvider):
         )
 
     def list_workloads(self, namespace: str, label_selector: str) -> List[Dict[str, Any]]:
-        """List Sandbox CRDs matching the given label selector."""
+        """List Sandbox CRDs matching the given label selector.
+
+        An uninstalled CRD is an empty result, not an error: the composite
+        list fans out to every backend, and a missing CRD must not fail the
+        whole read (mirrors SandboxCRReader.list).
+        """
+        if not self.k8s_client.custom_resource_exists(self.group, self.version, self.plural):
+            return []
         return self.k8s_client.list_custom_objects(
             group=self.group,
             version=self.version,

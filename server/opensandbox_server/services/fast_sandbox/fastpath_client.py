@@ -78,6 +78,10 @@ class FastPathResourceExhausted(FastPathError):
     """The FastPath pool has insufficient capacity for the request."""
 
 
+class FastPathFailedPrecondition(FastPathError):
+    """The referenced sandbox is not in a state that allows the operation."""
+
+
 class FastPathClient:
     """Synchronous gRPC client for the fast-sandbox FastPathService v2 API."""
 
@@ -158,6 +162,52 @@ class FastPathClient:
         )
         self._call(
             lambda: self._require_stub().DeleteSandbox(request, timeout=self._timeout_seconds)
+        )
+
+    def pause_sandbox(
+        self,
+        namespace: str,
+        sandbox_name: str,
+        *,
+        expected_uid: str = "",
+        request_id: str = "",
+    ) -> fastpath_pb2.PauseSandboxResponse:
+        """Persist the pause intent (spec.state=Paused).
+
+        Returns after the intent is durable; completion (PAUSED with the
+        checkpoint durable) is observed by polling get_sandbox. request_id
+        is optional in FastPath (validated only when set) and flows into
+        FastPath's structured logs as the tracing key.
+        """
+        request = fastpath_pb2.PauseSandboxRequest(
+            sandbox=namespaced_reference(namespace, sandbox_name, expected_uid=expected_uid),
+            request_id=request_id,
+        )
+        return self._call(
+            lambda: self._require_stub().PauseSandbox(request, timeout=self._timeout_seconds)
+        )
+
+    def resume_sandbox(
+        self,
+        namespace: str,
+        sandbox_name: str,
+        *,
+        expected_uid: str = "",
+        expected_checkpoint_id: str = "",
+        request_id: str = "",
+    ) -> fastpath_pb2.ResumeSandboxResponse:
+        """Persist the resume intent (spec.state=Running) from the recorded checkpoint.
+
+        Returns after the intent is durable; completion (READY) is observed
+        by polling get_sandbox.
+        """
+        request = fastpath_pb2.ResumeSandboxRequest(
+            sandbox=namespaced_reference(namespace, sandbox_name, expected_uid=expected_uid),
+            expected_checkpoint_id=expected_checkpoint_id,
+            request_id=request_id,
+        )
+        return self._call(
+            lambda: self._require_stub().ResumeSandbox(request, timeout=self._timeout_seconds)
         )
 
     def list_sandboxes(
@@ -324,6 +374,8 @@ def _to_fastpath_error(exc: grpc.RpcError) -> FastPathError:
         return FastPathInvalidArgument(code.name, details)
     if code == grpc.StatusCode.RESOURCE_EXHAUSTED:
         return FastPathResourceExhausted(code.name, details)
+    if code == grpc.StatusCode.FAILED_PRECONDITION:
+        return FastPathFailedPrecondition(code.name, details)
     if code in (grpc.StatusCode.ALREADY_EXISTS, grpc.StatusCode.ABORTED):
         return FastPathConflict(code.name, details)
     if code in (

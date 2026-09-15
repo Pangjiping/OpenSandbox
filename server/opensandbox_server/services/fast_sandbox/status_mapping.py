@@ -34,6 +34,14 @@ def map_state(info: pb2.SandboxInfo) -> str:
     """Map a fast-sandbox SandboxInfo to the OpenSandbox lifecycle state."""
     if info.runtime.state == pb2.RUNTIME_STATE_STOPPED:
         return "Terminated"
+    # Pause states precede the failure checks: a paused sandbox releases its
+    # data plane (UNAVAILABLE), which must not read as Failed.
+    if info.runtime.state == pb2.RUNTIME_STATE_PAUSED:
+        return "Paused"
+    if info.runtime.state == pb2.RUNTIME_STATE_PAUSING:
+        return "Pausing"
+    if info.runtime.state == pb2.RUNTIME_STATE_RESUMING:
+        return "Resuming"
     if info.runtime.state in (
         pb2.RUNTIME_STATE_FAILED,
         pb2.RUNTIME_STATE_UNAVAILABLE,
