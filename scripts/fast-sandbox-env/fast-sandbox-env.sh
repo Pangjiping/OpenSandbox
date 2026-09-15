@@ -822,7 +822,10 @@ control_plane_up() {
 	wait_for "controller deployment ready" 120 \
 		kubectl -n "$NS" rollout status deploy/fast-sandbox-controller --timeout=10s
 	local crd
-	for crd in sandboxpools sandboxtemplates sandboxes; do
+	# The OpenSandbox server's composite list also reads BatchSandboxes:
+	# install the kubernetes-backend CRD alongside the fast-sandbox ones.
+	kubectl apply -f "$OSB_ROOT/kubernetes/config/crd/bases/sandbox.opensandbox.io_batchsandboxes.yaml" >/dev/null
+	for crd in sandboxpools sandboxtemplates sandboxes batchsandboxes; do
 		kubectl get crd "$crd.sandbox.fast.io" >/dev/null 2>&1 || die "CRD $crd missing"
 	done
 	pass "CRDs + control plane ready (fast-sandbox $FSB_COMMIT)"
