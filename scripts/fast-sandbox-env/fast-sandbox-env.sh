@@ -1215,9 +1215,12 @@ server_api() { # method path [json-body]
 # the verify probes share it through VERIFY_ID.
 VERIFY_ID=""
 # The snapshot verify stage shares the created snapshot ids through
-# SNAPSHOT_ID / SNAPSHOT_ID2 (snapshot_ready polls GET /snapshots/$SNAPSHOT_ID).
+# SNAPSHOT_ID / SNAPSHOT_ID2.
 SNAPSHOT_ID=""
 SNAPSHOT_ID2=""
+# A re-entry snapshot accepted during fence cache lag (202) is tracked here
+# so its terminal outcome is asserted and it is cleaned up.
+SNAPSHOT_EXTRA=""
 
 verify_sandbox_gone() {
 	! server_api GET "/sandboxes/$VERIFY_ID" >/dev/null 2>&1
@@ -1476,6 +1479,14 @@ snapshot_ready() { # <snapshot-id>
 	[[ "$(server_api GET "/snapshots/$1" 2>/dev/null | jq -r '.status.state // empty')" == "Ready" ]]
 }
 
+# Terminal (Ready or Failed): the fastlet pause-window fence resolves an
+# accepted-but-conflicting snapshot one way or the other.
+snapshot_terminal() { # <snapshot-id>
+	local state
+	state="$(server_api GET "/snapshots/$1" 2>/dev/null | jq -r '.status.state // empty')"
+	[[ "$state" == "Ready" || "$state" == "Failed" ]]
+}
+
 snapshot_verify() {
 	# Full public-snapshot round trip on the live stack: create a sandbox,
 	# POST a snapshot (202 + Creating), let the server watcher converge the
@@ -1485,7 +1496,7 @@ snapshot_verify() {
 	# signed gateway route. Also covers: re-entry rejection while the dump
 	# window holds the sandbox, source-sandbox survival across the pause
 	# window, and a second (terminal-fenced) snapshot of the same sandbox.
-	local body created out source_id snapshot_id snapshot_id2 restore_id reentry_code
+	local body created out source_id snapshot_id snapshot_id2 restore_id reentry_out reentry_code
 	local t0 t1 t2 t3 t4
 	body="$(jq -n --arg template "$TEMPLATE_ID" '{
 		templateId: $template,
@@ -1516,16 +1527,30 @@ snapshot_verify() {
 	[[ "$(printf '%s' "$out" | jq -r '.status.state')" == "Creating" ]] \
 		|| fail "snapshot create did not return Creating: $(printf '%s' "$out" | head -c 300)"
 
-	# 2. Re-entry fence: a second snapshot while the first holds the pause
-	# window (dump phases before Publishing) is rejected by FastPath with
-	# FailedPrecondition -> the server surfaces 409. The dump of a microVM
-	# is orders of magnitude longer than the gap between the two POSTs.
-	reentry_code="$(curl -sS -m 60 -o /dev/null -w '%{http_code}' -X POST \
+	# 2. Re-entry: a second snapshot POST while the first holds the dump
+	# window is fenced by FastPath (FailedPrecondition -> 409) once the CR
+	# is cache-visible; with watcher cache lag the POST is accepted (202)
+	# and the fastlet pause window — the authoritative fence — resolves the
+	# extra snapshot to a terminal phase after the first completes.
+	reentry_out="$(curl -sS -m 60 -w '\n%{http_code}' -X POST \
 		-H "OPEN-SANDBOX-API-KEY: $SERVER_API_KEY" -H "Content-Type: application/json" \
 		-d '{"name":"env-verify-reentry"}' "$SERVER_URL/sandboxes/$source_id/snapshots" 2>/dev/null || true)"
-	[[ "$reentry_code" == "409" ]] \
-		|| fail "re-entry snapshot POST while the first snapshot holds the dump window: expected 409, got ${reentry_code:-none}"
-	pass "snapshot: re-entry during the dump window rejected (409)"
+	reentry_code="$(printf '%s' "$reentry_out" | tail -n1)"
+	reentry_out="$(printf '%s' "$reentry_out" | sed '$d')"
+	case "$reentry_code" in
+		409)
+			pass "snapshot: re-entry rejected by the fence (409)"
+			;;
+		202)
+			SNAPSHOT_EXTRA="$(printf '%s' "$reentry_out" | jq -r '.id' 2>/dev/null || true)"
+			[[ -n "$SNAPSHOT_EXTRA" && "$SNAPSHOT_EXTRA" != "null" ]] \
+				|| fail "re-entry snapshot POST returned 202 without an id: $(printf '%s' "$reentry_out" | head -c 300)"
+			log "verify (snapshot): re-entry accepted during fence cache lag ($SNAPSHOT_EXTRA); terminal outcome asserted below"
+			;;
+		*)
+			fail "re-entry snapshot POST returned unexpected HTTP ${reentry_code:-none}: $(printf '%s' "$reentry_out" | head -c 300)"
+			;;
+	esac
 
 	wait_for "poll GET /snapshots/$SNAPSHOT_ID until Ready (watcher -> SandboxSnapshot CR -> store index)" 300 snapshot_ready "$SNAPSHOT_ID"
 	t2="$(now_ms)"
@@ -1538,6 +1563,16 @@ snapshot_verify() {
 	wait_for "source sandbox Running again after the snapshot" 120 sandbox_running
 	wait_for "source sandbox execd /ping 200 after the snapshot" 100 execd_ping_ok
 	pass "snapshot: source sandbox survived (Running + /ping 200)"
+
+	# 3b. An accepted re-entry snapshot (fence cache lag) must reach a
+	# terminal phase once the first snapshot releases the pause window — a
+	# stuck non-terminal snapshot would block every future snapshot of the
+	# sandbox through the re-entry fence.
+	if [[ -n "$SNAPSHOT_EXTRA" ]]; then
+		wait_for "re-entry snapshot $SNAPSHOT_EXTRA reaches a terminal phase" 150 snapshot_terminal "$SNAPSHOT_EXTRA"
+		log "verify (snapshot): re-entry snapshot $SNAPSHOT_EXTRA terminal: $(server_api GET "/snapshots/$SNAPSHOT_EXTRA" 2>/dev/null | jq -r '.status.state')"
+		pass "snapshot: accepted re-entry snapshot resolved to a terminal phase"
+	fi
 
 	# 4. Second snapshot after the first is terminal: a fresh id, fenced in
 	# by re-entry only while non-terminal.
@@ -1553,14 +1588,18 @@ snapshot_verify() {
 	log "verify (snapshot): $snapshot_id2 second snapshot POST->Ready $(( (t4 - t3) / 1000000 ))ms"
 	pass "snapshot: repeated snapshot of the same sandbox -> Ready (distinct id)"
 
-	# 5. Listing: sandboxId scoping returns both, both Ready.
+	# 5. Listing: sandboxId scoping returns both required snapshots, both
+	# Ready (an accepted re-entry snapshot may add a third, terminal row).
 	out="$(server_api GET "/snapshots?sandboxId=$source_id&pageSize=50")"
 	[[ "$(printf '%s' "$out" | jq -r --arg id "$SNAPSHOT_ID" --arg id2 "$snapshot_id2" \
-		'[.items[] | select(.id == $id or .id == $id2)] | length')" == "2" ]] \
-		|| fail "snapshot list does not contain both snapshots: $(printf '%s' "$out" | head -c 300)"
-	[[ "$(printf '%s' "$out" | jq -r '[.items[] | select(.status.state == "Ready")] | length')" == "2" ]] \
-		|| fail "snapshot list reports non-Ready snapshots: $(printf '%s' "$out" | head -c 300)"
-	pass "snapshot: list scoped by sandboxId contains both snapshots (Ready)"
+		'[.items[] | select((.id == $id or .id == $id2) and .status.state == "Ready")] | length')" == "2" ]] \
+		|| fail "snapshot list does not contain both required snapshots as Ready: $(printf '%s' "$out" | head -c 400)"
+	if [[ -n "$SNAPSHOT_EXTRA" ]]; then
+		[[ "$(printf '%s' "$out" | jq -r --arg id "$SNAPSHOT_EXTRA" \
+			'[.items[] | select(.id == $id)] | length')" == "1" ]] \
+			|| fail "accepted re-entry snapshot $SNAPSHOT_EXTRA missing from the list"
+	fi
+	pass "snapshot: list scoped by sandboxId contains the snapshots (Ready)"
 
 	# 6. Restore: the snapshot row resolves to the published template index
 	# key (osb-snap-<uuid hex>); the restored sandbox boots that artifact
@@ -1584,7 +1623,7 @@ snapshot_verify() {
 	log "verify (snapshot): restored $restore_id POST->Running $(( (t4 - t3) / 1000000 ))ms"
 	pass "snapshot: restore -> sandbox boots the published artifact set -> execd /ping OK"
 
-	# 7. Cleanup: restored sandbox, source sandbox, then both snapshot rows
+	# 7. Cleanup: restored sandbox, source sandbox, then the snapshot rows
 	# (the server forwards artifact deletion through DeleteSandboxSnapshot).
 	server_api DELETE "/sandboxes/$restore_id" >/dev/null \
 		|| log "verify cleanup: DELETE $restore_id failed"
@@ -1593,7 +1632,8 @@ snapshot_verify() {
 	server_api DELETE "/sandboxes/$source_id" >/dev/null \
 		|| log "verify cleanup: DELETE $source_id failed"
 	wait_for "snapshot source sandbox deleted" 120 verify_sandbox_gone
-	for snapshot_id in "$SNAPSHOT_ID" "$SNAPSHOT_ID2"; do
+	for snapshot_id in "$SNAPSHOT_ID" "$SNAPSHOT_ID2" "$SNAPSHOT_EXTRA"; do
+		[[ -n "$snapshot_id" ]] || continue
 		server_api DELETE "/snapshots/$snapshot_id" >/dev/null \
 			|| log "verify cleanup: DELETE snapshot $snapshot_id failed"
 	done
