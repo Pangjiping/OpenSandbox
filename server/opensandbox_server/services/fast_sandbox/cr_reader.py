@@ -80,7 +80,7 @@ class SandboxCRReader:
 
     @staticmethod
     def _read_error(exc: Exception) -> HTTPException:
-        logger.warning("Fsb Sandbox CR read failed: %s", exc)
+        logger.warning(f"Fsb Sandbox CR read failed: {exc}")
         return HTTPException(
             503,
             detail={

@@ -104,7 +104,6 @@ class FastPathClient:
         self.close()
 
     def connect(self) -> None:
-        """Open the gRPC channel to the FastPath endpoint."""
         if self._channel is not None:
             return
         with self._connect_lock:
@@ -114,7 +113,6 @@ class FastPathClient:
                 self._channel = channel
 
     def close(self) -> None:
-        """Close the gRPC channel if open."""
         with self._connect_lock:
             if self._channel is not None:
                 self._channel.close()
@@ -377,7 +375,6 @@ class FastPathClient:
         )
 
     def list_pools(self, namespace: str) -> fastpath_pb2.ListPoolsResponse:
-        """List SandboxPools in a namespace."""
         request = fastpath_pb2.ListPoolsRequest(namespace=namespace)
         return self._call(
             lambda: self._require_stub().ListPools(request, timeout=self._timeout_seconds)

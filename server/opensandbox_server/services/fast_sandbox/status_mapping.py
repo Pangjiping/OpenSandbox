@@ -31,7 +31,6 @@ from opensandbox_server.services.fast_sandbox.generated import fastpath_pb2 as p
 
 
 def map_state(info: pb2.SandboxInfo) -> str:
-    """Map a fast-sandbox SandboxInfo to the OpenSandbox lifecycle state."""
     if info.runtime.state == pb2.RUNTIME_STATE_STOPPED:
         return "Terminated"
     # Pausing/Paused/Resuming precede the failure checks: an unavailable

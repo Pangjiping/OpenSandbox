@@ -84,11 +84,11 @@ class DockerSnapshotRuntime:
         try:
             self._docker_client.images.remove(image=image_ref)
         except ImageNotFound:
-            logger.info("Docker snapshot image %s already absent for snapshot %s", image_ref, snapshot_id)
+            logger.info(f"Docker snapshot image {image_ref} already absent for snapshot {snapshot_id}")
             return
         except APIError as exc:
             if getattr(exc, "status_code", None) == status.HTTP_409_CONFLICT:
-                logger.info("Docker snapshot image %s cannot be deleted due to conflict: %s", image_ref, exc)
+                logger.info(f"Docker snapshot image {image_ref} cannot be deleted due to conflict: {exc}")
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
@@ -131,10 +131,8 @@ class DockerSnapshotRuntime:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
-                "Unexpected error inspecting Docker snapshot image %s for snapshot %s: %s",
-                image_ref,
-                snapshot_id,
-                exc,
+                f"Unexpected error inspecting Docker snapshot image "
+                f"{image_ref} for snapshot {snapshot_id}: {exc}"
             )
             return SnapshotRuntimeStatus(
                 state=SnapshotState.FAILED,
@@ -164,10 +162,7 @@ class DockerSnapshotRuntime:
             )
         except (ReadTimeout, ConnectTimeout, TimeoutError) as exc:
             logger.warning(
-                "Timed out creating Docker snapshot %s from sandbox %s: %s",
-                snapshot_id,
-                sandbox_id,
-                exc,
+                f"Timed out creating Docker snapshot {snapshot_id} from sandbox {sandbox_id}: {exc}"
             )
             return SnapshotRuntimeStatus(
                 state=SnapshotState.FAILED,
@@ -176,10 +171,7 @@ class DockerSnapshotRuntime:
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
-                "Failed to create Docker snapshot %s from sandbox %s: %s",
-                snapshot_id,
-                sandbox_id,
-                exc,
+                f"Failed to create Docker snapshot {snapshot_id} from sandbox {sandbox_id}: {exc}"
             )
             reason = "snapshot_runtime_timeout" if self._is_timeout_error(exc) else "snapshot_runtime_failed"
             message = self._format_timeout_message(exc) if reason == "snapshot_runtime_timeout" else str(exc)

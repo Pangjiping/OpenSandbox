@@ -188,7 +188,7 @@ class FastSandboxSnapshotRuntime:
         try:
             self._fastpath.delete_sandbox_snapshot(ns, snapshot_name)
         except FastPathNotFound:
-            logger.info("fsb snapshot %s already absent", snapshot_name)
+            logger.info(f"fsb snapshot {snapshot_name} already absent")
             return
         except FastPathError as exc:
             raise RuntimeError(f"Failed to delete fsb snapshot {snapshot_name}: {exc}") from exc
@@ -212,7 +212,7 @@ class FastSandboxSnapshotRuntime:
                 message=f"fsb snapshot {snapshot_name} was not found in namespace {ns}.",
             )
         except FastPathError as exc:
-            logger.warning("Failed to inspect fsb snapshot %s: %s", snapshot_name, exc)
+            logger.warning(f"Failed to inspect fsb snapshot {snapshot_name}: {exc}")
             return SnapshotRuntimeStatus(
                 state=SnapshotState.CREATING,
                 reason="snapshot_runtime_inspect_failed",
@@ -252,17 +252,12 @@ class FastSandboxSnapshotRuntime:
             )
         except Exception as exc:  # noqa: BLE001 - the watch must never break creating
             logger.warning(
-                "fsb snapshot status watch for %s/%s failed to start: %s",
-                namespace,
-                PLURAL,
-                exc,
+                f"fsb snapshot status watch for {namespace}/{PLURAL} failed to start: {exc}"
             )
             return
         if informer is None:
             logger.debug(
-                "Informers disabled; fsb snapshot %s/%s converges via reads only",
-                namespace,
-                PLURAL,
+                f"Informers disabled; fsb snapshot {namespace}/{PLURAL} converges via reads only"
             )
             return
         with self._watch_lock:
@@ -282,10 +277,7 @@ class FastSandboxSnapshotRuntime:
             callback(snapshot_id, namespace)
         except Exception as exc:  # noqa: BLE001 - never propagate into the watch
             logger.warning(
-                "fsb snapshot status callback failed for %s/%s: %s",
-                namespace,
-                snapshot_id,
-                exc,
+                f"fsb snapshot status callback failed for {namespace}/{snapshot_id}: {exc}"
             )
 
     def close(self) -> None:

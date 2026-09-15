@@ -114,7 +114,6 @@ class FastSandboxService(SandboxService, ExtensionService):
         self._fastpath.close()
 
     def resolve_template_service(self) -> FastSandboxTemplateService:
-        """Lazily create the shared template service."""
         if self._template_service is None:
             self._template_service = FastSandboxTemplateService(self._app_config)
             # Keep template rows converged even without /templates traffic

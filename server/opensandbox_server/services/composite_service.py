@@ -74,7 +74,7 @@ class CompositeSandboxService(SandboxService, ExtensionService):
         except HTTPException:
             raise
         except Exception as exc:
-            logger.warning("Cannot read complete sandbox list: %s", exc)
+            logger.warning(f"Cannot read complete sandbox list: {exc}")
             raise HTTPException(
                 503,
                 detail={

@@ -79,9 +79,6 @@ SNAPSHOT_LIST_SYNC_BUDGET_SECONDS = 2.0
 
 
 class SnapshotService(ABC):
-    """
-    Abstract service interface for snapshot lifecycle operations.
-    """
 
     @abstractmethod
     def create_snapshot(self, sandbox_id: str, request: CreateSnapshotRequest) -> Snapshot:
@@ -302,7 +299,7 @@ class PersistedSnapshotService(SnapshotService):
         try:
             namespaces = self._active_snapshot_namespaces()
         except Exception as exc:  # noqa: BLE001 - catalog may be empty/unavailable
-            logger.warning("Snapshot namespace scan failed while starting watches: %s", exc)
+            logger.warning(f"Snapshot namespace scan failed while starting watches: {exc}")
             namespaces = set()
         start_status_watch(self._on_runtime_change, namespaces)
 
@@ -351,9 +348,7 @@ class PersistedSnapshotService(SnapshotService):
             )
         except Exception as exc:  # noqa: BLE001 - convergence retries on the next read
             logger.warning(
-                "Snapshot status read failed for %s: %s",
-                record.id,
-                exc,
+                f"Snapshot status read failed for {record.id}: {exc}"
             )
             return None
 
@@ -460,10 +455,8 @@ class PersistedSnapshotService(SnapshotService):
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
-                "Failed to create snapshot %s from sandbox %s: %s",
-                record.id,
-                record.source_sandbox_id,
-                exc,
+                f"Failed to create snapshot {record.id} from sandbox "
+                f"{record.source_sandbox_id}: {exc}"
             )
             runtime_status = SnapshotRuntimeStatus(
                 state=SnapshotState.FAILED,
@@ -486,7 +479,7 @@ class PersistedSnapshotService(SnapshotService):
         try:
             future.result()
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Snapshot worker exited unexpectedly: %s", exc)
+            logger.exception(f"Snapshot worker exited unexpectedly: {exc}")
 
     def _submit_snapshot_worker(self, record: SnapshotRecord) -> None:
         future = self._snapshot_executor.submit(
@@ -531,8 +524,8 @@ class PersistedSnapshotService(SnapshotService):
         )
         if not updated_applied:
             logger.info(
-                "Snapshot %s was already transitioned before worker completion; skipping update",
-                current_record.id,
+                f"Snapshot {current_record.id} was already transitioned before "
+                "worker completion; skipping update"
             )
 
     def recover_unfinished_snapshots(self) -> None:
@@ -553,9 +546,7 @@ class PersistedSnapshotService(SnapshotService):
                     progressed = self._recover_unfinished_snapshot(record) or progressed
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
-                        "Failed to recover unfinished snapshot %s: %s",
-                        record.id,
-                        exc,
+                        f"Failed to recover unfinished snapshot {record.id}: {exc}",
                         exc_info=True,
                     )
                     failed_status = SnapshotRuntimeStatus(
@@ -593,9 +584,7 @@ class PersistedSnapshotService(SnapshotService):
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "Failed to recover deleting snapshot %s: %s",
-                    record.id,
-                    exc,
+                    f"Failed to recover deleting snapshot {record.id}: {exc}",
                     exc_info=True,
                 )
                 return False
@@ -690,9 +679,7 @@ class PersistedSnapshotService(SnapshotService):
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Failed to cleanup snapshot artifact for %s: %s",
-                snapshot_id,
-                exc,
+                f"Failed to cleanup snapshot artifact for {snapshot_id}: {exc}",
                 exc_info=True,
             )
             return False
@@ -785,8 +772,7 @@ class PostgreSQLKubernetesSnapshotService(PersistedSnapshotService):
                 self.recover_unfinished_snapshots()
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "PostgreSQL Kubernetes snapshot recovery scan failed: %s",
-                    exc,
+                    f"PostgreSQL Kubernetes snapshot recovery scan failed: {exc}",
                     exc_info=True,
                 )
             self._recovery_stop.wait(self._recovery_interval_seconds)
@@ -814,9 +800,6 @@ class PostgreSQLKubernetesSnapshotService(PersistedSnapshotService):
 
 
 def create_snapshot_service(sandbox_service) -> SnapshotService:
-    """
-    Build the default persisted snapshot service.
-    """
     active_config = get_config()
     snapshot_runtime: SnapshotRuntime = create_snapshot_runtime(
         active_config,

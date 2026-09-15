@@ -211,10 +211,10 @@ class KubernetesSnapshotRuntime:
                     reason="snapshot_runtime_create_failed",
                     message=f"Failed to create Kubernetes SandboxSnapshot {snapshot_name}: {exc}",
                 )
-            logger.info("Kubernetes SandboxSnapshot %s already exists; continuing", snapshot_name)
+            logger.info(f"Kubernetes SandboxSnapshot {snapshot_name} already exists; continuing")
             should_validate_existing_source = True
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Failed to create Kubernetes SandboxSnapshot %s: %s", snapshot_name, exc)
+            logger.exception(f"Failed to create Kubernetes SandboxSnapshot {snapshot_name}: {exc}")
             if self._postgresql_ha_enabled:
                 return SnapshotRuntimeStatus(
                     state=SnapshotState.CREATING,
@@ -234,9 +234,8 @@ class KubernetesSnapshotRuntime:
                 current = self._get_snapshot_cr(snapshot_name, namespace=ns)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "Failed to inspect existing Kubernetes SandboxSnapshot %s after create conflict: %s",
-                    snapshot_name,
-                    exc,
+                    f"Failed to inspect existing Kubernetes SandboxSnapshot "
+                    f"{snapshot_name} after create conflict: {exc}"
                 )
                 if self._postgresql_ha_enabled:
                     return SnapshotRuntimeStatus(
@@ -314,17 +313,12 @@ class KubernetesSnapshotRuntime:
             )
         except Exception as exc:  # noqa: BLE001 - the watch must never break creating
             logger.warning(
-                "Snapshot status watch for %s/%s failed to start: %s",
-                namespace,
-                _PLURAL,
-                exc,
+                f"Snapshot status watch for {namespace}/{_PLURAL} failed to start: {exc}"
             )
             return
         if informer is None:
             logger.debug(
-                "Informers disabled; snapshot %s/%s converges via reads only",
-                namespace,
-                _PLURAL,
+                f"Informers disabled; snapshot {namespace}/{_PLURAL} converges via reads only"
             )
             return
         with self._watch_lock:
@@ -346,10 +340,7 @@ class KubernetesSnapshotRuntime:
             callback(snapshot_id, namespace)
         except Exception as exc:  # noqa: BLE001 - never propagate into the watch
             logger.warning(
-                "Snapshot status callback failed for %s/%s: %s",
-                namespace,
-                snapshot_id,
-                exc,
+                f"Snapshot status callback failed for {namespace}/{snapshot_id}: {exc}"
             )
 
     def close(self) -> None:
@@ -383,7 +374,7 @@ class KubernetesSnapshotRuntime:
             )
         except ApiException as exc:
             if exc.status == 404:
-                logger.info("Kubernetes SandboxSnapshot %s already absent", snapshot_name)
+                logger.info(f"Kubernetes SandboxSnapshot {snapshot_name} already absent")
                 return
             raise RuntimeError(f"Failed to delete Kubernetes SandboxSnapshot {snapshot_name}: {exc}") from exc
 
@@ -400,7 +391,7 @@ class KubernetesSnapshotRuntime:
         try:
             snapshot = self._get_snapshot_cr(snapshot_name, namespace=ns)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to inspect Kubernetes SandboxSnapshot %s: %s", snapshot_name, exc)
+            logger.warning(f"Failed to inspect Kubernetes SandboxSnapshot {snapshot_name}: {exc}")
             return SnapshotRuntimeStatus(
                 state=SnapshotState.CREATING,
                 reason="snapshot_runtime_inspect_failed",
@@ -660,9 +651,8 @@ class KubernetesSnapshotRuntime:
                     ),
                 )
             logger.warning(
-                "Failed to observe Kubernetes SandboxSnapshot %s before create: %s",
-                snapshot_name,
-                exc,
+                f"Failed to observe Kubernetes SandboxSnapshot {snapshot_name} "
+                f"before create: {exc}"
             )
             return SnapshotRuntimeStatus(
                 state=SnapshotState.CREATING,
@@ -673,9 +663,8 @@ class KubernetesSnapshotRuntime:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Failed to observe Kubernetes SandboxSnapshot %s before create: %s",
-                snapshot_name,
-                exc,
+                f"Failed to observe Kubernetes SandboxSnapshot {snapshot_name} "
+                f"before create: {exc}"
             )
             return SnapshotRuntimeStatus(
                 state=SnapshotState.CREATING,

@@ -84,7 +84,6 @@ class WorkloadInformer:
         return self.resync_period_seconds + self.watch_timeout_seconds
 
     def start(self) -> None:
-        """Start the background watch thread if not already running."""
         if self._stop_event.is_set():
             return
         if self._thread and self._thread.is_alive():
@@ -98,7 +97,6 @@ class WorkloadInformer:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop the background watch thread."""
         self._stop_event.set()
 
     def get_if_synced(self, name: str) -> Optional[Dict[str, Any]]:
@@ -238,7 +236,6 @@ class WorkloadInformer:
         return True
 
     def _run_watch_loop(self, timeout_seconds: int) -> None:
-        """Stream watch events to keep the cache fresh."""
         w = watch.Watch()
         try:
             for event in w.stream(
@@ -307,4 +304,4 @@ class WorkloadInformer:
             try:
                 handler(event_type or "", obj)
             except Exception as exc:  # noqa: BLE001 - isolation by design
-                logger.warning("Informer event handler failed: %s", exc, exc_info=True)
+                logger.warning(f"Informer event handler failed: {exc}", exc_info=True)

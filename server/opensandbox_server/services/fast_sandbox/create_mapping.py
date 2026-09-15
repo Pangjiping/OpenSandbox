@@ -36,7 +36,6 @@ from opensandbox_server.services.fast_sandbox.generated import (
     fastpath_pb2 as pb2,
 )
 
-#: Public extensions keys accepted by the fsb backend.
 SUPPORTED_EXTENSION_KEYS = frozenset({"poolRef"})
 
 #: FastPath CreateSandboxRequest has no nullable timeout; fsb requires an explicit one.
@@ -227,9 +226,8 @@ def _validate_resource_limits(request: CreateSandboxRequest, pool_resources: dic
             )
 
 
-#: Kubernetes quantity decimal-power suffixes (m is handled separately).
+# m is handled separately.
 _DECIMAL_QUANTITY_SUFFIXES = {"k": 3, "M": 6, "G": 9, "T": 12, "P": 15, "E": 18}
-#: Kubernetes quantity binary-power suffixes.
 _BINARY_QUANTITY_SUFFIXES = {"Ki": 10, "Mi": 20, "Gi": 30, "Ti": 40, "Pi": 50, "Ei": 60}
 
 _DNS_LABEL_PATTERN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
