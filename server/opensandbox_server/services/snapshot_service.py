@@ -15,9 +15,12 @@
 """
 Snapshot service orchestration for server-managed snapshot resources.
 
-The preferred path is to persist the snapshot record and, when supported by the
-runtime, complete snapshot creation inline so the repository reaches a terminal
-state within the request lifecycle.
+The service persists the snapshot record and submits creation to the runtime.
+Status converges asynchronously, mirroring the template catalog pattern:
+a runtime status watch (when available) reacts to terminal transitions and
+updates rows directly, and every read re-checks non-terminal rows against the
+runtime so convergence never depends on the watch alone. Runtimes without a
+change stream (Docker) complete inline as before.
 """
 
 from __future__ import annotations
@@ -88,6 +91,11 @@ class SnapshotService(ABC):
     @abstractmethod
     def delete_snapshot(self, snapshot_id: str) -> None:
         pass
+
+    def start_background_sync(self) -> None:
+        """
+        Start reacting to runtime status changes; default is read-time sync only.
+        """
 
     def close(self) -> None:
         """
@@ -201,7 +209,7 @@ class PersistedSnapshotService(SnapshotService):
 
         total_pages = ceil(result.total_items / pagination.page_size) if result.total_items > 0 else 0
         return ListSnapshotsResponse(
-            items=[self._to_snapshot_response(item) for item in result.items],
+            items=[self._to_snapshot_response(self._sync_creating_record(item)) for item in result.items],
             pagination=PaginationInfo(
                 page=pagination.page,
                 pageSize=pagination.page_size,
@@ -222,7 +230,7 @@ class PersistedSnapshotService(SnapshotService):
                 },
             )
         self._verify_tenant_access(record)
-        return self._to_snapshot_response(record)
+        return self._to_snapshot_response(self._sync_creating_record(record))
 
     def delete_snapshot(self, snapshot_id: str) -> None:
         record = self._snapshot_repository.get(snapshot_id)
@@ -261,7 +269,93 @@ class PersistedSnapshotService(SnapshotService):
         """
         Stop accepting new snapshot work and wait for in-flight workers.
         """
+        close_runtime = getattr(self._snapshot_runtime, "close", None)
+        if close_runtime is not None:
+            close_runtime()
         self._snapshot_executor.shutdown(wait=True)
+
+    # -- background status sync ------------------------------------------------
+
+    def start_background_sync(self) -> None:
+        """
+        React to runtime status changes by converging rows directly.
+
+        Runtimes with a change stream expose ``start_status_watch``; the watch
+        reacts to terminal transitions without polling. Convergence never
+        depends on it: every read re-checks non-terminal rows, and the
+        PostgreSQL recovery loop re-checks them periodically.
+        """
+        start_status_watch = getattr(self._snapshot_runtime, "start_status_watch", None)
+        if start_status_watch is None:
+            return
+        try:
+            namespaces = self._active_snapshot_namespaces()
+        except Exception as exc:  # noqa: BLE001 - catalog may be empty/unavailable
+            logger.warning("Snapshot namespace scan failed while starting watches: %s", exc)
+            namespaces = set()
+        start_status_watch(self._on_runtime_change, namespaces)
+
+    def _active_snapshot_namespaces(self) -> set[str | None]:
+        """Distinct namespaces that own non-terminal rows."""
+        namespaces: set[str | None] = set()
+        page = 1
+        while True:
+            result = self._snapshot_repository.list(
+                SnapshotListQuery(
+                    page=page,
+                    page_size=SNAPSHOT_RECOVERY_PAGE_SIZE,
+                    states=[SnapshotState.CREATING.value, SnapshotState.DELETING.value],
+                )
+            )
+            namespaces.update(record.namespace for record in result.items)
+            if len(result.items) < SNAPSHOT_RECOVERY_PAGE_SIZE:
+                return namespaces
+            page += 1
+
+    def _on_runtime_change(self, snapshot_id: str, namespace: str) -> None:
+        """Watch callback (informer threads): converge a CREATING row once."""
+        record = self._snapshot_repository.get(snapshot_id)
+        if record is None or record.status.state != SnapshotState.CREATING:
+            return
+        self._converge_from_runtime(record)
+
+    def _converge_from_runtime(self, record: SnapshotRecord) -> bool:
+        """One runtime observation; CAS-complete the row when terminal."""
+        runtime_status = self._observe_runtime(record)
+        if runtime_status is None or runtime_status.state not in (
+            SnapshotState.READY,
+            SnapshotState.FAILED,
+        ):
+            return False
+        self._complete_snapshot(record, runtime_status)
+        return True
+
+    def _observe_runtime(self, record: SnapshotRecord):
+        try:
+            return self._snapshot_runtime.inspect_snapshot(
+                record.id,
+                image=record.restore_config.image,
+                namespace=record.namespace,
+            )
+        except Exception as exc:  # noqa: BLE001 - convergence retries on the next read
+            logger.warning(
+                "Snapshot status read failed for %s: %s",
+                record.id,
+                exc,
+            )
+            return None
+
+    def _sync_creating_record(self, record: SnapshotRecord) -> SnapshotRecord:
+        """Read-time sync: re-check a non-terminal row before responding."""
+        if record.status.state != SnapshotState.CREATING:
+            return record
+        if getattr(self._snapshot_runtime, "start_status_watch", None) is None:
+            # Inline runtimes complete their own rows; observing them here
+            # would misreport in-flight work.
+            return record
+        if not self._converge_from_runtime(record):
+            return record
+        return self._snapshot_repository.get(record.id) or record
 
     @staticmethod
     def _default_restore_config():

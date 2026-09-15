@@ -21,13 +21,12 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 import logging
-import time
-from typing import Optional
+from threading import Lock
+from typing import Callable, Iterable, Optional
 from uuid import UUID
 
 from kubernetes.client import ApiException
 
-from opensandbox_server.services.k8s.snapshot_watch import SnapshotChangeWatcher
 from opensandbox_server.services.snapshot_models import SnapshotState
 from opensandbox_server.services.snapshot_runtime import (
     SnapshotRuntimePreflightError,
@@ -52,7 +51,6 @@ PUBLIC_SNAPSHOT_SOURCE_SANDBOX_ID_LABEL = "opensandbox.io/source-sandbox-id"
 PUBLIC_SNAPSHOT_SCOPE_VALUE = "public"
 MAIN_CONTAINER_NAME = "sandbox"
 DEFAULT_WAIT_TIMEOUT_SECONDS = 15 * 60
-DEFAULT_POLL_INTERVAL_SECONDS = 2.0
 
 
 def _stable_hex(value: str) -> str:
@@ -71,27 +69,31 @@ def build_public_snapshot_tag(snapshot_id: str) -> str:
 
 
 class KubernetesSnapshotRuntime:
+    """Non-blocking snapshot runtime: submit intent, converge via watch.
+
+    ``create_snapshot`` persists the SandboxSnapshot CR and returns a
+    non-terminal status immediately; terminal state is observed by the status
+    watch (``start_status_watch``) and by callers re-reading ``inspect_snapshot``.
+    """
+
     def __init__(
         self,
         k8s_client,
         *,
         namespace: str,
         wait_timeout_seconds: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
-        poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS,
         postgresql_ha_enabled: bool = False,
     ) -> None:
         self._k8s_client = k8s_client
         self._namespace = namespace
+        # Retained for constructor compatibility with the previous blocking
+        # wait; convergence is now event/read driven, so nothing times out.
         self._wait_timeout_seconds = wait_timeout_seconds
         self._postgresql_ha_enabled = postgresql_ha_enabled
         self._snapshot_namespaces: dict[str, str] = {}
-        self._change_watcher = SnapshotChangeWatcher(
-            k8s_client,
-            group=_GROUP,
-            version=_VERSION,
-            plural=_PLURAL,
-            wait_interval_seconds=poll_interval_seconds,
-        )
+        self._watched_namespaces: set[str] = set()
+        self._watch_lock = Lock()
+        self._on_change: Optional[Callable[[str, str], None]] = None
 
     def supports_create_snapshot(self) -> bool:
         return True
@@ -169,6 +171,9 @@ class KubernetesSnapshotRuntime:
         snapshot_name = build_public_snapshot_name(snapshot_id)
         ns = namespace if namespace is not None else self._namespace
         self._snapshot_namespaces[snapshot_id] = ns
+        # A fresh namespace may never have been watched; register before any
+        # status can change so the reactor observes this snapshot's events.
+        self._ensure_namespace_watch(ns)
         body = self._build_snapshot_body(snapshot_id, sandbox_id, snapshot_name, namespace=ns)
         should_validate_existing_source = False
 
@@ -184,7 +189,9 @@ class KubernetesSnapshotRuntime:
                 )
                 if conflict is not None:
                     return conflict
-                return self._wait_for_terminal_snapshot(snapshot_id, namespace=ns)
+                # The existing CR may already be terminal (peer recovery);
+                # one read lets the caller converge now.
+                return self.inspect_snapshot(snapshot_id, namespace=ns)
 
         try:
             self._k8s_client.create_custom_object(
@@ -262,8 +269,99 @@ class KubernetesSnapshotRuntime:
                 )
                 if conflict is not None:
                     return conflict
+                # The conflicting CR may already be terminal (a peer create
+                # that finished); one read lets the caller converge now.
+                return self.inspect_snapshot(snapshot_id, namespace=ns)
 
-        return self._wait_for_terminal_snapshot(snapshot_id, namespace=ns)
+        return self._submitted_status(snapshot_name, ns)
+
+    @staticmethod
+    def _submitted_status(snapshot_name: str, namespace: str) -> SnapshotRuntimeStatus:
+        """Non-terminal status returned right after the create intent is durable."""
+        return SnapshotRuntimeStatus(
+            state=SnapshotState.CREATING,
+            reason="snapshot_runtime_submitted",
+            message=(
+                f"Kubernetes SandboxSnapshot {snapshot_name} accepted in "
+                f"namespace {namespace}; completion is observed via watch."
+            ),
+        )
+
+    # -- status watch ------------------------------------------------------
+
+    def start_status_watch(
+        self,
+        on_change: Callable[[str, str], None],
+        namespaces: Iterable[str] = (),
+    ) -> None:
+        """React to SandboxSnapshot CR changes with ``on_change(snapshot_id, namespace)``.
+
+        One LIST/WATCH informer per namespace that owns snapshot work (the
+        given namespaces plus the configured default); every watch event and
+        reconciling LIST item invokes the callback. Callbacks run on informer
+        threads and must be cheap and thread-safe.
+        """
+        with self._watch_lock:
+            self._on_change = on_change
+        for namespace in sorted({*(ns for ns in namespaces if ns), self._namespace}):
+            self._ensure_namespace_watch(namespace)
+
+    def _ensure_namespace_watch(self, namespace: str) -> None:
+        with self._watch_lock:
+            if namespace in self._watched_namespaces or self._on_change is None:
+                return
+        watch_custom_objects = getattr(self._k8s_client, "watch_custom_objects", None)
+        if watch_custom_objects is None:
+            return
+        try:
+            informer = watch_custom_objects(
+                _GROUP, _VERSION, namespace, _PLURAL, self._on_crd_event
+            )
+        except Exception as exc:  # noqa: BLE001 - the watch must never break creating
+            logger.warning(
+                "Snapshot status watch for %s/%s failed to start: %s",
+                namespace,
+                _PLURAL,
+                exc,
+            )
+            return
+        if informer is None:
+            logger.debug(
+                "Informers disabled; snapshot %s/%s converges via reads only",
+                namespace,
+                _PLURAL,
+            )
+            return
+        with self._watch_lock:
+            self._watched_namespaces.add(namespace)
+
+    def _on_crd_event(self, event_type: str, obj: dict) -> None:
+        metadata = obj.get("metadata") if isinstance(obj, dict) else None
+        if not isinstance(metadata, dict):
+            return
+        snapshot_id = (metadata.get("labels") or {}).get(PUBLIC_SNAPSHOT_ID_LABEL)
+        if not snapshot_id:
+            return
+        with self._watch_lock:
+            callback = self._on_change
+        if callback is None:
+            return
+        namespace = metadata.get("namespace") or self._namespace
+        try:
+            callback(snapshot_id, namespace)
+        except Exception as exc:  # noqa: BLE001 - never propagate into the watch
+            logger.warning(
+                "Snapshot status callback failed for %s/%s: %s",
+                namespace,
+                snapshot_id,
+                exc,
+            )
+
+    def close(self) -> None:
+        """Stop informer threads owned by the runtime's dedicated client."""
+        stop_informers = getattr(self._k8s_client, "stop_informers", None)
+        if stop_informers is not None:
+            stop_informers()
 
     def get_snapshot_status(self, snapshot_id: str) -> Optional[SnapshotRuntimeStatus]:
         ns = self._snapshot_namespaces.get(snapshot_id)
@@ -452,40 +550,6 @@ class KubernetesSnapshotRuntime:
                 f"source sandbox: {existing_sandbox}"
             ),
         )
-
-    def _wait_for_terminal_snapshot(self, snapshot_id: str, *, namespace: str | None = None) -> SnapshotRuntimeStatus:
-        ns = namespace if namespace is not None else self._namespace
-        snapshot_name = build_public_snapshot_name(snapshot_id)
-        deadline = time.monotonic() + self._wait_timeout_seconds
-        while True:
-            runtime_status = self.inspect_snapshot(snapshot_id, namespace=ns)
-            if runtime_status.state in (SnapshotState.READY, SnapshotState.FAILED):
-                return runtime_status
-
-            remaining_seconds = deadline - time.monotonic()
-            if remaining_seconds <= 0:
-                return SnapshotRuntimeStatus(
-                    state=(
-                        SnapshotState.CREATING
-                        if self._postgresql_ha_enabled
-                        else SnapshotState.FAILED
-                    ),
-                    reason="snapshot_runtime_timeout",
-                    message=(
-                        "Timed out waiting for Kubernetes SandboxSnapshot "
-                        f"{snapshot_name} to complete"
-                        + (
-                            "; the PostgreSQL record remains Creating for recovery."
-                            if self._postgresql_ha_enabled
-                            else "."
-                        )
-                    ),
-                )
-
-            # Block on informer change events for this snapshot; the watcher
-            # degrades to bounded re-checks when the watch is unavailable, and
-            # re-reading the status above is always the source of truth.
-            self._change_watcher.wait_for_change(ns, snapshot_name, remaining_seconds)
 
     def _snapshot_status_from_cr(self, snapshot: dict) -> SnapshotRuntimeStatus:
         status = snapshot.get("status", {})

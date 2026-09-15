@@ -58,6 +58,8 @@ router = APIRouter(tags=["Sandboxes"])
 # Initialize service based on configuration from config.toml (defaults to docker)
 sandbox_service = create_sandbox_service()
 snapshot_service = create_snapshot_service(sandbox_service)
+# React to snapshot status changes so rows converge without waiting on reads
+snapshot_service.start_background_sync()
 
 
 # ============================================================================
