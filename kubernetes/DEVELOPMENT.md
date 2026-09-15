@@ -456,7 +456,7 @@ helm install opensandbox-controller ../manifests/charts/controller \
   --namespace opensandbox-system --create-namespace
 ```
 
-See `docs/HELM-DEPLOYMENT.md` for full Helm documentation.
+See `../manifests/docs/HELM-DEPLOYMENT.md` for full Helm documentation.
 
 ### Controller Configuration
 
