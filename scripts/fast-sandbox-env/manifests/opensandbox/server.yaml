@@ -47,6 +47,11 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  # The composite list fans out to the kubernetes backend, which lists
+  # BatchSandboxes; a missing rule fails the whole list with 503.
+  - apiGroups: ["sandbox.opensandbox.io"]
+    resources: ["batchsandboxes"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
