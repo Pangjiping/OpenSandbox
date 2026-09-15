@@ -42,13 +42,14 @@
 #   FSB_DIR              fast-sandbox checkout  (default $WORK/fast-sandbox —
 #                        env-owned clone, created from FSB_GIT_URL when missing)
 #   FSB_GIT_URL / FSB_REF                       (default opensandbox-group/fast-sandbox, master)
+#   WORK                  workspace root        (default /data/fast-sandbox-env when /data exists, else $PWD/.fast-sandbox-env)
 #   KIND_CLUSTER / KIND_NODE_IMAGE / KIND_RETAIN / KIND_SINGLE
 #   DOCKER_MIRROR        comma list injected as docker.io containerd mirrors
-#   MINIO_PORT / MINIO_CONSOLE_PORT / MINIO_AK / MINIO_SK / MINIO_IMAGE / MINIO_ENDPOINT
+#   MINIO_PORT / MINIO_CONSOLE_PORT / MINIO_AK / MINIO_SK / MINIO_IMAGE / MC_IMAGE / MINIO_ENDPOINT
 #   IMAGE_<NAME>         fast-sandbox component image tags
 #   EGRESS_IMAGE         egress image tag        (default docker.io/opensandbox/egress:latest)
 #   SERVER_IMAGE / INGRESS_IMAGE  OpenSandbox server/ingress image tags
-#   SERVER_HOST_PORT / GATEWAY_HOST_PORT  host-side publishes (default 8080/8081)
+#   SERVER_HOST_PORT / GATEWAY_HOST_PORT  host-side publishes (default 18080/18081)
 #   WARM_IMAGES=1        preheat pool warmImages (default: on-demand first-sandbox pull)
 #   SBX_IMAGE / EXECD    template build inputs   (default alpine:3.19 / opensandbox/execd:1.1.0)
 #   POOL_MIN / POOL_MAX  pool capacity           (default 2/2; auto 1/1 when KIND_SINGLE=1)
@@ -63,7 +64,16 @@ set -euo pipefail
 OSB_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFESTS_DIR="$SCRIPT_DIR/manifests"
-WORK="${WORK:-$PWD/.fast-sandbox-env}"
+# Default the workspace to /data when the host has it (same rationale as
+# fast-sandbox's integration-env.sh): built image tars, the XFS StateRoot
+# loop file and MinIO artifacts all grow with the workload, which a small
+# repo/root disk cannot absorb. Hosts without /data fall back to the repo
+# workdir. Overridable with WORK.
+if [[ -d /data ]] && [[ -z "${WORK:-}" ]]; then
+	WORK="/data/fast-sandbox-env"
+else
+	WORK="${WORK:-$PWD/.fast-sandbox-env}"
+fi
 LOGS_DIR="$WORK/logs"
 GEN_DIR="$WORK/gen"
 
@@ -79,14 +89,15 @@ KIND_RETAIN="${KIND_RETAIN:-0}"
 NS="fast-sandbox-system"
 
 MINIO_IMAGE="${MINIO_IMAGE:-minio/minio:latest}"
-MINIO_PORT="${MINIO_PORT:-9000}"
+MC_IMAGE="${MC_IMAGE:-minio/mc:latest}"
+MINIO_PORT="${MINIO_PORT:-19000}"
 # The container always LISTENS on 9000 (guest side of the publish map and
 # the port kind-network clients use via the container IP); MINIO_PORT only
 # moves the host-side 127.0.0.1 publish.
 MINIO_CONTAINER_PORT=9000
 # Console (human-only UI) listens on 9001 in-container; the host-side
-# publish is overridable because 9001 is a common host-port collision.
-MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-9001}"
+# publish defaults to 19001: 9000/9001 are common host-port collisions.
+MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-19001}"
 MINIO_AK="${MINIO_AK:-integration-env}"
 MINIO_SK="${MINIO_SK:-integration-env-secret}"
 MINIO_BUCKET="sandbox-images"
@@ -139,8 +150,8 @@ SIGNING_KEY_FILE="$WORK/opensandbox-signing-key"
 # Host-side publish (kind extraPortMappings on the control-plane node, bound
 # to 127.0.0.1 only): Service NodePorts -> server :80 / gateway :28888.
 # Overridable because host port collisions are environment-specific.
-SERVER_HOST_PORT="${SERVER_HOST_PORT:-8080}"
-GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-8081}"
+SERVER_HOST_PORT="${SERVER_HOST_PORT:-18080}"
+GATEWAY_HOST_PORT="${GATEWAY_HOST_PORT:-18081}"
 SERVER_NODEPORT=30880
 GATEWAY_NODEPORT=30881
 GATEWAY_ADDRESS="127.0.0.1:$GATEWAY_HOST_PORT"
@@ -158,6 +169,13 @@ SKIP_TOOL_INSTALL="${SKIP_TOOL_INSTALL:-0}"
 SKIP_LEFTOVER_CLEAN="${SKIP_LEFTOVER_CLEAN:-0}"
 KIND_VERSION="${KIND_VERSION:-v0.24.0}"
 KUBECTL_VERSION="${KUBECTL_VERSION:-v1.31.0}"
+
+# Go builds (fast-sandbox images + the registry generator) run on the host
+# and inherit the shell's GOPROXY. Internal goproxy mirrors sometimes answer
+# 500 on shared hosts, so default to direct VCS downloads (works wherever
+# the git hosts are reachable) and let FSB_GOPROXY opt back into a proxy.
+FSB_GOPROXY="${FSB_GOPROXY:-direct}"
+export GOPROXY="$FSB_GOPROXY"
 
 AUTO_CLEAN=0
 ACTION=""
@@ -242,7 +260,7 @@ kind_network() { # docker network of the first node container
 	docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$node" | tr ' ' '\n' | grep -v '^$' | head -1
 }
 
-mc() { docker run --rm --network host -v "$WORK/mc-config:/root/.mc" minio/mc "$@"; }
+mc() { docker run --rm --network host -v "$WORK/mc-config:/root/.mc" "$MC_IMAGE" "$@"; }
 
 # --- failure dump ------------------------------------------------------------------
 
@@ -353,6 +371,14 @@ host_port_busy() { # port -> 0 when something already listens on 127.0.0.1:<port
 	(exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
 }
 
+# ensure_image pulls only when the image is absent locally: hosts without a
+# Docker Hub route (air-gapped, rate-limited) reuse whatever is already in
+# the local store, or point the *_IMAGE overrides at their own registry.
+ensure_image() { # image -> pull only when missing locally
+	docker image inspect "$1" >/dev/null 2>&1 && return 0
+	docker pull -q "$1" >/dev/null || die "image $1 is not available locally and the pull failed (pre-load it with docker load, or override the *_IMAGE variable)"
+}
+
 preflight() {
 	[[ "$(uname -s)" == "Linux" ]] \
 		|| die "this environment requires a Linux host with KVM (run it on the remote development VM)"
@@ -371,16 +397,25 @@ preflight() {
 		die "docker cgroup Version is 1; kind requires cgroup v2. Enable it with the kernel cmdline 'systemd.unified_cgroup_hierarchy=1' and reboot"
 	fi
 	[[ -e /dev/kvm ]] || die "/dev/kvm is missing on this host (KVM required)"
-	# The workspace filesystem carries docker images (built), the XFS
-	# StateRoot loop file (sparse, up to 24G), MinIO artifacts (~4G per
-	# template build) and node snapshot caches; MinIO refuses writes
-	# below its free-disk threshold, so guard it here with a clear error.
-	local min_free_kb=$((30 * 1024 * 1024)) free_kb
-	free_kb="$(df -Pk "$WORK" 2>/dev/null | awk 'NR==2 {print $4}')"
-	[[ "$free_kb" =~ ^[0-9]+$ ]] || die "cannot determine free disk space on $WORK"
-	if (( free_kb < min_free_kb )); then
-		die "only $((free_kb / 1024 / 1024))G free on $WORK (need 30G: images + XFS StateRoot + MinIO artifacts); free space (docker system prune / old kind clusters) or point WORK at a bigger volume"
-	fi
+	# Per-target disk headroom (fast-sandbox integration-env pattern): the
+	# workspace (built image tars), the MinIO data directory and the XFS
+	# StateRoot loop file's filesystem are the heavy consumers. MinIO
+	# refuses writes below its free-disk threshold and a full root disk
+	# turns XFS sparse extension into EIO, so fail fast here with a clear
+	# error. When the targets share one filesystem the check is effectively
+	# on that filesystem alone.
+	local min_free_kb=$((20 * 1024 * 1024)) avail_kb target xfs_dir
+	xfs_dir="${XFS_LOOP_FILE%/*}"
+	mkdir -p "$WORK" "$MINIO_DATA" "$xfs_dir" 2>/dev/null || true
+	local -a targets=("$WORK" "$MINIO_DATA" "$xfs_dir")
+	for target in "${targets[@]}"; do
+		avail_kb="$(df -Pk "$target" 2>/dev/null | awk 'NR==2 {print $4}')"
+		[[ "$avail_kb" =~ ^[0-9]+$ ]] || die "cannot determine free disk space on $target"
+		if (( avail_kb < min_free_kb )); then
+			die "$target has $((avail_kb / 1024 / 1024))G free; at least 20G is required (built images, XFS StateRoot, MinIO artifacts). Free space (docker system prune / old kind clusters) or point WORK / MINIO_DATA / XFS_LOOP_FILE at a bigger volume"
+		fi
+		log "disk headroom: $target has $((avail_kb / 1024 / 1024 / 1024))G free"
+	done
 	# Fail fast on busy host ports instead of dying at the docker bind or
 	# kind create. MinIO culprits: a leftover MinIO container; 8080/8081 are
 	# published by the kind node for the server / ingress gateway.
@@ -390,8 +425,8 @@ preflight() {
 			die "127.0.0.1:$port is already in use (check 'ss -ltnp' / 'docker ps'); free it, or set MINIO_PORT / MINIO_CONSOLE_PORT / SERVER_HOST_PORT / GATEWAY_HOST_PORT"
 		fi
 	done
-	docker pull -q "$MINIO_IMAGE" >/dev/null
-	docker pull -q minio/mc >/dev/null
+	ensure_image "$MINIO_IMAGE"
+	ensure_image "$MC_IMAGE"
 	pass "preflight"
 }
 
@@ -617,7 +652,7 @@ kind_up() {
 	else
 		if [[ -n "${KIND_NODE_IMAGE:-}" ]]; then
 			log "pulling kind node image $KIND_NODE_IMAGE (this can take minutes)"
-			docker pull -q "$KIND_NODE_IMAGE" || die "kind node image pull failed (KIND_NODE_IMAGE=$KIND_NODE_IMAGE)"
+			ensure_image "$KIND_NODE_IMAGE" || die "kind node image unavailable locally and pull failed (KIND_NODE_IMAGE=$KIND_NODE_IMAGE)"
 			kind create cluster --name "$KIND_CLUSTER" --image "$KIND_NODE_IMAGE" \
 				${create_args+"${create_args[@]}"} --config "$kind_config" > "$LOGS_DIR/kind-create.log" 2>&1 \
 				|| fail "kind create failed (full log: $LOGS_DIR/kind-create.log)"
@@ -704,7 +739,9 @@ resolve_minio_endpoint() {
 
 # gen_registry compiles the agent pull credentials through fast-sandbox's
 # own registryconfig package (same pattern as its scripts/integration-env.sh).
-gen_registry() { # host username password endpoint > registry.json
+# The optional write pair is what the agent publishes snapshots/checkpoints
+# (pause/resume) with; omitting it keeps the store read-only.
+gen_registry() { # host username password endpoint [write-username write-password] > registry.json
 	mkdir -p "$FSB_GEN_DIR"
 	cat > "$FSB_GEN_DIR/gen-registry.go" <<'EOF'
 package main
@@ -717,13 +754,18 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 5 {
-		fmt.Fprintln(os.Stderr, "usage: gen-registry <host> <username> <password> <endpoint>")
+	if len(os.Args) != 5 && len(os.Args) != 7 {
+		fmt.Fprintln(os.Stderr, "usage: gen-registry <host> <username> <password> <endpoint> [write-username write-password]")
 		os.Exit(1)
 	}
-	compiled, err := registryconfig.NewCompiled([]registryconfig.Credential{{
+	credential := registryconfig.Credential{
 		Host: os.Args[1], Username: os.Args[2], Password: os.Args[3], Endpoint: os.Args[4],
-	}})
+	}
+	if len(os.Args) == 7 {
+		// Optional publish (write) pair: empty keeps the store read-only.
+		credential.WriteUsername, credential.WritePassword = os.Args[5], os.Args[6]
+	}
+	compiled, err := registryconfig.NewCompiled([]registryconfig.Credential{credential})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -753,15 +795,25 @@ credentials_up() {
 		--from-literal=endpoint="$MINIO_ENDPOINT" \
 		--from-literal=region=us-east-1 \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
-	# Pull credentials for the runtime-agent (compiled registryconfig).
-	gen_registry "$host" "$MINIO_AK" "$MINIO_SK" "$MINIO_ENDPOINT" > "$WORK/agent-registry.json"
-	jq -e . "$WORK/agent-registry.json" >/dev/null || die "generated agent registry.json is invalid"
+	# Pull + publish credentials for the runtime-agent (compiled
+	# registryconfig): the write pair is what pause/resume checkpoints and
+	# snapshots publish with (MinIO root keys are read-write, so the same
+	# pair doubles as the write pair).
+	gen_registry "$host" "$MINIO_AK" "$MINIO_SK" "$MINIO_ENDPOINT" "$MINIO_AK" "$MINIO_SK" \
+		> "$WORK/agent-registry.json"
+	jq -e '.credentials[0].writeUsername' "$WORK/agent-registry.json" >/dev/null \
+		|| die "generated agent registry carries no write credential"
 	kubectl -n "$NS" create secret generic fast-sandbox-agent-registry \
 		--from-file=registry.json="$WORK/agent-registry.json" \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
-	# Agent endpoint override (connection address for SigV4 signing).
-	kubectl -n "$NS" create configmap fast-sandbox-agent-config \
-		--from-literal=artifact-endpoint="$MINIO_ENDPOINT" \
+	# Shared artifact store root/endpoint: the agent mounts the
+	# fast-sandbox-artifact-store ConfigMap (created by the control-plane
+	# manifests with an empty endpoint); this pins the live MinIO endpoint
+	# for SigV4 signing. Kubelet projects updates in place, so an edit lands
+	# on the next pull without an agent restart.
+	kubectl -n "$NS" create configmap fast-sandbox-artifact-store \
+		--from-literal=store="s3://$MINIO_BUCKET/publish" \
+		--from-literal=endpoint="$MINIO_ENDPOINT" \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	# Pull credentials for the fastlet (pool-compiled registry).
 	kubectl -n "$NS" create secret docker-registry registry-minio \
@@ -1472,8 +1524,9 @@ usage: fast-sandbox-env.sh [--auto-clean] {up|down|status|pool}
            two-node kind cluster (KVM), MinIO, control plane, firecracker
            node assets, runtime-agent + DART (P2P), SandboxTemplate golden
            image, firecracker-egress-pool (egress attached), the
-           source-built OpenSandbox server + ingress gateway, and an
-           end-to-end verify (create -> gateway route -> execd /ping).
+           source-built OpenSandbox server + ingress gateway, and
+           end-to-end verifies (create -> gateway route -> execd /ping,
+           plus a pause/resume round-trip through the checkpoint).
   pool     re-apply only the SandboxPool (after editing manifests/pool/)
   status   nodes / pods / pool / DART P2P counters / MinIO / OpenSandbox health
   down     teardown: kind cluster + MinIO + sysctl + XFS StateRoot + caches
@@ -1482,6 +1535,8 @@ usage: fast-sandbox-env.sh [--auto-clean] {up|down|status|pool}
 
 Notable env overrides: WORK, FSB_DIR, KIND_CLUSTER, KIND_SINGLE,
 DOCKER_MIRROR, MINIO_*, EGRESS_IMAGE, SERVER_IMAGE, INGRESS_IMAGE,
+FSB_GOPROXY (default direct; set e.g. https://mirrors.aliyun.com/goproxy/,direct
+when the host cannot reach module VCS hosts directly),
 IMAGE_<COMPONENT>, POOL_MIN/POOL_MAX, WARM_IMAGES=1, SBX_IMAGE, EXECD,
 XFS_STATEROOT=0, SKIP_TOOL_INSTALL=1, SKIP_LEFTOVER_CLEAN=1.
 See the header of this script.
