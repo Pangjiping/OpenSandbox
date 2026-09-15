@@ -26,7 +26,7 @@ readonly API_KEY_SECRET="opensandbox-api-key"
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release/smoke-helm-release.sh --package <opensandbox-X.Y.Z.tgz> [options] -- <command> [args...]
+  manifests/release/smoke-helm-release.sh --package <opensandbox-X.Y.Z.tgz> [options] -- <command> [args...]
 
 Required:
   --package <path>          Exact, already packaged all-in-one opensandbox chart.

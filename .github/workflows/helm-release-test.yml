@@ -7,7 +7,7 @@ on:
       - '.github/workflows/helm-release-test.yml'
       - '.github/workflows/publish-helm-chart.yml'
       - 'manifests/charts/**'
-      - 'scripts/release/*helm*.sh'
+      - 'manifests/release/*helm*.sh'
       - 'sdks/code-interpreter/python/**'
       - 'sdks/sandbox/python/**'
       - 'tests/python/**'
@@ -78,7 +78,7 @@ jobs:
           helm lint "$chart_path"
           mkdir -p dist
           helm package "$chart_path" --destination dist
-          scripts/release/verify-helm-package.sh \
+          manifests/release/verify-helm-package.sh \
             "dist/$package_name" opensandbox "$chart_version" "$app_version"
           package_sha256="$(sha256sum "dist/$package_name" | awk '{print $1}')"
           printf '%s  %s\n' "$package_sha256" "$package_name" >dist/SHA256SUMS
@@ -105,8 +105,8 @@ jobs:
         env:
           PACKAGE_NAME: ${{ steps.package.outputs.package_name }}
         run: |
-          scripts/release/smoke-helm-release.sh \
-            --package "dist/$PACKAGE_NAME" -- scripts/release/run-helm-release-e2e.sh
+          manifests/release/smoke-helm-release.sh \
+            --package "dist/$PACKAGE_NAME" -- manifests/release/run-helm-release-e2e.sh
 
       - name: Upload candidate and diagnostics
         if: ${{ always() }}

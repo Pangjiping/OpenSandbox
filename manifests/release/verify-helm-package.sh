@@ -19,7 +19,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release/verify-helm-package.sh <package> <component> <chart-version> <app-version>
+  manifests/release/verify-helm-package.sh <package> <component> <chart-version> <app-version>
 
 Verifies the metadata and default rendering of an already packaged Helm chart.
 For the all-in-one opensandbox chart it also verifies that all embedded charts

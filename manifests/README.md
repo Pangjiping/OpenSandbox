@@ -19,6 +19,7 @@ manifests/
 │   ├── ingress-gateway/  # Ingress gateway (components/ingress), deployable standalone
 │   ├── node-agent/       # Node-level sandbox data collector (DaemonSet)
 │   └── opensandbox/      # Umbrella chart aggregating the above as dependencies
+├── release/              # Helm release tooling (create/publish/verify/smoke)
 └── HELM-DEPLOYMENT.md    # Helm deployment guide
 ```
 

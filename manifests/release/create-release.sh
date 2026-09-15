@@ -19,7 +19,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release/create-release.sh --target <target> --version <version> [options]
+  manifests/release/create-release.sh --target <target> --version <version> [options]
 
 Required:
   --target <target>     Release target key, e.g.:
@@ -58,9 +58,9 @@ Options:
   --help                Show this help.
 
 Examples:
-  scripts/release/create-release.sh --target js/sandbox --version 1.0.5 --dry-run
-  scripts/release/create-release.sh --target server --version 0.2.0 --push
-  scripts/release/create-release.sh --target docker/execd --version v0.3.0 --push
+  manifests/release/create-release.sh --target js/sandbox --version 1.0.5 --dry-run
+  manifests/release/create-release.sh --target server --version 0.2.0 --push
+  manifests/release/create-release.sh --target docker/execd --version v0.3.0 --push
 EOF
 }
 

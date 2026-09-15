@@ -224,7 +224,7 @@ jobs:
           test -f "dist/$package_name"
           test "$(find dist -maxdepth 1 -type f -name '*.tgz' | wc -l)" -eq 1
 
-          scripts/release/verify-helm-package.sh \
+          manifests/release/verify-helm-package.sh \
             "dist/$package_name" "$COMPONENT" "$CHART_VERSION" "$APP_VERSION"
 
           package_sha256="$(sha256sum "dist/$package_name" | awk '{print $1}')"
@@ -288,7 +288,7 @@ jobs:
           (cd dist && sha256sum -c SHA256SUMS)
           actual_sha256="$(sha256sum "dist/$PACKAGE_NAME" | awk '{print $1}')"
           test "$actual_sha256" = "$EXPECTED_SHA256"
-          scripts/release/verify-helm-package.sh \
+          manifests/release/verify-helm-package.sh \
             "dist/$PACKAGE_NAME" "$COMPONENT" "$CHART_VERSION" "$APP_VERSION"
 
       - name: Set up Python
@@ -326,8 +326,8 @@ jobs:
         env:
           PACKAGE_NAME: ${{ needs.package.outputs.package_name }}
         run: |
-          scripts/release/smoke-helm-release.sh \
-            --package "dist/$PACKAGE_NAME" -- scripts/release/run-helm-release-e2e.sh
+          manifests/release/smoke-helm-release.sh \
+            --package "dist/$PACKAGE_NAME" -- manifests/release/run-helm-release-e2e.sh
 
       - name: Record tested image identities
         id: runtime_evidence
@@ -422,4 +422,4 @@ jobs:
           RUNTIME_VERIFIED: ${{ needs.package.outputs.component == 'opensandbox' && 'true' || 'false' }}
           RUNTIME_PROFILE: ${{ needs.package.outputs.component == 'opensandbox' && 'Kind Kubernetes v1.30.13 linux/amd64 core lifecycle' || 'package verification only' }}
           TESTED_IMAGES: ${{ needs.kind-gate.outputs.tested_images }}
-        run: scripts/release/publish-helm-release.sh
+        run: manifests/release/publish-helm-release.sh
