@@ -30,6 +30,8 @@ spec:
     metadata:
       labels:
         {{- include "opensandbox-ingress-gateway.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ingress-gateway
+        app.kubernetes.io/part-of: opensandbox
         {{- with .Values.gateway.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

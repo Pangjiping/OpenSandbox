@@ -15,7 +15,7 @@ keywords:
 
 home: https://github.com/opensandbox-group/OpenSandbox
 sources:
-  - https://github.com/opensandbox-group/OpenSandbox/tree/main/kubernetes
+  - https://github.com/opensandbox-group/OpenSandbox/tree/main/manifests/charts/controller
 
 maintainers:
   - name: OpenSandbox Team
@@ -39,6 +39,6 @@ annotations:
     - url: https://github.com/kubernetes-sigs/kind
   artifacthub.io/links: |
     - name: Documentation
-      url: https://github.com/opensandbox-group/OpenSandbox/blob/main/kubernetes/README.md
+      url: https://github.com/opensandbox-group/OpenSandbox/blob/main/manifests/README.md
     - name: Support
       url: https://github.com/opensandbox-group/OpenSandbox/issues

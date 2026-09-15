@@ -18,6 +18,8 @@ first:
 
 ```bash
 # Install the latest version (0.1.0)
+# The helm/base release becomes available right after the chart restructure
+# merges; until then install from source: helm install base manifests/charts/base
 helm install base \
   https://github.com/opensandbox-group/OpenSandbox/releases/download/helm/base/0.1.0/base-0.1.0.tgz
 

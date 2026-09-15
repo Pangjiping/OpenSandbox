@@ -41,6 +41,6 @@ annotations:
   artifacthub.io/prerelease: "false"
   artifacthub.io/links: |
     - name: Documentation
-      url: https://github.com/opensandbox-group/OpenSandbox/blob/main/kubernetes/README.md
+      url: https://github.com/opensandbox-group/OpenSandbox/blob/main/manifests/README.md
     - name: Support
       url: https://github.com/opensandbox-group/OpenSandbox/issues

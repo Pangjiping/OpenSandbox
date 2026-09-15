@@ -129,7 +129,7 @@ case "$expected_component" in
 esac
 
 if [[ "$expected_component" == "opensandbox" ]]; then
-  for dependency in opensandbox-controller opensandbox-server opensandbox-node-agent; do
+  for dependency in opensandbox-controller opensandbox-server opensandbox-node-agent base ingress-gateway; do
     grep -Fxq "opensandbox/charts/${dependency}/Chart.yaml" "$work_dir/archive-files.txt" || \
       die "All-in-one package is missing embedded chart: $dependency"
   done

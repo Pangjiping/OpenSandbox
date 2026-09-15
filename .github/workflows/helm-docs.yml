@@ -32,6 +32,16 @@ jobs:
           sudo mv /tmp/helm-docs /usr/local/bin/helm-docs
           helm-docs --version
 
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.21.3'
+
+      - name: Lint all charts
+        working-directory: manifests
+        run: |
+          make helm-lint
+
       - name: Generate chart documentation
         working-directory: manifests
         run: |
