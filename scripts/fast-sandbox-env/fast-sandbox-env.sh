@@ -1313,7 +1313,16 @@ verify_lifecycle_ops() { # <sandbox-id>
 	[[ "$(printf '%s' "$out" | jq -r '.id')" == "$id" ]] || fail "GET returned wrong id: $out"
 	pass "lifecycle: GET /sandboxes/{id}"
 
-	out="$(server_api GET "/sandboxes?page=1&pageSize=50")" || fail "GET /sandboxes failed"
+	# Capture the body: a 503 here carries the backend error code that
+	# names the failing list source.
+	local list_code
+	list_code="$(curl -sS -m 60 -o "$WORK/last-list.json" -w '%{http_code}' \
+		-H "OPEN-SANDBOX-API-KEY: $SERVER_API_KEY" \
+		"$SERVER_URL/sandboxes?page=1&pageSize=50")"
+	if [[ "$list_code" != "200" ]] || ! jq -e '.items' "$WORK/last-list.json" >/dev/null 2>&1; then
+		fail "GET /sandboxes returned $list_code: $(head -c 400 "$WORK/last-list.json" 2>/dev/null)"
+	fi
+	out="$(cat "$WORK/last-list.json")"
 	[[ "$(printf '%s' "$out" | jq -r --arg id "$id" '.items[]?.id | select(. == $id)' | head -1)" == "$id" ]] \
 		|| fail "list does not contain $id: $(printf '%s' "$out" | jq -c '.pagination')"
 	pass "lifecycle: GET /sandboxes (list contains the verify sandbox)"
