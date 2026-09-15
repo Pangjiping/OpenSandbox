@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from opensandbox_server.api import lifecycle
-from opensandbox_server.api.schema import CreateSandboxResponse, SandboxStatus
+from opensandbox_server.api.schema import CreateSandboxRequest, CreateSandboxResponse, SandboxStatus
 
 
 def test_create_sandbox_openapi_describes_synchronous_provisioning(
@@ -252,10 +252,10 @@ def test_create_sandbox_pool_only_passes_resolution_untouched(
     monkeypatch,
 ) -> None:
     now = datetime.now(timezone.utc)
-    calls: list[object] = []
-    resolve_calls: list[object] = []
+    calls: list[CreateSandboxRequest] = []
+    resolve_calls: list[CreateSandboxRequest] = []
 
-    async def spy_resolve(request):
+    async def spy_resolve(request: CreateSandboxRequest):
         resolve_calls.append(request)
         return request
 
