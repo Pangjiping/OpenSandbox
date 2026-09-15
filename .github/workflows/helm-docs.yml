@@ -5,7 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'manifests/charts/**'
-      - 'kubernetes/Makefile'
+      - 'manifests/Makefile'
       - '.github/workflows/helm-docs.yml'
 
 permissions:
@@ -33,14 +33,14 @@ jobs:
           helm-docs --version
 
       - name: Generate chart documentation
-        working-directory: kubernetes
+        working-directory: manifests
         run: |
           make helm-docs
 
       - name: Verify no drift
         run: |
           if [ -n "$(git status --porcelain -- manifests/charts)" ]; then
-            echo "::error::Helm chart documentation is out of date. Run 'make helm-docs' in kubernetes/ and commit the generated README.md files."
+            echo "::error::Helm chart documentation is out of date. Run 'make helm-docs' in manifests/ and commit the generated README.md files."
             git diff -- manifests/charts
             exit 1
           fi

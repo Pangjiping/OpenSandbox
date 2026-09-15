@@ -125,7 +125,7 @@ Deploy via Helm:
 
 ```bash
 cd kubernetes
-make helm-install
+make -C manifests helm-install
 ```
 
 Regenerate CRD manifests and DeepCopy:

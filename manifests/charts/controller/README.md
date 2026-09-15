@@ -17,7 +17,7 @@ This chart bootstraps an OpenSandbox Controller deployment on a Kubernetes clust
 - Kubernetes 1.21.1+
 - Helm 3.0+
 - Container runtime (Docker, containerd, etc.)
-- The OpenSandbox CRDs, installed by the [base chart](../../../manifests/charts/base) (`helm install base manifests/charts/base` from the repository root). This chart no longer installs CRDs itself.
+- The OpenSandbox CRDs, installed by the [base chart](../base) (`helm install base manifests/charts/base` from the repository root). This chart no longer installs CRDs itself.
 
 ## Installing the Chart
 
@@ -25,7 +25,7 @@ Install the base chart first (CRDs and user-facing RBAC), then the controller:
 
 ```bash
 helm install base manifests/charts/base
-helm install opensandbox-controller ./opensandbox-controller \
+helm install opensandbox-controller manifests/charts/controller \
   --set controller.image.repository=<your-registry>/opensandbox-controller \
   --set controller.image.tag=v0.1.0 \
   --namespace opensandbox-system \
@@ -243,7 +243,7 @@ spec:
 To upgrade the chart:
 
 ```bash
-helm upgrade opensandbox-controller ./opensandbox-controller \
+helm upgrade opensandbox-controller manifests/charts/controller \
   --namespace opensandbox-system \
   -f custom-values.yaml
 ```
