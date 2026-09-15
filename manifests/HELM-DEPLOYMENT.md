@@ -12,10 +12,15 @@ This document describes how to deploy the OpenSandbox Controller using Helm Char
 
 ### Option 1: Install from GitHub Release (Recommended)
 
-Download and install the published chart package directly:
+Download and install the published chart package directly. The controller
+chart no longer bundles the CRDs; install the base chart once per cluster
+first:
 
 ```bash
 # Install the latest version (0.1.0)
+helm install base \
+  https://github.com/opensandbox-group/OpenSandbox/releases/download/helm/base/0.1.0/base-0.1.0.tgz
+
 helm install opensandbox-controller \
   https://github.com/opensandbox-group/OpenSandbox/releases/download/helm/opensandbox-controller/0.1.0/opensandbox-controller-0.1.0.tgz \
   --namespace opensandbox-system \

@@ -22,9 +22,10 @@ Usage:
   manifests/release/verify-helm-package.sh <package> <component> <chart-version> <app-version>
 
 Verifies the metadata and default rendering of an already packaged Helm chart.
-For the all-in-one opensandbox chart it also verifies that all embedded charts
-are present and that the default controller arguments omit the optional
-containerd socket flag.
+Charts without an appVersion (base, ingress-gateway) pass an empty
+<app-version>; for the all-in-one opensandbox chart it also verifies that all
+embedded charts are present and that the default controller arguments omit the
+optional containerd socket flag.
 EOF
 }
 
@@ -75,8 +76,13 @@ actual_app_version="$(metadata_value appVersion "$metadata")"
   die "Expected chart name '$expected_component', got '$actual_component'"
 [[ "$actual_chart_version" == "$expected_chart_version" ]] || \
   die "Expected chart version '$expected_chart_version', got '$actual_chart_version'"
-[[ "$actual_app_version" == "$expected_app_version" ]] || \
-  die "Expected app version '$expected_app_version', got '$actual_app_version'"
+if [[ -n "$expected_app_version" ]]; then
+  [[ "$actual_app_version" == "$expected_app_version" ]] || \
+    die "Expected app version '$expected_app_version', got '$actual_app_version'"
+else
+  [[ -z "$actual_app_version" ]] || \
+    die "Chart unexpectedly declares appVersion '$actual_app_version' (expected none)"
+fi
 
 helm lint "$package_path"
 
@@ -92,19 +98,35 @@ helm template release-under-test "$package_path" \
   >"$work_dir/rendered.yaml" \
   2>"$work_dir/render-warnings.txt"
 
+check_primary_image=1
 case "$expected_component" in
   opensandbox|opensandbox-server) expected_primary_image_suffix="/server:v${expected_app_version}" ;;
   opensandbox-controller) expected_primary_image_suffix="/controller:v${expected_app_version}" ;;
   opensandbox-node-agent) expected_primary_image_suffix="/nodeagent:v${expected_app_version}" ;;
+  base) check_primary_image= ;;  # cluster-scoped resources only, no workloads
+  ingress-gateway) check_primary_image= ;;  # image tag is independent of chart releases
   *) die "Unsupported Helm component: ${expected_component}" ;;
 esac
-awk '$1 == "image:" {gsub(/^"|"$/, "", $2); print $2}' "$work_dir/rendered.yaml" \
-  >"$work_dir/rendered-images.txt"
-awk -v suffix="$expected_primary_image_suffix" '
-  length($0) >= length(suffix) && substr($0, length($0) - length(suffix) + 1) == suffix { found = 1 }
-  END { exit !found }
-' "$work_dir/rendered-images.txt" || \
-  die "Default primary image does not match appVersion ${expected_app_version} (${expected_primary_image_suffix})"
+if [[ -n "$check_primary_image" ]]; then
+  awk '$1 == "image:" {gsub(/^"|"$/, "", $2); print $2}' "$work_dir/rendered.yaml" \
+    >"$work_dir/rendered-images.txt"
+  awk -v suffix="$expected_primary_image_suffix" '
+    length($0) >= length(suffix) && substr($0, length($0) - length(suffix) + 1) == suffix { found = 1 }
+    END { exit !found }
+  ' "$work_dir/rendered-images.txt" || \
+    die "Default primary image does not match appVersion ${expected_app_version} (${expected_primary_image_suffix})"
+fi
+
+case "$expected_component" in
+  base)
+    [[ "$(grep -c '^kind: CustomResourceDefinition$' "$work_dir/rendered.yaml")" -eq 3 ]] || \
+      die "base package did not render the three OpenSandbox CRDs"
+    ;;
+  ingress-gateway)
+    grep -Fq 'name: opensandbox-ingress-gateway' "$work_dir/rendered.yaml" || \
+      die "ingress-gateway package did not render the gateway resources"
+    ;;
+esac
 
 if [[ "$expected_component" == "opensandbox" ]]; then
   for dependency in opensandbox-controller opensandbox-server opensandbox-node-agent; do

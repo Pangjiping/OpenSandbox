@@ -428,6 +428,16 @@ case "$TARGET" in
     WORKFLOW_HINT=".github/workflows/publish-helm-chart.yml"
     TARGET_PATH_FILTERS=("manifests/charts/node-agent")
     ;;
+  helm/base)
+    DISPLAY_NAME="Helm base"
+    WORKFLOW_HINT=".github/workflows/publish-helm-chart.yml"
+    TARGET_PATH_FILTERS=("manifests/charts/base")
+    ;;
+  helm/ingress-gateway)
+    DISPLAY_NAME="Helm ingress-gateway"
+    WORKFLOW_HINT=".github/workflows/publish-helm-chart.yml"
+    TARGET_PATH_FILTERS=("manifests/charts/ingress-gateway")
+    ;;
   *)
     die "Unsupported target '$TARGET'. Run with --help for supported target list."
     ;;

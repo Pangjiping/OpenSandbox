@@ -43,6 +43,9 @@ kubectl create namespace opensandbox --dry-run=client -o yaml | kubectl apply -f
 
 kubectl apply -f examples/aks-kata/batchsandbox-template-configmap.yaml
 
+# The controller chart no longer ships the CRDs; install base first on a fresh cluster
+helm upgrade --install base ./manifests/charts/base
+
 helm upgrade --install opensandbox-controller ./manifests/charts/controller \
   --namespace opensandbox-system \
   -f examples/aks-kata/controller-values.yaml

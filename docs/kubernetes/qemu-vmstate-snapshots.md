@@ -267,9 +267,12 @@ controller:
     resumePullSecret: snapshot-registry
 ```
 
-Install or upgrade the controller:
+Install or upgrade the controller. On a fresh cluster, install the base chart
+first — the controller chart no longer ships the CRDs:
 
 ```bash
+helm upgrade --install base ./manifests/charts/base
+
 helm upgrade --install opensandbox-controller \
   ./manifests/charts/controller \
   --namespace opensandbox-system \
@@ -277,8 +280,9 @@ helm upgrade --install opensandbox-controller \
   --values qemu-snapshot-values.yaml
 ```
 
-The chart installs the updated `SandboxSnapshot` CRD and RBAC together with
-the controller. Verify the deployed capability before creating workloads:
+Sync the CRDs into the base chart (`make -C manifests helm-gen-crds`) and
+upgrade `base` so the updated `SandboxSnapshot` CRD lands. Verify the deployed
+capability before creating workloads:
 
 ```bash
 kubectl -n opensandbox-system rollout status \

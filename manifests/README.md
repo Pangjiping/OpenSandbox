@@ -39,6 +39,7 @@ manifests/
 All-in-one (umbrella):
 
 ```bash
+helm dependency build manifests/charts/opensandbox  # package sub-charts (not committed)
 helm install opensandbox manifests/charts/opensandbox --namespace opensandbox-system --create-namespace
 ```
 
