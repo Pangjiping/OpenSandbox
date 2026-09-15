@@ -6,7 +6,7 @@ dependencies:
   repository: file://../opensandbox-controller
   version: 0.2.1
 - name: opensandbox-server
-  repository: file://../opensandbox-server
+  repository: file://../../../manifests/charts/server
   version: 0.1.0
 - name: ingress-gateway
   repository: file://../../../manifests/charts/ingress-gateway
@@ -14,5 +14,5 @@ dependencies:
 - name: opensandbox-node-agent
   repository: file://../opensandbox-node-agent
   version: 0.1.0
-digest: sha256:81db4b2baffc09e46405764cd18ea133a64932dfdb45ca1453092d4da65cb14b
-generated: "2026-09-15T21:12:26.218693+08:00"
+digest: sha256:6d0f1861e287fc633b9c9160c099d195866786fae0fe6db2e0436ad8db66d656
+generated: "2026-09-15T21:23:41.750094+08:00"

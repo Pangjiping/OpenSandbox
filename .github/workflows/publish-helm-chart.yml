@@ -160,7 +160,7 @@ jobs:
           set -euo pipefail
           case "$COMPONENT" in
             opensandbox-controller) chart_path="kubernetes/charts/opensandbox-controller" ;;
-            opensandbox-server) chart_path="kubernetes/charts/opensandbox-server" ;;
+            opensandbox-server) chart_path="manifests/charts/server" ;;
             opensandbox) chart_path="kubernetes/charts/opensandbox" ;;
             opensandbox-node-agent) chart_path="kubernetes/charts/opensandbox-node-agent" ;;
           esac

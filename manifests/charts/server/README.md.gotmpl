@@ -62,7 +62,7 @@ helm install opensandbox-server "${CHART_URL}" \
   --values values-server.yaml
 ```
 
-See the [Kubernetes deployment guide](../../../docs/kubernetes/deployment.md) for production configuration, verification, and upgrades.
+See the [Kubernetes deployment guide](../../docs/kubernetes/deployment.md) for production configuration, verification, and upgrades.
 
 ## Install from local source
 
@@ -86,7 +86,7 @@ helm install opensandbox-server ./kubernetes/charts/opensandbox-server \
 ### Ingress gateway announcement
 
 The ingress gateway (components/ingress) is deployed by its own
-[`ingress-gateway` chart](../../../manifests/charts/ingress-gateway). This chart
+[`ingress-gateway` chart](../ingress-gateway). This chart
 only announces the gateway to clients: set `server.gateway.enabled=true` to
 write server config `[ingress] mode = "gateway"` so the server returns the
 correct gateway address to clients.

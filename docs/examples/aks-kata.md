@@ -47,7 +47,7 @@ helm upgrade --install opensandbox-controller ./kubernetes/charts/opensandbox-co
   --namespace opensandbox-system \
   -f examples/aks-kata/controller-values.yaml
 
-helm upgrade --install opensandbox-server ./kubernetes/charts/opensandbox-server \
+helm upgrade --install opensandbox-server ./manifests/charts/server \
   --namespace opensandbox-system \
   -f examples/aks-kata/server-values.yaml
 ```

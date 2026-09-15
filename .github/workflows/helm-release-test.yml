@@ -90,13 +90,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          helm template opensandbox-server kubernetes/charts/opensandbox-server \
-            --show-only templates/server.yaml >/tmp/opensandbox-server-rendered.yaml
+          helm template opensandbox-server manifests/charts/server \
+            --show-only templates/deployment.yaml >/tmp/opensandbox-server-rendered.yaml
           grep -qx '  replicas: 1' /tmp/opensandbox-server-rendered.yaml
           grep -qx '    type: Recreate' /tmp/opensandbox-server-rendered.yaml
 
           helm template opensandbox "dist/$PACKAGE_NAME" \
-            --show-only charts/opensandbox-server/templates/server.yaml \
+            --show-only charts/opensandbox-server/templates/deployment.yaml \
             >/tmp/opensandbox-umbrella-server-rendered.yaml
           grep -qx '  replicas: 1' /tmp/opensandbox-umbrella-server-rendered.yaml
           grep -qx '    type: Recreate' /tmp/opensandbox-umbrella-server-rendered.yaml

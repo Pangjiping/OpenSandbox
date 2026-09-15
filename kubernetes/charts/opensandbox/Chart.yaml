@@ -48,7 +48,7 @@ dependencies:
     repository: "file://../opensandbox-controller"
   - name: opensandbox-server
     version: "0.1.0"
-    repository: "file://../opensandbox-server"
+    repository: "file://../../../manifests/charts/server"
   - name: ingress-gateway
     version: "0.1.0"
     repository: "file://../../../manifests/charts/ingress-gateway"

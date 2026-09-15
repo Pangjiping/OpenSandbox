@@ -19,7 +19,7 @@ Verify the installation:
 The server exposes the Lifecycle API (create/delete sandboxes, etc.).
 {{- if .Values.server.gateway.enabled }}
 
-Server config [ingress]: mode=gateway, gateway.address={{ .Values.server.gateway.host }}, gateway.route.mode={{ .Values.server.gateway.gatewayRouteMode }}. Ingress gateway (components/ingress) is deployed in this release.
+Server config [ingress]: mode=gateway, gateway.address={{ .Values.server.gateway.host }}, gateway.route.mode={{ .Values.server.gateway.gatewayRouteMode }}. Make sure the ingress-gateway chart (components/ingress) is installed and the route mode matches.
 {{- else }}
 
 Port-forward to access locally:

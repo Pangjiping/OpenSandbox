@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # Bump component image versions across the project (image refs like component:vX.Y.Z).
-# For ingress, also updates gateway image tag in kubernetes/charts/opensandbox-server/values.yaml.
+# For ingress, also updates gateway image tag in manifests/charts/ingress-gateway/values.yaml.
 #
 # External image pins:
 # OpenSandbox does not own or release the code-interpreter sandbox image, which is maintained
