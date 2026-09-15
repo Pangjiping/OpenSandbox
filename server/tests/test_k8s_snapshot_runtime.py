@@ -237,7 +237,6 @@ def test_create_snapshot_creates_cr_and_maps_succeed_to_ready() -> None:
     runtime = KubernetesSnapshotRuntime(
         k8s_client,
         namespace="default",
-        wait_timeout_seconds=0,
     )
 
     status = runtime.create_snapshot(SNAPSHOT_ID, SANDBOX_ID)
@@ -499,7 +498,7 @@ def test_create_snapshot_fails_when_existing_cr_points_to_different_sandbox() ->
     runtime = KubernetesSnapshotRuntime(
         k8s_client,
         namespace="default",
-        wait_timeout_seconds=0    )
+    )
 
     status = runtime.create_snapshot(SNAPSHOT_ID, SANDBOX_ID)
 
@@ -537,7 +536,7 @@ def test_create_snapshot_marks_ambiguous_multi_container_restore_failed() -> Non
     runtime = KubernetesSnapshotRuntime(
         k8s_client,
         namespace="default",
-        wait_timeout_seconds=0    )
+    )
 
     status = runtime.create_snapshot(SNAPSHOT_ID, SANDBOX_ID)
 

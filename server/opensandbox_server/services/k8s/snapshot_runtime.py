@@ -50,7 +50,6 @@ PUBLIC_SNAPSHOT_ID_LABEL = "opensandbox.io/snapshot-id"
 PUBLIC_SNAPSHOT_SOURCE_SANDBOX_ID_LABEL = "opensandbox.io/source-sandbox-id"
 PUBLIC_SNAPSHOT_SCOPE_VALUE = "public"
 MAIN_CONTAINER_NAME = "sandbox"
-DEFAULT_WAIT_TIMEOUT_SECONDS = 15 * 60
 
 
 def _stable_hex(value: str) -> str:
@@ -81,14 +80,10 @@ class KubernetesSnapshotRuntime:
         k8s_client,
         *,
         namespace: str,
-        wait_timeout_seconds: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
         postgresql_ha_enabled: bool = False,
     ) -> None:
         self._k8s_client = k8s_client
         self._namespace = namespace
-        # Retained for constructor compatibility with the previous blocking
-        # wait; convergence is now event/read driven, so nothing times out.
-        self._wait_timeout_seconds = wait_timeout_seconds
         self._postgresql_ha_enabled = postgresql_ha_enabled
         self._snapshot_namespaces: dict[str, str] = {}
         self._watched_namespaces: set[str] = set()

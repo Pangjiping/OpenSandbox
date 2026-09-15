@@ -170,7 +170,6 @@ def create_snapshot_runtime(
         kubernetes_runtime: SnapshotRuntime = KubernetesSnapshotRuntime(
             k8s_client,
             namespace=namespace,
-            wait_timeout_seconds=kubernetes_config.snapshot_create_timeout_seconds,
             postgresql_ha_enabled=active_config.store.type == "postgresql",
         )
         # fsb sandboxes (fsb-*) coexist with pod sandboxes under the same

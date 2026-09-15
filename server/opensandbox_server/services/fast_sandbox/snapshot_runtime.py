@@ -30,7 +30,6 @@ from threading import Lock
 from typing import Callable, Iterable, Optional
 from uuid import UUID
 
-from opensandbox_server.services.constants import SANDBOX_SNAPSHOT_ID_LABEL
 from opensandbox_server.services.fast_sandbox.fastpath_client import (
     FastPathClient,
     FastPathError,
@@ -52,6 +51,13 @@ GROUP = "sandbox.fast.io"
 VERSION = "v1alpha2"
 PLURAL = "sandboxesnapshots"
 
+# FastPath validates snapshot metadata keys as DNS-1123 labels and projects
+# them onto CR labels as "metadata.sandbox.fast.io/<key>" (same convention as
+# sandbox metadata).
+SNAPSHOT_ID_METADATA_KEY = "opensandbox-snapshot-id"
+SNAPSHOT_ID_LABEL_KEY = f"metadata.sandbox.fast.io/{SNAPSHOT_ID_METADATA_KEY}"
+_SNAPSHOT_ID_LABEL = SNAPSHOT_ID_LABEL_KEY
+
 logger = logging.getLogger(__name__)
 
 # FastPath phase values (SnapshotPhase): PENDING, CREATING, PUBLISHING,
@@ -64,15 +70,15 @@ _BACKEND_FSB = "fsb"
 def snapshot_id_from_crd(obj: dict) -> Optional[str]:
     """Reverse-map a SandboxSnapshot CR to the server snapshot id.
 
-    The id is carried in the ``opensandbox.io/snapshot-id`` metadata entry set
-    at create time (FastPath persists snapshot metadata as CR labels); the
-    deterministic CR name (``osb-snap-<uuid hex>``) is the fallback.
+    The id is carried in the ``metadata.sandbox.fast.io/opensandbox-snapshot-id``
+    label set at create time; the deterministic CR name
+    (``osb-snap-<uuid hex>``) is the fallback.
     """
     metadata = obj.get("metadata") if isinstance(obj, dict) else None
     if not isinstance(metadata, dict):
         return None
     labels = metadata.get("labels") or {}
-    snapshot_id = labels.get(SANDBOX_SNAPSHOT_ID_LABEL)
+    snapshot_id = labels.get(_SNAPSHOT_ID_LABEL)
     if snapshot_id:
         return str(snapshot_id)
     name = metadata.get("name") or ""
@@ -141,7 +147,7 @@ class FastSandboxSnapshotRuntime:
             sandbox=namespaced_reference(ns, sandbox_id),
             template_name=snapshot_name,
         )
-        request.metadata[SANDBOX_SNAPSHOT_ID_LABEL] = snapshot_id
+        request.metadata[SNAPSHOT_ID_METADATA_KEY] = snapshot_id
         try:
             self._fastpath.create_sandbox_snapshot(request)
         except FastPathNotFound as exc:

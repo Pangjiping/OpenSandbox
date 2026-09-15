@@ -61,24 +61,6 @@ def test_create_snapshot_runtime_composes_kubernetes_and_fsb_runtimes() -> None:
     assert k8s_runtime._postgresql_ha_enabled is False
 
 
-def test_create_snapshot_runtime_uses_kubernetes_snapshot_create_timeout() -> None:
-    config = AppConfig(
-        runtime=RuntimeConfig(type="kubernetes", execd_image="opensandbox/execd:test"),
-        kubernetes=KubernetesRuntimeConfig(
-            namespace="default",
-            snapshot_create_timeout_seconds=1234,
-        ),
-    )
-    k8s_client = object()
-
-    runtime = create_snapshot_runtime(config, k8s_client=k8s_client)
-
-    assert isinstance(runtime, CompositeSnapshotRuntime)
-    k8s_runtime = runtime.default
-    assert isinstance(k8s_runtime, KubernetesSnapshotRuntime)
-    assert k8s_runtime._wait_timeout_seconds == 1234
-
-
 def test_postgresql_kubernetes_runtime_enables_ha_recovery() -> None:
     config = AppConfig(
         runtime=RuntimeConfig(type="kubernetes", execd_image="opensandbox/execd:test"),

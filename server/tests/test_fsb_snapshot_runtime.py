@@ -20,7 +20,6 @@ from __future__ import annotations
 from typing import cast
 import pytest
 
-from opensandbox_server.services.constants import SANDBOX_SNAPSHOT_ID_LABEL
 from opensandbox_server.services.fast_sandbox.fastpath_client import (
     FastPathClient,
     FastPathNotFound,
@@ -28,6 +27,8 @@ from opensandbox_server.services.fast_sandbox.fastpath_client import (
 from opensandbox_server.services.fast_sandbox.generated import fastpath_pb2 as pb2
 from opensandbox_server.services.fast_sandbox.snapshot_runtime import (
     PLURAL,
+    SNAPSHOT_ID_LABEL_KEY,
+    SNAPSHOT_ID_METADATA_KEY,
     FastSandboxSnapshotRuntime,
     snapshot_id_from_crd,
 )
@@ -150,7 +151,7 @@ def test_create_snapshot_submits_intent_without_waiting() -> None:
     assert request.template_name == build_public_snapshot_name(SNAPSHOT_ID)
     assert request.sandbox.namespaced_name.namespace == "tenant-a"
     assert request.sandbox.namespaced_name.name == SANDBOX_ID
-    assert request.metadata[SANDBOX_SNAPSHOT_ID_LABEL] == SNAPSHOT_ID
+    assert request.metadata[SNAPSHOT_ID_METADATA_KEY] == SNAPSHOT_ID
 
 
 def test_create_snapshot_maps_fastpath_errors_to_failed() -> None:
@@ -242,7 +243,7 @@ def test_start_status_watch_registers_namespaces_and_invokes_callback() -> None:
         "metadata": {
             "name": build_public_snapshot_name(SNAPSHOT_ID),
             "namespace": "tenant-a",
-            "labels": {SANDBOX_SNAPSHOT_ID_LABEL: SNAPSHOT_ID},
+            "labels": {SNAPSHOT_ID_LABEL_KEY: SNAPSHOT_ID},
         }
     }
     k8s.watch_handlers[0]("MODIFIED", cr)
@@ -287,7 +288,7 @@ def test_snapshot_id_from_crd_prefers_label_over_name() -> None:
     cr = {
         "metadata": {
             "name": build_public_snapshot_name(SNAPSHOT_ID),
-            "labels": {SANDBOX_SNAPSHOT_ID_LABEL: "explicit-id"},
+            "labels": {SNAPSHOT_ID_LABEL_KEY: "explicit-id"},
         }
     }
 
