@@ -131,14 +131,6 @@ class PersistedSnapshotService(SnapshotService):
 
     def create_snapshot(self, sandbox_id: str, request: CreateSnapshotRequest) -> Snapshot:
         sandbox = self._sandbox_service.get_sandbox(sandbox_id)
-        if sandbox_id.startswith("fsb-"):
-            raise HTTPException(
-                status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail={
-                    "code": "SNAPSHOT::NOT_IMPLEMENTED",
-                    "message": "Fsb does not support sandbox snapshots.",
-                },
-            )
         self._ensure_source_sandbox_running(sandbox)
 
         if not self._snapshot_runtime.supports_create_snapshot():
@@ -262,6 +254,7 @@ class PersistedSnapshotService(SnapshotService):
             snapshot_id,
             image=record.restore_config.image,
             namespace=record.namespace,
+            source_sandbox_id=record.source_sandbox_id,
         )
         self._snapshot_repository.delete(snapshot_id)
 
@@ -336,6 +329,7 @@ class PersistedSnapshotService(SnapshotService):
                 record.id,
                 image=record.restore_config.image,
                 namespace=record.namespace,
+                source_sandbox_id=record.source_sandbox_id,
             )
         except Exception as exc:  # noqa: BLE001 - convergence retries on the next read
             logger.warning(
@@ -471,7 +465,12 @@ class PersistedSnapshotService(SnapshotService):
     def _complete_snapshot(self, record: SnapshotRecord, runtime_status) -> None:
         current_record = self._snapshot_repository.get(record.id)
         if current_record is None:
-            self._cleanup_runtime_artifact(record.id, runtime_status.image, record.namespace)
+            self._cleanup_runtime_artifact(
+                record.id,
+                runtime_status.image,
+                record.namespace,
+                record.source_sandbox_id,
+            )
             return
 
         if current_record.status.state == SnapshotState.DELETING:
@@ -479,6 +478,7 @@ class PersistedSnapshotService(SnapshotService):
                 current_record.id,
                 runtime_status.image,
                 current_record.namespace,
+                current_record.source_sandbox_id,
             )
             if self._preserve_deleting_on_cleanup_failure and not cleaned:
                 return
@@ -542,6 +542,7 @@ class PersistedSnapshotService(SnapshotService):
                 record.id,
                 image=record.restore_config.image,
                 namespace=record.namespace,
+                source_sandbox_id=record.source_sandbox_id,
             )
             if runtime_status.state == SnapshotState.CREATING:
                 self._submit_snapshot_worker(record)
@@ -555,6 +556,7 @@ class PersistedSnapshotService(SnapshotService):
                     record.id,
                     image=record.restore_config.image,
                     namespace=record.namespace,
+                    source_sandbox_id=record.source_sandbox_id,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
@@ -601,7 +603,10 @@ class PersistedSnapshotService(SnapshotService):
                 namespace=record.namespace,
                 name=record.name,
                 description=record.description,
-                restore_config=SnapshotRestoreConfig(image=runtime_status.image),
+                restore_config=SnapshotRestoreConfig(
+                    image=runtime_status.image,
+                    backend=runtime_status.backend,
+                ),
                 status=SnapshotStatusRecord(
                     state=SnapshotState.READY,
                     reason=runtime_status.reason,
@@ -637,12 +642,18 @@ class PersistedSnapshotService(SnapshotService):
         snapshot_id: str,
         image: str | None,
         namespace: str | None = "default",
+        source_sandbox_id: str | None = None,
     ) -> bool:
         if not image:
             return False
 
         try:
-            self._snapshot_runtime.delete_snapshot(snapshot_id, image=image, namespace=namespace)
+            self._snapshot_runtime.delete_snapshot(
+                snapshot_id,
+                image=image,
+                namespace=namespace,
+                source_sandbox_id=source_sandbox_id,
+            )
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning(

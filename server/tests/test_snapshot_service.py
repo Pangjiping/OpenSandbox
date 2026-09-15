@@ -92,6 +92,7 @@ class StubSnapshotRuntime:
         self.calls: list[tuple[str, str]] = []
         self.delete_calls: list[tuple[str, str | None]] = []
         self.inspect_status_by_snapshot_id: dict[str, SnapshotRuntimeStatus] = {}
+        self.create_result: SnapshotRuntimeStatus | None = None
 
     def supports_create_snapshot(self) -> bool:
         return True
@@ -104,15 +105,29 @@ class StubSnapshotRuntime:
 
     def create_snapshot(self, snapshot_id: str, sandbox_id: str, *, namespace: str | None = None):
         self.calls.append((snapshot_id, sandbox_id))
-        return None
+        return self.create_result
 
     def get_snapshot_status(self, snapshot_id: str):
         return None
 
-    def delete_snapshot(self, snapshot_id: str, image: str | None = None, *, namespace: str | None = None) -> None:
+    def delete_snapshot(
+        self,
+        snapshot_id: str,
+        image: str | None = None,
+        *,
+        namespace: str | None = None,
+        source_sandbox_id: str | None = None,
+    ) -> None:
         self.delete_calls.append((snapshot_id, image))
 
-    def inspect_snapshot(self, snapshot_id: str, image: str | None = None, *, namespace: str | None = None) -> SnapshotRuntimeStatus:
+    def inspect_snapshot(
+        self,
+        snapshot_id: str,
+        image: str | None = None,
+        *,
+        namespace: str | None = None,
+        source_sandbox_id: str | None = None,
+    ) -> SnapshotRuntimeStatus:
         return self.inspect_status_by_snapshot_id.get(
             snapshot_id,
             SnapshotRuntimeStatus(
@@ -1030,14 +1045,23 @@ def test_snapshot_service_recovers_deleting_snapshot(tmp_path) -> None:
     assert repo.get("snap-delete") is None
 
 
-def test_snapshot_service_rejects_fsb_without_persisting_or_calling_legacy(tmp_path) -> None:
+def test_snapshot_service_accepts_fsb_source_sandbox(tmp_path) -> None:
     repo = SQLiteSnapshotRepository(tmp_path / "snapshots.db")
     runtime = StubSnapshotRuntime()
     service = PersistedSnapshotService(
         repo, StubSandboxService(), snapshot_runtime=runtime, snapshot_executor=ImmediateExecutor()
     )
-    with pytest.raises(HTTPException) as exc_info:
-        service.create_snapshot("fsb-001", CreateSnapshotRequest())
-    assert exc_info.value.status_code == 501
-    assert service.list_snapshots(ListSnapshotsRequest()).items == []
-    assert runtime.calls == []
+    runtime.create_result = SnapshotRuntimeStatus(
+        state=SnapshotState.CREATING,
+        reason="snapshot_runtime_submitted",
+        backend="fsb",
+    )
+
+    created = service.create_snapshot("fsb-001", CreateSnapshotRequest(name="fsb-checkpoint"))
+
+    stored = repo.get(created.id)
+    assert created.status.state == "Creating"
+    assert stored is not None
+    assert stored.status.state == SnapshotState.CREATING
+    assert stored.source_sandbox_id == "fsb-001"
+    assert runtime.calls == [(created.id, "fsb-001")]

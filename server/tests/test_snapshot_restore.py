@@ -60,6 +60,40 @@ async def test_snapshot_restore_resolves_effective_image(monkeypatch, tmp_path) 
     assert resolved.image.uri == "registry.example.com/snapshots/snap-001:latest"
     assert resolved.snapshot_id == "snap-001"
     assert resolved.entrypoint == DEFAULT_SNAPSHOT_RESTORE_ENTRYPOINT
+    assert resolved.resolved_snapshot_backend is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_restore_records_fsb_backend_hint(monkeypatch, tmp_path) -> None:
+    repo = SQLiteSnapshotRepository(tmp_path / "snapshots.db")
+    repo.create(
+        SnapshotRecord(
+            id="snap-fsb-001",
+            source_sandbox_id="fsb-001",
+            restore_config=SnapshotRestoreConfig(
+                image="registry.example.com/fsb/snap-001:index",
+                backend="fsb",
+            ),
+            status=SnapshotStatusRecord(
+                state=SnapshotState.READY,
+                last_transition_at=datetime.now(timezone.utc),
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        "opensandbox_server.services.snapshot_restore.get_snapshot_repository",
+        lambda: repo,
+    )
+
+    request = CreateSandboxRequest(
+        snapshotId="snap-fsb-001",
+        resourceLimits=ResourceLimits(root={"cpu": "500m"}),
+    )
+
+    resolved = await resolve_sandbox_image_from_request(request)
+    assert resolved.image is not None
+    assert resolved.image.uri == "registry.example.com/fsb/snap-001:index"
+    assert resolved.resolved_snapshot_backend == "fsb"
 
 
 @pytest.mark.asyncio

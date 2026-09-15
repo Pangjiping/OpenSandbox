@@ -367,7 +367,14 @@ class KubernetesSnapshotRuntime:
         ns = self._snapshot_namespaces.get(snapshot_id)
         return self.inspect_snapshot(snapshot_id, namespace=ns)
 
-    def delete_snapshot(self, snapshot_id: str, image: Optional[str] = None, *, namespace: str | None = None) -> None:
+    def delete_snapshot(
+        self,
+        snapshot_id: str,
+        image: Optional[str] = None,
+        *,
+        namespace: str | None = None,
+        source_sandbox_id: str | None = None,
+    ) -> None:
         snapshot_name = build_public_snapshot_name(snapshot_id)
         fallback = namespace if namespace is not None else self._namespace
         ns = self._snapshot_namespaces.pop(snapshot_id, fallback)
@@ -385,7 +392,14 @@ class KubernetesSnapshotRuntime:
                 return
             raise RuntimeError(f"Failed to delete Kubernetes SandboxSnapshot {snapshot_name}: {exc}") from exc
 
-    def inspect_snapshot(self, snapshot_id: str, image: Optional[str] = None, *, namespace: str | None = None) -> SnapshotRuntimeStatus:
+    def inspect_snapshot(
+        self,
+        snapshot_id: str,
+        image: Optional[str] = None,
+        *,
+        namespace: str | None = None,
+        source_sandbox_id: str | None = None,
+    ) -> SnapshotRuntimeStatus:
         snapshot_name = build_public_snapshot_name(snapshot_id)
         ns = namespace or self._snapshot_namespaces.get(snapshot_id)
         try:

@@ -36,8 +36,13 @@ async def resolve_sandbox_image_from_request(
     Normalize a sandbox create request to an effective image-backed request.
 
     When `snapshotId` is used, this resolves the snapshot from server
-    persistence and injects `request.image` from `restore_config.image`.
+    persistence and injects `request.image` from `restore_config.image`, and
+    records the owning backend so composite routing can dispatch the create.
     """
+
+    if (request.template_id or "").strip():
+        # Template mode fixes the workload shape; nothing to resolve.
+        return request
 
     has_image = request.image is not None and bool(request.image.uri.strip())
     if has_image:
@@ -95,6 +100,7 @@ async def resolve_sandbox_image_from_request(
 
     request.image = ImageSpec(uri=restore_image)
     request.snapshot_id = snapshot_id
+    request._resolved_snapshot_backend = (snapshot.restore_config.backend or "").strip() or None
     if not request.entrypoint:
         request.entrypoint = list(DEFAULT_SNAPSHOT_RESTORE_ENTRYPOINT)
     return request

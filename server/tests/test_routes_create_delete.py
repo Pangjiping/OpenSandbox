@@ -141,6 +141,11 @@ def test_create_sandbox_accepts_snapshot_id_without_entrypoint(
     now = datetime.now(timezone.utc)
     calls: list[object] = []
 
+    async def passthrough_resolve(request):
+        return request
+
+    monkeypatch.setattr(lifecycle, "resolve_sandbox_image_from_request", passthrough_resolve)
+
     class StubService:
         @staticmethod
         async def create_sandbox(request) -> CreateSandboxResponse:
@@ -177,6 +182,11 @@ def test_create_sandbox_accepts_snapshot_id_with_entrypoint(
 ) -> None:
     now = datetime.now(timezone.utc)
     calls: list[object] = []
+
+    async def passthrough_resolve(request):
+        return request
+
+    monkeypatch.setattr(lifecycle, "resolve_sandbox_image_from_request", passthrough_resolve)
 
     class StubService:
         @staticmethod

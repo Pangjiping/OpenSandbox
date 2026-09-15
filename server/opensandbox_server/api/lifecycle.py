@@ -50,6 +50,7 @@ from opensandbox_server.services.constants import (
     SandboxErrorCodes,
 )
 from opensandbox_server.services.factory import create_sandbox_service
+from opensandbox_server.services.snapshot_restore import resolve_sandbox_image_from_request
 from opensandbox_server.services.snapshot_service import create_snapshot_service
 
 # Initialize router
@@ -112,6 +113,10 @@ async def create_sandbox(
         HTTPException: If sandbox creation scheduling fails
     """
     validate_extensions(request.extensions)
+    # Resolve snapshotId before backend routing: the owning backend recorded
+    # on the snapshot row selects the fsb vs pod backend for restores.
+    if not (request.template_id or "").strip():
+        request = await resolve_sandbox_image_from_request(request)
     return await sandbox_service.create_sandbox(request)
 
 
