@@ -206,6 +206,10 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
         self.crs.pop((namespace, name), None)
         return pb2.DeleteResponse()
 
+    def _cr_runtime_state(self, namespace: str, name: str) -> str:
+        cr = self.crs.get((namespace, name)) or {}
+        return (cr.get("status") or {}).get("runtime", {}).get("state", "")
+
     def PauseSandbox(self, request, context):
         self.pause_requests.append(request)
         namespace = request.sandbox.namespaced_name.namespace
@@ -216,6 +220,14 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
         uid, generation = current
         if request.sandbox.expected_uid and request.sandbox.expected_uid != uid:
             context.abort(grpc.StatusCode.ABORTED, "uid fence rejected")
+        # Mirror the FastPath contract: only a terminal runtime refuses the
+        # pause (non-terminal states wait for Ready; a replayed pause is
+        # an idempotent success).
+        if self._cr_runtime_state(namespace, name) in ("Stopped", "Stopping", "Failed"):
+            context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "only a Ready runtime can be paused",
+            )
         if self.abort_pause_with is not None:
             context.abort(self.abort_pause_with, "scripted pause failure")
         if (namespace, name) in self.crs:
@@ -234,6 +246,20 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
         uid, generation = current
         if request.sandbox.expected_uid and request.sandbox.expected_uid != uid:
             context.abort(grpc.StatusCode.ABORTED, "uid fence rejected")
+        # Mirror the FastPath contract: a durably Paused sandbox without a
+        # recorded checkpoint is unresumable (it needs resetRevision); a
+        # Pausing sandbox simply cancels the pause, and a Running replay is
+        # an idempotent success.
+        cr = self.crs.get((namespace, name)) or {}
+        runtime_status = (cr.get("status") or {}).get("runtime") or {}
+        if (
+            runtime_status.get("state") == "Paused"
+            and not runtime_status.get("checkpoint")
+        ):
+            context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "no recorded checkpoint; resume is impossible",
+            )
         if self.abort_resume_with is not None:
             context.abort(self.abort_resume_with, "scripted resume failure")
         if (namespace, name) in self.crs:
@@ -827,6 +853,28 @@ def test_http_resume_maps_precondition_to_conflict(http_fsb):
 
     assert conflict.status_code == 409
     assert detail["code"] == "FSB::API_ERROR"
+
+
+def test_http_pause_rejects_terminal_runtime_state(http_fsb):
+    """Fidelity: the fake mirrors FastPath's own precondition (terminal
+    runtimes refuse the pause) instead of relying on scripted aborts."""
+    client, fake, _ = http_fsb
+    sandbox_id = _create_fsb_sandbox(client)
+    fake.crs[("ns-1", sandbox_id)]["status"]["runtime"]["state"] = "Failed"
+
+    response = client.post(f"/v1/sandboxes/{sandbox_id}/pause")
+
+    assert response.status_code == 409
+
+
+def test_http_resume_rejects_paused_without_checkpoint(http_fsb):
+    client, fake, _ = http_fsb
+    sandbox_id = _create_fsb_sandbox(client)
+    fake.crs[("ns-1", sandbox_id)]["status"]["runtime"] = {"state": "Paused"}
+
+    response = client.post(f"/v1/sandboxes/{sandbox_id}/resume")
+
+    assert response.status_code == 409
 
 
 def test_get_reports_pause_lifecycle_states(http_fsb):
