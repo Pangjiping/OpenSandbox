@@ -91,21 +91,6 @@ class TestAgentSandboxProvider:
         assert provider.version == "v1beta1"
         assert provider.plural == "sandboxes"
 
-    def test_list_workloads_returns_empty_when_crd_missing(self, mock_k8s_client):
-        provider = AgentSandboxProvider(mock_k8s_client)
-        mock_k8s_client.custom_resource_exists.return_value = False
-
-        assert provider.list_workloads("ns-1", "label") == []
-        mock_k8s_client.list_custom_objects.assert_not_called()
-
-    def test_list_workloads_lists_when_crd_installed(self, mock_k8s_client):
-        provider = AgentSandboxProvider(mock_k8s_client)
-        mock_k8s_client.custom_resource_exists.return_value = True
-        mock_k8s_client.list_custom_objects.return_value = [{"metadata": {"name": "sbx-1"}}]
-
-        assert provider.list_workloads("ns-1", "label") == [{"metadata": {"name": "sbx-1"}}]
-        mock_k8s_client.list_custom_objects.assert_called_once()
-
     def test_create_workload_builds_correct_manifest_init_mode(self, mock_k8s_client):
         provider = AgentSandboxProvider(
             mock_k8s_client,

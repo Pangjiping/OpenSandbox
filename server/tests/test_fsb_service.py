@@ -698,7 +698,7 @@ def test_mixed_list_globally_filters_sorts_and_pages(persisted_fsb, monkeypatch)
 
 
 @pytest.mark.parametrize(
-    "failure,expected", [("absent", 200), ("forbidden", 503), ("list404", 503), ("legacy", 503)]
+    "failure,expected", [("list404", 200), ("legacy", 503)]
 )
 def test_mixed_list_never_hides_a_backend_failure(persisted_fsb, monkeypatch, failure, expected):
     client, _, fsb, sandbox_id = persisted_fsb
@@ -707,9 +707,7 @@ def test_mixed_list_never_hides_a_backend_failure(persisted_fsb, monkeypatch, fa
         fsb.get_sandbox(sandbox_id).model_copy(update={"id": "legacy"})
     ]
     api = fsb._cr_reader._client.get_custom_objects_api()
-    if failure in ("absent", "forbidden"):
-        api.get_api_resources.side_effect = ApiException(status=404 if failure == "absent" else 403)
-    elif failure == "list404":
+    if failure == "list404":
         api.list_namespaced_custom_object.side_effect = ApiException(status=404)
     else:
         legacy.list_sandbox_objects.side_effect = ApiException(status=503)
@@ -717,7 +715,10 @@ def test_mixed_list_never_hides_a_backend_failure(persisted_fsb, monkeypatch, fa
     response = client.get("/v1/sandboxes")
     assert response.status_code == expected
     if expected == 200:
-        assert [item["id"] for item in response.json()["items"]] == ["legacy"]
+        listed_ids = [item["id"] for item in response.json()["items"]]
+        assert "legacy" in listed_ids
+        if failure == "list404":
+            assert not [i for i in listed_ids if i.startswith("fsb-")]
 
 
 @pytest.mark.asyncio

@@ -19,7 +19,6 @@ operations. All API access goes through this class.
 
 import logging
 import threading
-import time
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -58,9 +57,6 @@ class K8sClient:
         self._node_v1_api: Optional[NodeV1Api] = None
         self._informers: Dict[_InformerKey, WorkloadInformer] = {}
         self._informers_lock = threading.Lock()
-        # Short-TTL CRD discovery cache: bounded staleness, no per-list round-trip.
-        self._crd_exists_cache: Dict[Tuple[str, str, str], Tuple[bool, float]] = {}
-        self._crd_exists_cache_lock = threading.Lock()
         self._read_limiter: Optional[TokenBucketRateLimiter] = (
             TokenBucketRateLimiter(qps=k8s_config.read_qps, burst=k8s_config.read_burst)
             if k8s_config.read_qps > 0
@@ -270,22 +266,8 @@ class K8sClient:
                 return []
             raise
 
-    CRD_EXISTS_CACHE_TTL_SECONDS = 60.0
-
     def custom_resource_exists(self, group: str, version: str, plural: str) -> bool:
-        """True when the CRD is installed; cached briefly to avoid per-list discovery."""
-        cache_key = (group, version, plural)
-        now = time.monotonic()
-        with self._crd_exists_cache_lock:
-            cached = self._crd_exists_cache.get(cache_key)
-            if cached is not None and (now - cached[1]) < self.CRD_EXISTS_CACHE_TTL_SECONDS:
-                return cached[0]
-        exists = self._discover_custom_resource(group, version, plural)
-        with self._crd_exists_cache_lock:
-            self._crd_exists_cache[cache_key] = (exists, time.monotonic())
-        return exists
-
-    def _discover_custom_resource(self, group: str, version: str, plural: str) -> bool:
+        """Distinguish an uninstalled API from a failed namespaced list."""
         if self._read_limiter:
             self._read_limiter.acquire()
         try:

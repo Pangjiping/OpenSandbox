@@ -591,9 +591,7 @@ class BatchSandboxProvider(WorkloadProvider):
         )
 
     def list_workloads(self, namespace: str, label_selector: str) -> List[Dict[str, Any]]:
-        """List workloads; an uninstalled CRD is an empty result, not an error."""
-        if not self.k8s_client.custom_resource_exists(self.group, self.version, self.plural):
-            return []
+        """List BatchSandboxes matching label selector."""
         return self.k8s_client.list_custom_objects(
             group=self.group,
             version=self.version,
