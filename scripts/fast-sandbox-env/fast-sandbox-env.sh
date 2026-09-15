@@ -825,9 +825,11 @@ control_plane_up() {
 	# The OpenSandbox server's composite list also reads BatchSandboxes:
 	# install the kubernetes-backend CRD alongside the fast-sandbox ones.
 	kubectl apply -f "$OSB_ROOT/kubernetes/config/crd/bases/sandbox.opensandbox.io_batchsandboxes.yaml" >/dev/null
-	for crd in sandboxpools sandboxtemplates sandboxes batchsandboxes; do
+	for crd in sandboxpools sandboxtemplates sandboxes; do
 		kubectl get crd "$crd.sandbox.fast.io" >/dev/null 2>&1 || die "CRD $crd missing"
 	done
+	kubectl get crd batchsandboxes.sandbox.opensandbox.io >/dev/null 2>&1 \
+		|| die "CRD batchsandboxes.sandbox.opensandbox.io missing"
 	pass "CRDs + control plane ready (fast-sandbox $FSB_COMMIT)"
 }
 
