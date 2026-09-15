@@ -1065,3 +1065,42 @@ def test_snapshot_service_accepts_fsb_source_sandbox(tmp_path) -> None:
     assert stored.status.state == SnapshotState.CREATING
     assert stored.source_sandbox_id == "fsb-001"
     assert runtime.calls == [(created.id, "fsb-001")]
+
+
+def test_list_snapshots_reapplies_state_filter_after_convergence(tmp_path) -> None:
+    repo = SQLiteSnapshotRepository(tmp_path / "snapshots.db")
+    runtime = WatchableStubSnapshotRuntime()
+    service = PersistedSnapshotService(
+        repo,
+        StubSandboxService(),
+        snapshot_runtime=runtime,
+        snapshot_executor=CapturingExecutor(),
+        recover_unfinished_snapshots=False,
+    )
+    converged = _snapshot_record("snap-was-creating", SnapshotState.CREATING)
+    repo.create(converged)
+    runtime.inspect_status_by_snapshot_id[converged.id] = SnapshotRuntimeStatus(
+        state=SnapshotState.FAILED,
+        reason="CommitJobFailed",
+        message="commit job failed",
+    )
+
+    response = service.list_snapshots(
+        ListSnapshotsRequest(
+            filter=SnapshotFilter(state=["Creating"]),
+            pagination=None,
+        )
+    )
+
+    # The row converged out of Creating during read-time sync; it must not
+    # leak into a Creating-filtered page.
+    assert response.items == []
+
+    ready = service.list_snapshots(
+        ListSnapshotsRequest(
+            filter=SnapshotFilter(state=["Failed"]),
+            pagination=None,
+        )
+    )
+    assert [item.id for item in ready.items] == [converged.id]
+    assert ready.items[0].status.state == "Failed"

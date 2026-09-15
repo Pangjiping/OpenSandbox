@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import HTTPException
 
-from opensandbox_server.api.schema import CreateSandboxRequest, ResourceLimits
+from opensandbox_server.api.schema import CreateSandboxRequest, ImageSpec, ResourceLimits
 from opensandbox_server.repositories.snapshots.sqlite import SQLiteSnapshotRepository
 from opensandbox_server.services.snapshot_models import (
     SnapshotRecord,
@@ -155,3 +155,33 @@ async def test_snapshot_restore_rejects_unready_snapshot(monkeypatch, tmp_path) 
     with pytest.raises(HTTPException) as exc_info:
         await resolve_sandbox_image_from_request(request)
     assert exc_info.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_snapshot_restore_passthrough_without_snapshot_id(monkeypatch, tmp_path) -> None:
+    """Pool-only and image-backed creates pass through: no repo access, no 400."""
+    repo = SQLiteSnapshotRepository(tmp_path / "snapshots.db")
+    monkeypatch.setattr(
+        "opensandbox_server.services.snapshot_restore.get_snapshot_repository",
+        lambda: repo,
+    )
+
+    pool_only = CreateSandboxRequest(
+        resourceLimits=ResourceLimits(root={"cpu": "1"}),
+        extensions={"poolRef": "pool-a"},
+        timeout=3600,
+        entrypoint=["tail", "-f", "/dev/null"],
+    )
+    resolved = await resolve_sandbox_image_from_request(pool_only)
+    assert resolved is pool_only
+    assert resolved.resolved_snapshot_backend is None
+
+    image_backed = CreateSandboxRequest(
+        image=ImageSpec(uri="registry.example.com/app:1"),
+        resourceLimits=ResourceLimits(root={"cpu": "1"}),
+        timeout=3600,
+        entrypoint=["tail", "-f", "/dev/null"],
+    )
+    resolved = await resolve_sandbox_image_from_request(image_backed)
+    assert resolved is image_backed
+    assert resolved.resolved_snapshot_backend is None

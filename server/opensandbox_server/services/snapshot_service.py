@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 import logging
 from math import ceil
 from threading import Event, Lock, Thread
+import time
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -69,6 +70,12 @@ from opensandbox_server.tenants.context import get_current_tenant
 logger = logging.getLogger(__name__)
 SNAPSHOT_RECOVERY_PAGE_SIZE = 200
 SNAPSHOT_WORKER_MAX_WORKERS = 2
+# Read-time sync budget for list requests: each CREATING row costs one
+# runtime inspection (a gRPC round trip for fsb), so converging a page is
+# capped by deadline rather than by page size. Rows past the budget stay
+# stale until the next read; the watch reactor and the PostgreSQL recovery
+# loop converge them regardless.
+SNAPSHOT_LIST_SYNC_BUDGET_SECONDS = 2.0
 
 
 class SnapshotService(ABC):
@@ -200,8 +207,19 @@ class PersistedSnapshotService(SnapshotService):
         )
 
         total_pages = ceil(result.total_items / pagination.page_size) if result.total_items > 0 else 0
+        page_items = list(result.items)
+        self._sync_creating_records(page_items)
+        if request.filter.state:
+            # Convergence may have moved rows out of the requested states
+            # after the repository filtered them; reapply the state filter
+            # so callers never see a row outside the requested states.
+            # Pagination totals reflect the repository read and settle on
+            # the next request (same eventual consistency as the template
+            # catalog).
+            wanted_states = set(request.filter.state)
+            page_items = [item for item in page_items if item.status.state.value in wanted_states]
         return ListSnapshotsResponse(
-            items=[self._to_snapshot_response(self._sync_creating_record(item)) for item in result.items],
+            items=[self._to_snapshot_response(item) for item in page_items],
             pagination=PaginationInfo(
                 page=pagination.page,
                 pageSize=pagination.page_size,
@@ -338,6 +356,21 @@ class PersistedSnapshotService(SnapshotService):
                 exc,
             )
             return None
+
+    def _sync_creating_records(self, records: list[SnapshotRecord]) -> None:
+        """Converge CREATING rows in place within a bounded per-request budget."""
+        if getattr(self._snapshot_runtime, "start_status_watch", None) is None:
+            # Inline runtimes complete their own rows; observing them here
+            # would misreport in-flight work.
+            return
+        deadline = time.monotonic() + SNAPSHOT_LIST_SYNC_BUDGET_SECONDS
+        for index, record in enumerate(records):
+            if record.status.state != SnapshotState.CREATING:
+                continue
+            if time.monotonic() >= deadline:
+                return
+            if self._converge_from_runtime(record):
+                records[index] = self._snapshot_repository.get(record.id) or record
 
     def _sync_creating_record(self, record: SnapshotRecord) -> SnapshotRecord:
         """Read-time sync: re-check a non-terminal row before responding."""
