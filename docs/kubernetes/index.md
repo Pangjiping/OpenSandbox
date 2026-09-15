@@ -275,7 +275,7 @@ helm install opensandbox-controller \
 
 2. Install with Helm:
    ```sh
-   helm install opensandbox-controller ./charts/opensandbox-controller \
+   helm install opensandbox-controller ../manifests/charts/controller \
      --set controller.image.repository=<some-registry>/opensandbox-controller \
      --set controller.image.tag=<tag> \
      --namespace opensandbox-system \

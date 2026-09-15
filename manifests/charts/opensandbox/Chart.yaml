@@ -41,21 +41,21 @@ kubeVersion: ">=1.21.1-0"
 dependencies:
   - name: base
     version: "0.1.0"
-    repository: "file://../../../manifests/charts/base"
+    repository: "file://../base"
     condition: base.enabled
   - name: opensandbox-controller
     version: "0.2.1"
-    repository: "file://../opensandbox-controller"
+    repository: "file://../controller"
   - name: opensandbox-server
     version: "0.1.0"
-    repository: "file://../../../manifests/charts/server"
+    repository: "file://../server"
   - name: ingress-gateway
     version: "0.1.0"
-    repository: "file://../../../manifests/charts/ingress-gateway"
+    repository: "file://../ingress-gateway"
     condition: ingress-gateway.enabled
   - name: opensandbox-node-agent
     version: "0.1.0"
-    repository: "file://../opensandbox-node-agent"
+    repository: "file://../node-agent"
     condition: opensandbox-node-agent.enabled
 
 annotations:

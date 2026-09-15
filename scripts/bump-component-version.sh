@@ -90,7 +90,7 @@ if [ "$COMPONENT" = "nodeagent" ]; then
     echo "Error: invalid nodeagent version: $NEW_VERSION" >&2
     exit 1
   fi
-  CHART_VALUES="kubernetes/charts/opensandbox-node-agent/values.yaml"
+  CHART_VALUES="manifests/charts/node-agent/values.yaml"
   if [ ! -f "$CHART_VALUES" ]; then
     echo "Error: missing $CHART_VALUES" >&2
     exit 1

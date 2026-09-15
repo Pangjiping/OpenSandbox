@@ -53,7 +53,7 @@ COMPONENT=task-executor TAG=v0.0.1 ./build.sh
 #### 2. Install the Local Helm Chart
 
 ```bash
-helm install opensandbox-controller ./charts/opensandbox-controller \
+helm install opensandbox-controller ../manifests/charts/controller \
   --set controller.image.repository=<your-registry>/controller \
   --set controller.image.tag=v0.0.1 \
   --namespace opensandbox-system \
@@ -137,7 +137,7 @@ imagePullSecrets:
 Install with custom configuration:
 
 ```bash
-helm install opensandbox-controller ./charts/opensandbox-controller \
+helm install opensandbox-controller ../manifests/charts/controller \
   -f custom-values.yaml \
   --namespace opensandbox-system \
   --create-namespace
@@ -148,7 +148,7 @@ helm install opensandbox-controller ./charts/opensandbox-controller \
 #### 1. Adjust Resource Configuration
 
 ```bash
-helm install opensandbox-controller ./charts/opensandbox-controller \
+helm install opensandbox-controller ../manifests/charts/controller \
   --set controller.resources.limits.cpu=1000m \
   --set controller.resources.limits.memory=512Mi \
   --namespace opensandbox-system
@@ -174,7 +174,7 @@ controller:
 ```
 
 ```bash
-helm install opensandbox-controller ./charts/opensandbox-controller \
+helm install opensandbox-controller ../manifests/charts/controller \
   -f affinity-values.yaml \
   --namespace opensandbox-system
 ```
@@ -182,7 +182,7 @@ helm install opensandbox-controller ./charts/opensandbox-controller \
 #### 3. Configure Pause/Resume
 
 ```bash
-helm install opensandbox-controller ./charts/opensandbox-controller \
+helm install opensandbox-controller ../manifests/charts/controller \
   --set controller.snapshot.registry=myregistry.example.com/opensandbox/snapshots \
   --set controller.snapshot.snapshotPushSecret=registry-snapshot-push-secret \
   --set controller.snapshot.imageCommitterPullSecret=registry-image-committer-pull-secret \
@@ -206,7 +206,7 @@ helm upgrade opensandbox-controller \
 Upgrade from local chart:
 
 ```bash
-helm upgrade opensandbox-controller ./charts/opensandbox-controller \
+helm upgrade opensandbox-controller ../manifests/charts/controller \
   --set controller.image.tag=v0.0.2 \
   --namespace opensandbox-system
 ```
@@ -369,7 +369,7 @@ kubectl create secret docker-registry myregistrykey \
   -n opensandbox-system
 
 # Reinstall with the secret
-helm upgrade opensandbox-controller ./charts/opensandbox-controller \
+helm upgrade opensandbox-controller ../manifests/charts/controller \
   --set imagePullSecrets[0].name=myregistrykey \
   --namespace opensandbox-system
 ```
@@ -415,12 +415,12 @@ Deploy to different environments:
 
 ```bash
 # Development environment
-helm install opensandbox-controller ./charts/opensandbox-controller \
+helm install opensandbox-controller ../manifests/charts/controller \
   -f values-dev.yaml \
   --namespace opensandbox-dev
 
 # Production environment
-helm install opensandbox-controller ./charts/opensandbox-controller \
+helm install opensandbox-controller ../manifests/charts/controller \
   -f values-prod.yaml \
   --namespace opensandbox-prod
 ```
@@ -532,7 +532,7 @@ options:
 
 # Add to Set chart path step
 if [ "$COMPONENT" == "opensandbox-controller" ]; then
-  CHART_PATH="kubernetes/charts/opensandbox-controller"
+  CHART_PATH="manifests/charts/controller"
 elif [ "$COMPONENT" == "new-component" ]; then
   CHART_PATH="path/to/new-component/chart"
 fi
@@ -558,6 +558,6 @@ helm install test-release opensandbox-controller-*.tgz \
 
 ## References
 
-- [Helm Chart README](../charts/opensandbox-controller/README.md) - Full parameter list
+- [Helm Chart README](../../manifests/charts/controller/README.md) - Full parameter list
 - [OpenSandbox Documentation](../README.md) - Project documentation
 - [Configuration Examples](../config/samples/) - Resource configuration examples

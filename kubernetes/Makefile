@@ -417,7 +417,7 @@ endef
 ##@ Helm
 
 # Helm chart configuration
-HELM_CHART_PATH ?= charts/opensandbox-controller
+HELM_CHART_PATH ?= ../manifests/charts/controller
 HELM_CHART_VERSION ?= $(VERSION)
 
 .PHONY: helm-lint
@@ -426,10 +426,10 @@ helm-lint: ## Lint all Helm charts and verify dependencies
 	helm lint ../manifests/charts/base
 	helm lint ../manifests/charts/ingress-gateway
 	helm lint ../manifests/charts/server
-	helm lint charts/opensandbox-controller
-	helm lint charts/opensandbox-node-agent
-	helm dependency build charts/opensandbox
-	helm lint charts/opensandbox
+	helm lint ../manifests/charts/controller
+	helm lint ../manifests/charts/node-agent
+	helm dependency build ../manifests/charts/opensandbox
+	helm lint ../manifests/charts/opensandbox
 
 .PHONY: helm-template
 helm-template: ## Generate Kubernetes manifests from Helm chart
@@ -453,8 +453,9 @@ helm-package: ## Package the Helm chart
 	helm package $(HELM_CHART_PATH) -d dist/ --version $(HELM_CHART_VERSION) --app-version $(VERSION)
 
 .PHONY: helm-install
-helm-install: ## Install the Helm chart
-	@echo "Installing Helm chart..."
+helm-install: ## Install the Helm charts (base CRDs first, then the controller)
+	@echo "Installing Helm charts..."
+	helm upgrade --install base ../manifests/charts/base
 	helm install opensandbox-controller $(HELM_CHART_PATH) \
 		--set controller.image.repository=$(IMAGE_TAG_BASE) \
 		--set controller.image.tag=v$(VERSION) \

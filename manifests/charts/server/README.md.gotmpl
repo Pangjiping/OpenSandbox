@@ -71,12 +71,12 @@ See the [Kubernetes deployment guide](../../docs/kubernetes/deployment.md) for p
 kubectl create namespace opensandbox --dry-run=client -o yaml | kubectl apply -f -
 
 # Server only (default namespace opensandbox-system)
-helm install opensandbox-server ./kubernetes/charts/opensandbox-server \
+helm install opensandbox-server ./manifests/charts/server \
   --namespace opensandbox-system \
   --create-namespace
 
 # With custom image and config
-helm install opensandbox-server ./kubernetes/charts/opensandbox-server \
+helm install opensandbox-server ./manifests/charts/server \
   --set server.image.repository=your-registry/opensandbox/server \
   --set server.image.tag=v0.1.0 \
   --namespace opensandbox-system \
@@ -96,7 +96,7 @@ helm install ingress-gateway manifests/charts/ingress-gateway \
   --namespace opensandbox-system \
   --create-namespace
 
-helm install opensandbox-server ./kubernetes/charts/opensandbox-server \
+helm install opensandbox-server ./manifests/charts/server \
   --namespace opensandbox-system \
   --create-namespace \
   --set server.gateway.enabled=true \
