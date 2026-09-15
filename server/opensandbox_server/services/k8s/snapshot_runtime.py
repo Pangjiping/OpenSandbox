@@ -27,6 +27,7 @@ from uuid import UUID
 
 from kubernetes.client import ApiException
 
+from opensandbox_server.services.k8s.snapshot_watch import SnapshotChangeWatcher
 from opensandbox_server.services.snapshot_models import SnapshotState
 from opensandbox_server.services.snapshot_runtime import (
     SnapshotRuntimePreflightError,
@@ -82,9 +83,15 @@ class KubernetesSnapshotRuntime:
         self._k8s_client = k8s_client
         self._namespace = namespace
         self._wait_timeout_seconds = wait_timeout_seconds
-        self._poll_interval_seconds = poll_interval_seconds
         self._postgresql_ha_enabled = postgresql_ha_enabled
         self._snapshot_namespaces: dict[str, str] = {}
+        self._change_watcher = SnapshotChangeWatcher(
+            k8s_client,
+            group=_GROUP,
+            version=_VERSION,
+            plural=_PLURAL,
+            wait_interval_seconds=poll_interval_seconds,
+        )
 
     def supports_create_snapshot(self) -> bool:
         return True
@@ -447,13 +454,16 @@ class KubernetesSnapshotRuntime:
         )
 
     def _wait_for_terminal_snapshot(self, snapshot_id: str, *, namespace: str | None = None) -> SnapshotRuntimeStatus:
+        ns = namespace if namespace is not None else self._namespace
+        snapshot_name = build_public_snapshot_name(snapshot_id)
         deadline = time.monotonic() + self._wait_timeout_seconds
         while True:
-            runtime_status = self.inspect_snapshot(snapshot_id, namespace=namespace)
+            runtime_status = self.inspect_snapshot(snapshot_id, namespace=ns)
             if runtime_status.state in (SnapshotState.READY, SnapshotState.FAILED):
                 return runtime_status
 
-            if time.monotonic() >= deadline:
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
                 return SnapshotRuntimeStatus(
                     state=(
                         SnapshotState.CREATING
@@ -463,7 +473,7 @@ class KubernetesSnapshotRuntime:
                     reason="snapshot_runtime_timeout",
                     message=(
                         "Timed out waiting for Kubernetes SandboxSnapshot "
-                        f"{build_public_snapshot_name(snapshot_id)} to complete"
+                        f"{snapshot_name} to complete"
                         + (
                             "; the PostgreSQL record remains Creating for recovery."
                             if self._postgresql_ha_enabled
@@ -472,7 +482,10 @@ class KubernetesSnapshotRuntime:
                     ),
                 )
 
-            time.sleep(self._poll_interval_seconds)
+            # Block on informer change events for this snapshot; the watcher
+            # degrades to bounded re-checks when the watch is unavailable, and
+            # re-reading the status above is always the source of truth.
+            self._change_watcher.wait_for_change(ns, snapshot_name, remaining_seconds)
 
     def _snapshot_status_from_cr(self, snapshot: dict) -> SnapshotRuntimeStatus:
         status = snapshot.get("status", {})

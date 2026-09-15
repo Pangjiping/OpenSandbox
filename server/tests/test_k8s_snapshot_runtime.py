@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import threading
+import time
 
 import pytest
 from kubernetes.client import ApiException
@@ -139,6 +141,18 @@ def _snapshot_cr(*, phase: str, containers: list[dict] | None = None, sandbox_id
             "containers": containers or [],
         },
     }
+
+
+class WatchFiringK8sClient(FakeK8sClient):
+    """FakeK8sClient that records watch handlers for event-driven tests."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.watch_handlers: list = []
+
+    def watch_custom_objects(self, group, version, namespace, plural, event_handler):
+        self.watch_handlers.append(event_handler)
+        return object()
 
 
 def test_public_snapshot_name_and_tag_are_derived_from_snapshot_id() -> None:
@@ -416,6 +430,45 @@ def test_delete_snapshot_deletes_cr_and_ignores_missing_cr() -> None:
     runtime.delete_snapshot(SNAPSHOT_ID)
 
     assert k8s_client.deleted == [build_public_snapshot_name(SNAPSHOT_ID)]
+
+
+def test_create_snapshot_wakes_on_informer_change_event() -> None:
+    k8s_client = WatchFiringK8sClient()
+    snapshot_name = build_public_snapshot_name(SNAPSHOT_ID)
+    k8s_client.objects[snapshot_name] = _snapshot_cr(phase="Committing")
+    runtime = KubernetesSnapshotRuntime(
+        k8s_client,
+        namespace="default",
+        # A long fallback interval proves the change event, not polling,
+        # completes the wait.
+        wait_timeout_seconds=10,
+        poll_interval_seconds=60,
+    )
+    results: list = []
+    worker = threading.Thread(
+        target=lambda: results.append(runtime.create_snapshot(SNAPSHOT_ID, SANDBOX_ID))
+    )
+
+    worker.start()
+    deadline = time.monotonic() + 2
+    while not k8s_client.watch_handlers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert k8s_client.watch_handlers, "runtime should register its watch before waiting"
+
+    k8s_client.objects[snapshot_name]["status"] = {
+        "phase": "Succeed",
+        "containers": [
+            {"containerName": "sandbox", "imageUri": "registry/sandbox:snap"},
+        ],
+    }
+    k8s_client.watch_handlers[0]("MODIFIED", _snapshot_cr(phase="Succeed"))
+
+    worker.join(timeout=10)
+    assert not worker.is_alive()
+
+    status = results[0]
+    assert status.state == SnapshotState.READY
+    assert status.image == "registry/sandbox:snap"
 
 
 def test_create_snapshot_fails_when_existing_cr_points_to_different_sandbox() -> None:

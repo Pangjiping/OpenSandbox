@@ -65,7 +65,9 @@ class WorkloadInformer:
         self.watch_timeout_seconds = watch_timeout_seconds
         self.enable_watch = enable_watch
         self._thread_name = thread_name
-        self._event_handler = event_handler
+        self._event_handlers: List[Callable[[str, Dict[str, Any]], None]] = (
+            [event_handler] if event_handler is not None else []
+        )
 
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.RLock()
@@ -120,6 +122,19 @@ class WorkloadInformer:
         if self._last_contact_at is None:
             return False
         return time.monotonic() - self._last_contact_at <= self._staleness_limit_seconds
+
+    def add_event_handler(self, event_handler: Optional[Callable[[str, Dict[str, Any]], None]]) -> None:
+        """Attach an additional reactor callback to a (possibly running) informer.
+
+        Informers are created lazily by the first read path, which passes no
+        handler; watch consumers that attach later register through this method
+        so their handler is invoked for every subsequent event and resync.
+        """
+        if event_handler is None:
+            return
+        with self._lock:
+            if event_handler not in self._event_handlers:
+                self._event_handlers.append(event_handler)
 
     def invalidate(self) -> None:
         """Make the published cache unavailable after a successful direct mutation.
@@ -217,7 +232,7 @@ class WorkloadInformer:
 
         # React to the snapshot outside the lock: a LIST reconciles objects
         # that changed while no watch was connected (startup, reconnect).
-        if self._event_handler is not None:
+        if self._event_handlers:
             for item in new_cache.values():
                 self._dispatch_event("SYNC", item)
         return True
@@ -285,10 +300,11 @@ class WorkloadInformer:
         self._dispatch_event(event_type, obj)
 
     def _dispatch_event(self, event_type: Optional[str], obj: Dict[str, Any]) -> None:
-        """Invoke the reactor callback; handler failures never kill the watch."""
-        if self._event_handler is None:
-            return
-        try:
-            self._event_handler(event_type or "", obj)
-        except Exception as exc:  # noqa: BLE001 - isolation by design
-            logger.warning("Informer event handler failed: %s", exc, exc_info=True)
+        """Invoke the reactor callbacks; handler failures never kill the watch."""
+        with self._lock:
+            handlers = tuple(self._event_handlers)
+        for handler in handlers:
+            try:
+                handler(event_type or "", obj)
+            except Exception as exc:  # noqa: BLE001 - isolation by design
+                logger.warning("Informer event handler failed: %s", exc, exc_info=True)
