@@ -64,6 +64,15 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(MAKE) helm-gen-crds
+
+.PHONY: helm-gen-crds
+helm-gen-crds: ## Sync generated CRDs from config/crd/bases into manifests/charts/base/files/crds.yaml (repo root).
+	@mkdir -p ../manifests/charts/base/files
+	@rm -f ../manifests/charts/base/files/crds.yaml
+	@for f in $(sort $(wildcard config/crd/bases/*.yaml)); do \
+		printf '%s\n---\n' "$$(awk 'NR==1 && $$0=="---" {next} {print}' $$f)" >> ../manifests/charts/base/files/crds.yaml; \
+	done
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -414,6 +423,7 @@ HELM_CHART_VERSION ?= $(VERSION)
 .PHONY: helm-lint
 helm-lint: ## Lint all Helm charts and verify dependencies
 	@echo "Linting Helm charts..."
+	helm lint ../manifests/charts/base
 	helm lint charts/opensandbox-controller
 	helm lint charts/opensandbox-server
 	helm lint charts/opensandbox-node-agent

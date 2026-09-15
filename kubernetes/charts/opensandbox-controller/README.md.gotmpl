@@ -17,12 +17,14 @@ This chart bootstraps an OpenSandbox Controller deployment on a Kubernetes clust
 - Kubernetes 1.21.1+
 - Helm 3.0+
 - Container runtime (Docker, containerd, etc.)
+- The OpenSandbox CRDs, installed by the [base chart](../../../manifests/charts/base) (`helm install base ../manifests/charts/base`). This chart no longer installs CRDs itself.
 
 ## Installing the Chart
 
-To install the chart with the release name `opensandbox-controller`:
+Install the base chart first (CRDs and user-facing RBAC), then the controller:
 
 ```bash
+helm install base ../manifests/charts/base
 helm install opensandbox-controller ./opensandbox-controller \
   --set controller.image.repository=<your-registry>/opensandbox-controller \
   --set controller.image.tag=v0.1.0 \
@@ -40,11 +42,12 @@ To uninstall/delete the `opensandbox-controller` deployment:
 helm delete opensandbox-controller -n opensandbox-system
 ```
 
-The command removes all the Kubernetes components associated with the chart. Note that CRDs are kept by default (can be changed via `crds.keep`).
+The command removes all the Kubernetes components associated with the chart. CRDs are managed by the separate base chart and are not affected.
 
-To also remove the CRDs:
+To also remove the CRDs, uninstall the base release (CRDs carry the `helm.sh/resource-policy: keep` annotation, so they must be deleted manually afterwards):
 
 ```bash
+helm delete base
 kubectl delete crd batchsandboxes.sandbox.opensandbox.io
 kubectl delete crd pools.sandbox.opensandbox.io
 kubectl delete crd sandboxsnapshots.sandbox.opensandbox.io

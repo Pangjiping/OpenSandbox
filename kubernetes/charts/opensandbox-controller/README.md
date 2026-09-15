@@ -17,12 +17,14 @@ This chart bootstraps an OpenSandbox Controller deployment on a Kubernetes clust
 - Kubernetes 1.21.1+
 - Helm 3.0+
 - Container runtime (Docker, containerd, etc.)
+- The OpenSandbox CRDs, installed by the [base chart](../../../manifests/charts/base) (`helm install base manifests/charts/base` from the repository root). This chart no longer installs CRDs itself.
 
 ## Installing the Chart
 
-To install the chart with the release name `opensandbox-controller`:
+Install the base chart first (CRDs and user-facing RBAC), then the controller:
 
 ```bash
+helm install base manifests/charts/base
 helm install opensandbox-controller ./opensandbox-controller \
   --set controller.image.repository=<your-registry>/opensandbox-controller \
   --set controller.image.tag=v0.1.0 \
@@ -40,11 +42,12 @@ To uninstall/delete the `opensandbox-controller` deployment:
 helm delete opensandbox-controller -n opensandbox-system
 ```
 
-The command removes all the Kubernetes components associated with the chart. Note that CRDs are kept by default (can be changed via `crds.keep`).
+The command removes all the Kubernetes components associated with the chart. CRDs are managed by the separate base chart and are not affected.
 
-To also remove the CRDs:
+To also remove the CRDs, uninstall the base release (CRDs carry the `helm.sh/resource-policy: keep` annotation, so they must be deleted manually afterwards):
 
 ```bash
+helm delete base
 kubectl delete crd batchsandboxes.sandbox.opensandbox.io
 kubectl delete crd pools.sandbox.opensandbox.io
 kubectl delete crd sandboxsnapshots.sandbox.opensandbox.io
@@ -91,9 +94,6 @@ The following table lists the configurable parameters of the chart and their def
 | controller.snapshot.resumePullSecret | string | `""` | Secret name injected into resumed sandboxes for pulling snapshot images. |
 | controller.snapshot.snapshotPushSecret | string | `""` | Secret name used by commit Jobs to push snapshot images. |
 | controller.tolerations | list | `[]` | Tolerations for controller pod assignment |
-| crds.annotations | object | `{}` | Additional annotations to add to CRDs (will be merged with resource-policy if keep is true) |
-| crds.install | bool | `true` | Specifies whether CRDs should be installed |
-| crds.keep | bool | `true` | Keep CRDs on chart uninstall (adds helm.sh/resource-policy: keep annotation) |
 | extraContainers | list | `[]` | Additional sidecar containers |
 | extraEnv | list | `[]` | Additional environment variables for the controller |
 | extraInitContainers | list | `[]` | Additional init containers |

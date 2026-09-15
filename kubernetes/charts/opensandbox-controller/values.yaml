@@ -157,16 +157,6 @@ rbac:
   # -- Specifies whether RBAC resources should be created
   create: true
 
-# CRD configuration
-crds:
-  # -- Specifies whether CRDs should be installed
-  install: true
-  # -- Keep CRDs on chart uninstall (adds helm.sh/resource-policy: keep annotation)
-  keep: true
-  # -- Additional annotations to add to CRDs (will be merged with resource-policy if keep is true)
-  annotations: {}
-
-
 # -- Additional environment variables for the controller
 extraEnv: []
 # - name: CUSTOM_VAR

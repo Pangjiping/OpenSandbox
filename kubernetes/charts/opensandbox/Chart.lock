@@ -1,4 +1,7 @@
 dependencies:
+- name: base
+  repository: file://../../../manifests/charts/base
+  version: 0.1.0
 - name: opensandbox-controller
   repository: file://../opensandbox-controller
   version: 0.2.1
@@ -8,5 +11,5 @@ dependencies:
 - name: opensandbox-node-agent
   repository: file://../opensandbox-node-agent
   version: 0.1.0
-digest: sha256:9a8dfea166e50e4016bd850366a17e02a9052cb73f88375d934558c625dfb956
-generated: "2026-08-18T18:20:43.341958+08:00"
+digest: sha256:c2d6d81e70d9c37619b254ce30d9f2bd93df78688219228833e6be9fb19744f3
+generated: "2026-09-15T20:56:25.471581+08:00"

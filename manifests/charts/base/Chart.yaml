@@ -13,23 +13,19 @@
 # limitations under the License.
 
 apiVersion: v2
-name: opensandbox
-description: All-in-one Helm chart for deploying OpenSandbox controller and server
-type: application
-version: 0.2.2
-appVersion: "0.2.2"
+name: base
+description: Helm chart for deploying OpenSandbox cluster resources and CRDs
+version: 0.1.0
 
 keywords:
   - sandbox
   - kubernetes
-  - operator
-  - api
-  - lifecycle
-  - batchsandbox
+  - crds
+  - cluster-resources
 
 home: https://github.com/opensandbox-group/OpenSandbox
 sources:
-  - https://github.com/opensandbox-group/OpenSandbox/tree/main/kubernetes
+  - https://github.com/opensandbox-group/OpenSandbox/tree/main/manifests/charts/base
 
 maintainers:
   - name: OpenSandbox Team
@@ -37,22 +33,6 @@ maintainers:
 
 # Kubernetes version constraints
 kubeVersion: ">=1.21.1-0"
-
-dependencies:
-  - name: base
-    version: "0.1.0"
-    repository: "file://../../../manifests/charts/base"
-    condition: base.enabled
-  - name: opensandbox-controller
-    version: "0.2.1"
-    repository: "file://../opensandbox-controller"
-  - name: opensandbox-server
-    version: "0.1.0"
-    repository: "file://../opensandbox-server"
-  - name: opensandbox-node-agent
-    version: "0.1.0"
-    repository: "file://../opensandbox-node-agent"
-    condition: opensandbox-node-agent.enabled
 
 annotations:
   artifacthub.io/category: integration-delivery
