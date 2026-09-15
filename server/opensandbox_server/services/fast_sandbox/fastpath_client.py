@@ -297,6 +297,55 @@ class FastPathClient:
             lambda: self._require_stub().UpdateSandbox(request, timeout=self._timeout_seconds)
         )
 
+    # -- snapshots -----------------------------------------------------------
+
+    def create_sandbox_snapshot(
+        self,
+        request: fastpath_pb2.CreateSandboxSnapshotRequest,
+    ) -> fastpath_pb2.CreateSandboxSnapshotResponse:
+        """Submit a snapshot of a running sandbox; completion is observed via
+        get_sandbox_snapshot (the intent is durable and idempotent by request_id)."""
+        return self._call(
+            lambda: self._require_stub().CreateSandboxSnapshot(
+                request, timeout=self._timeout_seconds
+            )
+        )
+
+    def get_sandbox_snapshot(
+        self,
+        namespace: str,
+        snapshot_name: str,
+        *,
+        expected_uid: str = "",
+    ) -> fastpath_pb2.GetSandboxSnapshotResponse:
+        """Get a sandbox snapshot; raises FastPathNotFound on gRPC NotFound."""
+        request = fastpath_pb2.GetSandboxSnapshotRequest(
+            snapshot=fastpath_pb2.NamespacedName(namespace=namespace, name=snapshot_name),
+            expected_uid=expected_uid,
+        )
+        return self._call(
+            lambda: self._require_stub().GetSandboxSnapshot(
+                request, timeout=self._timeout_seconds
+            )
+        )
+
+    def delete_sandbox_snapshot(
+        self,
+        namespace: str,
+        snapshot_name: str,
+        *,
+        expected_uid: str = "",
+    ) -> None:
+        """Delete a sandbox snapshot and its published artifacts."""
+        request = fastpath_pb2.DeleteSandboxSnapshotRequest(
+            snapshot=namespaced_reference(namespace, snapshot_name, expected_uid=expected_uid)
+        )
+        self._call(
+            lambda: self._require_stub().DeleteSandboxSnapshot(
+                request, timeout=self._timeout_seconds
+            )
+        )
+
     # -- readiness / endpoints --------------------------------------------
 
     def resolve_endpoint(

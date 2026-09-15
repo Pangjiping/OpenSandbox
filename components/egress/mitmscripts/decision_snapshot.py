@@ -14,9 +14,11 @@
 
 """Strict validator for the OSEP-0023 canonical decision payload.
 
-The live addon does not import this module yet. Go owns construction and host
-normalization; this validator verifies the exact payload/envelope agreement
-before the revision receiver may stage those immutable bytes.
+The live addon imports this module only for a launcher-provided internal
+revision session; current egress profiles do not supply one. Go owns
+construction and host normalization; this validator verifies the exact
+payload/envelope agreement before the revision receiver may stage those
+immutable bytes.
 """
 
 from __future__ import annotations

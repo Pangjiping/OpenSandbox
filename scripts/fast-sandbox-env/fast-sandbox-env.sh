@@ -24,7 +24,10 @@
 # with the OpenSandbox egress sidecar attached through the Sandbox Actions
 # channel → the source-built OpenSandbox lifecycle server (fsb runtime)
 # and ingress gateway → an end-to-end verify (create through the server
-# API, execd /ping through the signed gateway route, delete).
+# API, execd /ping through the signed gateway route, delete); then
+# pause/resume (checkpoint to the artifact store, capacity released,
+# resume) and a public-snapshot verify (snapshot a Running sandbox, watch
+# it to Ready, restore a NEW sandbox from the snapshotId and boot it).
 #
 # Everything is source-built from this repository plus fast-sandbox@master,
 # except the execd image baked into the SandboxTemplate golden image
@@ -1211,6 +1214,13 @@ server_api() { # method path [json-body]
 # The server assigns the sandbox id (CreateSandboxRequest carries none);
 # the verify probes share it through VERIFY_ID.
 VERIFY_ID=""
+# The snapshot verify stage shares the created snapshot ids through
+# SNAPSHOT_ID / SNAPSHOT_ID2.
+SNAPSHOT_ID=""
+SNAPSHOT_ID2=""
+# A re-entry snapshot accepted during fence cache lag (202) is tracked here
+# so its terminal outcome is asserted and it is cleaned up.
+SNAPSHOT_EXTRA=""
 
 verify_sandbox_gone() {
 	! server_api GET "/sandboxes/$VERIFY_ID" >/dev/null 2>&1
@@ -1415,18 +1425,21 @@ sandbox_paused() { sandbox_state_is Paused; }
 pause_resume_verify() {
 	# 202 + poll GET: Paused == checkpoint durable + capacity released;
 	# resume advances the route generation, so /ping needs a fresh route.
-	local body created
+	local body created t0 t1 t2 t3
 	body="$(jq -n --arg template "$TEMPLATE_ID" '{
 		templateId: $template,
 		timeout: 3600,
 		metadata: {origin: "fast-sandbox-env-pause"}
 	}')"
 	log "verify (pause): creating a sandbox via the server API (templateId=$TEMPLATE_ID)"
+	t0="$(now_ms)"
 	created="$(server_api POST /sandboxes "$body" 2>/dev/null)" \
 		|| fail "POST /sandboxes failed against $SERVER_URL"
 	VERIFY_ID="$(printf '%s' "$created" | jq -r '.id')"
 	[[ -n "$VERIFY_ID" && "$VERIFY_ID" != "null" ]] || fail "create response carried no id"
 	wait_for "pause target Running" 150 sandbox_running
+	t1="$(now_ms)"
+	log "verify (pause): $VERIFY_ID create->Running $(( (t1 - t0) / 1000000 ))ms"
 
 	wait_for "pre-pause execd /ping 200 through the gateway" 100 execd_ping_ok
 
@@ -1436,21 +1449,195 @@ pause_resume_verify() {
 	# Paused is durable-first: the checkpoint must be complete in the artifact
 	# store before the state is reported; the dump itself keeps serving.
 	wait_for "poll GET until Paused (checkpoint durable, capacity released)" 240 sandbox_paused
+	t2="$(now_ms)"
+	log "verify (pause): $VERIFY_ID pause POST->Paused (checkpoint durable) $(( (t2 - t1) / 1000000 ))ms"
 	if execd_ping_ok; then
 		fail "paused sandbox still serves /ping through the gateway"
 	fi
 	pass "paused: execd /ping no longer served (runtime released, signed route rejected at the gateway)"
 
 	log "verify (pause): POST /sandboxes/$VERIFY_ID/resume"
+	t2="$(now_ms)"
 	server_api POST "/sandboxes/$VERIFY_ID/resume" >/dev/null \
 		|| fail "POST resume failed for $VERIFY_ID"
 	wait_for "poll GET until Running (checkpoint restored)" 240 sandbox_running
+	t3="$(now_ms)"
+	log "verify (pause): $VERIFY_ID resume POST->Running (checkpoint restored) $(( (t3 - t2) / 1000000 ))ms"
 	wait_for "post-resume execd /ping 200 through a fresh route" 100 execd_ping_ok
+	pass "pause/resume round-trip timings: pause->Paused $(( (t2 - t1) / 1000000 ))ms, resume->Running $(( (t3 - t2) / 1000000 ))ms (server API -> FastPath -> artifact store)"
 
 	server_api DELETE "/sandboxes/$VERIFY_ID" >/dev/null \
 		|| log "verify cleanup: DELETE failed; remove $VERIFY_ID manually"
 	wait_for "pause/resume sandbox deleted" 120 verify_sandbox_gone
-	pass "pause/resume round-trip (server API -> FastPath -> artifact store)"
+}
+
+# --- stage: snapshot (server API -> SandboxSnapshot CR -> restore) --------------
+
+# Ready when the server watcher has converged the snapshot row from the
+# fast-sandbox SandboxSnapshot CR (Succeeded + template index published).
+snapshot_ready() { # <snapshot-id>
+	[[ "$(server_api GET "/snapshots/$1" 2>/dev/null | jq -r '.status.state // empty')" == "Ready" ]]
+}
+
+# Terminal (Ready or Failed): the fastlet pause-window fence resolves an
+# accepted-but-conflicting snapshot one way or the other.
+snapshot_terminal() { # <snapshot-id>
+	local state
+	state="$(server_api GET "/snapshots/$1" 2>/dev/null | jq -r '.status.state // empty')"
+	[[ "$state" == "Ready" || "$state" == "Failed" ]]
+}
+
+snapshot_verify() {
+	# Full public-snapshot round trip on the live stack: create a sandbox,
+	# POST a snapshot (202 + Creating), let the server watcher converge the
+	# row from the SandboxSnapshot CR, restore a NEW sandbox from the
+	# snapshotId (the published template index becomes its rootfs artifact
+	# set), and prove the restored sandbox boots by execd /ping through the
+	# signed gateway route. Also covers: re-entry rejection while the dump
+	# window holds the sandbox, source-sandbox survival across the pause
+	# window, and a second (terminal-fenced) snapshot of the same sandbox.
+	local body created out source_id snapshot_id snapshot_id2 restore_id reentry_out reentry_code
+	local t0 t1 t2 t3 t4
+	body="$(jq -n --arg template "$TEMPLATE_ID" '{
+		templateId: $template,
+		timeout: 3600,
+		metadata: {origin: "fast-sandbox-env-snapshot"}
+	}')"
+	t0="$(now_ms)"
+	log "verify (snapshot): creating the source sandbox via the server API (templateId=$TEMPLATE_ID)"
+	created="$(server_api POST /sandboxes "$body" 2>/dev/null)" \
+		|| fail "POST /sandboxes failed against $SERVER_URL"
+	source_id="$(printf '%s' "$created" | jq -r '.id')"
+	[[ -n "$source_id" && "$source_id" != "null" ]] || fail "create response carried no id"
+	VERIFY_ID="$source_id"
+	wait_for "snapshot source sandbox Running" 300 sandbox_running
+	wait_for "pre-snapshot execd /ping 200 through the gateway" 100 execd_ping_ok
+	t1="$(now_ms)"
+	log "verify (snapshot): source sandbox $source_id create->Running $(( (t1 - t0) / 1000000 ))ms"
+
+	# 1. Snapshot create: 202 + Creating; the dump holds the runtime pause
+	# window, artifacts publish after it; the server row converges from the
+	# SandboxSnapshot CR via its watcher.
+	log "verify (snapshot): POST /sandboxes/$source_id/snapshots"
+	t1="$(now_ms)"
+	out="$(server_api POST "/sandboxes/$source_id/snapshots" '{"name":"env-verify"}' 2>/dev/null)" \
+		|| fail "POST snapshots failed for $source_id"
+	SNAPSHOT_ID="$(printf '%s' "$out" | jq -r '.id')"
+	[[ -n "$SNAPSHOT_ID" && "$SNAPSHOT_ID" != "null" ]] || fail "snapshot create carried no id"
+	[[ "$(printf '%s' "$out" | jq -r '.status.state')" == "Creating" ]] \
+		|| fail "snapshot create did not return Creating: $(printf '%s' "$out" | head -c 300)"
+
+	# 2. Re-entry: a second snapshot POST while the first holds the dump
+	# window is fenced by FastPath (FailedPrecondition -> 409) once the CR
+	# is cache-visible; with watcher cache lag the POST is accepted (202)
+	# and the fastlet pause window — the authoritative fence — resolves the
+	# extra snapshot to a terminal phase after the first completes.
+	reentry_out="$(curl -sS -m 60 -w '\n%{http_code}' -X POST \
+		-H "OPEN-SANDBOX-API-KEY: $SERVER_API_KEY" -H "Content-Type: application/json" \
+		-d '{"name":"env-verify-reentry"}' "$SERVER_URL/sandboxes/$source_id/snapshots" 2>/dev/null || true)"
+	reentry_code="$(printf '%s' "$reentry_out" | tail -n1)"
+	reentry_out="$(printf '%s' "$reentry_out" | sed '$d')"
+	case "$reentry_code" in
+		409)
+			pass "snapshot: re-entry rejected by the fence (409)"
+			;;
+		202)
+			SNAPSHOT_EXTRA="$(printf '%s' "$reentry_out" | jq -r '.id' 2>/dev/null || true)"
+			[[ -n "$SNAPSHOT_EXTRA" && "$SNAPSHOT_EXTRA" != "null" ]] \
+				|| fail "re-entry snapshot POST returned 202 without an id: $(printf '%s' "$reentry_out" | head -c 300)"
+			log "verify (snapshot): re-entry accepted during fence cache lag ($SNAPSHOT_EXTRA); terminal outcome asserted below"
+			;;
+		*)
+			fail "re-entry snapshot POST returned unexpected HTTP ${reentry_code:-none}: $(printf '%s' "$reentry_out" | head -c 300)"
+			;;
+	esac
+
+	wait_for "poll GET /snapshots/$SNAPSHOT_ID until Ready (watcher -> SandboxSnapshot CR -> store index)" 300 snapshot_ready "$SNAPSHOT_ID"
+	t2="$(now_ms)"
+	log "verify (snapshot): $SNAPSHOT_ID snapshot POST->Ready $(( (t2 - t1) / 1000000 ))ms"
+	pass "snapshot: POST 202 Creating -> watcher -> Ready"
+
+	# 3. Source survival: the pause window must be released and the sandbox
+	# back to serving after the snapshot reached its terminal phase.
+	VERIFY_ID="$source_id"
+	wait_for "source sandbox Running again after the snapshot" 120 sandbox_running
+	wait_for "source sandbox execd /ping 200 after the snapshot" 100 execd_ping_ok
+	pass "snapshot: source sandbox survived (Running + /ping 200)"
+
+	# 3b. An accepted re-entry snapshot (fence cache lag) must reach a
+	# terminal phase once the first snapshot releases the pause window — a
+	# stuck non-terminal snapshot would block every future snapshot of the
+	# sandbox through the re-entry fence.
+	if [[ -n "$SNAPSHOT_EXTRA" ]]; then
+		wait_for "re-entry snapshot $SNAPSHOT_EXTRA reaches a terminal phase" 150 snapshot_terminal "$SNAPSHOT_EXTRA"
+		log "verify (snapshot): re-entry snapshot $SNAPSHOT_EXTRA terminal: $(server_api GET "/snapshots/$SNAPSHOT_EXTRA" 2>/dev/null | jq -r '.status.state')"
+		pass "snapshot: accepted re-entry snapshot resolved to a terminal phase"
+	fi
+
+	# 4. Second snapshot after the first is terminal: a fresh id, fenced in
+	# by re-entry only while non-terminal.
+	t3="$(now_ms)"
+	out="$(server_api POST "/sandboxes/$source_id/snapshots" '{"name":"env-verify-2"}' 2>/dev/null)" \
+		|| fail "second snapshot POST failed for $source_id"
+	snapshot_id2="$(printf '%s' "$out" | jq -r '.id')"
+	[[ -n "$snapshot_id2" && "$snapshot_id2" != "null" && "$snapshot_id2" != "$SNAPSHOT_ID" ]] \
+		|| fail "second snapshot did not produce a distinct id: $snapshot_id2"
+	SNAPSHOT_ID2="$snapshot_id2"
+	wait_for "poll GET /snapshots/$snapshot_id2 until Ready" 300 snapshot_ready "$snapshot_id2"
+	t4="$(now_ms)"
+	log "verify (snapshot): $snapshot_id2 second snapshot POST->Ready $(( (t4 - t3) / 1000000 ))ms"
+	pass "snapshot: repeated snapshot of the same sandbox -> Ready (distinct id)"
+
+	# 5. Listing: sandboxId scoping returns both required snapshots, both
+	# Ready (an accepted re-entry snapshot may add a third, terminal row).
+	out="$(server_api GET "/snapshots?sandboxId=$source_id&pageSize=50")"
+	[[ "$(printf '%s' "$out" | jq -r --arg id "$SNAPSHOT_ID" --arg id2 "$snapshot_id2" \
+		'[.items[] | select((.id == $id or .id == $id2) and .status.state == "Ready")] | length')" == "2" ]] \
+		|| fail "snapshot list does not contain both required snapshots as Ready: $(printf '%s' "$out" | head -c 400)"
+	if [[ -n "$SNAPSHOT_EXTRA" ]]; then
+		[[ "$(printf '%s' "$out" | jq -r --arg id "$SNAPSHOT_EXTRA" \
+			'[.items[] | select(.id == $id)] | length')" == "1" ]] \
+			|| fail "accepted re-entry snapshot $SNAPSHOT_EXTRA missing from the list"
+	fi
+	pass "snapshot: list scoped by sandboxId contains the snapshots (Ready)"
+
+	# 6. Restore: the snapshot row resolves to the published template index
+	# key (osb-snap-<uuid hex>); the restored sandbox boots that artifact
+	# set. resourceLimits must restate the pool profile (firecracker pool).
+	local restore_body restored
+	restore_body="$(jq -n --arg snapshot "$SNAPSHOT_ID" '{
+		snapshotId: $snapshot,
+		timeout: 3600,
+		resourceLimits: {cpu: "1", memory: "512Mi", pids: "128"}
+	}')"
+	log "verify (snapshot): POST /sandboxes with snapshotId=$SNAPSHOT_ID"
+	t3="$(now_ms)"
+	restored="$(server_api POST /sandboxes "$restore_body" 2>/dev/null)" \
+		|| fail "POST /sandboxes (snapshotId=$SNAPSHOT_ID) failed"
+	restore_id="$(printf '%s' "$restored" | jq -r '.id')"
+	[[ -n "$restore_id" && "$restore_id" != "null" ]] || fail "restore create carried no id"
+	VERIFY_ID="$restore_id"
+	wait_for "restored sandbox Running" 600 sandbox_running
+	t4="$(now_ms)"
+	wait_for "restored execd /ping 200 through the gateway" 300 execd_ping_ok
+	log "verify (snapshot): restored $restore_id POST->Running $(( (t4 - t3) / 1000000 ))ms"
+	pass "snapshot: restore -> sandbox boots the published artifact set -> execd /ping OK"
+
+	# 7. Cleanup: restored sandbox, source sandbox, then the snapshot rows
+	# (the server forwards artifact deletion through DeleteSandboxSnapshot).
+	server_api DELETE "/sandboxes/$restore_id" >/dev/null \
+		|| log "verify cleanup: DELETE $restore_id failed"
+	wait_for "restored sandbox deleted" 120 verify_sandbox_gone
+	VERIFY_ID="$source_id"
+	server_api DELETE "/sandboxes/$source_id" >/dev/null \
+		|| log "verify cleanup: DELETE $source_id failed"
+	wait_for "snapshot source sandbox deleted" 120 verify_sandbox_gone
+	for snapshot_id in "$SNAPSHOT_ID" "$SNAPSHOT_ID2" "$SNAPSHOT_EXTRA"; do
+		[[ -n "$snapshot_id" ]] || continue
+		server_api DELETE "/snapshots/$snapshot_id" >/dev/null \
+			|| log "verify cleanup: DELETE snapshot $snapshot_id failed"
+	done
+	pass "snapshot: cleanup (restored + source sandboxes, both snapshot rows)"
 }
 
 # --- status / summary ---------------------------------------------------------------------
@@ -1650,6 +1837,7 @@ case "$ACTION" in
 		run_stage "SandboxPool $POOL_NAME (egress + P2P)" pool_up
 		run_stage "end-to-end verify (templateId create -> gateway -> execd /ping)" opensandbox_verify
 		run_stage "pause/resume verify (server API -> FastPath checkpoint)" pause_resume_verify
+		run_stage "snapshot verify (server API -> SandboxSnapshot -> restore)" snapshot_verify
 		trap - ERR
 		stage_summary
 		env_summary

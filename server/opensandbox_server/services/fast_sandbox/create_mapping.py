@@ -284,8 +284,8 @@ def _reject_unsupported_fields(request: CreateSandboxRequest) -> None:
             "lifecycle",
             "lifecycle hooks are not supported by the fsb backend",
         )
-    if request.snapshot_id:
-        raise UnsupportedFieldError("snapshotId", "snapshots are not supported on fsb")
+    # snapshotId is allowed: restore resolution replaced it with the snapshot
+    # artifact reference (restore_config.image) before routing reached fsb.
     if request.platform is not None:
         raise UnsupportedFieldError("platform", "scheduling is per Fastlet pool, not per sandbox")
     if request.resource_requests is not None:
