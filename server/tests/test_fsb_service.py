@@ -220,9 +220,7 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
         uid, generation = current
         if request.sandbox.expected_uid and request.sandbox.expected_uid != uid:
             context.abort(grpc.StatusCode.ABORTED, "uid fence rejected")
-        # Mirror the FastPath contract: only a terminal runtime refuses the
-        # pause (non-terminal states wait for Ready; a replayed pause is
-        # an idempotent success).
+        # Only a terminal runtime refuses the pause.
         if self._cr_runtime_state(namespace, name) in ("Stopped", "Stopping", "Failed"):
             context.abort(
                 grpc.StatusCode.FAILED_PRECONDITION,
@@ -246,16 +244,10 @@ class _FakeFastPathService(pb2_grpc.FastPathServiceServicer):
         uid, generation = current
         if request.sandbox.expected_uid and request.sandbox.expected_uid != uid:
             context.abort(grpc.StatusCode.ABORTED, "uid fence rejected")
-        # Mirror the FastPath contract: a durably Paused sandbox without a
-        # recorded checkpoint is unresumable (it needs resetRevision); a
-        # Pausing sandbox simply cancels the pause, and a Running replay is
-        # an idempotent success.
+        # A durably Paused sandbox without a checkpoint is unresumable.
         cr = self.crs.get((namespace, name)) or {}
         runtime_status = (cr.get("status") or {}).get("runtime") or {}
-        if (
-            runtime_status.get("state") == "Paused"
-            and not runtime_status.get("checkpoint")
-        ):
+        if runtime_status.get("state") == "Paused" and not runtime_status.get("checkpoint"):
             context.abort(
                 grpc.StatusCode.FAILED_PRECONDITION,
                 "no recorded checkpoint; resume is impossible",
@@ -358,8 +350,6 @@ def http_fsb(monkeypatch):
     monkeypatch.setattr(lifecycle, "sandbox_service", service)
 
     app = FastAPI()
-    # Mirror the production wiring: the request-id middleware populates the
-    # ContextVar the fsb pause/resume calls forward to FastPath.
     app.add_middleware(RequestIdMiddleware)
     app.include_router(lifecycle.router, prefix="/v1")
     app.include_router(network_policy.router, prefix="/v1")
@@ -825,8 +815,6 @@ def test_http_pause_and_resume_use_uid_fences_and_return_accepted(http_fsb):
     assert len(fake.pause_requests) == 1
     assert fake.pause_requests[0].sandbox.expected_uid == f"uid-{sandbox_id}"
     assert fake.pause_requests[0].sandbox.namespaced_name.name == sandbox_id
-    # The request middleware's X-Request-ID flows through as the FastPath
-    # tracing key.
     assert fake.pause_requests[0].request_id != ""
     assert fake.resume_requests[0].sandbox.expected_uid == f"uid-{sandbox_id}"
 
@@ -856,8 +844,6 @@ def test_http_resume_maps_precondition_to_conflict(http_fsb):
 
 
 def test_http_pause_rejects_terminal_runtime_state(http_fsb):
-    """Fidelity: the fake mirrors FastPath's own precondition (terminal
-    runtimes refuse the pause) instead of relying on scripted aborts."""
     client, fake, _ = http_fsb
     sandbox_id = _create_fsb_sandbox(client)
     fake.crs[("ns-1", sandbox_id)]["status"]["runtime"]["state"] = "Failed"

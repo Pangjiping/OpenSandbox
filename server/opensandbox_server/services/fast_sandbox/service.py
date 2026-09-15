@@ -380,11 +380,7 @@ class FastSandboxService(SandboxService, ExtensionService):
             self._cr_reader.invalidate(namespace)
 
     def pause_sandbox(self, sandbox_id: str) -> None:
-        """Persist the pause intent on fast-sandbox; the transition completes
-        asynchronously (PAUSING -> PAUSED is observed via GET).
-
-        Deleting the sandbox drops the pause checkpoint along with the CR.
-        """
+        """Persist the pause intent; PAUSING -> PAUSED completes asynchronously."""
         metadata = self._get_cr(sandbox_id)["metadata"]
         namespace = metadata["namespace"]
         try:
@@ -400,12 +396,8 @@ class FastSandboxService(SandboxService, ExtensionService):
             self._cr_reader.invalidate(namespace)
 
     def resume_sandbox(self, sandbox_id: str) -> None:
-        """Persist the resume intent (spec.state=Running); fast-sandbox
-        reschedules the recorded checkpoint, possibly on another Fastlet.
-
-        The route generation advances on resume, so cached endpoints must be
-        re-resolved after the sandbox reports Running.
-        """
+        """Persist the resume intent; fast-sandbox restores the checkpoint
+        (possibly on another Fastlet) and routes must be re-resolved."""
         metadata = self._get_cr(sandbox_id)["metadata"]
         namespace = metadata["namespace"]
         try:

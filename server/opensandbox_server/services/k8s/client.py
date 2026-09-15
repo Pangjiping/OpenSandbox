@@ -58,10 +58,7 @@ class K8sClient:
         self._node_v1_api: Optional[NodeV1Api] = None
         self._informers: Dict[_InformerKey, WorkloadInformer] = {}
         self._informers_lock = threading.Lock()
-        # CRD installation is static for the lifetime of a process, but a
-        # short TTL bounds the staleness window (e.g. a server that started
-        # before the CRD was applied) without paying a discovery round-trip
-        # on every list.
+        # Short-TTL CRD discovery cache: bounded staleness, no per-list round-trip.
         self._crd_exists_cache: Dict[Tuple[str, str, str], Tuple[bool, float]] = {}
         self._crd_exists_cache_lock = threading.Lock()
         self._read_limiter: Optional[TokenBucketRateLimiter] = (
@@ -273,19 +270,10 @@ class K8sClient:
                 return []
             raise
 
-    # Discovery results live far longer than this TTL (CRDs are applied at
-    # deploy time), so the cache only needs to bound the "server started
-    # before the CRD" window, not track installations live.
     CRD_EXISTS_CACHE_TTL_SECONDS = 60.0
 
     def custom_resource_exists(self, group: str, version: str, plural: str) -> bool:
-        """Distinguish an uninstalled API from a failed namespaced list.
-
-        Results are cached per (group, version, plural) with a short TTL:
-        the composite list fans out to several CRD-backed backends, and an
-        uncached discovery round-trip per backend per list multiplies
-        quickly.
-        """
+        """True when the CRD is installed; cached briefly to avoid per-list discovery."""
         cache_key = (group, version, plural)
         now = time.monotonic()
         with self._crd_exists_cache_lock:

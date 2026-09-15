@@ -64,11 +64,7 @@ set -euo pipefail
 OSB_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFESTS_DIR="$SCRIPT_DIR/manifests"
-# Default the workspace to /data when the host has it (same rationale as
-# fast-sandbox's integration-env.sh): built image tars, the XFS StateRoot
-# loop file and MinIO artifacts all grow with the workload, which a small
-# repo/root disk cannot absorb. Hosts without /data fall back to the repo
-# workdir. Overridable with WORK.
+# Heavy run-state belongs on a data volume, not the repo/root disk.
 if [[ -d /data ]] && [[ -z "${WORK:-}" ]]; then
 	WORK="/data/fast-sandbox-env"
 else
@@ -170,10 +166,7 @@ SKIP_LEFTOVER_CLEAN="${SKIP_LEFTOVER_CLEAN:-0}"
 KIND_VERSION="${KIND_VERSION:-v0.24.0}"
 KUBECTL_VERSION="${KUBECTL_VERSION:-v1.31.0}"
 
-# Go builds (fast-sandbox images + the registry generator) run on the host
-# and inherit the shell's GOPROXY. Internal goproxy mirrors sometimes answer
-# 500 on shared hosts, so default to direct VCS downloads (works wherever
-# the git hosts are reachable) and let FSB_GOPROXY opt back into a proxy.
+# Internal goproxy mirrors can 500 on shared hosts; direct VCS just works there.
 FSB_GOPROXY="${FSB_GOPROXY:-direct}"
 export GOPROXY="$FSB_GOPROXY"
 
@@ -371,9 +364,7 @@ host_port_busy() { # port -> 0 when something already listens on 127.0.0.1:<port
 	(exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
 }
 
-# ensure_image pulls only when the image is absent locally: hosts without a
-# Docker Hub route (air-gapped, rate-limited) reuse whatever is already in
-# the local store, or point the *_IMAGE overrides at their own registry.
+# Pull only when absent locally (*_IMAGE overrides cover private registries).
 ensure_image() { # image -> pull only when missing locally
 	docker image inspect "$1" >/dev/null 2>&1 && return 0
 	docker pull -q "$1" >/dev/null || die "image $1 is not available locally and the pull failed (pre-load it with docker load, or override the *_IMAGE variable)"
@@ -397,13 +388,7 @@ preflight() {
 		die "docker cgroup Version is 1; kind requires cgroup v2. Enable it with the kernel cmdline 'systemd.unified_cgroup_hierarchy=1' and reboot"
 	fi
 	[[ -e /dev/kvm ]] || die "/dev/kvm is missing on this host (KVM required)"
-	# Per-target disk headroom (fast-sandbox integration-env pattern): the
-	# workspace (built image tars), the MinIO data directory and the XFS
-	# StateRoot loop file's filesystem are the heavy consumers. MinIO
-	# refuses writes below its free-disk threshold and a full root disk
-	# turns XFS sparse extension into EIO, so fail fast here with a clear
-	# error. When the targets share one filesystem the check is effectively
-	# on that filesystem alone.
+	# Fail fast per heavy-data target instead of ENOSPC mid-run.
 	local min_free_kb=$((20 * 1024 * 1024)) avail_kb target xfs_dir
 	xfs_dir="${XFS_LOOP_FILE%/*}"
 	mkdir -p "$WORK" "$MINIO_DATA" "$xfs_dir" 2>/dev/null || true
@@ -737,10 +722,8 @@ resolve_minio_endpoint() {
 	pass "MinIO reachable from the kind network"
 }
 
-# gen_registry compiles the agent pull credentials through fast-sandbox's
-# own registryconfig package (same pattern as its scripts/integration-env.sh).
-# The optional write pair is what the agent publishes snapshots/checkpoints
-# (pause/resume) with; omitting it keeps the store read-only.
+# gen_registry compiles the agent registry via fast-sandbox's registryconfig
+# package; the optional write pair covers checkpoint/snapshot publication.
 gen_registry() { # host username password endpoint [write-username write-password] > registry.json
 	mkdir -p "$FSB_GEN_DIR"
 	cat > "$FSB_GEN_DIR/gen-registry.go" <<'EOF'
@@ -795,10 +778,7 @@ credentials_up() {
 		--from-literal=endpoint="$MINIO_ENDPOINT" \
 		--from-literal=region=us-east-1 \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
-	# Pull + publish credentials for the runtime-agent (compiled
-	# registryconfig): the write pair is what pause/resume checkpoints and
-	# snapshots publish with (MinIO root keys are read-write, so the same
-	# pair doubles as the write pair).
+	# Agent pull+publish credentials (the write pair covers checkpoints).
 	gen_registry "$host" "$MINIO_AK" "$MINIO_SK" "$MINIO_ENDPOINT" "$MINIO_AK" "$MINIO_SK" \
 		> "$WORK/agent-registry.json"
 	jq -e '.credentials[0].writeUsername' "$WORK/agent-registry.json" >/dev/null \
@@ -806,11 +786,7 @@ credentials_up() {
 	kubectl -n "$NS" create secret generic fast-sandbox-agent-registry \
 		--from-file=registry.json="$WORK/agent-registry.json" \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
-	# Shared artifact store root/endpoint: the agent mounts the
-	# fast-sandbox-artifact-store ConfigMap (created by the control-plane
-	# manifests with an empty endpoint); this pins the live MinIO endpoint
-	# for SigV4 signing. Kubelet projects updates in place, so an edit lands
-	# on the next pull without an agent restart.
+	# Pin the shared artifact-store ConfigMap to the live MinIO endpoint.
 	kubectl -n "$NS" create configmap fast-sandbox-artifact-store \
 		--from-literal=store="s3://$MINIO_BUCKET/publish" \
 		--from-literal=endpoint="$MINIO_ENDPOINT" \
@@ -1404,9 +1380,7 @@ opensandbox_verify() {
 
 # --- stage: pause / resume (server API -> FastPath checkpoint) ------------------
 
-# Resolve the signed gateway route fresh and GET guest execd /ping once.
-# Route resolution requires a live, aggregate-Ready sandbox, so this doubles
-# as the "is the runtime actually serving" probe.
+# Fresh signed route + one GET: doubles as the "runtime actually serving" probe.
 execd_ping_ok() {
 	local route code
 	route="$(server_api GET "/sandboxes/$VERIFY_ID/endpoints/44772" 2>/dev/null \
@@ -1425,14 +1399,8 @@ sandbox_running() { sandbox_state_is Running; }
 sandbox_paused() { sandbox_state_is Paused; }
 
 pause_resume_verify() {
-	# Pause/resume through the OpenSandbox server API: the server persists the
-	# desired state on fast-sandbox (FastPath PauseSandbox/ResumeSandbox, uid
-	# fenced) and returns 202; the transition completes asynchronously and is
-	# observed by polling GET. Paused means the checkpoint is durable in the
-	# artifact store and the Fastlet capacity is released; resume restores the
-	# checkpoint (node-local cache hit here) and advances the route
-	# generation, so the post-resume /ping must succeed through a FRESH
-	# endpoint resolution.
+	# 202 + poll GET: Paused == checkpoint durable + capacity released;
+	# resume advances the route generation, so /ping needs a fresh route.
 	local body created
 	body="$(jq -n --arg template "$TEMPLATE_ID" '{
 		templateId: $template,

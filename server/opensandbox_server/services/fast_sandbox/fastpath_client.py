@@ -172,13 +172,7 @@ class FastPathClient:
         expected_uid: str = "",
         request_id: str = "",
     ) -> fastpath_pb2.PauseSandboxResponse:
-        """Persist the pause intent (spec.state=Paused).
-
-        Returns after the intent is durable; completion (PAUSED with the
-        checkpoint durable) is observed by polling get_sandbox. request_id
-        is optional in FastPath (validated only when set) and flows into
-        FastPath's structured logs as the tracing key.
-        """
+        """Persist the pause intent; completion (PAUSED) is observed via get_sandbox."""
         request = fastpath_pb2.PauseSandboxRequest(
             sandbox=namespaced_reference(namespace, sandbox_name, expected_uid=expected_uid),
             request_id=request_id,
@@ -196,11 +190,7 @@ class FastPathClient:
         expected_checkpoint_id: str = "",
         request_id: str = "",
     ) -> fastpath_pb2.ResumeSandboxResponse:
-        """Persist the resume intent (spec.state=Running) from the recorded checkpoint.
-
-        Returns after the intent is durable; completion (READY) is observed
-        by polling get_sandbox.
-        """
+        """Persist the resume intent; completion (READY) is observed via get_sandbox."""
         request = fastpath_pb2.ResumeSandboxRequest(
             sandbox=namespaced_reference(namespace, sandbox_name, expected_uid=expected_uid),
             expected_checkpoint_id=expected_checkpoint_id,
