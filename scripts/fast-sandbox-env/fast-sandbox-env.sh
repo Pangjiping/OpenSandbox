@@ -1402,6 +1402,75 @@ opensandbox_verify() {
 	pass "verify sandboxes cleaned up"
 }
 
+# --- stage: pause / resume (server API -> FastPath checkpoint) ------------------
+
+# Resolve the signed gateway route fresh and GET guest execd /ping once.
+# Route resolution requires a live, aggregate-Ready sandbox, so this doubles
+# as the "is the runtime actually serving" probe.
+execd_ping_ok() {
+	local route code
+	route="$(server_api GET "/sandboxes/$VERIFY_ID/endpoints/44772" 2>/dev/null \
+		| jq -r '.headers["OpenSandbox-Ingress-To"] // empty')"
+	[[ -n "$route" ]] || return 1
+	code="$(curl -sS -m 5 -o /dev/null -w '%{http_code}' \
+		-H "OpenSandbox-Ingress-To: $route" "$GATEWAY_URL/ping" 2>/dev/null || true)"
+	[[ "$code" == "200" ]]
+}
+
+sandbox_state_is() { # <state>
+	[[ "$(server_api GET "/sandboxes/$VERIFY_ID" 2>/dev/null | jq -r '.status.state // empty')" == "$1" ]]
+}
+
+sandbox_running() { sandbox_state_is Running; }
+sandbox_paused() { sandbox_state_is Paused; }
+
+pause_resume_verify() {
+	# Pause/resume through the OpenSandbox server API: the server persists the
+	# desired state on fast-sandbox (FastPath PauseSandbox/ResumeSandbox, uid
+	# fenced) and returns 202; the transition completes asynchronously and is
+	# observed by polling GET. Paused means the checkpoint is durable in the
+	# artifact store and the Fastlet capacity is released; resume restores the
+	# checkpoint (node-local cache hit here) and advances the route
+	# generation, so the post-resume /ping must succeed through a FRESH
+	# endpoint resolution.
+	local body created
+	body="$(jq -n --arg template "$TEMPLATE_ID" '{
+		templateId: $template,
+		timeout: 3600,
+		metadata: {origin: "fast-sandbox-env-pause"}
+	}')"
+	log "verify (pause): creating a sandbox via the server API (templateId=$TEMPLATE_ID)"
+	created="$(server_api POST /sandboxes "$body" 2>/dev/null)" \
+		|| fail "POST /sandboxes failed against $SERVER_URL"
+	VERIFY_ID="$(printf '%s' "$created" | jq -r '.id')"
+	[[ -n "$VERIFY_ID" && "$VERIFY_ID" != "null" ]] || fail "create response carried no id"
+	wait_for "pause target Running" 150 sandbox_running
+
+	wait_for "pre-pause execd /ping 200 through the gateway" 100 execd_ping_ok
+
+	log "verify (pause): POST /sandboxes/$VERIFY_ID/pause"
+	server_api POST "/sandboxes/$VERIFY_ID/pause" >/dev/null \
+		|| fail "POST pause failed for $VERIFY_ID"
+	# Paused is durable-first: the checkpoint must be complete in the artifact
+	# store before the state is reported; the dump itself keeps serving.
+	wait_for "poll GET until Paused (checkpoint durable, capacity released)" 240 sandbox_paused
+	if execd_ping_ok; then
+		fail "paused sandbox still serves /ping through the gateway"
+	fi
+	pass "paused: execd /ping no longer served (runtime released, signed route rejected at the gateway)"
+
+	log "verify (pause): POST /sandboxes/$VERIFY_ID/resume"
+	server_api POST "/sandboxes/$VERIFY_ID/resume" >/dev/null \
+		|| fail "POST resume failed for $VERIFY_ID"
+	wait_for "poll GET until Running (checkpoint restored)" 240 sandbox_running
+	wait_for "post-resume execd /ping 200 through a fresh route" 100 execd_ping_ok
+
+	server_api DELETE "/sandboxes/$VERIFY_ID" >/dev/null \
+		|| log "verify cleanup: DELETE failed; remove $VERIFY_ID manually"
+	wait_for "pause/resume sandbox deleted" 120 verify_sandbox_gone
+	pass "pause/resume round-trip (server API -> FastPath -> artifact store)"
+}
+
 # --- status / summary ---------------------------------------------------------------------
 
 dart_metrics_summary() {
@@ -1598,6 +1667,7 @@ case "$ACTION" in
 		run_stage "SandboxTemplate build (server API)" template_up
 		run_stage "SandboxPool $POOL_NAME (egress + P2P)" pool_up
 		run_stage "end-to-end verify (templateId create -> gateway -> execd /ping)" opensandbox_verify
+		run_stage "pause/resume verify (server API -> FastPath checkpoint)" pause_resume_verify
 		trap - ERR
 		stage_summary
 		env_summary

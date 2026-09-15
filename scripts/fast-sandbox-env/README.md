@@ -20,7 +20,7 @@ caveats): `fast-sandbox/docs/guides/firecracker-integration-env.md`.
 ## Usage
 
 ```bash
-./scripts/fast-sandbox-env/fast-sandbox-env.sh up        # full stack + end-to-end verify
+./scripts/fast-sandbox-env/fast-sandbox-env.sh up        # full stack + end-to-end + pause/resume verify
 ./scripts/fast-sandbox-env/fast-sandbox-env.sh status    # component / pool / DART / OpenSandbox health
 ./scripts/fast-sandbox-env/fast-sandbox-env.sh pool      # re-apply the pool only
 ./scripts/fast-sandbox-env/fast-sandbox-env.sh down      # teardown, host left clean
@@ -112,6 +112,8 @@ asserted) → OpenSandbox server + ingress gateway → SandboxTemplate golden
 image **built through the server `POST /templates` API** → SandboxPool
 (fastlet Ready, egress Ready, pool conditions, actions protocol check) →
 end-to-end verify (templateId create → signed gateway route → execd
+`/ping` → delete) → pause/resume round-trip (POST pause → poll
+`Paused` + route released → POST resume → poll `Running` → fresh-route
 `/ping` → delete).
 
 Every stage logs to `$WORK/logs/`; failures dump component logs to
