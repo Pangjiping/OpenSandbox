@@ -208,7 +208,7 @@ async def main() -> None:
         await sandbox.files.write_files([
             WriteEntry(
                 path="/tmp/hello.sh",
-                data="echo 'Hello $1'\necho '2 + 2 =' $((2 + 2))",
+                data="echo \"Hello $1\"\necho '2 + 2 =' $((2 + 2))",
                 mode=755,
             )
         ])
