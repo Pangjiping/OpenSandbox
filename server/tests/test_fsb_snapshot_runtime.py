@@ -83,10 +83,17 @@ class FakeFastPathClient:
 
 
 class _Info:
-    def __init__(self, phase, message: str = "", manifest_ref: str = ""):
+    def __init__(
+        self,
+        phase,
+        message: str = "",
+        manifest_ref: str = "",
+        template_name: str = "",
+    ):
         self.phase = phase
         self.message = message
         self.manifest_ref = manifest_ref
+        self.template_name = template_name
 
 
 class _Response:
@@ -165,20 +172,39 @@ def test_create_snapshot_maps_fastpath_errors_to_failed() -> None:
     assert status.reason == "snapshot_runtime_create_failed"
 
 
-def test_inspect_maps_succeeded_phase_to_ready_with_manifest_ref() -> None:
+def test_inspect_maps_succeeded_phase_to_ready_with_template_name_image() -> None:
     fastpath = FakeFastPathClient()
     snapshot_name = build_public_snapshot_name(SNAPSHOT_ID)
     fastpath.get_by_name[("tenant-a", snapshot_name)] = _Response(
-        _Info(pb2.SNAPSHOT_PHASE_SUCCEEDED, manifest_ref="s3://bucket/snap/index")
+        _Info(
+            pb2.SNAPSHOT_PHASE_SUCCEEDED,
+            manifest_ref="s3://bucket/manifests/abc.json",
+            template_name=snapshot_name,
+        )
     )
     runtime, _, _ = _runtime(fastpath=fastpath)
 
     status = runtime.inspect_snapshot(SNAPSHOT_ID, namespace="tenant-a")
 
+    # The restore image is the template name (the published index key), not
+    # the raw manifest_ref URI.
     assert status.state == SnapshotState.READY
-    assert status.image == "s3://bucket/snap/index"
+    assert status.image == snapshot_name
     assert status.backend == "fsb"
     assert status.reason == "snapshot_runtime_ready"
+
+
+def test_inspect_fails_when_succeeded_without_template_name() -> None:
+    fastpath = FakeFastPathClient()
+    fastpath.get_by_name[("default", build_public_snapshot_name(SNAPSHOT_ID))] = _Response(
+        _Info(pb2.SNAPSHOT_PHASE_SUCCEEDED, manifest_ref="s3://bucket/manifests/abc.json")
+    )
+    runtime, _, _ = _runtime(fastpath=fastpath)
+
+    status = runtime.inspect_snapshot(SNAPSHOT_ID)
+
+    assert status.state == SnapshotState.FAILED
+    assert status.reason == "snapshot_runtime_missing_image"
 
 
 def test_inspect_maps_failed_phase_with_message() -> None:

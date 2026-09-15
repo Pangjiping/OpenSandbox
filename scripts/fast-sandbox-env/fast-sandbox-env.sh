@@ -24,7 +24,10 @@
 # with the OpenSandbox egress sidecar attached through the Sandbox Actions
 # channel → the source-built OpenSandbox lifecycle server (fsb runtime)
 # and ingress gateway → an end-to-end verify (create through the server
-# API, execd /ping through the signed gateway route, delete).
+# API, execd /ping through the signed gateway route, delete); then
+# pause/resume (checkpoint to the artifact store, capacity released,
+# resume) and a public-snapshot verify (snapshot a Running sandbox, watch
+# it to Ready, restore a NEW sandbox from the snapshotId and boot it).
 #
 # Everything is source-built from this repository plus fast-sandbox@master,
 # except the execd image baked into the SandboxTemplate golden image
@@ -1211,6 +1214,9 @@ server_api() { # method path [json-body]
 # The server assigns the sandbox id (CreateSandboxRequest carries none);
 # the verify probes share it through VERIFY_ID.
 VERIFY_ID=""
+# The snapshot verify stage shares the created snapshot id through
+# SNAPSHOT_ID (snapshot_ready polls GET /snapshots/$SNAPSHOT_ID).
+SNAPSHOT_ID=""
 
 verify_sandbox_gone() {
 	! server_api GET "/sandboxes/$VERIFY_ID" >/dev/null 2>&1
@@ -1453,6 +1459,86 @@ pause_resume_verify() {
 	pass "pause/resume round-trip (server API -> FastPath -> artifact store)"
 }
 
+# --- stage: snapshot (server API -> SandboxSnapshot CR -> restore) --------------
+
+# Ready when the server watcher has converged the snapshot row from the
+# fast-sandbox SandboxSnapshot CR (Succeeded + template index published).
+snapshot_ready() {
+	[[ "$(server_api GET "/snapshots/$SNAPSHOT_ID" 2>/dev/null | jq -r '.status.state // empty')" == "Ready" ]]
+}
+
+snapshot_verify() {
+	# Full public-snapshot round trip on the live stack: create a sandbox,
+	# POST a snapshot (202 + Creating), let the server watcher converge the
+	# row from the SandboxSnapshot CR, restore a NEW sandbox from the
+	# snapshotId (the published template index becomes its rootfs artifact
+	# set), and prove the restored sandbox boots by execd /ping through the
+	# signed gateway route. Cleanup removes both sandboxes and the snapshot.
+	local body created out source_id snapshot_id restore_id
+	body="$(jq -n --arg template "$TEMPLATE_ID" '{
+		templateId: $template,
+		timeout: 3600,
+		metadata: {origin: "fast-sandbox-env-snapshot"}
+	}')"
+	log "verify (snapshot): creating the source sandbox via the server API (templateId=$TEMPLATE_ID)"
+	created="$(server_api POST /sandboxes "$body" 2>/dev/null)" \
+		|| fail "POST /sandboxes failed against $SERVER_URL"
+	source_id="$(printf '%s' "$created" | jq -r '.id')"
+	[[ -n "$source_id" && "$source_id" != "null" ]] || fail "create response carried no id"
+	VERIFY_ID="$source_id"
+	wait_for "snapshot source sandbox Running" 300 sandbox_running
+	wait_for "pre-snapshot execd /ping 200 through the gateway" 100 execd_ping_ok
+
+	log "verify (snapshot): POST /sandboxes/$source_id/snapshots"
+	out="$(server_api POST "/sandboxes/$source_id/snapshots" '{"name":"env-verify"}' 2>/dev/null)" \
+		|| fail "POST snapshots failed for $source_id"
+	SNAPSHOT_ID="$(printf '%s' "$out" | jq -r '.id')"
+	[[ -n "$SNAPSHOT_ID" && "$SNAPSHOT_ID" != "null" ]] || fail "snapshot create carried no id"
+	[[ "$(printf '%s' "$out" | jq -r '.status.state')" == "Creating" ]] \
+		|| fail "snapshot create did not return Creating: $(printf '%s' "$out" | head -c 300)"
+	# The dump holds the runtime pause window, then publishes to the store;
+	# the server row converges from the SandboxSnapshot CR via its watcher.
+	wait_for "poll GET /snapshots/$SNAPSHOT_ID until Ready (watcher -> SandboxSnapshot CR -> store index)" 600 snapshot_ready
+	pass "snapshot: POST 202 Creating -> watcher -> Ready"
+
+	out="$(server_api GET "/snapshots?sandboxId=$source_id")"
+	[[ "$(printf '%s' "$out" | jq -r --arg id "$SNAPSHOT_ID" '.items[]?.id | select(. == $id)' | head -1)" == "$SNAPSHOT_ID" ]] \
+		|| fail "snapshot list (sandboxId=$source_id) does not contain $SNAPSHOT_ID: $(printf '%s' "$out" | head -c 300)"
+	pass "snapshot: list scoped by sandboxId contains the snapshot"
+
+	# Restore: snapshotId resolves to the published template index key
+	# (osb-snap-<uuid hex>); the restored sandbox boots that artifact set.
+	# resourceLimits must restate the pool profile (firecracker-egress-pool).
+	local restore_body restored
+	restore_body="$(jq -n --arg snapshot "$SNAPSHOT_ID" '{
+		snapshotId: $snapshot,
+		timeout: 3600,
+		resourceLimits: {cpu: "1", memory: "512Mi", pids: "128"}
+	}')"
+	log "verify (snapshot): POST /sandboxes with snapshotId=$SNAPSHOT_ID"
+	restored="$(server_api POST /sandboxes "$restore_body" 2>/dev/null)" \
+		|| fail "POST /sandboxes (snapshotId=$SNAPSHOT_ID) failed"
+	restore_id="$(printf '%s' "$restored" | jq -r '.id')"
+	[[ -n "$restore_id" && "$restore_id" != "null" ]] || fail "restore create carried no id"
+	VERIFY_ID="$restore_id"
+	wait_for "restored sandbox Running" 600 sandbox_running
+	wait_for "restored execd /ping 200 through the gateway" 300 execd_ping_ok
+	pass "snapshot: restore -> sandbox boots the published artifact set -> execd /ping OK"
+
+	# Cleanup: restored sandbox, source sandbox, then the snapshot row (the
+	# server forwards the artifact deletion through DeleteSandboxSnapshot).
+	server_api DELETE "/sandboxes/$restore_id" >/dev/null \
+		|| log "verify cleanup: DELETE $restore_id failed"
+	wait_for "restored sandbox deleted" 120 verify_sandbox_gone
+	VERIFY_ID="$source_id"
+	server_api DELETE "/sandboxes/$source_id" >/dev/null \
+		|| log "verify cleanup: DELETE $source_id failed"
+	wait_for "snapshot source sandbox deleted" 120 verify_sandbox_gone
+	server_api DELETE "/snapshots/$SNAPSHOT_ID" >/dev/null \
+		|| log "verify cleanup: DELETE snapshot $SNAPSHOT_ID failed"
+	pass "snapshot: cleanup (restored + source sandboxes, snapshot row)"
+}
+
 # --- status / summary ---------------------------------------------------------------------
 
 dart_metrics_summary() {
@@ -1650,6 +1736,7 @@ case "$ACTION" in
 		run_stage "SandboxPool $POOL_NAME (egress + P2P)" pool_up
 		run_stage "end-to-end verify (templateId create -> gateway -> execd /ping)" opensandbox_verify
 		run_stage "pause/resume verify (server API -> FastPath checkpoint)" pause_resume_verify
+		run_stage "snapshot verify (server API -> SandboxSnapshot -> restore)" snapshot_verify
 		trap - ERR
 		stage_summary
 		env_summary

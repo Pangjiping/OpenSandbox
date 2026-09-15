@@ -301,19 +301,24 @@ class FastSandboxSnapshotRuntime:
         phase = getattr(info, "phase", None)
         phase_name = pb2_phase_name(phase)
         message = (getattr(info, "message", "") or "").strip() or None
-        manifest_ref = (getattr(info, "manifest_ref", "") or "").strip() or None
+        template_name = (getattr(info, "template_name", "") or "").strip() or None
 
         if phase_name in _TERMINAL_READY_PHASES:
-            if not manifest_ref:
+            # The restore image is the snapshot's template name: the artifact
+            # set is published under index/<sha256(templateName)>.json, the
+            # same content-addressed layout as template golden images. The
+            # manifest_ref points at the raw manifest object and is not
+            # resolvable as a CreateSandbox image.
+            if not template_name:
                 return SnapshotRuntimeStatus(
                     state=SnapshotState.FAILED,
                     reason="snapshot_runtime_missing_image",
-                    message="fsb snapshot succeeded without a manifest reference.",
+                    message="fsb snapshot succeeded without a template name.",
                     backend=_BACKEND_FSB,
                 )
             return SnapshotRuntimeStatus(
                 state=SnapshotState.READY,
-                image=manifest_ref,
+                image=template_name,
                 reason="snapshot_runtime_ready",
                 message="fsb snapshot artifacts published successfully.",
                 backend=_BACKEND_FSB,
