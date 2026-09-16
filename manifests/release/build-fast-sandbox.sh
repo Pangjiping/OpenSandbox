@@ -35,13 +35,23 @@
 #   manifests/release/build-fast-sandbox.sh --sync-crds            # build + sync CRDs
 #   manifests/release/build-fast-sandbox.sh --no-build --sync-crds # sync CRDs only
 #   manifests/release/build-fast-sandbox.sh --load-kind <cluster>  # build + kind load
+#   manifests/release/build-fast-sandbox.sh --push                 # build + push to the default registries
+#   manifests/release/build-fast-sandbox.sh --push r1,r2           # build + push to the listed registries
 #   manifests/release/build-fast-sandbox.sh --list-images          # print image refs
+#
+# Push follows the components/* build.sh convention (retag + docker push of
+# the locally built images): bare --push targets docker.io/opensandbox and
+# sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox (plus
+# $GHCR_REPO/<component> when GHCR_REPO is set); --push r1[,r2...] targets
+# exactly the listed registries. A v* TAG additionally pushes :latest.
+# Images are linux/amd64 only (the fast-sandbox Makefile hardcodes GOARCH).
 #
 # Environment overrides:
 #   PIN_FILE     pin file path      (default manifests/third-party/fast-sandbox.commit)
 #   FSB_SRC_DIR  checkout location  (default <repo>/.fast-sandbox/src)
 #   REGISTRY     image registry     (default fast-sandbox)
 #   TAG          image tag          (default dev)
+#   GHCR_REPO    extra push registry (only with bare --push, mirrors components/*)
 #   DOCKER_BUILD_FLAGS  extra docker build flags (e.g. --platform linux/amd64)
 
 set -euo pipefail
@@ -64,13 +74,22 @@ Usage:
   manifests/release/build-fast-sandbox.sh --sync-crds            # build + sync CRDs
   manifests/release/build-fast-sandbox.sh --no-build --sync-crds # sync CRDs only
   manifests/release/build-fast-sandbox.sh --load-kind <cluster>  # build + kind load
+  manifests/release/build-fast-sandbox.sh --push                 # build + push to the default registries
+  manifests/release/build-fast-sandbox.sh --push r1,r2           # build + push to the listed registries
   manifests/release/build-fast-sandbox.sh --list-images          # print image refs
+
+Push (--push, same convention as components/* build.sh):
+  bare --push  -> docker.io/opensandbox + sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox
+                  (+ $GHCR_REPO when set)
+  --push r1,r2 -> exactly the listed registries (comma-separated, repeatable)
+  a v* TAG also pushes :latest; images are linux/amd64 only
 
 Environment overrides:
   PIN_FILE     pin file path      (default manifests/third-party/fast-sandbox.commit)
   FSB_SRC_DIR  checkout location  (default <repo>/.fast-sandbox/src)
   REGISTRY     image registry     (default fast-sandbox)
   TAG          image tag          (default dev)
+  GHCR_REPO    extra push registry (only with bare --push, mirrors components/*)
   DOCKER_BUILD_FLAGS  extra docker build flags (e.g. --platform linux/amd64)
 EOF
 	exit 0
@@ -80,6 +99,8 @@ SYNC_CRDS=0
 NO_BUILD=0
 KIND_CLUSTER=""
 LIST_IMAGES=0
+PUSH_MODE=0
+PUSH_REGISTRIES=()
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--sync-crds) SYNC_CRDS=1 ;;
@@ -88,6 +109,16 @@ while [[ $# -gt 0 ]]; do
 		[[ $# -ge 2 ]] || die "--load-kind requires a kind cluster name"
 		KIND_CLUSTER="$2"
 		shift
+		;;
+	--push)
+		PUSH_MODE=1
+		# Optional registry list: bare --push uses the components/* default
+		# registry set; --push r1[,r2...] targets exactly those registries.
+		if [[ $# -ge 2 && "$2" != -* ]]; then
+			IFS=',' read -ra regs <<<"$2"
+			PUSH_REGISTRIES+=("${regs[@]}")
+			shift
+		fi
 		;;
 	--list-images) LIST_IMAGES=1 ;;
 	-h | --help) usage ;;
@@ -204,6 +235,29 @@ load_kind() {
 	log "images loaded into kind cluster $KIND_CLUSTER"
 }
 
+push_images() {
+	# Retag + push the locally built images (no rebuild). Default registry
+	# set mirrors components/*/build.sh; a v* TAG also pushes :latest.
+	local entry comp ref reg tag target
+	local tags=("$TAG")
+	if [[ "$TAG" == v* ]]; then
+		tags+=("latest")
+	fi
+	for entry in "${IMAGES[@]}"; do
+		comp="${entry%%:*}"
+		ref="$(image_ref "$comp")"
+		for reg in "${PUSH_REGISTRIES[@]}"; do
+			for tag in "${tags[@]}"; do
+				target="$reg/$comp:$tag"
+				docker tag "$ref" "$target" || die "docker tag $target failed"
+				log "pushing $target"
+				docker push "$target" >/dev/null || die "docker push $target failed"
+			done
+		done
+	done
+	log "images pushed: ${PUSH_REGISTRIES[*]}"
+}
+
 # --- CRD sync ---------------------------------------------------------------------------------
 
 sync_crds() {
@@ -226,12 +280,25 @@ sync_crds() {
 if [[ "$SYNC_CRDS" == 1 ]]; then
 	sync_crds
 fi
-if [[ "$NO_BUILD" == 1 ]]; then
-	exit 0
+if [[ "$NO_BUILD" != 1 ]]; then
+	command -v docker >/dev/null 2>&1 || die "docker not found in PATH"
+	build_images
 fi
-
-build_images
 if [[ -n "$KIND_CLUSTER" ]]; then
 	command -v kind >/dev/null 2>&1 || die "kind not found in PATH"
 	load_kind
+fi
+if [[ "$PUSH_MODE" == 1 ]]; then
+	if [[ ${#PUSH_REGISTRIES[@]} -eq 0 ]]; then
+		# components/*/build.sh default registry set + optional GHCR mirror.
+		PUSH_REGISTRIES=(
+			"opensandbox"
+			"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox"
+		)
+		if [[ -n "${GHCR_REPO:-}" ]]; then
+			PUSH_REGISTRIES+=("$GHCR_REPO")
+		fi
+	fi
+	command -v docker >/dev/null 2>&1 || die "docker not found in PATH"
+	push_images
 fi

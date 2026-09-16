@@ -412,7 +412,13 @@ manifests/release/build-fast-sandbox.sh --list-images
 
 `REGISTRY` / `TAG` environment variables override the default
 `fast-sandbox/<component>:dev` refs — keep the chart `image.*` values in
-sync when you override them.
+sync when you override them. To publish, `--push` follows the
+`components/*/build.sh` convention: bare `--push` retags and pushes to
+`docker.io/opensandbox` and
+`sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox` (plus
+`$GHCR_REPO/<component>` when `GHCR_REPO` is set), `--push r1[,r2...]`
+pushes to exactly the listed registries, and a `v*` `TAG` additionally
+pushes `:latest`. Images are linux/amd64 only.
 
 ### 2. Prepare the cluster
 
