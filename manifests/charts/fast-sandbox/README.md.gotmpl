@@ -1,15 +1,14 @@
 # fast-sandbox Helm Chart
 
-A Helm chart for deploying the fast-sandbox Firecracker chain on a Kubernetes cluster: the `sandbox.fast.io` all-in-one control plane (reconcilers + FastPath gRPC), the janitor, and the node-side runtime pieces (Firecracker asset installer and the firecracker runtime-agent with DART peer discovery).
+A Helm chart for deploying the fast-sandbox Firecracker chain on a Kubernetes cluster: the `sandbox.fast.io` all-in-one control plane (reconcilers + FastPath gRPC), the janitor, and the node-side firecracker runtime (UDS management API, DART peer discovery, node readiness loop).
 
 ## Introduction
 
 The chart deploys:
 
 - **fast-sandbox-controller** (Deployment + `fast-sandbox-fastpath` Service): one process running the `sandbox.fast.io` reconcilers and the FastPath gRPC API (development topology, no leader election)
-- **fast-sandbox-janitor** (DaemonSet): per-node orphaned fastlet cleanup
-- **firecracker-runtime-installer** (DaemonSet): installs the pinned Firecracker release (binary + jailer) and the guest kernel on every Firecracker-capable node
-- **firecracker-runtime-agent** (DaemonSet + `dart` headless Service): node-level UDS management API used by fastlet Firecracker drivers, with a node-local DART child for P2P artifact delivery
+- **fast-sandbox-janitor** (DaemonSet): per-node orphaned fastlet cleanup for the containerd-based runtimes
+- **firecracker-runtime** (DaemonSet + `dart` headless Service): the node-level firecracker agent (UDS management API used by fastlet Firecracker drivers, node-local DART child for P2P artifact delivery, janitor sidecar) running the node readiness loop — host checks, Firecracker asset install, the `sandbox.fast.io/kvm` + `fast-sandbox.io/firecracker-node` scheduling labels and the `FirecrackerReady` condition (the kata-deploy pattern; no manual node labeling)
 
 boxlite and other non-Firecracker runtimes are out of scope for the images this chart expects, and the upstream central sandbox-proxy is intentionally not deployed: OpenSandbox deployments reach fastlets through the ingress gateway's direct route resolution (see `manifests/release/build-fast-sandbox.sh`).
 
@@ -24,11 +23,7 @@ boxlite and other non-Firecracker runtimes are out of scope for the images this 
   manifests/release/build-fast-sandbox.sh --load-kind <kind-cluster>
   ```
 
-- Firecracker-capable (KVM) nodes labeled for the installer and agent DaemonSets:
-
-  ```bash
-  kubectl label node <node> fast-sandbox.io/firecracker-node=true
-  ```
+- Nodes that should serve Firecracker sandboxes need bare-metal KVM (`/dev/kvm`). There is NO manual labeling step: the firecracker-runtime readiness loop verifies each host, installs the Firecracker assets, and applies the `sandbox.fast.io/kvm` + `fast-sandbox.io/firecracker-node` labels plus the `FirecrackerReady` condition itself (rechecking every 5 minutes).
 
 - The agent registry Secret with artifact-store pull credentials (compiled `registry.json`):
 

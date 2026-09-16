@@ -140,8 +140,8 @@ Every stage logs to `$WORK/logs/`; failures dump component logs to
 | `SERVER_HOST_PORT` / `GATEWAY_HOST_PORT` | `18080` / `18081` | host-side publishes for server / gateway (loopback only) |
 | `SERVER_IMAGE` | `docker.io/opensandbox/server:env` | server image tag (built from `server/`) |
 | `INGRESS_IMAGE` | `docker.io/opensandbox/ingress:env` | ingress image tag (built from `components/ingress`) |
-| `IMAGE_AGENT` | `fast-sandbox/firecracker-runtime-agent:dev` | agent image (passed to the fast-sandbox chart) |
-| `FC_VERSION` / `FC_KERNEL_URL` | `v1.16.1` / arch-resolved Amazon CI kernel | firecracker node assets (fast-sandbox chart installer values) |
+| `IMAGE_RUNTIME` | `fast-sandbox/firecracker-runtime:dev` | firecracker runtime image (passed to the fast-sandbox chart) |
+| — | agent-config defaults pinned by the chart | Firecracker asset version/kernel live in the runtime agent config (`runtime.config` chart value), hot-reloadable |
 | `POOL_MIN` / `POOL_MAX` | `2` / `2` | pool capacity (auto `1`/`1` when `KIND_SINGLE=1`) |
 | `WARM_IMAGES` | `0` | `1` = preheat pool instead of on-demand first-sandbox pull |
 | `SBX_IMAGE` / `EXECD` | `alpine:3.19` / `opensandbox/execd:1.1.0` | template build inputs |

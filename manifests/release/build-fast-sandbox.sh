@@ -146,7 +146,7 @@ IMAGES=(
 	"fastlet:fastlet:FASTLET_IMAGE"
 	"fastlet-proxy:fastlet-proxy:FASTLET_PROXY_IMAGE"
 	"janitor:janitor:JANITOR_IMAGE"
-	"firecracker-runtime-agent:firecracker-runtime-agent:FIRECRACKER_RUNTIME_AGENT_IMAGE"
+	"firecracker-runtime:firecracker-runtime:FIRECRACKER_RUNTIME_IMAGE"
 	"sandboxtemplate-builder:sandboxtemplate-builder:SANDBOXTEMPLATE_BUILDER_IMAGE"
 )
 

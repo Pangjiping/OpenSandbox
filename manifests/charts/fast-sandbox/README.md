@@ -1,15 +1,14 @@
 # fast-sandbox Helm Chart
 
-A Helm chart for deploying the fast-sandbox Firecracker chain on a Kubernetes cluster: the `sandbox.fast.io` all-in-one control plane (reconcilers + FastPath gRPC), the janitor, and the node-side runtime pieces (Firecracker asset installer and the firecracker runtime-agent with DART peer discovery).
+A Helm chart for deploying the fast-sandbox Firecracker chain on a Kubernetes cluster: the `sandbox.fast.io` all-in-one control plane (reconcilers + FastPath gRPC), the janitor, and the node-side firecracker runtime (UDS management API, DART peer discovery, node readiness loop).
 
 ## Introduction
 
 The chart deploys:
 
 - **fast-sandbox-controller** (Deployment + `fast-sandbox-fastpath` Service): one process running the `sandbox.fast.io` reconcilers and the FastPath gRPC API (development topology, no leader election)
-- **fast-sandbox-janitor** (DaemonSet): per-node orphaned fastlet cleanup
-- **firecracker-runtime-installer** (DaemonSet): installs the pinned Firecracker release (binary + jailer) and the guest kernel on every Firecracker-capable node
-- **firecracker-runtime-agent** (DaemonSet + `dart` headless Service): node-level UDS management API used by fastlet Firecracker drivers, with a node-local DART child for P2P artifact delivery
+- **fast-sandbox-janitor** (DaemonSet): per-node orphaned fastlet cleanup for the containerd-based runtimes
+- **firecracker-runtime** (DaemonSet + `dart` headless Service): the node-level firecracker agent (UDS management API used by fastlet Firecracker drivers, node-local DART child for P2P artifact delivery, janitor sidecar) running the node readiness loop — host checks, Firecracker asset install, the `sandbox.fast.io/kvm` + `fast-sandbox.io/firecracker-node` scheduling labels and the `FirecrackerReady` condition (the kata-deploy pattern; no manual node labeling)
 
 boxlite and other non-Firecracker runtimes are out of scope for the images this chart expects, and the upstream central sandbox-proxy is intentionally not deployed: OpenSandbox deployments reach fastlets through the ingress gateway's direct route resolution (see `manifests/release/build-fast-sandbox.sh`).
 
@@ -24,11 +23,7 @@ boxlite and other non-Firecracker runtimes are out of scope for the images this 
   manifests/release/build-fast-sandbox.sh --load-kind <kind-cluster>
   ```
 
-- Firecracker-capable (KVM) nodes labeled for the installer and agent DaemonSets:
-
-  ```bash
-  kubectl label node <node> fast-sandbox.io/firecracker-node=true
-  ```
+- Nodes that should serve Firecracker sandboxes need bare-metal KVM (`/dev/kvm`). There is NO manual labeling step: the firecracker-runtime readiness loop verifies each host, installs the Firecracker assets, and applies the `sandbox.fast.io/kvm` + `fast-sandbox.io/firecracker-node` labels plus the `FirecrackerReady` condition itself (rechecking every 5 minutes).
 
 - The agent registry Secret with artifact-store pull credentials (compiled `registry.json`):
 
@@ -65,10 +60,6 @@ The following table lists the configurable parameters of the chart and their def
 | controller.replicaCount | int | `1` | Number of controller replicas (no leader election; keep 1) |
 | controller.resources | object | `{"limits":{"cpu":"1","memory":"512Mi"},"requests":{"cpu":"100m","memory":"128Mi"}}` | Resource requests and limits for the controller |
 | controller.sandboxtemplateBuilderImage | string | `"fast-sandbox/sandboxtemplate-builder:dev"` | Image that executes SandboxTemplate golden-image builds (builder Pods are created by the controller; build it with manifests/release/build-fast-sandbox.sh) |
-| firecrackerInstaller.enabled | bool | `true` | Whether the installer DaemonSet is installed |
-| firecrackerInstaller.fcVersion | string | `"v1.16.1"` | Firecracker release to install |
-| firecrackerInstaller.kernelUrl | string | `"https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260722-38359b8055fc-0/x86_64/vmlinux-6.1.176"` | Guest kernel to install (Amazon microvm CI artifact with ACPI/VMGenID support) |
-| firecrackerInstaller.nodeSelector | object | `{"fast-sandbox.io/firecracker-node":"true"}` | Node selector selecting the Firecracker-capable nodes |
 | fullnameOverride | string | `""` | Override the full name of the chart |
 | imagePullSecrets | list | `[]` | Image pull secrets for every workload in this chart |
 | janitor.enabled | bool | `true` | Whether the janitor DaemonSet is installed |
@@ -84,15 +75,16 @@ The following table lists the configurable parameters of the chart and their def
 | routeKeys.existingSecret | string | `""` | Use an existing Secret instead of creating one (its keys must be private-key / public-key) |
 | routeKeys.privateKey | string | `"nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A="` | Ed25519 private key (base64) used by the controller's route signer |
 | routeKeys.publicKey | string | `"11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="` | Ed25519 public key (base64) used by the controller's route verifier |
-| runtimeAgent.dartPeerPort | int | `9000` | DART P2P peer listen port (also the headless dart Service port) |
-| runtimeAgent.enabled | bool | `true` | Whether the runtime-agent DaemonSet + dart headless Service are installed |
-| runtimeAgent.image.pullPolicy | string | `"IfNotPresent"` | Image pull policy |
-| runtimeAgent.image.repository | string | `"fast-sandbox/firecracker-runtime-agent"` | Runtime-agent image repository (built by manifests/release/build-fast-sandbox.sh) |
-| runtimeAgent.image.tag | string | `"dev"` | Image tag |
-| runtimeAgent.nodeSelector | object | `{"fast-sandbox.io/firecracker-node":"true"}` | Node selector selecting the Firecracker-capable nodes |
-| runtimeAgent.registrySecret | string | `"fast-sandbox-agent-registry"` | Secret carrying the compiled agent registry configuration (registry.json key with artifact-store pull credentials); must be provisioned by the operator. |
-| runtimeAgent.socketDir | string | `"/run/fast-sandbox/firecracker"` | Node hostPath sharing the agent UDS socket with fastlet Pods |
-| runtimeAgent.stateRoot | string | `"/var/lib/fast-sandbox/firecracker"` | Node hostPath holding per-node Firecracker state (rootfs, snapshots). Each node needs its own directory; do not share across nodes. |
+| runtime.config | string | `""` | Agent config (agent.yaml). Empty = the chart default (upstream config/dev/agent-config.yaml with the dart discover URL pointing at this chart's namespace). socket/stateRoot/registryConfig/dart are startup-only; the nodeReadiness section (fcVersion, kernelURL, interval, minFree, minMemory) hot-reloads on every readiness pass. |
+| runtime.dartPeerPort | int | `9000` | DART P2P peer listen port (also the headless dart Service port) |
+| runtime.enabled | bool | `true` | Whether the firecracker-runtime DaemonSet, its RBAC, the agent config ConfigMap and the dart headless Service are installed |
+| runtime.image.pullPolicy | string | `"IfNotPresent"` | Image pull policy |
+| runtime.image.repository | string | `"fast-sandbox/firecracker-runtime"` | Runtime image repository (built by manifests/release/build-fast-sandbox.sh) |
+| runtime.image.tag | string | `"dev"` | Image tag |
+| runtime.nodeSelector | object | `{}` | Node selector. Empty by default: the runtime applies the firecracker scheduling labels itself, so it must run on every candidate node. Pin it with your own coarse selector only if the cluster hosts unrelated node pools. |
+| runtime.registrySecret | string | `"fast-sandbox-agent-registry"` | Secret carrying the compiled agent registry configuration (registry.json key with artifact-store pull credentials); must be provisioned by the operator. |
+| runtime.socketDir | string | `"/run/fast-sandbox/firecracker"` | Node hostPath sharing the agent UDS socket with fastlet Pods |
+| runtime.stateRoot | string | `"/var/lib/fast-sandbox/firecracker"` | Node hostPath holding per-node Firecracker state (rootfs, snapshots). Each node needs its own directory; do not share across nodes. |
 | runtimeEnvironments | string | `"version: v1alpha2\nenvironments:\n  default:\n    containerd:\n      socket: /run/containerd/containerd.sock\n      namespace: k8s.io\n      defaultSnapshotter: overlayfs\n      root: /var/lib/containerd\n    kubelet:\n      root: /var/lib/kubelet\n    runtimes:\n      container: {}\n      gvisor: {}\n      kata-qemu: {}\n      kata-clh: {}\n      kata-fc:\n        snapshotter: blockfile\n        configPath: /opt/kata/share/defaults/kata-containers/configuration-fc-fast-sandbox.toml\n      kata-dragonball:\n        configPath: /opt/kata/share/defaults/kata-containers/runtime-rs/configuration-dragonball-fast-sandbox.toml\n      boxlite: {}\n      firecracker:\n        firecracker:\n          binaryPath: /opt/fast-sandbox/firecracker/firecracker\n          jailerPath: /opt/fast-sandbox/firecracker/jailer\n          kernelPath: /opt/fast-sandbox/firecracker/vmlinux.bin\n          rootfsPath: /var/lib/fast-sandbox/firecracker/rootfs\n          stateRoot: /var/lib/fast-sandbox/firecracker"` |  |
 | systemNamespace | string | `"fast-sandbox-system"` | Namespace for the fast-sandbox control plane workloads. Must match base.fastSandbox.namespaces.system (where the ServiceAccounts live). |
 

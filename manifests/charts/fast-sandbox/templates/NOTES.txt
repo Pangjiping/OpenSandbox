@@ -6,22 +6,23 @@ Components:
     Service: fast-sandbox-fastpath.{{ include "fast-sandbox.namespace" . }}.svc:9090
 {{- end }}
 {{- if .Values.janitor.enabled }}
-  - fast-sandbox-janitor (per-node orphan cleanup DaemonSet)
+  - fast-sandbox-janitor (per-node orphan cleanup DaemonSet, containerd runtimes)
 {{- end }}
-{{- if .Values.firecrackerInstaller.enabled }}
-  - firecracker-runtime-installer (Firecracker + jailer + kernel on nodes
-    labeled {{ index .Values.firecrackerInstaller.nodeSelector "fast-sandbox.io/firecracker-node" | printf "fast-sandbox.io/firecracker-node=%s" }})
-{{- end }}
-{{- if .Values.runtimeAgent.enabled }}
-  - firecracker-runtime-agent (per-node UDS management API + DART P2P,
+{{- if .Values.runtime.enabled }}
+  - firecracker-runtime (per-node UDS management API + DART P2P + node
+    readiness loop: host checks, Firecracker asset install, self-applied
+    scheduling labels + FirecrackerReady condition, janitor sidecar;
     peer discovery Service: dart.{{ include "fast-sandbox.namespace" . }}.svc)
 {{- end }}
 
 Next steps:
-  1. Label the Firecracker-capable nodes (KVM required):
-       kubectl label node <node> fast-sandbox.io/firecracker-node=true
+  1. Nodes need bare-metal KVM (/dev/kvm); no manual labeling — the
+     firecracker-runtime readiness loop verifies each host and applies
+     sandbox.fast.io/kvm + fast-sandbox.io/firecracker-node itself
+     (watch: kubectl get node -w -o jsonpath='{range .items[*]}{.metadata.name}{" "}
+       {.metadata.labels.fast-sandbox\.io/firecracker-node}{"\n"}{end}')
   2. Provision the agent registry Secret (artifact-store pull credentials):
-       kubectl -n {{ include "fast-sandbox.namespace" . }} create secret generic {{ .Values.runtimeAgent.registrySecret }} \
+       kubectl -n {{ include "fast-sandbox.namespace" . }} create secret generic {{ .Values.runtime.registrySecret }} \
          --from-file=registry.json=<compiled-registry.json>
   3. Build and load the companion images from the pinned source:
        manifests/release/build-fast-sandbox.sh --load-kind <cluster>

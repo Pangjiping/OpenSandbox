@@ -21,7 +21,7 @@
 # manifests/third-party/fast-sandbox.commit): two-node kind cluster with KVM
 # passthrough → Helm charts/base (sandbox.fast.io CRDs + component RBAC) +
 # charts/fast-sandbox (all-in-one control plane, janitor, node installer,
-# runtime-agent + DART) → MinIO artifact store → the firecracker-egress-pool
+# firecracker runtime readiness + DART) → MinIO artifact store → the firecracker-egress-pool
 # SandboxPool with the OpenSandbox egress sidecar attached through the
 # Sandbox Actions channel → the source-built OpenSandbox lifecycle server
 # (fsb runtime) and ingress gateway via charts/server and
@@ -135,23 +135,11 @@ IMG_FASTLET="${IMAGE_FASTLET:-fast-sandbox/fastlet:dev}"
 IMG_FASTLET_PROXY="${IMAGE_FASTLET_PROXY:-fast-sandbox/fastlet-proxy:dev}"
 IMG_JANITOR="${IMAGE_JANITOR:-fast-sandbox/janitor:dev}"
 IMG_BUILDER="${IMAGE_BUILDER:-fast-sandbox/sandboxtemplate-builder:dev}"
-IMG_AGENT="${IMAGE_AGENT:-fast-sandbox/firecracker-runtime-agent:dev}"
+IMG_RUNTIME="${IMAGE_RUNTIME:-fast-sandbox/firecracker-runtime:dev}"
 IMG_EGRESS="${EGRESS_IMAGE:-docker.io/opensandbox/egress:latest}"
 
 image_repo() { printf '%s' "${1%:*}"; }
 image_tag() { printf '%s' "${1##*:}"; }
-
-# Firecracker node assets installed by charts/fast-sandbox's installer
-# DaemonSet. kind nodes share the host arch, so the kernel URL is resolved
-# from uname (the Amazon microvm CI kernel has ACPI/VMGenID support; the
-# quickstart vmlinux.bin is Linux 4.14, whose CRNG breaks snapshot resume).
-FC_VERSION="${FC_VERSION:-v1.16.1}"
-case "$(uname -m)" in
-	x86_64) FC_KERNEL_ARCH="x86_64" ;;
-	aarch64) FC_KERNEL_ARCH="aarch64" ;;
-	*) FC_KERNEL_ARCH="x86_64" ;;
-esac
-FC_KERNEL_URL="${FC_KERNEL_URL:-https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260722-38359b8055fc-0/${FC_KERNEL_ARCH}/vmlinux-6.1.176}"
 
 # --- OpenSandbox server + ingress gateway (source-built) ----------------------
 # Fixed shape of this environment: no knobs, the full stack always runs.
@@ -177,8 +165,9 @@ GATEWAY_ADDRESS="127.0.0.1:$GATEWAY_HOST_PORT"
 SERVER_URL="http://127.0.0.1:$SERVER_HOST_PORT"
 GATEWAY_URL="http://127.0.0.1:$GATEWAY_HOST_PORT"
 
-# Node labels: sandbox.fast.io/kvm is hardcoded by the SandboxTemplate
-# reconciler; fast-sandbox.io/firecracker-node selects installer/agent/fastlet.
+# Node labels: the firecracker-runtime readiness loop applies both itself
+# (sandbox.fast.io/kvm is hardcoded by the SandboxTemplate reconciler;
+# fast-sandbox.io/firecracker-node gates the fastlet scheduling).
 KVM_NODE_LABEL="sandbox.fast.io/kvm"
 FC_NODE_LABEL="fast-sandbox.io/firecracker-node"
 
@@ -309,10 +298,8 @@ failure_dump() {
 		kubectl get pods -n "$NS" -o wide 2>&1 || true
 		echo "--- controller logs (tail) ---"
 		kubectl logs -n "$NS" deploy/fast-sandbox-controller --tail=80 2>&1 || true
-		echo "--- agent logs (tail) ---"
-		kubectl logs -n "$NS" daemonset/firecracker-runtime-agent --tail=80 2>&1 || true
-		echo "--- installer logs (tail) ---"
-		kubectl logs -n "$NS" daemonset/firecracker-runtime-installer --all-containers --tail=80 2>&1 || true
+		echo "--- firecracker-runtime logs (tail) ---"
+		kubectl logs -n "$NS" daemonset/firecracker-runtime --all-containers --tail=80 2>&1 || true
 		echo "--- fastlet logs (tail) ---"
 		kubectl logs -n "$NS" -l app=sandbox-fastlet --tail=80 2>&1 || true
 		echo "--- builder pods + logs (tail) ---"
@@ -688,9 +675,7 @@ kind_up() {
 	local node
 	for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
 		docker exec "$node" sh -c 'test -e /dev/kvm' || die "KVM not visible inside the kind node container $node"
-		kubectl label node "$node" "$KVM_NODE_LABEL=true" --overwrite >/dev/null
-		kubectl label node "$node" "$FC_NODE_LABEL=true" --overwrite >/dev/null
-		log "node $node: KVM + firecracker labels applied"
+		log "node $node: /dev/kvm visible"
 	done
 	if [[ "$KIND_SINGLE" != "1" ]]; then
 		# Multi-node kind keeps the control-plane tainted (NoSchedule),
@@ -873,16 +858,14 @@ control_plane_up() {
 		--set controller.sandboxtemplateBuilderImage="$IMG_BUILDER" \
 		--set janitor.image.repository="$(image_repo "$IMG_JANITOR")" \
 		--set janitor.image.tag="$(image_tag "$IMG_JANITOR")" \
-		--set runtimeAgent.image.repository="$(image_repo "$IMG_AGENT")" \
-		--set runtimeAgent.image.tag="$(image_tag "$IMG_AGENT")" \
+		--set runtime.image.repository="$(image_repo "$IMG_RUNTIME")" \
+		--set runtime.image.tag="$(image_tag "$IMG_RUNTIME")" \
 		--set artifactStore.store="s3://$MINIO_BUCKET/publish" \
-		--set artifactStore.endpoint="$MINIO_ENDPOINT" \
-		--set firecrackerInstaller.fcVersion="$FC_VERSION" \
-		--set firecrackerInstaller.kernelUrl="$FC_KERNEL_URL"
+		--set artifactStore.endpoint="$MINIO_ENDPOINT"
 	kubectl apply -f "$GEN_DIR/fast-sandbox.yaml" >/dev/null
 	local image
 	for image in "$IMG_CONTROLLER" "$IMG_FASTLET" "$IMG_FASTLET_PROXY" \
-		"$IMG_JANITOR" "$IMG_AGENT" "$IMG_EGRESS"; do
+		"$IMG_JANITOR" "$IMG_RUNTIME" "$IMG_EGRESS"; do
 		kind load docker-image "$image" --name "$KIND_CLUSTER" >/dev/null
 	done
 	wait_for "controller deployment ready" 120 \
@@ -896,17 +879,21 @@ control_plane_up() {
 	pass "CRDs + control plane ready (charts @ pinned $(git -C "$FSB_DIR" rev-parse --short HEAD))"
 }
 
-# --- stage: node assets + runtime-agent (DART P2P) ---------------------------------------------
+# --- stage: firecracker runtime (node readiness + DART P2P) -----------------------------------
 
-installer_up() {
-	# The installer DaemonSet ships with the charts/fast-sandbox release.
-	wait_for "firecracker installer ready" 60 \
-		kubectl -n "$NS" rollout status daemonset/firecracker-runtime-installer --timeout=15s
-	pass "firecracker/jailer/kernel installed on every node"
+runtime_node_labeled() { # node -> 0 when the agent applied both labels + condition
+	local node="$1"
+	kubectl get node "$node" -o json 2>/dev/null | jq -e \
+		--arg fc "$FC_NODE_LABEL" --arg kvm "$KVM_NODE_LABEL" '
+		(.metadata.labels[$fc] == "true") and
+		(.metadata.labels[$kvm] == "true") and
+		([(.status.conditions // [])[]?
+		  | select(.type == "FirecrackerReady" and .status == "True")] | length > 0)
+	' >/dev/null
 }
 
-agent_pods() {
-	kubectl -n "$NS" get pods -l component=firecracker-runtime-agent -o jsonpath='{.items[*].metadata.name}' 2>/dev/null
+runtime_pods() {
+	kubectl -n "$NS" get pods -l component=firecracker-runtime -o jsonpath='{.items[*].metadata.name}' 2>/dev/null
 }
 
 dart_roster_ready() { # pod expected-members
@@ -916,20 +903,20 @@ dart_roster_ready() { # pod expected-members
 	[[ "$(printf '%s' "$members" | grep -o '"id":' | wc -l | tr -d ' ')" == "$expected" ]]
 }
 
-agent_up() {
-	# The runtime-agent DaemonSet + dart headless Service ship with the
-	# charts/fast-sandbox release (artifact-store endpoint was pinned at
-	# install time; the registry Secret lands in credentials_up before
+runtime_up() {
+	# The firecracker-runtime DaemonSet + dart headless Service ship with
+	# the charts/fast-sandbox release (artifact-store endpoint was pinned
+	# at install time; the registry Secret lands in credentials_up before
 	# this stage).
-	wait_for "runtime-agent DaemonSet ready" 120 \
-		kubectl -n "$NS" rollout status daemonset/firecracker-runtime-agent --timeout=10s
+	wait_for "firecracker-runtime DaemonSet ready" 120 \
+		kubectl -n "$NS" rollout status daemonset/firecracker-runtime --timeout=10s
 
-	# Every agent pod must have its node-local DART child answering on the
+	# Every runtime pod must have its node-local DART child answering on the
 	# admin plane, and agent /v1/health must report dartUp=true (a missing
 	# dart only degrades pulls to direct S3, so this is a positive wiring
 	# assertion of the default P2P data plane, not a readiness gate).
 	local pod uid node pods
-	pods="$(agent_pods)"
+	pods="$(runtime_pods)"
 	for pod in $pods; do
 		uid="$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.metadata.uid}')"
 		node="$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.spec.nodeName}')"
@@ -941,7 +928,7 @@ agent_up() {
 				"curl -fsS --noproxy '*' --unix-socket /run/fast-sandbox/firecracker/runtime.sock -H 'Content-Type: application/json' -d '{\"podUid\":\"$uid\",\"namespace\":\"$NS\"}' http://firecracker-agent/v1/health | grep -q '\"dartUp\":true'"
 		log "dart: $node dart pid=$(kubectl exec -n "$NS" "$pod" -- sh -c 'pgrep -x dart')"
 	done
-	# P2P roster: every daemon must see every other agent pod as a peer
+	# P2P roster: every daemon must see every other runtime pod as a peer
 	# before any pull, so the second node's pull can be served by the
 	# first node's dart instead of the origin.
 	local expected_members
@@ -951,7 +938,15 @@ agent_up() {
 		wait_for "dart roster full on $node ($expected_members members)" 90 \
 			dart_roster_ready "$pod" "$expected_members"
 	done
-	pass "runtime-agent healthy + DART daemons up, roster=$expected_members (P2P default)"
+	# Node readiness: the readiness loop verifies each host, installs the
+	# Firecracker assets and applies the scheduling labels +
+	# FirecrackerReady condition itself (the old manual kubectl label step
+	# is gone).
+	for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+		wait_for "node $node labeled + FirecrackerReady" 120 \
+			runtime_node_labeled "$node"
+	done
+	pass "firecracker-runtime healthy + DART roster=$expected_members + nodes FirecrackerReady"
 }
 
 # --- stage (server-driven): SandboxTemplate golden image -----------------------
@@ -1151,7 +1146,7 @@ p2p_evidence() { # description
 		[[ "$size" =~ ^[0-9]+$ ]] || die "cannot stat published $object (publish incomplete?)"
 		expected_blocks=$((expected_blocks + (size + 4194303) / 4194304))
 	done
-	pods="$(agent_pods)"
+	pods="$(runtime_pods)"
 	for pod in $pods; do
 		node_total=0
 		while read -r source value; do
@@ -1744,7 +1739,7 @@ snapshot_verify() {
 
 dart_metrics_summary() {
 	local pods pod node metrics
-	pods="$(agent_pods 2>/dev/null || true)"
+	pods="$(runtime_pods 2>/dev/null || true)"
 	[[ -n "$pods" ]] || { echo "  (no agent pods)"; return 0; }
 	for pod in $pods; do
 		node="$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.spec.nodeName}' 2>/dev/null)"
@@ -1803,7 +1798,7 @@ env_summary() {
 	printf '  %-22s %s\n' "fast-sandbox" "pinned $(git -C "$FSB_DIR" rev-parse --short HEAD 2>/dev/null || echo "$FSB_COMMIT") ($FSB_DIR)"
 	printf '  %-22s %s\n' "MinIO endpoint" "$MINIO_ENDPOINT"
 	printf '  %-22s %s\n' "pool" "$POOL_NAME (runtime=firecracker, poolMin=$POOL_MIN, egress=$IMG_EGRESS)"
-	printf '  %-22s %s\n' "P2P" "DART daemons=$(printf '%s' "$(agent_pods)" | wc -w | tr -d ' ') (on-demand pulls: cache -> peer -> origin)"
+	printf '  %-22s %s\n' "P2P" "DART daemons=$(printf '%s' "$(runtime_pods)" | wc -w | tr -d ' ') (on-demand pulls: cache -> peer -> origin)"
 	printf '  %-22s %s\n' "template" "${TEMPLATE_ID:-n/a} ($(if [[ -n "$TEMPLATE_ID" ]]; then _template_phase || echo unknown; else echo "not built"; fi))"
 	printf '  %-22s %s\n' "StateRoot fs" "$(findmnt -no FSTYPE "$XFS_MOUNT_POINT" 2>/dev/null || echo 'plain directory (full copy per sandbox)')"
 	printf '  %-22s %s\n' "server" "$IMG_SERVER -> $SERVER_URL (fsb runtime)"
@@ -1860,7 +1855,7 @@ usage: fast-sandbox-env.sh [--auto-clean] {up|down|status|pool}
 
   up       initialize the full environment: fast-sandbox@pinned-commit images,
            two-node kind cluster (KVM), MinIO, control plane, firecracker
-           node assets, runtime-agent + DART (P2P), SandboxTemplate golden
+           firecracker runtime readiness + DART (P2P), SandboxTemplate golden
            image, firecracker-egress-pool (egress attached), the
            source-built OpenSandbox server + ingress gateway, and
            end-to-end verifies (create -> gateway route -> execd /ping,
@@ -1907,7 +1902,7 @@ case "$ACTION" in
 			echo "sbxImage=$SBX_IMAGE execd=$EXECD warmImages=$WARM_IMAGES"
 			echo "pool=$POOL_NAME poolMin=$POOL_MIN egress=$IMG_EGRESS"
 			echo "server=$IMG_SERVER ingress=$IMG_INGRESS fastpath=$FASTPATH_ENDPOINT"
-			echo "images: controller=$IMG_CONTROLLER agent=$IMG_AGENT"
+			echo "images: controller=$IMG_CONTROLLER runtime=$IMG_RUNTIME"
 		} > "$LOGS_DIR/environment.txt" 2>&1 || true
 		if [[ -n "$(kind get clusters 2>/dev/null | grep -x "$KIND_CLUSTER" || true)" ]] \
 			|| docker ps -a --format '{{.Names}}' | grep -qx "$MINIO_CONTAINER"; then
@@ -1930,8 +1925,7 @@ case "$ACTION" in
 		run_stage "MinIO endpoint (kind network)" resolve_minio_endpoint
 		run_stage "CRDs + control plane" control_plane_up
 		run_stage "credentials (publish/pull)" credentials_up
-		run_stage "firecracker node assets" installer_up
-		run_stage "runtime-agent + DART (P2P)" agent_up
+		run_stage "firecracker runtime readiness + DART (P2P)" runtime_up
 		run_stage "OpenSandbox server + ingress gateway" opensandbox_up
 		run_stage "SandboxTemplate build (server API)" template_up
 		run_stage "SandboxPool $POOL_NAME (egress + P2P)" pool_up

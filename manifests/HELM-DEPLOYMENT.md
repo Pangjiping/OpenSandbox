@@ -385,12 +385,13 @@ helm upgrade opensandbox-controller ../manifests/charts/controller \
 
 The optional `fast-sandbox` chart deploys the fast-sandbox Firecracker chain
 (`sandbox.fast.io`): the all-in-one control plane (reconcilers + FastPath
-gRPC), the janitor, and the node-side runtime pieces (Firecracker asset
-installer DaemonSet and the firecracker runtime-agent with DART peer
-discovery). Only Firecracker is covered; boxlite and other non-Firecracker
-runtimes are out of scope, and the upstream central sandbox-proxy is not
-deployed (OpenSandbox reaches fastlets through the ingress gateway's direct
-route resolution).
+gRPC), the janitor, and the node-side firecracker runtime (UDS management
+API, DART P2P delivery, janitor sidecar, and the node readiness loop that
+installs the Firecracker assets and self-labels the nodes). Only
+Firecracker is covered; boxlite and other non-Firecracker runtimes are out
+of scope, and the upstream central sandbox-proxy is not deployed
+(OpenSandbox reaches fastlets through the ingress gateway's direct route
+resolution).
 
 The CRDs (`sandbox.fast.io`) and the component RBAC ship in the `base` chart
 (gated by `fastSandbox.*` values), so install `base` first.
@@ -401,7 +402,7 @@ The upstream source is pinned Git-LFS-pointer style in
 [`manifests/third-party/fast-sandbox.commit`](third-party/fast-sandbox.commit)
 (repo + commit). The build script materializes a checkout of exactly that
 commit and builds the six Firecracker-scope images (controller, fastlet,
-fastlet-proxy, janitor, firecracker-runtime-agent,
+fastlet-proxy, janitor, firecracker-runtime,
 sandboxtemplate-builder):
 
 ```bash
@@ -425,8 +426,10 @@ pushes `:latest`. Images are linux/amd64 only.
 ### 2. Prepare the cluster
 
 ```bash
-# Label the Firecracker-capable nodes (bare metal with KVM)
-kubectl label node <node> fast-sandbox.io/firecracker-node=true
+# Nodes need bare-metal KVM (/dev/kvm); no manual labeling — the
+# firecracker-runtime readiness loop verifies each host, installs the
+# Firecracker assets, and applies sandbox.fast.io/kvm +
+# fast-sandbox.io/firecracker-node itself.
 
 # Provision the agent registry Secret (artifact-store pull credentials,
 # compiled registry.json)

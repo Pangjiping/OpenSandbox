@@ -16,8 +16,8 @@
 #
 # This chart deploys the fast-sandbox Firecracker chain: the all-in-one
 # control plane (controller + FastPath gRPC), the janitor, and the node-side
-# runtime pieces (firecracker asset installer and the firecracker
-# runtime-agent with its DART peer-discovery Service).
+# firecracker runtime (UDS management API + DART P2P + node readiness loop
+# that installs the Firecracker assets and self-labels the nodes).
 #
 # The upstream sandbox-proxy is intentionally not deployed: OpenSandbox
 # deployments reach fastlets through the ingress gateway's direct route
@@ -136,7 +136,9 @@ runtimeEnvironments: |-
             rootfsPath: /var/lib/fast-sandbox/firecracker/rootfs
             stateRoot: /var/lib/fast-sandbox/firecracker
 
-# janitor: per-node DaemonSet cleaning up orphaned fastlet resources.
+# janitor: standalone per-node DaemonSet cleaning up orphaned fastlet
+# resources for the containerd-based runtimes (the firecracker runtime pod
+# carries its own janitor sidecar with the containerd backend disabled).
 janitor:
   # -- Whether the janitor DaemonSet is installed
   enabled: true
@@ -152,45 +154,45 @@ janitor:
   # -- Orphan timeout before cleanup
   orphanTimeout: 30s
 
-# firecracker-runtime-installer: node installer DaemonSet fetching the
-# pinned Firecracker release (binary + jailer) and the guest kernel onto a
-# node hostPath (/opt/fast-sandbox/firecracker).
-firecrackerInstaller:
-  # -- Whether the installer DaemonSet is installed
-  enabled: true
-  # -- Firecracker release to install
-  fcVersion: v1.16.1
-  # -- Guest kernel to install (Amazon microvm CI artifact with
-  # ACPI/VMGenID support)
-  kernelUrl: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260722-38359b8055fc-0/x86_64/vmlinux-6.1.176
-  # -- Node selector selecting the Firecracker-capable nodes
-  nodeSelector:
-    fast-sandbox.io/firecracker-node: "true"
-
-# firecracker-runtime-agent: node-level DaemonSet serving the UDS management
-# API (artifact pull + lease state) that fastlet Firecracker drivers talk to,
-# with a node-local DART child for P2P artifact delivery.
-runtimeAgent:
-  # -- Whether the runtime-agent DaemonSet + dart headless Service are installed
+# firecracker-runtime: node-level daemon serving the UDS management API
+# (artifact pull + lease state) that fastlet Firecracker drivers talk to,
+# with a node-local DART child for P2P delivery, the node janitor sidecar,
+# and the node readiness loop (the kata-deploy pattern: host checks +
+# Firecracker asset install + the sandbox.fast.io/kvm and
+# fast-sandbox.io/firecracker-node labels + the FirecrackerReady node
+# condition). Replaces the former installer DaemonSet: no manual node
+# labeling — the runtime self-labels the nodes it verified.
+runtime:
+  # -- Whether the firecracker-runtime DaemonSet, its RBAC, the agent
+  # config ConfigMap and the dart headless Service are installed
   enabled: true
   image:
-    # -- Runtime-agent image repository (built by manifests/release/build-fast-sandbox.sh)
-    repository: fast-sandbox/firecracker-runtime-agent
+    # -- Runtime image repository (built by manifests/release/build-fast-sandbox.sh)
+    repository: fast-sandbox/firecracker-runtime
     # -- Image tag
     tag: dev
     # -- Image pull policy
     pullPolicy: IfNotPresent
-  # -- Node selector selecting the Firecracker-capable nodes
-  nodeSelector:
-    fast-sandbox.io/firecracker-node: "true"
+  # -- Node selector. Empty by default: the runtime applies the firecracker
+  # scheduling labels itself, so it must run on every candidate node. Pin
+  # it with your own coarse selector only if the cluster hosts unrelated
+  # node pools.
+  nodeSelector: {}
   # -- Secret carrying the compiled agent registry configuration
   # (registry.json key with artifact-store pull credentials); must be
   # provisioned by the operator.
   registrySecret: fast-sandbox-agent-registry
-  # -- Node hostPath holding per-node Firecracker state (rootfs, snapshots).
-  # Each node needs its own directory; do not share across nodes.
+  # -- Node hostPath holding per-node Firecracker state (rootfs,
+  # snapshots). Each node needs its own directory; do not share across
+  # nodes.
   stateRoot: /var/lib/fast-sandbox/firecracker
   # -- Node hostPath sharing the agent UDS socket with fastlet Pods
   socketDir: /run/fast-sandbox/firecracker
   # -- DART P2P peer listen port (also the headless dart Service port)
   dartPeerPort: 9000
+  # -- Agent config (agent.yaml). Empty = the chart default (upstream
+  # config/dev/agent-config.yaml with the dart discover URL pointing at
+  # this chart's namespace). socket/stateRoot/registryConfig/dart are
+  # startup-only; the nodeReadiness section (fcVersion, kernelURL,
+  # interval, minFree, minMemory) hot-reloads on every readiness pass.
+  config: ""

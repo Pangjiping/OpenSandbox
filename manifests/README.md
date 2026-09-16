@@ -34,7 +34,7 @@ manifests/
 | `server` | Lifecycle REST API server; announces the ingress gateway through its `[ingress]` config. | requires `base` |
 | `ingress-gateway` | Proxies sandbox traffic; can be deployed standalone and scaled independently. | optional |
 | `node-agent` | Optional node-level log/data collection. | optional |
-| `fast-sandbox` | fast-sandbox Firecracker runtime: all-in-one control plane (reconcilers + FastPath), janitor, node asset installer and runtime-agent. | requires `base`; Firecracker-capable (KVM) nodes |
+| `fast-sandbox` | fast-sandbox Firecracker runtime: all-in-one control plane (reconcilers + FastPath), janitor, and the firecracker runtime (UDS API + DART + node readiness self-labeling). | requires `base`; Firecracker-capable (KVM) nodes |
 | `opensandbox` | Umbrella chart: one release installing everything, with per-component conditions. | — |
 
 ## Install
