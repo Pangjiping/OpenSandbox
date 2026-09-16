@@ -48,9 +48,7 @@
 # Environment overrides (all optional):
 #   WORK                 workspace + logs        (default $PWD/.fast-sandbox-env)
 #   FSB_DIR              fast-sandbox checkout  (default $WORK/fast-sandbox —
-#                        env-owned clone, created from FSB_GIT_URL when missing)
-#   FSB_GIT_URL / FSB_REF  fork overrides       (default: the repo+commit pinned
-#                        in manifests/third-party/fast-sandbox.commit)
+#                        env-owned clone; source pinned in manifests/third-party/fast-sandbox.commit)
 #   WORK                  workspace root        (default /data/fast-sandbox-env when /data exists, else $PWD/.fast-sandbox-env)
 #   KIND_CLUSTER / KIND_NODE_IMAGE / KIND_RETAIN / KIND_SINGLE
 #   DOCKER_MIRROR        comma list injected as docker.io containerd mirrors
@@ -83,14 +81,12 @@ LOGS_DIR="$WORK/logs"
 GEN_DIR="$WORK/gen"
 
 # Env-owned fast-sandbox clone under $WORK (independent of any checkout
-# outside the workspace); FSB_DIR still overrides for an existing one.
-# The source is pinned: manifests/third-party/fast-sandbox.commit names the
-# exact upstream commit this environment builds against (FSB_GIT_URL /
-# FSB_REF override the pin for fork testing).
-FSB_PIN_FILE="$OSB_ROOT/manifests/third-party/fast-sandbox.commit"
+# outside the workspace); FSB_DIR only relocates the clone. The source is
+# exactly the commit pinned in manifests/third-party/fast-sandbox.commit —
+# there is no ref override; to test a different source, bump the pin.
 FSB_DIR="${FSB_DIR:-$WORK/fast-sandbox}"
-FSB_REPO="${FSB_GIT_URL:-$(sed -n 's/^repo:[[:space:]]*//p' "$FSB_PIN_FILE")}"
-FSB_COMMIT="${FSB_REF:-$(sed -n 's/^commit:[[:space:]]*//p' "$FSB_PIN_FILE")}"
+FSB_REPO="$(sed -n 's/^repo:[[:space:]]*//p' "$OSB_ROOT/manifests/third-party/fast-sandbox.commit")"
+FSB_COMMIT="$(sed -n 's/^commit:[[:space:]]*//p' "$OSB_ROOT/manifests/third-party/fast-sandbox.commit")"
 
 KIND_CLUSTER="${KIND_CLUSTER:-fast-sandbox-integration}"
 KIND_SINGLE="${KIND_SINGLE:-0}"
@@ -484,14 +480,7 @@ FSB_GEN_DIR="$FSB_DIR/.fast-sandbox-env-gen"
 ensure_fsb() {
 	if [[ ! -d "$FSB_DIR/.git" ]]; then
 		log "cloning $FSB_REPO into $FSB_DIR"
-		git clone "$FSB_REPO" "$FSB_DIR" || die "clone failed; check network / FSB_GIT_URL"
-	fi
-	local current_url
-	current_url="$(git -C "$FSB_DIR" remote get-url origin)"
-	if [[ "$current_url" != "$FSB_REPO" ]]; then
-		log "fast-sandbox origin: $current_url -> $FSB_REPO"
-		git -C "$FSB_DIR" remote set-url origin "$FSB_REPO" \
-			|| die "could not repoint fast-sandbox origin at $FSB_REPO"
+		git clone "$FSB_REPO" "$FSB_DIR" || die "clone failed; check network"
 	fi
 	rm -rf "$FSB_GEN_DIR"
 	[[ -z "$(git -C "$FSB_DIR" status --porcelain)" ]] \
@@ -501,15 +490,9 @@ ensure_fsb() {
 	if ! git -C "$FSB_DIR" fetch -q origin "$FSB_COMMIT" 2>/dev/null; then
 		git -C "$FSB_DIR" fetch -q origin '+refs/heads/*:refs/remotes/origin/*' \
 			|| die "git fetch failed for $FSB_REPO"
-		git -C "$FSB_DIR" rev-parse --verify --quiet "$FSB_COMMIT^{commit}" >/dev/null \
-			|| die "pinned commit $FSB_COMMIT is not reachable from $FSB_REPO"
 	fi
-	# Resolve the pinned SHA or the fork-override ref (branch/tag) to an
-	# exact commit once, so every later comparison is SHA-vs-SHA. Branch
-	# names live on remote-tracking refs in a fresh clone.
-	FSB_COMMIT="$(git -C "$FSB_DIR" rev-parse --verify --quiet "${FSB_COMMIT}^{commit}" ||
-		git -C "$FSB_DIR" rev-parse --verify --quiet "origin/${FSB_COMMIT}^{commit}")" \
-		|| die "cannot resolve fast-sandbox ref '${FSB_REF:-<pinned commit>}' to a commit"
+	git -C "$FSB_DIR" rev-parse --verify --quiet "$FSB_COMMIT^{commit}" >/dev/null \
+		|| die "pinned commit $FSB_COMMIT is not reachable from $FSB_REPO"
 	if [[ "$(git -C "$FSB_DIR" rev-parse HEAD)" != "$FSB_COMMIT" ]]; then
 		git -C "$FSB_DIR" clean -ffdx
 	fi
@@ -517,7 +500,7 @@ ensure_fsb() {
 		|| die "git checkout $FSB_COMMIT failed"
 	[[ "$(git -C "$FSB_DIR" rev-parse HEAD)" == "$FSB_COMMIT" ]] \
 		|| die "fast-sandbox checkout is not at the pinned commit $FSB_COMMIT"
-	log "fast-sandbox @ pinned $(git -C "$FSB_DIR" rev-parse --short HEAD) ($(basename "$FSB_PIN_FILE"))"
+	log "fast-sandbox @ pinned $(git -C "$FSB_DIR" rev-parse --short HEAD) (manifests/third-party/fast-sandbox.commit)"
 	pass "fast-sandbox checkout ready"
 }
 

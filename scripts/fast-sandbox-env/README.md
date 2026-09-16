@@ -81,8 +81,8 @@ SDK ──header──> ingress gateway (source-built, --provider-type=fast-sand
   `WARM_IMAGES=1` preheats instead.
 - **fast-sandbox @ pinned commit**: env-owned clone at `$WORK/fast-sandbox`,
   cloned on first `up` and checked out at the pinned commit afterwards;
-  override the location with `FSB_DIR`, the source with `FSB_GIT_URL` /
-  `FSB_REF`.
+  relocate it with `FSB_DIR`. The source itself has no override — bump the
+  commit in `manifests/third-party/fast-sandbox.commit`.
 
 ## Layout
 
