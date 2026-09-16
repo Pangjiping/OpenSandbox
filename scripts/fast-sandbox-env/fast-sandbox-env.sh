@@ -1208,13 +1208,14 @@ osb_signing_key() {
 }
 
 # render_server_config writes the lifecycle server's config.toml (fsb
-# runtime + gateway-mode ingress) with the workdir's tokens substituted.
-# The ingress gateway is configured entirely through chart values.
+# runtime) with the workdir's tokens substituted. The gateway-mode ingress
+# section is NOT part of it: charts/server appends its own [ingress] block
+# rendered from server.gateway.* values (see opensandbox_up).
 render_server_config() { # > $GEN_DIR/osb-server-config.toml
 	mkdir -p "$GEN_DIR"
-	awk -v api_key="$SERVER_API_KEY" -v signing_key="$(osb_signing_key)" \
+	awk -v api_key="$SERVER_API_KEY" \
 		-v fastpath="$FASTPATH_ENDPOINT" -v fsb_ns="$NS" -v pool="$POOL_NAME" \
-		-v execd="$EXECD" -v gateway="$GATEWAY_ADDRESS" '
+		-v execd="$EXECD" '
 		{ gsub(/@SERVER_API_KEY@/, api_key)
 		  gsub(/@SIGNING_KEY@/, signing_key)
 		  gsub(/@FASTPATH_ENDPOINT@/, fastpath)
@@ -1247,24 +1248,6 @@ fastpath_resource_pool = "@POOL_NAME@"
 fastpath_wait_ready_seconds = 30.0
 template_s3_publish_secret = "sandbox-oss-credentials"
 informer_enabled = true
-
-# Gateway-mode ingress: endpoints are signed f1.* route scopes verified
-# by the ingress gateway (same key ring as --secure-access-keys there).
-[ingress]
-mode = "gateway"
-
-[ingress.gateway]
-address = "@GATEWAY_ADDRESS@"
-
-[ingress.gateway.route]
-mode = "header"
-
-[ingress.secure_access]
-active_key = "a"
-
-[[ingress.secure_access.keys]]
-key_id = "a"
-key = "@SIGNING_KEY@"
 TOML
 	if grep -Eq '@[A-Z_]+@' "$GEN_DIR/osb-server-config.toml"; then
 		die "unrendered token left in $GEN_DIR/osb-server-config.toml"
@@ -1288,7 +1271,13 @@ opensandbox_up() {
 		--set server.resources.requests.memory=512Mi \
 		--set server.resources.limits.cpu=1 \
 		--set server.resources.limits.memory=2Gi \
-		--set-file configToml="$GEN_DIR/osb-server-config.toml"
+		--set-file configToml="$GEN_DIR/osb-server-config.toml" \
+		--set server.gateway.enabled=true \
+		--set server.gateway.host="$GATEWAY_ADDRESS" \
+		--set server.gateway.gatewayRouteMode=header \
+		--set server.gateway.secureAccess.activeKey=a \
+		--set "server.gateway.secureAccess.keys[0].key_id=a" \
+		--set "server.gateway.secureAccess.keys[0].key=$(osb_signing_key)"
 	kubectl apply -f "$GEN_DIR/osb-server.yaml" >/dev/null
 	# charts/ingress-gateway: fast-sandbox provider resolving through
 	# FastPath, verifying the same signing key the server signs with.
