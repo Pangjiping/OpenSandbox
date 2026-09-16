@@ -9,7 +9,10 @@ names are fixed so the fast-sandbox chart can reference them by name.
 
 The upstream fast-sandbox-proxy RBAC is intentionally omitted: OpenSandbox
 deployments reach fastlets through the ingress gateway's direct route
-resolution and do not deploy the central sandbox-proxy.
+resolution and do not deploy the central sandbox-proxy. The standalone
+janitor DaemonSet (containerd runtimes) is omitted for the same reason;
+the firecracker-runtime pod's janitor sidecar uses the runtime
+ServiceAccount above.
 */}}
 {{- if .Values.fastSandbox.namespaces.create }}
 ---
@@ -44,15 +47,6 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: fast-sandbox-fastpath
-  namespace: {{ .Values.fastSandbox.namespaces.system }}
-  labels:
-    {{- include "opensandbox-base.labels" . | nindent 4 }}
-    app.kubernetes.io/component: fast-sandbox
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: fast-sandbox-janitor
   namespace: {{ .Values.fastSandbox.namespaces.system }}
   labels:
     {{- include "opensandbox-base.labels" . | nindent 4 }}
@@ -218,32 +212,6 @@ rules:
   verbs:
   - get
 ---
-# Grants the janitor read access for orphaned fastlet cleanup.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: fast-sandbox-janitor
-  labels:
-    {{- include "opensandbox-base.labels" . | nindent 4 }}
-    app.kubernetes.io/component: fast-sandbox
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - pods
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - sandbox.fast.io
-  resources:
-  - sandboxes
-  verbs:
-  - get
-  - list
-  - watch
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -274,21 +242,5 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: fast-sandbox-fastpath
-  namespace: {{ .Values.fastSandbox.namespaces.system }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: fast-sandbox-janitor
-  labels:
-    {{- include "opensandbox-base.labels" . | nindent 4 }}
-    app.kubernetes.io/component: fast-sandbox
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: fast-sandbox-janitor
-subjects:
-- kind: ServiceAccount
-  name: fast-sandbox-janitor
   namespace: {{ .Values.fastSandbox.namespaces.system }}
 {{- end }}

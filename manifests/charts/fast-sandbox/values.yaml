@@ -136,12 +136,12 @@ runtimeEnvironments: |-
             rootfsPath: /var/lib/fast-sandbox/firecracker/rootfs
             stateRoot: /var/lib/fast-sandbox/firecracker
 
-# janitor: standalone per-node DaemonSet cleaning up orphaned fastlet
-# resources for the containerd-based runtimes (the firecracker runtime pod
-# carries its own janitor sidecar with the containerd backend disabled).
+# janitor: settings for the janitor sidecar inside the firecracker-runtime
+# pod (sweeps orphaned fastlet network state, boxlite leftovers and leaked
+# VMM processes; the containerd backend is disabled there). There is no
+# standalone janitor DaemonSet: containerd-based runtimes are out of scope
+# for this chart.
 janitor:
-  # -- Whether the janitor DaemonSet is installed
-  enabled: true
   image:
     # -- Janitor image repository (built by manifests/release/build-fast-sandbox.sh)
     repository: fast-sandbox/janitor

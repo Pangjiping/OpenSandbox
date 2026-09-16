@@ -5,13 +5,10 @@ Components:
   - fast-sandbox-controller (all-in-one: reconcilers + FastPath gRPC :9090)
     Service: fast-sandbox-fastpath.{{ include "fast-sandbox.namespace" . }}.svc:9090
 {{- end }}
-{{- if .Values.janitor.enabled }}
-  - fast-sandbox-janitor (per-node orphan cleanup DaemonSet, containerd runtimes)
-{{- end }}
 {{- if .Values.runtime.enabled }}
   - firecracker-runtime (per-node UDS management API + DART P2P + node
     readiness loop: host checks, Firecracker asset install, self-applied
-    scheduling labels + FirecrackerReady condition, janitor sidecar;
+    scheduling labels + FirecrackerReady condition; janitor sidecar;
     peer discovery Service: dart.{{ include "fast-sandbox.namespace" . }}.svc)
 {{- end }}
 
