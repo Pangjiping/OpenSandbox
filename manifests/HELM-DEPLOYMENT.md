@@ -385,10 +385,12 @@ helm upgrade opensandbox-controller ../manifests/charts/controller \
 
 The optional `fast-sandbox` chart deploys the fast-sandbox Firecracker chain
 (`sandbox.fast.io`): the all-in-one control plane (reconcilers + FastPath
-gRPC), the sandbox proxy, the janitor, and the node-side runtime pieces
-(Firecracker asset installer DaemonSet and the firecracker runtime-agent with
-DART peer discovery). Only Firecracker is covered; boxlite and other
-non-Firecracker runtimes are out of scope.
+gRPC), the janitor, and the node-side runtime pieces (Firecracker asset
+installer DaemonSet and the firecracker runtime-agent with DART peer
+discovery). Only Firecracker is covered; boxlite and other non-Firecracker
+runtimes are out of scope, and the upstream central sandbox-proxy is not
+deployed (OpenSandbox reaches fastlets through the ingress gateway's direct
+route resolution).
 
 The CRDs (`sandbox.fast.io`) and the component RBAC ship in the `base` chart
 (gated by `fastSandbox.*` values), so install `base` first.
@@ -398,8 +400,8 @@ The CRDs (`sandbox.fast.io`) and the component RBAC ship in the `base` chart
 The upstream source is pinned Git-LFS-pointer style in
 [`manifests/third-party/fast-sandbox.commit`](third-party/fast-sandbox.commit)
 (repo + commit). The build script materializes a checkout of exactly that
-commit and builds the seven Firecracker-scope images (controller, fastlet,
-fastlet-proxy, sandbox-proxy, janitor, firecracker-runtime-agent,
+commit and builds the six Firecracker-scope images (controller, fastlet,
+fastlet-proxy, janitor, firecracker-runtime-agent,
 sandboxtemplate-builder):
 
 ```bash
@@ -451,7 +453,7 @@ The route signing keys default to the published development-only test keys
 `routeKeys.existingSecret` or `routeKeys.privateKey` / `routeKeys.publicKey`
 with `routeKeys.developmentOnly=false`. Point the OpenSandbox server's
 `[runtime]`/fsb configuration and the ingress gateway's
-`--provider-type=fast-sandbox` at the deployed FastPath/proxy endpoints to
+`--provider-type=fast-sandbox` at the deployed FastPath endpoint to
 serve sandboxes through this runtime (see
 `scripts/fast-sandbox-env` for a working reference).
 

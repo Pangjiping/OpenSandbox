@@ -5,10 +5,6 @@ Components:
   - fast-sandbox-controller (all-in-one: reconcilers + FastPath gRPC :9090)
     Service: fast-sandbox-fastpath.{{ include "fast-sandbox.namespace" . }}.svc:9090
 {{- end }}
-{{- if .Values.proxy.enabled }}
-  - fast-sandbox-proxy (signed-route data-plane proxy)
-    Service: fast-sandbox-proxy.{{ include "fast-sandbox.namespace" . }}.svc:8080
-{{- end }}
 {{- if .Values.janitor.enabled }}
   - fast-sandbox-janitor (per-node orphan cleanup DaemonSet)
 {{- end }}

@@ -15,13 +15,17 @@
 # Default values for the fast-sandbox chart.
 #
 # This chart deploys the fast-sandbox Firecracker chain: the all-in-one
-# control plane (controller + FastPath gRPC), the sandbox proxy, the janitor,
-# and the node-side runtime pieces (firecracker asset installer and the
-# firecracker runtime-agent with its DART peer-discovery Service).
+# control plane (controller + FastPath gRPC), the janitor, and the node-side
+# runtime pieces (firecracker asset installer and the firecracker
+# runtime-agent with its DART peer-discovery Service).
+#
+# The upstream sandbox-proxy is intentionally not deployed: OpenSandbox
+# deployments reach fastlets through the ingress gateway's direct route
+# resolution.
 #
 # Requires the base chart first: it owns the sandbox.fast.io CRDs and the
-# component RBAC (ServiceAccounts fast-sandbox-controller/fastpath/janitor/
-# proxy), created in the same namespaces configured below.
+# component RBAC (ServiceAccounts fast-sandbox-controller/fastpath/janitor),
+# created in the same namespaces configured below.
 #
 # The default image tags (`dev`) refer to images built from the source pinned
 # in manifests/third-party/fast-sandbox.commit by manifests/release/build-fast-sandbox.sh.
@@ -77,9 +81,10 @@ artifactStore:
   # -- S3-compatible endpoint (empty = AWS default)
   endpoint: ""
 
-# Route signing keys shared by the controller (signing) and the sandbox proxy
-# (verification). Development-only RFC 8032 test keys by default; production
-# must provision real keys via routeKeys.existingSecret or explicit values.
+# Route signing keys shared by the controller (signing) and the OpenSandbox
+# ingress gateway (verification). Development-only RFC 8032 test keys by
+# default; production must provision real keys via routeKeys.existingSecret
+# or explicit values.
 routeKeys:
   # -- Specifies whether the fast-sandbox-route-keys Secret is created here
   create: true
@@ -93,29 +98,6 @@ routeKeys:
   # -- Mark the Secret with fast-sandbox.io/development-only (set false when
   # provisioning real keys via privateKey/publicKey)
   developmentOnly: true
-
-# fast-sandbox-proxy: signed-route aware data-plane proxy in front of
-# fastlet proxies.
-proxy:
-  # -- Whether the sandbox-proxy Deployment + Service are installed
-  enabled: true
-  image:
-    # -- Sandbox-proxy image repository (built by manifests/release/build-fast-sandbox.sh)
-    repository: fast-sandbox/sandbox-proxy
-    # -- Image tag
-    tag: dev
-    # -- Image pull policy
-    pullPolicy: IfNotPresent
-  # -- Number of proxy replicas
-  replicaCount: 2
-  # -- Resource requests and limits for the proxy
-  resources:
-    limits:
-      cpu: "1"
-      memory: 256Mi
-    requests:
-      cpu: 50m
-      memory: 64Mi
 
 # Runtime environment definitions shared by the controller and the janitor
 # (rendered into the fast-sandbox-runtime-environments ConfigMap). The

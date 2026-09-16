@@ -1,18 +1,17 @@
 # fast-sandbox Helm Chart
 
-A Helm chart for deploying the fast-sandbox Firecracker chain on a Kubernetes cluster: the `sandbox.fast.io` all-in-one control plane (reconcilers + FastPath gRPC), the sandbox proxy, the janitor, and the node-side runtime pieces (Firecracker asset installer and the firecracker runtime-agent with DART peer discovery).
+A Helm chart for deploying the fast-sandbox Firecracker chain on a Kubernetes cluster: the `sandbox.fast.io` all-in-one control plane (reconcilers + FastPath gRPC), the janitor, and the node-side runtime pieces (Firecracker asset installer and the firecracker runtime-agent with DART peer discovery).
 
 ## Introduction
 
 The chart deploys:
 
 - **fast-sandbox-controller** (Deployment + `fast-sandbox-fastpath` Service): one process running the `sandbox.fast.io` reconcilers and the FastPath gRPC API (development topology, no leader election)
-- **fast-sandbox-proxy** (Deployment + Service): signed-route aware data-plane proxy
 - **fast-sandbox-janitor** (DaemonSet): per-node orphaned fastlet cleanup
 - **firecracker-runtime-installer** (DaemonSet): installs the pinned Firecracker release (binary + jailer) and the guest kernel on every Firecracker-capable node
 - **firecracker-runtime-agent** (DaemonSet + `dart` headless Service): node-level UDS management API used by fastlet Firecracker drivers, with a node-local DART child for P2P artifact delivery
 
-boxlite and other non-Firecracker runtimes are out of scope for the images this chart expects (see `manifests/release/build-fast-sandbox.sh`).
+boxlite and other non-Firecracker runtimes are out of scope for the images this chart expects, and the upstream central sandbox-proxy is intentionally not deployed: OpenSandbox deployments reach fastlets through the ingress gateway's direct route resolution (see `manifests/release/build-fast-sandbox.sh`).
 
 ## Prerequisites
 
@@ -79,12 +78,6 @@ The following table lists the configurable parameters of the chart and their def
 | janitor.orphanTimeout | string | `"30s"` | Orphan timeout before cleanup |
 | janitor.scanInterval | string | `"2m"` | Orphan scan interval |
 | nameOverride | string | `""` | Override the name of the chart |
-| proxy.enabled | bool | `true` | Whether the sandbox-proxy Deployment + Service are installed |
-| proxy.image.pullPolicy | string | `"IfNotPresent"` | Image pull policy |
-| proxy.image.repository | string | `"fast-sandbox/sandbox-proxy"` | Sandbox-proxy image repository (built by manifests/release/build-fast-sandbox.sh) |
-| proxy.image.tag | string | `"dev"` | Image tag |
-| proxy.replicaCount | int | `2` | Number of proxy replicas |
-| proxy.resources | object | `{"limits":{"cpu":"1","memory":"256Mi"},"requests":{"cpu":"50m","memory":"64Mi"}}` | Resource requests and limits for the proxy |
 | resourceNamespace | string | `"fast-sandbox"` | Namespace for fast-sandbox resource objects (reserved for future use; workloads always run in systemNamespace). Must match base.fastSandbox.namespaces.resources. |
 | routeKeys.create | bool | `true` | Specifies whether the fast-sandbox-route-keys Secret is created here |
 | routeKeys.developmentOnly | bool | `true` | Mark the Secret with fast-sandbox.io/development-only (set false when provisioning real keys via privateKey/publicKey) |
@@ -105,7 +98,7 @@ The following table lists the configurable parameters of the chart and their def
 
 ## Route signing keys
 
-The controller signs the `f1.*` gateway routes with the Ed25519 private key from the `fast-sandbox-route-keys` Secret; the sandbox proxy verifies with the public key. By default the chart creates this Secret with the published development-only test keys (labeled `fast-sandbox.io/development-only: "true"`). For production, either provision the Secret yourself and set `routeKeys.existingSecret`, or set `routeKeys.privateKey` / `routeKeys.publicKey` with `routeKeys.developmentOnly=false`.
+The controller signs the `f1.*` gateway routes with the Ed25519 private key from the `fast-sandbox-route-keys` Secret; the OpenSandbox ingress gateway verifies them with the public key (`ingress-gateway --secure-access-keys`). By default the chart creates this Secret with the published development-only test keys (labeled `fast-sandbox.io/development-only: "true"`). For production, either provision the Secret yourself and set `routeKeys.existingSecret`, or set `routeKeys.privateKey` / `routeKeys.publicKey` with `routeKeys.developmentOnly=false`.
 
 ## Uninstalling the Chart
 

@@ -16,21 +16,3 @@ spec:
   selector:
     {{- include "fast-sandbox.controllerSelectorLabels" . | nindent 4 }}
 {{- end }}
-{{- if .Values.proxy.enabled }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: fast-sandbox-proxy
-  namespace: {{ include "fast-sandbox.namespace" . }}
-  labels:
-    {{- include "fast-sandbox.labels" . | nindent 4 }}
-    app.kubernetes.io/component: proxy
-spec:
-  ports:
-  - name: http
-    port: 8080
-    targetPort: http
-  selector:
-    app: fast-sandbox-proxy
-{{- end }}

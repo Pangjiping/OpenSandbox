@@ -21,10 +21,12 @@
 # commit (cached under .fast-sandbox/src, safe to delete) and builds the
 # Firecracker-scope image set only:
 #
-#   controller, fastlet, fastlet-proxy, sandbox-proxy, janitor,
+#   controller, fastlet, fastlet-proxy, janitor,
 #   firecracker-runtime-agent, sandboxtemplate-builder
 #
 # boxlite-runtime and sandbox-action-fixture are intentionally NOT built.
+# sandbox-proxy is not built either: OpenSandbox deployments reach fastlets
+# through the ingress gateway's direct route resolution.
 #
 # With --sync-crds it also re-vendors the fast-sandbox CRDs from the pinned
 # checkout into manifests/charts/base/files/fast-sandbox-crds.yaml, keeping
@@ -143,7 +145,6 @@ IMAGES=(
 	"controller:controller:CONTROLLER_IMAGE"
 	"fastlet:fastlet:FASTLET_IMAGE"
 	"fastlet-proxy:fastlet-proxy:FASTLET_PROXY_IMAGE"
-	"sandbox-proxy:sandbox-proxy:SANDBOX_PROXY_IMAGE"
 	"janitor:janitor:JANITOR_IMAGE"
 	"firecracker-runtime-agent:firecracker-runtime-agent:FIRECRACKER_RUNTIME_AGENT_IMAGE"
 	"sandboxtemplate-builder:sandboxtemplate-builder:SANDBOXTEMPLATE_BUILDER_IMAGE"
