@@ -13,23 +13,21 @@
 # limitations under the License.
 
 apiVersion: v2
-name: opensandbox
-description: All-in-one Helm chart for deploying OpenSandbox controller and server
-type: application
-version: 0.2.2
-appVersion: "0.2.2"
+name: fast-sandbox
+description: Helm chart for deploying the fast-sandbox Firecracker control plane and node runtime (sandbox.fast.io)
+version: 0.1.0
+appVersion: "dev"
 
 keywords:
   - sandbox
   - kubernetes
-  - operator
-  - api
-  - lifecycle
-  - batchsandbox
+  - firecracker
+  - microvm
+  - fast-sandbox
 
 home: https://github.com/opensandbox-group/OpenSandbox
 sources:
-  - https://github.com/opensandbox-group/OpenSandbox/tree/main/manifests
+  - https://github.com/opensandbox-group/OpenSandbox/tree/main/manifests/charts/fast-sandbox
 
 maintainers:
   - name: OpenSandbox Team
@@ -37,30 +35,6 @@ maintainers:
 
 # Kubernetes version constraints
 kubeVersion: ">=1.21.1-0"
-
-dependencies:
-  - name: base
-    version: "0.1.0"
-    repository: "file://../base"
-    condition: base.enabled
-  - name: opensandbox-controller
-    version: "0.2.1"
-    repository: "file://../controller"
-  - name: opensandbox-server
-    version: "0.1.0"
-    repository: "file://../server"
-  - name: ingress-gateway
-    version: "0.1.0"
-    repository: "file://../ingress-gateway"
-    condition: ingress-gateway.enabled
-  - name: opensandbox-node-agent
-    version: "0.1.0"
-    repository: "file://../node-agent"
-    condition: opensandbox-node-agent.enabled
-  - name: fast-sandbox
-    version: "0.1.0"
-    repository: "file://../fast-sandbox"
-    condition: fast-sandbox.enabled
 
 annotations:
   artifacthub.io/category: integration-delivery

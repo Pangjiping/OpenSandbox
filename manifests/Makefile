@@ -27,6 +27,10 @@ helm-gen-crds: ## Sync generated CRDs from kubernetes/config/crd/bases into char
 		printf '%s\n---\n' "$$(awk 'NR==1 && $$0=="---" {next} {print}' $$f)" >> charts/base/files/crds.yaml; \
 	done
 
+.PHONY: helm-gen-fast-sandbox-crds
+helm-gen-fast-sandbox-crds: ## Sync fast-sandbox CRDs from the pinned checkout into charts/base/files/fast-sandbox-crds.yaml.
+	@../manifests/release/build-fast-sandbox.sh --no-build --sync-crds
+
 ##@ Helm
 
 .PHONY: helm-lint
@@ -37,6 +41,7 @@ helm-lint: ## Lint all Helm charts and verify dependencies
 	helm lint charts/server
 	helm lint charts/controller
 	helm lint charts/node-agent
+	helm lint charts/fast-sandbox
 	helm dependency build charts/opensandbox
 	helm lint charts/opensandbox
 

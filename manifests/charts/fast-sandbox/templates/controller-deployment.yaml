@@ -1,0 +1,90 @@
+{{- if .Values.controller.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fast-sandbox-controller
+  namespace: {{ include "fast-sandbox.namespace" . }}
+  labels:
+    {{- include "fast-sandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+    app: fast-sandbox-controller
+    fast-sandbox.io/control-plane-role: all
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "fast-sandbox.controllerSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "fast-sandbox.controllerSelectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: manager
+        command: [./controller]
+        args:
+        - --role=all
+        - --metrics-bind-address=:9091
+        - --health-probe-bind-address=:5758
+        - --fastpath-bind-address=:9090
+        - --sandboxtemplate-builder-image={{ .Values.controller.sandboxtemplateBuilderImage }}
+        env:
+        - name: FAST_SANDBOX_ROUTE_SIGNING_PRIVATE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.routeKeys.existingSecret | default "fast-sandbox-route-keys" }}
+              key: private-key
+        - name: FAST_SANDBOX_ROUTE_VERIFY_PUBLIC_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.routeKeys.existingSecret | default "fast-sandbox-route-keys" }}
+              key: public-key
+        image: {{ include "fast-sandbox.image" .Values.controller.image }}
+        imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+        ports:
+        - name: grpc
+          containerPort: 9090
+        - name: health
+          containerPort: 5758
+        - name: metrics
+          containerPort: 9091
+        resources:
+          {{- toYaml .Values.controller.resources | nindent 10 }}
+        volumeMounts:
+        - name: artifact-store
+          mountPath: /etc/fast-sandbox/artifact-store
+          readOnly: true
+      serviceAccountName: fast-sandbox-controller
+      volumes:
+      - name: artifact-store
+        configMap:
+          name: fast-sandbox-artifact-store
+          optional: true
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fast-sandbox-controller
+  namespace: {{ include "fast-sandbox.namespace" . }}
+  labels:
+    {{- include "fast-sandbox.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "fast-sandbox.controllerSelectorLabels" . | nindent 6 }}
+{{- end }}

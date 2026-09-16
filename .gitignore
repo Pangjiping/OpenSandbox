@@ -290,3 +290,7 @@ obj/
 
 .qoder/
 /.vs
+
+# fast-sandbox pinned source checkout (materialized by
+# manifests/release/build-fast-sandbox.sh from manifests/third-party/fast-sandbox.commit)
+.fast-sandbox/

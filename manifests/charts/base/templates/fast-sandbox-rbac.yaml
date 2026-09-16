@@ -1,0 +1,341 @@
+{{/*
+fast-sandbox control-plane namespaces, ServiceAccounts, ClusterRoles and
+ClusterRoleBindings.
+
+These are the permission layer of the sandbox.fast.io API (mirroring the
+kustomize output of fast-sandbox config/ at the pinned commit); the workloads
+that bind to these ServiceAccounts live in the fast-sandbox chart. Resource
+names are fixed so the fast-sandbox chart can reference them by name.
+*/}}
+{{- if .Values.fastSandbox.namespaces.create }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.fastSandbox.namespaces.system }}
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.fastSandbox.namespaces.resources }}
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+{{- end }}
+{{- if .Values.fastSandbox.rbac.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fast-sandbox-controller
+  namespace: {{ .Values.fastSandbox.namespaces.system }}
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fast-sandbox-fastpath
+  namespace: {{ .Values.fastSandbox.namespaces.system }}
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fast-sandbox-janitor
+  namespace: {{ .Values.fastSandbox.namespaces.system }}
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fast-sandbox-proxy
+  namespace: {{ .Values.fastSandbox.namespaces.system }}
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+---
+# Grants the controller-manager everything it needs to reconcile Sandboxes,
+# Pools, Templates and Snapshots and to schedule fastlet Pods.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fast-sandbox-controller
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - get
+  - create
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - roles
+  - rolebindings
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+  - update
+- apiGroups:
+  - node.k8s.io
+  resources:
+  - runtimeclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sandbox.fast.io
+  resources:
+  - sandboxes
+  - sandboxpools
+  - sandboxtemplates
+  - sandboxsnapshots
+  - sandboxes/status
+  - sandboxpools/status
+  - sandboxtemplates/status
+  - sandboxsnapshots/status
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+---
+# Grants the FastPath gRPC API read access to Pools, Sandboxes and Snapshots.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fast-sandbox-fastpath
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sandbox.fast.io
+  resources:
+  - sandboxpools
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sandbox.fast.io
+  resources:
+  - sandboxes
+  - sandboxes/status
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - sandbox.fast.io
+  resources:
+  - sandboxsnapshots
+  - sandboxsnapshots/status
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+# Grants the janitor read access for orphaned fastlet cleanup.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fast-sandbox-janitor
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sandbox.fast.io
+  resources:
+  - sandboxes
+  verbs:
+  - get
+  - list
+  - watch
+---
+# Grants the sandbox proxy read access for route resolution.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fast-sandbox-proxy
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - sandbox.fast.io
+  resources:
+  - sandboxes
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fast-sandbox-controller
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fast-sandbox-controller
+subjects:
+- kind: ServiceAccount
+  name: fast-sandbox-controller
+  namespace: {{ .Values.fastSandbox.namespaces.system }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fast-sandbox-fastpath
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fast-sandbox-fastpath
+subjects:
+- kind: ServiceAccount
+  name: fast-sandbox-fastpath
+  namespace: {{ .Values.fastSandbox.namespaces.system }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fast-sandbox-janitor
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fast-sandbox-janitor
+subjects:
+- kind: ServiceAccount
+  name: fast-sandbox-janitor
+  namespace: {{ .Values.fastSandbox.namespaces.system }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fast-sandbox-proxy
+  labels:
+    {{- include "opensandbox-base.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fast-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fast-sandbox-proxy
+subjects:
+- kind: ServiceAccount
+  name: fast-sandbox-proxy
+  namespace: {{ .Values.fastSandbox.namespaces.system }}
+{{- end }}

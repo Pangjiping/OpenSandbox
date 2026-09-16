@@ -25,8 +25,15 @@ Kubernetes: `>=1.21.1-0`
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | crds.annotations | object | `{}` | Additional annotations to add to CRDs (merged with resource-policy when keep is true) |
-| crds.install | bool | `true` | Specifies whether the CRDs should be installed |
+| crds.install | bool | `true` | Specifies whether the OpenSandbox CRDs should be installed |
 | crds.keep | bool | `true` | Keep CRDs on chart uninstall (adds the helm.sh/resource-policy: keep annotation) |
+| fastSandbox.crds.annotations | object | `{}` | Additional annotations to add to CRDs (merged with resource-policy when keep is true) |
+| fastSandbox.crds.install | bool | `true` | Specifies whether the fast-sandbox CRDs should be installed |
+| fastSandbox.crds.keep | bool | `true` | Keep CRDs on chart uninstall (adds the helm.sh/resource-policy: keep annotation) |
+| fastSandbox.namespaces.create | bool | `true` | Specifies whether the fast-sandbox namespaces should be created |
+| fastSandbox.namespaces.resources | string | `"fast-sandbox"` | Namespace for fast-sandbox resource objects (pools, templates, ...) |
+| fastSandbox.namespaces.system | string | `"fast-sandbox-system"` | Namespace for the fast-sandbox control plane workloads |
+| fastSandbox.rbac.create | bool | `true` | Specifies whether the fast-sandbox control-plane ServiceAccounts, ClusterRoles and ClusterRoleBindings should be installed (the workloads using them live in the fast-sandbox chart) |
 | fullnameOverride | string | `""` | Override the full name of the chart |
 | nameOverride | string | `""` | Override the name of the chart |
 | rbac.create | bool | `true` | Specifies whether user-facing ClusterRoles for the OpenSandbox CRD API (admin/editor/viewer per resource kind) should be installed |

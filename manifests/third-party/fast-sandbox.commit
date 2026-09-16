@@ -1,0 +1,14 @@
+# Pinned fast-sandbox source, Git-LFS-pointer style: a tiny text file that
+# names the exact upstream commit the OpenSandbox repo builds against.
+#
+# Two derived artifacts must stay in sync with this commit:
+#   - the companion images built by manifests/release/build-fast-sandbox.sh
+#     (controller, fastlet, fastlet-proxy, sandbox-proxy, janitor,
+#     firecracker-runtime-agent, sandboxtemplate-builder — Firecracker scope
+#     only; boxlite-runtime and sandbox-action-fixture are never built)
+#   - the CRD bundle vendored at manifests/charts/base/files/fast-sandbox-crds.yaml
+#
+# Bump by updating `commit` to a full 40-character SHA, then run:
+#   manifests/release/build-fast-sandbox.sh --sync-crds
+repo: https://github.com/opensandbox-group/fast-sandbox.git
+commit: 5c779452c2a1cd2b7b00c6c81ed7f54d88a1d029

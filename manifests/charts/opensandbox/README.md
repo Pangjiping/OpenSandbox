@@ -67,6 +67,7 @@ The following table lists the configurable parameters of the chart and their def
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| fast-sandbox.enabled | bool | `false` | Whether the fast-sandbox control plane + node runtime is enabled. |
 | global | string | `nil` | Global values passed to both sub-charts. |
 | ingress-gateway.enabled | bool | `false` | Whether the ingress gateway is enabled. |
 | opensandbox-controller.controller.logLevel | string | `"info"` | Controller log level (debug, info, error). |

@@ -13,9 +13,11 @@
 # limitations under the License.
 
 # Default values for the OpenSandbox base chart.
-# This chart installs cluster-scoped resources only: the OpenSandbox CRDs and
-# user-facing RBAC roles. It contains no workloads and can be installed once
-# per cluster, independently of the controller and server releases.
+# This chart installs cluster-scoped resources only: the OpenSandbox CRDs, the
+# fast-sandbox CRDs (sandbox.fast.io) with their component RBAC, and the
+# user-facing OpenSandbox CRD RBAC roles. It contains no workloads and can be
+# installed once per cluster, independently of the controller and server
+# releases.
 
 # -- Override the name of the chart
 nameOverride: ""
@@ -23,7 +25,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 crds:
-  # -- Specifies whether the CRDs should be installed
+  # -- Specifies whether the OpenSandbox CRDs should be installed
   install: true
   # -- Keep CRDs on chart uninstall (adds the helm.sh/resource-policy: keep annotation)
   keep: true
@@ -34,3 +36,27 @@ rbac:
   # -- Specifies whether user-facing ClusterRoles for the OpenSandbox CRD API
   # (admin/editor/viewer per resource kind) should be installed
   create: true
+
+# fast-sandbox runtime support (sandbox.fast.io API group, synced from the
+# source pinned in manifests/third-party/fast-sandbox.commit by
+# manifests/release/build-fast-sandbox.sh --sync-crds).
+fastSandbox:
+  crds:
+    # -- Specifies whether the fast-sandbox CRDs should be installed
+    install: true
+    # -- Keep CRDs on chart uninstall (adds the helm.sh/resource-policy: keep annotation)
+    keep: true
+    # -- Additional annotations to add to CRDs (merged with resource-policy when keep is true)
+    annotations: {}
+  namespaces:
+    # -- Specifies whether the fast-sandbox namespaces should be created
+    create: true
+    # -- Namespace for the fast-sandbox control plane workloads
+    system: fast-sandbox-system
+    # -- Namespace for fast-sandbox resource objects (pools, templates, ...)
+    resources: fast-sandbox
+  rbac:
+    # -- Specifies whether the fast-sandbox control-plane ServiceAccounts,
+    # ClusterRoles and ClusterRoleBindings should be installed (the
+    # workloads using them live in the fast-sandbox chart)
+    create: true

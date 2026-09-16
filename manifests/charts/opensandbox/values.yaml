@@ -49,6 +49,15 @@ opensandbox-node-agent:
   # -- Whether the node agent is enabled.
   enabled: false
 
+# Optional fast-sandbox Firecracker runtime (sandbox.fast.io). Requires the
+# companion images built by manifests/release/build-fast-sandbox.sh from the source
+# pinned in manifests/third-party/fast-sandbox.commit, Firecracker-capable
+# (KVM) nodes labeled fast-sandbox.io/firecracker-node=true, and the
+# fast-sandbox-agent-registry Secret provisioned in fast-sandbox-system.
+fast-sandbox:
+  # -- Whether the fast-sandbox control plane + node runtime is enabled.
+  enabled: false
+
 # Global values (passed to both sub-charts)
 # -- Global values passed to both sub-charts.
 global:
