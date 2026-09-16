@@ -29,12 +29,12 @@ import (
 	"sync/atomic"
 )
 
-// AccessTokenHashPrefix marks a SHA-256 hex digest in /init payloads.
+// AccessTokenHashPrefix marks a SHA-256 hex digest in runtime-init payloads.
 const AccessTokenHashPrefix = "sha256:"
 
-// RuntimeBinding is the sandbox-scoped runtime state applied by /init.
-// AccessTokenHash stores SHA-256(raw token); the raw token never reaches
-// execd.
+// RuntimeBinding is the sandbox-scoped runtime state applied by
+// /internal/init. AccessTokenHash stores SHA-256(raw token); the raw token
+// never reaches execd.
 type RuntimeBinding struct {
 	SandboxID  string
 	Generation uint64
@@ -53,14 +53,9 @@ type RuntimeBinding struct {
 
 var current atomic.Pointer[RuntimeBinding]
 
-// Current returns the active binding, or nil before the first /init.
+// Current returns the active binding, or nil before the first /internal/init.
 func Current() *RuntimeBinding {
 	return current.Load()
-}
-
-// Initialized reports whether a RuntimeBinding has been applied.
-func Initialized() bool {
-	return current.Load() != nil
 }
 
 // Apply atomically replaces the active binding and returns the previous one

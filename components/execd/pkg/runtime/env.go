@@ -88,8 +88,8 @@ func mergeEnvs(base []string, extra map[string]string) []string {
 	return out
 }
 
-// bindingSandboxEnvs returns the sandbox-level envs provided by POST /internal/init,
-// or nil when no RuntimeBinding (or no envs) is applied.
+// bindingSandboxEnvs returns the sandbox-level envs provided by
+// POST /internal/init, or nil when no RuntimeBinding (or no envs) is applied.
 func bindingSandboxEnvs() map[string]string {
 	b := binding.Current()
 	if b == nil || len(b.Envs) == 0 {
@@ -98,15 +98,14 @@ func bindingSandboxEnvs() map[string]string {
 	return b.Envs
 }
 
-// UserEnvOverlay builds the standard user-workload env overlay, layered with
-// the /init RuntimeBinding as the authoritative source:
+// UserEnvOverlay builds the standard user-workload env overlay, layered
+// with the /internal/init RuntimeBinding as the authoritative source:
 //
 //	sandbox envs (/internal/init) < EXECD_ENVS file < extras (session/request)
 //
 // Binding-authoritative values (OPENSANDBOX_ID) are forced on top so user
 // envs cannot spoof sandbox attribution.
 func UserEnvOverlay(extras ...map[string]string) map[string]string {
-	var merged map[string]string
 	layers := make([]map[string]string, 0, len(extras)+2)
 	if envs := bindingSandboxEnvs(); envs != nil {
 		layers = append(layers, envs)
@@ -116,20 +115,11 @@ func UserEnvOverlay(extras ...map[string]string) map[string]string {
 	}
 	layers = append(layers, extras...)
 
+	merged := make(map[string]string)
 	for _, layer := range layers {
-		if len(layer) == 0 {
-			continue
-		}
-		if merged == nil {
-			merged = make(map[string]string, len(layer))
-		}
 		for k, v := range layer {
 			merged[pathutil.EnvKey(k)] = v
 		}
-	}
-
-	if merged == nil {
-		merged = make(map[string]string)
 	}
 	if b := binding.Current(); b != nil && b.SandboxID != "" {
 		merged["OPENSANDBOX_ID"] = b.SandboxID

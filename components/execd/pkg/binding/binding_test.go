@@ -24,12 +24,11 @@ func TestApplyAndCurrent(t *testing.T) {
 	previous := Apply(nil)
 	defer Apply(previous)
 
-	require.False(t, Initialized())
 	require.Nil(t, Current())
 
 	applied := Apply(&RuntimeBinding{SandboxID: "sandbox-1", Generation: 7})
 	require.Nil(t, applied, "first apply returns no previous binding")
-	require.True(t, Initialized())
+	require.NotNil(t, Current())
 
 	current := Current()
 	require.NotNil(t, current)

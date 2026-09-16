@@ -35,8 +35,8 @@ import (
 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
 )
 
-// ErrAlreadyInitialized is returned when /internal/init is called after the one-shot
-// init slot has been consumed.
+// ErrAlreadyInitialized is returned when /internal/init is called after the
+// one-shot init slot has been consumed.
 var ErrAlreadyInitialized = errors.New("runtime init already accepted")
 
 // maxInitTelemetryAttrs bounds the /internal/init telemetry attribute map.
@@ -143,11 +143,9 @@ func (m *RuntimeInitManager) MarkReady() {
 	m.ready.Store(true)
 }
 
-// Ready reports whether user workloads may run (the apply sequence
-// completed). The runtime-init gate consults this instead of binding
-// presence: the binding is installed atomically mid-apply, so a
-// half-completed apply (preStart or entrypoint failed with 500) must keep
-// the business APIs gated even though a binding exists.
+// Ready reports whether the apply sequence completed. The runtime-init gate
+// consults this instead of binding presence: a half-completed apply (500)
+// keeps a binding but must stay gated, matching the /ready 503.
 func (m *RuntimeInitManager) Ready() bool {
 	if m == nil {
 		return false
@@ -166,10 +164,9 @@ func NewInitController(ctx *gin.Context) *InitController {
 }
 
 // Ready implements GET /ready: 200 once user workloads may run, 503 while
-// execd is uninitialized (runtime-init gating) or still starting up.
+// execd is uninitialized or still starting up.
 func (c *InitController) Ready() {
-	manager := GetRuntimeInitManager()
-	initialized := manager != nil && manager.ready.Load()
+	initialized := GetRuntimeInitManager().Ready()
 	status := http.StatusOK
 	if !initialized {
 		status = http.StatusServiceUnavailable
@@ -218,8 +215,16 @@ func (c *InitController) Init() {
 func (m *RuntimeInitManager) Apply(req *model.RuntimeInitRequest) ([]string, model.ErrorCode, int, error) {
 	warnings, err := validateInitRequest(req)
 	if err != nil {
-		// Malformed requests never consume the one-shot slot.
 		return nil, model.ErrorCodeInvalidRequest, http.StatusBadRequest, err
+	}
+	var tokenHash [32]byte
+	hasToken := req.AccessTokenHash != ""
+	if hasToken {
+		digest, err := binding.ParseAccessTokenHash(req.AccessTokenHash)
+		if err != nil {
+			return nil, model.ErrorCodeInvalidRequest, http.StatusBadRequest, err
+		}
+		tokenHash = digest
 	}
 	policy := req.EntrypointPolicy
 
@@ -259,17 +264,11 @@ func (m *RuntimeInitManager) Apply(req *model.RuntimeInitRequest) ([]string, mod
 	// 2. Apply the RuntimeBinding atomically: auth, env resolution, and
 	// telemetry attribution switch to the new sandbox in one swap.
 	newBinding := &binding.RuntimeBinding{
-		SandboxID:  req.SandboxID,
-		Generation: req.Generation,
-		Envs:       req.Envs,
-	}
-	if req.AccessTokenHash != "" {
-		digest, err := binding.ParseAccessTokenHash(req.AccessTokenHash)
-		if err != nil {
-			return warnings, model.ErrorCodeInvalidRequest, http.StatusBadRequest, err
-		}
-		newBinding.AccessTokenHash = digest
-		newBinding.HasAccessToken = true
+		SandboxID:       req.SandboxID,
+		Generation:      req.Generation,
+		AccessTokenHash: tokenHash,
+		HasAccessToken:  hasToken,
+		Envs:            req.Envs,
 	}
 	if req.Telemetry != nil {
 		newBinding.TelemetryAttrs = req.Telemetry.Attributes
@@ -323,13 +322,11 @@ func (m *RuntimeInitManager) Apply(req *model.RuntimeInitRequest) ([]string, mod
 	return warnings, "", http.StatusOK, nil
 }
 
-// runPreStart executes the lifecycle preStart hook, reporting progress to
-// the bootstrap watchdog status file (classic mode bootstrap polls it before
-// launching the user command; the init-mode topology has no such file).
-// Status-file failures are logged, never fatal: the file may already have
-// been consumed and removed by bootstrap. A preStart failure itself is
-// returned so /internal/init reports 500 and execd stays uninitialized (the one-shot
-// slot stays consumed; the control plane recycles the container).
+// runPreStart executes the lifecycle preStart hook, mirroring the legacy
+// startup-status protocol ("running N" → "done 0|1") for the bootstrap
+// watchdog. Status-file failures are logged, never fatal (bootstrap may
+// already have consumed and removed the file); a preStart failure itself is
+// returned so /internal/init reports 500 and stays uninitialized.
 func (m *RuntimeInitManager) runPreStart(cfg *lifecycle.Config) error {
 	if cfg != nil && cfg.PreStart != nil {
 		m.appendStartupStatus(fmt.Sprintf("running %d", int64(cfg.PreStartTimeout()/time.Second)))
@@ -353,20 +350,15 @@ func (m *RuntimeInitManager) appendStartupStatus(status string) {
 	}
 }
 
-// validateInitRequest sanity-checks the /internal/init payload. Env keys colliding
-// with execd's own config/credential names are rejected outright; reserved
-// telemetry attribute keys are dropped with a warning.
+// validateInitRequest sanity-checks the /internal/init payload. Env keys
+// colliding with execd's own config/credential names are rejected outright;
+// reserved telemetry attribute keys are dropped with a warning.
 func validateInitRequest(req *model.RuntimeInitRequest) ([]string, error) {
 	if err := validateInitIdentity(req); err != nil {
 		return nil, err
 	}
 	if err := validateInitEnvs(req.Envs); err != nil {
 		return nil, err
-	}
-	if req.AccessTokenHash != "" {
-		if _, err := binding.ParseAccessTokenHash(req.AccessTokenHash); err != nil {
-			return nil, err
-		}
 	}
 	if req.Lifecycle != nil {
 		if err := lifecycle.ValidateConfig(req.Lifecycle); err != nil {

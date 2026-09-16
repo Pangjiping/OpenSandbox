@@ -175,10 +175,11 @@ func withInit(fn func(*controller.InitController)) gin.HandlerFunc {
 	}
 }
 
-// accessTokenMiddleware guards API entrypoints. Once a RuntimeBinding with a
-// token hash is applied (/internal/init is authoritative), request tokens are verified
-// against the hash; before that, the legacy container-env token applies.
-// /init, /ready, and /ping are always reachable without the token.
+// accessTokenMiddleware guards API entrypoints. Once a RuntimeBinding with
+// a token hash is applied (/internal/init is authoritative), request tokens
+// are verified against the hash; before that, the legacy container-env
+// token applies. /internal/init, /ready, and /ping are always reachable
+// without the token.
 func accessTokenMiddleware(legacyToken string) gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if _, preInit := preInitPaths[ctx.FullPath()]; preInit {
@@ -189,9 +190,7 @@ func accessTokenMiddleware(legacyToken string) gin.HandlerFunc {
 		if b := binding.Current(); b != nil && b.HasAccessToken {
 			presented := ctx.GetHeader(model.ApiAccessTokenHeader)
 			if presented == "" || !b.VerifyAccessToken(presented) {
-				ctx.AbortWithStatusJSON(http.StatusUnauthorized, map[string]any{
-					"error": "Unauthorized: invalid or missing header " + model.ApiAccessTokenHeader,
-				})
+				abortUnauthorized(ctx)
 				return
 			}
 			ctx.Next()
@@ -211,14 +210,18 @@ func accessTokenMiddleware(legacyToken string) gin.HandlerFunc {
 
 		requestedToken := ctx.GetHeader(model.ApiAccessTokenHeader)
 		if requestedToken == "" || requestedToken != legacyToken {
-			ctx.AbortWithStatusJSON(http.StatusUnauthorized, map[string]any{
-				"error": "Unauthorized: invalid or missing header " + model.ApiAccessTokenHeader,
-			})
+			abortUnauthorized(ctx)
 			return
 		}
 
 		ctx.Next()
 	}
+}
+
+func abortUnauthorized(ctx *gin.Context) {
+	ctx.AbortWithStatusJSON(http.StatusUnauthorized, map[string]any{
+		"error": "Unauthorized: invalid or missing header " + model.ApiAccessTokenHeader,
+	})
 }
 
 // runtimeInitGate serves only liveness, readiness, and /internal/init until
