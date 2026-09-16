@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# fast-sandbox-env.sh — one-command fast-sandbox integration environment,
+# integration-env.sh — one-command fast-sandbox integration environment,
 # driven from the OpenSandbox repository.
 #
 # Builds the full OpenSandbox ecosystem on a bare-metal Linux KVM host
@@ -39,11 +39,11 @@
 # resource.
 #
 # Usage:
-#   ./scripts/fast-sandbox-env/fast-sandbox-env.sh up       # full environment + pool + server/ingress + verify
-#   ./scripts/fast-sandbox-env/fast-sandbox-env.sh pool     # re-apply the pool only
-#   ./scripts/fast-sandbox-env/fast-sandbox-env.sh status   # component/pool/DART/OpenSandbox health
-#   ./scripts/fast-sandbox-env/fast-sandbox-env.sh down     # teardown, host left clean
-#   ./scripts/fast-sandbox-env/fast-sandbox-env.sh up --auto-clean   # down on failure
+#   ./scripts/fast-sandbox-env/integration-env.sh up       # full environment + pool + server/ingress + verify
+#   ./scripts/fast-sandbox-env/integration-env.sh pool     # re-apply the pool only
+#   ./scripts/fast-sandbox-env/integration-env.sh status   # component/pool/DART/OpenSandbox health
+#   ./scripts/fast-sandbox-env/integration-env.sh down     # teardown, host left clean
+#   ./scripts/fast-sandbox-env/integration-env.sh up --auto-clean   # down on failure
 #
 # Environment overrides (all optional):
 #   WORK                 workspace + logs        (default $PWD/.fast-sandbox-env)
@@ -1861,7 +1861,7 @@ down() {
 
 usage() {
 	cat <<'EOF'
-usage: fast-sandbox-env.sh [--auto-clean] {up|down|status|pool}
+usage: integration-env.sh [--auto-clean] {up|down|status|pool}
 
   up       initialize the full environment: fast-sandbox@pinned-commit images,
            two-node kind cluster (KVM), MinIO, control plane, firecracker
@@ -1917,7 +1917,7 @@ case "$ACTION" in
 		if [[ -n "$(kind get clusters 2>/dev/null | grep -x "$KIND_CLUSTER" || true)" ]] \
 			|| docker ps -a --format '{{.Names}}' | grep -qx "$MINIO_CONTAINER"; then
 			if [[ "$SKIP_LEFTOVER_CLEAN" == 1 ]]; then
-				log "leftover resources detected; aborting (SKIP_LEFTOVER_CLEAN=1). Run 'fast-sandbox-env.sh down' first"
+				log "leftover resources detected; aborting (SKIP_LEFTOVER_CLEAN=1). Run 'integration-env.sh down' first"
 				exit 1
 			fi
 			log "leftover resources detected; cleaning and rebuilding"

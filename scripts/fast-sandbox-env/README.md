@@ -27,10 +27,10 @@ caveats): `fast-sandbox/docs/guides/firecracker-integration-env.md`.
 ## Usage
 
 ```bash
-./scripts/fast-sandbox-env/fast-sandbox-env.sh up        # full stack + end-to-end + pause/resume verify
-./scripts/fast-sandbox-env/fast-sandbox-env.sh status    # component / pool / DART / OpenSandbox health
-./scripts/fast-sandbox-env/fast-sandbox-env.sh pool      # re-apply the pool only
-./scripts/fast-sandbox-env/fast-sandbox-env.sh down      # teardown, host left clean
+./scripts/fast-sandbox-env/integration-env.sh up        # full stack + end-to-end + pause/resume verify
+./scripts/fast-sandbox-env/integration-env.sh status    # component / pool / DART / OpenSandbox health
+./scripts/fast-sandbox-env/integration-env.sh pool      # re-apply the pool only
+./scripts/fast-sandbox-env/integration-env.sh down      # teardown, host left clean
 ```
 
 After `up`, point any OpenSandbox SDK at `http://127.0.0.1:18080` with the
@@ -87,7 +87,7 @@ SDK ──header──> ingress gateway (source-built, --provider-type=fast-sand
 ## Layout
 
 ```
-fast-sandbox-env.sh          entrypoint: up / down / status / pool
+integration-env.sh          entrypoint: up / down / status / pool
 architecture.svg             how the environment works (topology, pipeline,
                              P2P delivery, egress actions channel)
 manifests/

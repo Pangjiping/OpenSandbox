@@ -12,7 +12,7 @@
 #   /sys/.../kvm        KVM access inside the container
 #   /dev/net/tun        TAP devices for the per-clone netns data plane
 #   /dev/shm            snapshot memory staging (default 64MiB is too small)
-#   /var/lib/fast-sandbox  StateRoot; prepared by fast-sandbox-env.sh up
+#   /var/lib/fast-sandbox  StateRoot; prepared by integration-env.sh up
 #                          (XFS loop image when XFS_STATEROOT=1 so
 #                          per-sandbox rootfs copies are CoW reflinks)
 #
@@ -33,10 +33,10 @@
 # Registry mirrors: this file assumes direct Docker Hub access (the
 # installer pulls curlimages/curl, alpine). On blocked hosts set
 # DOCKER_MIRROR="https://mirror.example.com[,https://fallback]" and the
-# render step in fast-sandbox-env.sh injects a containerdConfigPatches
+# render step in integration-env.sh injects a containerdConfigPatches
 # block for docker.io before `kind create`.
 #
-# Usage (normally through fast-sandbox-env.sh up):
+# Usage (normally through integration-env.sh up):
 #   kind create cluster --config kind-cluster.yaml
 #   kubectl label node <node> sandbox.fast.io/kvm=true
 #   kubectl label node <node> fast-sandbox.io/firecracker-node=true

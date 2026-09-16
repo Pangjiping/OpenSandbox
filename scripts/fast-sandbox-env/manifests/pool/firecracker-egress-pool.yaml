@@ -28,7 +28,7 @@
 # No sandboxes are created by the environment itself — apply-driven
 # capacity only.
 #
-# Tokens rendered by fast-sandbox-env.sh (pool stage, into $WORK/gen):
+# Tokens rendered by integration-env.sh (pool stage, into $WORK/gen):
 #   "@FASTLET_IMAGE@"  "@EGRESS_IMAGE@"  "@POOL_MIN@"  "@POOL_MAX@"
 #   # @WARM_IMAGES@  -> warmImages block when WARM_IMAGES=1
 # (quoted in the template so the file stays valid YAML; the render step
