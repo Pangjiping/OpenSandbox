@@ -58,6 +58,9 @@ func (r *IsolatedRunner) StopGC() {}
 // Close is a no-op on platforms without isolated-session support.
 func (r *IsolatedRunner) Close() error { return nil }
 
+// Reset is a no-op on platforms without isolated-session support.
+func (r *IsolatedRunner) Reset() error { return nil }
+
 // Available reports false on Windows.
 func (r *IsolatedRunner) Available() bool { return false }
 

@@ -175,7 +175,7 @@ func run() int {
 
 	initManager := controller.InitRuntimeInitManager(&controller.RuntimeInitConfig{
 		Ctrl:              ctrl,
-		IsolatedCloser:    isolatedRunner,
+		IsolatedResetter:  isolatedRunner,
 		LaunchEntrypoint:  entryLauncher(startInitEntrypoint),
 		EntrypointArgs:    flag.Args(),
 		TemplateLifecycle: lifecycleConfig,

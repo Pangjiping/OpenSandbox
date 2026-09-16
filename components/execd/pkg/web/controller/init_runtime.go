@@ -48,9 +48,9 @@ const maxInitTelemetryAttrs = 64
 type RuntimeInitConfig struct {
 	Ctrl *runtime.Controller
 
-	// IsolatedCloser tears down isolated sessions; nil when isolation is
-	// unavailable.
-	IsolatedCloser interface{ Close() error }
+	// IsolatedResetter clears the previous generation's isolated sessions
+	// without shutting the runner down; nil when isolation is unavailable.
+	IsolatedResetter interface{ Reset() error }
 
 	// LaunchEntrypoint starts (or replaces) the supervised user entrypoint;
 	// nil in classic mode where the container entrypoint is external.
@@ -134,13 +134,25 @@ func (m *RuntimeInitManager) stopPeriodicLocked() {
 }
 
 // MarkReady records that user workloads are allowed to run. The legacy
-// startup path calls it after preStart + entrypoint; the /internal/init path after
+// startup path calls it after preStart + entrypoint; the /init path after
 // applying the binding.
 func (m *RuntimeInitManager) MarkReady() {
 	if m == nil {
 		return
 	}
 	m.ready.Store(true)
+}
+
+// Ready reports whether user workloads may run (the apply sequence
+// completed). The runtime-init gate consults this instead of binding
+// presence: the binding is installed atomically mid-apply, so a
+// half-completed apply (preStart or entrypoint failed with 500) must keep
+// the business APIs gated even though a binding exists.
+func (m *RuntimeInitManager) Ready() bool {
+	if m == nil {
+		return false
+	}
+	return m.ready.Load()
 }
 
 // InitController serves POST /internal/init and GET /ready.
@@ -229,11 +241,18 @@ func (m *RuntimeInitManager) Apply(req *model.RuntimeInitRequest) ([]string, mod
 	if m.cfg.Ctrl != nil {
 		m.cfg.Ctrl.Reset()
 	}
-	if m.cfg.IsolatedCloser != nil {
-		if err := m.cfg.IsolatedCloser.Close(); err != nil {
+	if m.cfg.IsolatedResetter != nil {
+		if err := m.cfg.IsolatedResetter.Reset(); err != nil {
 			log.Warn("runtime init: isolated runner cleanup: %v", err)
 			warnings = append(warnings, "isolated session cleanup reported errors")
 		}
+	}
+	// Retire the supervised entrypoint BEFORE killing the remaining
+	// children: retirement must be visible before the entrypoint process
+	// exits, or its waiter treats the exit as the container exiting
+	// (stopChildrenExcept + os.Exit) instead of a generation replacement.
+	if policy == model.EntrypointPolicyRestart {
+		runtime.RetireEntrypoint()
 	}
 	runtime.StopUserProcesses(policy == model.EntrypointPolicyKeep)
 

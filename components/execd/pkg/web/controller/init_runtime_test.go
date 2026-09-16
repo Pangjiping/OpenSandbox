@@ -26,10 +26,10 @@ import (
 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
 )
 
-type recordingCloser struct{ closed atomic.Int32 }
+type recordingResetter struct{ resets atomic.Int32 }
 
-func (r *recordingCloser) Close() error {
-	r.closed.Add(1)
+func (r *recordingResetter) Reset() error {
+	r.resets.Add(1)
 	return nil
 }
 
@@ -57,9 +57,9 @@ func TestApplyDefaultKeepsEntrypoint(t *testing.T) {
 	t.Cleanup(func() { binding.Apply(prev) })
 
 	var launchCalls int
-	closer := &recordingCloser{}
+	closer := &recordingResetter{}
 	manager := newTestInitManager(t, RuntimeInitConfig{
-		IsolatedCloser: closer,
+		IsolatedResetter: closer,
 		LaunchEntrypoint: func([]string) error {
 			launchCalls++
 			return nil
@@ -73,7 +73,7 @@ func TestApplyDefaultKeepsEntrypoint(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, status)
 	require.Zero(t, launchCalls)
-	require.Equal(t, int32(1), closer.closed.Load(), "previous generation sessions torn down")
+	require.Equal(t, int32(1), closer.resets.Load(), "previous generation sessions torn down")
 	require.Contains(t, warnings, "entrypointPolicy=keep: template entrypoint was not started")
 	require.True(t, manager.ready.Load(), "ready even without an entrypoint")
 }

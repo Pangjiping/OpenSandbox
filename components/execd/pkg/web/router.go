@@ -221,9 +221,11 @@ func accessTokenMiddleware(legacyToken string) gin.HandlerFunc {
 	}
 }
 
-// runtimeInitGate serves only liveness, readiness, and /init until the
-// RuntimeBinding is applied (runtime-init mode). User workloads cannot start
-// and user APIs are not reachable before the control plane initializes execd.
+// runtimeInitGate serves only liveness, readiness, and /internal/init until
+// runtime init completes (runtime-init mode). The gate checks the manager's
+// ready state — not binding presence — because the binding is installed
+// atomically mid-apply: a failed apply (500) keeps the binding but must
+// stay gated since /ready reports 503 too.
 func runtimeInitGate() gin.HandlerFunc {
 	return func(ctx *gin.Context) {
 		if !flag.RuntimeInit {
@@ -234,7 +236,7 @@ func runtimeInitGate() gin.HandlerFunc {
 			ctx.Next()
 			return
 		}
-		if binding.Initialized() {
+		if controller.GetRuntimeInitManager().Ready() {
 			ctx.Next()
 			return
 		}

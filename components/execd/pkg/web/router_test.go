@@ -24,6 +24,7 @@ import (
 
 	"github.com/alibaba/opensandbox/execd/pkg/binding"
 	"github.com/alibaba/opensandbox/execd/pkg/flag"
+	"github.com/alibaba/opensandbox/execd/pkg/web/controller"
 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
 )
 
@@ -108,9 +109,20 @@ func TestAccessTokenPreInitPathsSkipToken(t *testing.T) {
 	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodPost, "/internal/init", "").Code)
 }
 
+// withManager installs a fresh runtime-init manager with the given ready
+// state (each call replaces the process-wide manager).
+func withManager(t *testing.T, ready bool) {
+	t.Helper()
+	manager := controller.InitRuntimeInitManager(&controller.RuntimeInitConfig{})
+	if ready {
+		manager.MarkReady()
+	}
+}
+
 func TestRuntimeInitGateBlocksUninitializedAPIs(t *testing.T) {
 	withRuntimeInit(t, true)
 	withTestBinding(t, nil)
+	withManager(t, false)
 	r := newMiddlewareTestRouter(t, "")
 
 	// Business APIs are unavailable before /internal/init...
@@ -121,9 +133,20 @@ func TestRuntimeInitGateBlocksUninitializedAPIs(t *testing.T) {
 	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodPost, "/internal/init", "").Code)
 }
 
+func TestRuntimeInitGateChecksReadinessNotBinding(t *testing.T) {
+	withRuntimeInit(t, true)
+	// A binding installed by a half-completed apply (preStart/entrypoint
+	// returned 500) must NOT open the business APIs while /ready is 503.
+	withTestBinding(t, &binding.RuntimeBinding{SandboxID: "sandbox-1", Generation: 1})
+	withManager(t, false)
+	r := newMiddlewareTestRouter(t, "")
+
+	require.Equal(t, http.StatusServiceUnavailable, doRequest(t, r, http.MethodGet, "/api", "").Code)
+}
+
 func TestRuntimeInitGateOpenAfterInit(t *testing.T) {
 	withRuntimeInit(t, true)
-	withTestBinding(t, &binding.RuntimeBinding{SandboxID: "sandbox-1", Generation: 1})
+	withManager(t, true)
 	r := newMiddlewareTestRouter(t, "")
 
 	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodGet, "/api", "").Code)
@@ -140,20 +163,22 @@ func TestRuntimeInitGateDisabledByDefault(t *testing.T) {
 func TestNewRouterServesInitRoutes(t *testing.T) {
 	withTestBinding(t, nil)
 	withRuntimeInit(t, false)
+	withManager(t, false)
 	r := NewRouter("")
 
 	// /ping keeps working.
 	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodGet, "/ping", "").Code)
 
-	// /ready reports uninitialized (no manager installed in this process).
+	// /ready reports uninitialized.
 	w := doRequest(t, r, http.MethodGet, "/ready", "")
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	require.Contains(t, w.Body.String(), `"initialized":false`)
 
-	// /internal/init without a manager reports unavailability (this process never
-	// wired the manager), not a routing failure.
-	w = doRequest(t, r, http.MethodPost, "/internal/init", `{"sandboxId":"s","generation":1}`)
-	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	// /internal/init routes through to the handler: an invalid payload
+	// fails validation (400) instead of a routing error (404), and the
+	// failed request does not consume the one-shot slot.
+	w = doRequest(t, r, http.MethodPost, "/internal/init", `{"sandboxId":"s","generation":0}`)
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func mustHash(t *testing.T, raw string) [32]byte {

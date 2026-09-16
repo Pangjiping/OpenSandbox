@@ -35,6 +35,9 @@ func LaunchUserEntrypoint([]string) error { return nil }
 // EntrypointRunning is always false off Linux: no supervised entrypoint.
 func EntrypointRunning() bool { return false }
 
+// RetireEntrypoint is a no-op off Linux: there is no supervised entrypoint.
+func RetireEntrypoint() {}
+
 // StopUserProcesses is a no-op off Linux; sessions tear themselves down
 // through Controller.Reset.
 func StopUserProcesses(keepEntrypoint bool) {}

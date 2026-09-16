@@ -589,12 +589,22 @@ func EntrypointRunning() bool {
 	return entrypoints.currentEntry() != nil
 }
 
+// RetireEntrypoint stops and retires the supervised entrypoint (runtime
+// init with entrypointPolicy=restart). Retirement must be visible BEFORE
+// the process exits: waitEntrypointExit treats the exit of a non-retired
+// entrypoint as the container exiting (stopChildrenExcept + os.Exit).
+// No-op when no entrypoint is running.
+func RetireEntrypoint() {
+	entrypoints.retireCurrent()
+}
+
 // StopUserProcesses terminates every child process execd owns. In init mode
 // this includes the entrypoint and all session process groups (reaper
-// tracked); POST /internal/init uses it to stop any pre-init workloads before
-// applying the binding. With keepEntrypoint the supervised entrypoint (and
-// only it) is spared — entrypointPolicy=keep adopts the running process.
-// Outside init mode, sessions tear themselves down through Controller.Reset.
+// tracked); POST /internal/init uses it to stop any pre-init workloads
+// before applying the binding. With keepEntrypoint the supervised
+// entrypoint (and only it) is spared — entrypointPolicy=keep adopts the
+// running process. Outside init mode, sessions tear themselves down
+// through Controller.Reset.
 func StopUserProcesses(keepEntrypoint bool) {
 	if initReaper == nil {
 		return
