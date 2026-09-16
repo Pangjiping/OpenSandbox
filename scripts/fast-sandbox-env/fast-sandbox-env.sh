@@ -1288,7 +1288,7 @@ opensandbox_up() {
 		--set server.resources.requests.memory=512Mi \
 		--set server.resources.limits.cpu=1 \
 		--set server.resources.limits.memory=2Gi \
-		--set-file server.configToml="$GEN_DIR/osb-server-config.toml"
+		--set-file configToml="$GEN_DIR/osb-server-config.toml"
 	kubectl apply -f "$GEN_DIR/osb-server.yaml" >/dev/null
 	# charts/ingress-gateway: fast-sandbox provider resolving through
 	# FastPath, verifying the same signing key the server signs with.
