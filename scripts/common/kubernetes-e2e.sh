@@ -206,6 +206,7 @@ EOF
 gateway:
   dataplaneNamespace: "${E2E_NAMESPACE}"
   replicaCount: 1
+  gatewayRouteMode: "${E2E_GATEWAY_ROUTE_MODE:-header}"
   image:
     repository: ${INGRESS_IMG_REPOSITORY}
     tag: "${INGRESS_IMG_TAG}"
