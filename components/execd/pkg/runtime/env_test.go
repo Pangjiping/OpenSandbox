@@ -21,6 +21,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/alibaba/opensandbox/execd/pkg/binding"
+	"github.com/alibaba/opensandbox/execd/pkg/isolation"
 )
 
 func TestLoadExtraEnvFromFileUnset(t *testing.T) {
@@ -95,23 +98,82 @@ func TestMergeEnvsOverlaysExtra(t *testing.T) {
 	require.Equal(t, "3", got["C"])
 }
 
-func TestMergeExtraEnvsMergesAndOverrides(t *testing.T) {
-	fromFile := map[string]string{"A": "1", "B": "2"}
-	fromRequest := map[string]string{"B": "override", "C": "3"}
-
-	got := mergeExtraEnvs(fromFile, fromRequest)
-
-	require.Len(t, got, 3)
-	require.Equal(t, "1", got["A"])
-	require.Equal(t, "override", got["B"])
-	require.Equal(t, "3", got["C"])
+// applyTestBinding installs a RuntimeBinding for the duration of the test and
+// restores the previous state afterwards.
+func applyTestBinding(t *testing.T, b *binding.RuntimeBinding) {
+	t.Helper()
+	previous := binding.Apply(b)
+	t.Cleanup(func() { binding.Apply(previous) })
 }
 
-func TestMergeExtraEnvsHandlesNilFromFile(t *testing.T) {
-	fromRequest := map[string]string{"ONLY": "request"}
+func TestUserEnvOverlayEmptyWithoutBinding(t *testing.T) {
+	t.Setenv("EXECD_ENVS", "")
+	applyTestBinding(t, nil)
 
-	got := mergeExtraEnvs(nil, fromRequest)
+	got := UserEnvOverlay(map[string]string{"REQ": "1"})
+	require.Equal(t, map[string]string{"REQ": "1"}, got)
+}
 
-	require.Len(t, got, 1)
-	require.Equal(t, "request", got["ONLY"])
+func TestUserEnvOverlayLayersBindingFileRequest(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "env"), []byte("FILE_ONLY=f1\nSHARED=file\n"), 0o644))
+	t.Setenv("EXECD_ENVS", filepath.Join(dir, "env"))
+
+	applyTestBinding(t, &binding.RuntimeBinding{
+		SandboxID: "sandbox-1",
+		Envs:      map[string]string{"SANDBOX_ONLY": "s1", "SHARED": "sandbox"},
+	})
+
+	// Sandbox env < file env; request env beats both.
+	got := UserEnvOverlay(map[string]string{"SHARED": "request"})
+	require.Equal(t, "s1", got["SANDBOX_ONLY"])
+	require.Equal(t, "f1", got["FILE_ONLY"])
+	require.Equal(t, "request", got["SHARED"])
+
+	// The runtime (.env file) layer overrides the sandbox layer.
+	require.Equal(t, "file", UserEnvOverlay()["SHARED"])
+}
+
+func TestUserEnvOverlayForcesSandboxID(t *testing.T) {
+	t.Setenv("EXECD_ENVS", "")
+	applyTestBinding(t, &binding.RuntimeBinding{SandboxID: "authoritative"})
+
+	got := UserEnvOverlay(map[string]string{"OPENSANDBOX_ID": "spoofed"})
+	require.Equal(t, "authoritative", got["OPENSANDBOX_ID"])
+}
+
+func TestUserEnvOverlayNoBindingKeepsFileLayer(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "env"), []byte("FOO=bar\n"), 0o644))
+	t.Setenv("EXECD_ENVS", filepath.Join(dir, "env"))
+	applyTestBinding(t, nil)
+
+	got := UserEnvOverlay()
+	require.Equal(t, "bar", got["FOO"])
+	require.NotContains(t, got, "OPENSANDBOX_ID")
+}
+
+func TestFilterEnvNamesRemovesConfigVars(t *testing.T) {
+	env := []string{"PATH=/usr/bin", "EXECD_ACCESS_TOKEN=secret", "JUPYTER_TOKEN=tok", "KEEP=1"}
+
+	filtered := filterEnvNames(env, isolation.ExecdConfigEnvBlacklist())
+
+	require.Contains(t, filtered, "PATH=/usr/bin")
+	require.Contains(t, filtered, "KEEP=1")
+	require.Len(t, filtered, 2)
+}
+
+func TestUserProcessEnvironmentFiltersBlacklist(t *testing.T) {
+	t.Setenv("EXECD_ACCESS_TOKEN", "secret")
+	t.Setenv("EXECD_ENVS", "")
+	applyTestBinding(t, &binding.RuntimeBinding{
+		SandboxID: "sandbox-1",
+		Envs:      map[string]string{"SANDBOX_ONLY": "s1"},
+	})
+
+	env := UserProcessEnvironment()
+	joined := strings.Join(env, "\n")
+	require.Contains(t, joined, "SANDBOX_ONLY=s1")
+	require.Contains(t, joined, "OPENSANDBOX_ID=sandbox-1")
+	require.NotContains(t, joined, "EXECD_ACCESS_TOKEN")
 }

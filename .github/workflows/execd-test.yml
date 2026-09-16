@@ -136,6 +136,12 @@ jobs:
 
           sleep 5
           python3 tests/smoke_api.py
+      - name: Runtime init smoke test
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 5
+        working-directory: components/execd
+        run: |
+          bash tests/runtime_init.sh
       - name: SIGTERM forward test
         if: matrix.os == 'ubuntu-latest'
         working-directory: components/execd

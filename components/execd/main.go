@@ -130,12 +130,14 @@ func run() int {
 	// Always store probe result for capabilities endpoint.
 	controller.InitIsolatedProbe(&isolationProbe)
 
+	var isolatedRunner *runtime.IsolatedRunner
 	if isolationProbe.Available {
 		iso := isolation.NewBwrapWithProbe(isoCfg, isolationProbe)
 		runner, err := runtime.NewIsolatedRunner(ctrl, iso, isoCfg)
 		if err != nil {
 			log.Error("isolation: runner init failed (continuing without isolation): %v", err)
 		} else {
+			isolatedRunner = runner
 			controller.InitIsolatedRunner(runner)
 			defer func() {
 				if err := closeIsolatedRunnerWithRetry(
@@ -171,6 +173,18 @@ func run() int {
 		}()
 	}
 
+	initManager := controller.InitRuntimeInitManager(&controller.RuntimeInitConfig{
+		Ctrl:              ctrl,
+		IsolatedCloser:    isolatedRunner,
+		LaunchEntrypoint:  entryLauncher(startInitEntrypoint),
+		EntrypointArgs:    flag.Args(),
+		TemplateLifecycle: lifecycleConfig,
+		AppendStartupStatus: func(status string) error {
+			return appendLifecycleStartupStatus(flag.LifecycleStartupStatusFile, status)
+		},
+	})
+	defer initManager.StopPeriodic()
+
 	engine := web.NewRouter(flag.ServerAccessToken)
 	if err := runHTTPServer(
 		engine,
@@ -178,6 +192,7 @@ func run() int {
 		initStartupCtx,
 		stopInitStartupSignals,
 		lifecycleConfig,
+		initManager,
 	); err != nil {
 		if errors.Is(err, errStartupShutdown) {
 			log.Info("execd: shutdown requested before user entrypoint started: %v", err)
@@ -189,12 +204,22 @@ func run() int {
 	return 0
 }
 
+// entryLauncher adapts a nil init-mode launcher (classic mode) into the
+// manager's optional entrypoint relauncher.
+func entryLauncher(startInitEntrypoint func([]string) error) func([]string) error {
+	if !flag.InitMode || startInitEntrypoint == nil {
+		return nil
+	}
+	return startInitEntrypoint
+}
+
 func runHTTPServer(
 	engine http.Handler,
 	startInitEntrypoint func([]string) error,
 	initStartupCtx context.Context,
 	stopInitStartupSignals context.CancelFunc,
 	lifecycleConfig *lifecycle.Config,
+	initManager *controller.RuntimeInitManager,
 ) error {
 	addr := fmt.Sprintf(":%d", flag.ServerPort)
 	listener, err := net.Listen("tcp4", addr)
@@ -214,13 +239,14 @@ func runHTTPServer(
 		ctxSignals...,
 	)
 	defer stopSignals()
-	var periodicManager *lifecycle.PeriodicManager
-	defer func() {
-		if periodicManager != nil {
-			periodicManager.Stop()
-		}
-	}()
 	startup := func() error {
+		if flag.RuntimeInit {
+			// Runtime-init mode: preStart and the entrypoint are applied by
+			// POST /init; only the lifecycle/startup probe surface is set up
+			// here.
+			log.Info("execd: runtime-init mode: waiting for POST /init before starting user workloads")
+			return nil
+		}
 		preStartCtx := serverCtx
 		if flag.InitMode {
 			preStartCtx = initStartupCtx
@@ -236,13 +262,14 @@ func runHTTPServer(
 		if startErr != nil {
 			return startErr
 		}
-		periodicManager = manager
+		initManager.SetPeriodic(manager)
 		if flag.InitMode {
 			stopInitStartupSignals()
 			if err := startInitEntrypoint(flag.Args()); err != nil {
 				return err
 			}
 		}
+		initManager.MarkReady()
 		return nil
 	}
 	return serveHTTPUntilShutdown(serverCtx, listener, engine, startup)

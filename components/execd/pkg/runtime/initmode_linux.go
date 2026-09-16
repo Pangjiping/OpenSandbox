@@ -337,12 +337,17 @@ func withoutHardening() launchOption {
 // never reach the long-lived entrypoint (its Jupyter kernels are user code).
 func bootstrapEnv() launchOption {
 	return func(mp *managedProcess) {
-		mp.stripEnv = []string{
-			"EXECD_ACCESS_TOKEN",
-			"OPENSANDBOX_LIFECYCLE",
-			"EXECD_LIFECYCLE_CONFIG",
-		}
+		mp.stripEnv = bootstrapStripEnv
 	}
+}
+
+// bootstrapStripEnv names stripped from the entrypoint environment before
+// launch (cmd.Env) and again at execve time (hardening launcher policy).
+var bootstrapStripEnv = []string{
+	"EXECD_ACCESS_TOKEN",
+	"OPENSANDBOX_LIFECYCLE",
+	"EXECD_LIFECYCLE_CONFIG",
+	"EXECD_RUNTIME_INIT",
 }
 
 // launchManagedWith starts the command and registers it with the reaper.
@@ -419,7 +424,8 @@ func exitStatusError(ws syscall.WaitStatus) error {
 
 // PrepareInitMode activates the init/reaper duties and registers signal
 // handling before any managed child starts. The returned function launches
-// the user entrypoint after execd has started serving and preStart succeeds.
+// (or replaces) the user entrypoint; the legacy startup path calls it once
+// and POST /init calls it again when a RuntimeBinding reassigns the sandbox.
 func PrepareInitMode() func([]string) error {
 	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
 		log.Warn("init: PR_SET_DUMPABLE(0) failed: %v", err)
@@ -442,48 +448,203 @@ func PrepareInitMode() func([]string) error {
 	// hitting the runtime default handler.
 	sigCh := make(chan os.Signal, 8)
 	signal.Notify(sigCh, initForwardedSignals...)
-	entryCh := make(chan *managedProcess, 1)
-	safego.Go(func() { forwardInitSignalsWhenReady(entryCh, sigCh) })
+	safego.Go(func() { forwardInitSignals(sigCh) })
 
-	return func(entryArgs []string) error {
-		if len(entryArgs) == 0 {
-			log.Warn("init: --init set but no user command provided; no entrypoint to supervise")
-			entryCh <- nil
-			return nil
-		}
-		entry, err := launchEntrypoint(entryArgs)
-		if err != nil {
-			entryCh <- nil
-			return err
-		}
-		entryCh <- entry
-		safego.Go(func() { waitEntrypointExit(entry) })
-		return nil
+	return LaunchUserEntrypoint
+}
+
+// entrypointSupervisor tracks the current user entrypoint generation so
+// application signals are forwarded to the active process and runtime init
+// can retire and replace it without tearing down the container.
+type entrypointSupervisor struct {
+	mu         sync.Mutex
+	current    *managedProcess
+	retired    map[*managedProcess]struct{}
+	restarting bool
+	disabled   bool // no entrypoint will ever be supervised (no user command)
+	started    chan struct{}
+}
+
+var entrypoints = &entrypointSupervisor{
+	retired: map[*managedProcess]struct{}{},
+	started: make(chan struct{}, 1),
+}
+
+func (s *entrypointSupervisor) currentEntry() *managedProcess {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.current
+}
+
+func (s *entrypointSupervisor) isRestarting() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.restarting
+}
+
+func (s *entrypointSupervisor) isDisabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.disabled
+}
+
+func (s *entrypointSupervisor) markNoEntrypoint() {
+	s.mu.Lock()
+	s.disabled = true
+	s.restarting = false
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (s *entrypointSupervisor) setEntry(mp *managedProcess) {
+	s.mu.Lock()
+	s.current = mp
+	s.restarting = false
+	s.mu.Unlock()
+	s.notify()
+}
+
+func (s *entrypointSupervisor) notify() {
+	select {
+	case s.started <- struct{}{}:
+	default:
 	}
 }
 
-func forwardInitSignalsWhenReady(
-	entryCh <-chan *managedProcess,
-	sigCh chan os.Signal,
-) {
+func (s *entrypointSupervisor) isRetired(mp *managedProcess) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, wasRetired := s.retired[mp]
+	return wasRetired
+}
+
+// signalEntryGroup delivers sig to the entrypoint process group while the
+// reaper lock guarantees the PID/PGID is still owned (a recycled group can
+// never be signalled).
+func signalEntryGroup(mp *managedProcess, sig syscall.Signal) error {
+	if initReaper == nil {
+		return nil
+	}
+	initReaper.mu.Lock()
+	defer initReaper.mu.Unlock()
+	if initReaper.owned[mp.pid()] != mp {
+		return nil
+	}
+	return killGroup(mp.pid(), sig)
+}
+
+// retireCurrent stops the active entrypoint (SIGTERM → grace → SIGKILL),
+// marks it retired so its exit does not terminate the container, and waits
+// for the reaper to collect it.
+func (s *entrypointSupervisor) retireCurrent() {
+	s.mu.Lock()
+	entry := s.current
+	s.current = nil
+	s.restarting = true
+	if entry != nil {
+		s.retired[entry] = struct{}{}
+	}
+	s.mu.Unlock()
+	if entry == nil {
+		return
+	}
+	log.Info("init: stopping previous entrypoint pid=%d for runtime init", entry.pid())
+	if err := signalEntryGroup(entry, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		log.Warn("init: SIGTERM previous entrypoint group: %v", err)
+	}
+	deadline := time.After(initShutdownGrace)
+	select {
+	case <-entry.done:
+	case <-deadline:
+		if err := signalEntryGroup(entry, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			log.Warn("init: SIGKILL previous entrypoint group: %v", err)
+		}
+		select {
+		case <-entry.done:
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+// LaunchUserEntrypoint starts (or replaces) the supervised user entrypoint.
+func LaunchUserEntrypoint(args []string) error {
+	if len(args) == 0 {
+		log.Warn("init: --init set but no user command provided; no entrypoint to supervise")
+		entrypoints.markNoEntrypoint()
+		return nil
+	}
+	entrypoints.retireCurrent()
+	entry, err := launchEntrypoint(args)
+	if err != nil {
+		return err
+	}
+	entrypoints.setEntry(entry)
+	safego.Go(func() { waitEntrypointExit(entry) })
+	return nil
+}
+
+// EntrypointRunning reports whether a supervised entrypoint process is
+// currently active.
+func EntrypointRunning() bool {
+	return entrypoints.currentEntry() != nil
+}
+
+// StopUserProcesses terminates every child process execd owns. In init mode
+// this includes the entrypoint and all session process groups (reaper
+// tracked); POST /init uses it to stop any pre-init workloads before
+// applying the binding. With keepEntrypoint the supervised entrypoint (and
+// only it) is spared — entrypointPolicy=keep adopts the running process.
+// Outside init mode, sessions tear themselves down through Controller.Reset.
+func StopUserProcesses(keepEntrypoint bool) {
+	if initReaper == nil {
+		return
+	}
+	if keepEntrypoint {
+		stopChildrenExcept(entrypoints.currentEntry())
+		return
+	}
+	stopChildrenExcept(nil)
+}
+
+func forwardInitSignals(sigCh chan os.Signal) {
 	termPending := false
 	for {
-		select {
-		case entry := <-entryCh:
-			if entry == nil {
-				signal.Stop(sigCh)
-				return
-			}
-			if termPending {
-				terminateInit(entry)
-				return
-			}
-			forwardInitSignals(entry, sigCh)
+		if entrypoints.isDisabled() {
+			signal.Stop(sigCh)
 			return
+		}
+		entry := entrypoints.currentEntry()
+		if entry != nil && termPending {
+			terminateInit(entry)
+			return
+		}
+		select {
 		case sig := <-sigCh:
-			if sig == syscall.SIGTERM {
-				termPending = true
+			s, ok := sig.(syscall.Signal)
+			if !ok {
+				continue
 			}
+			if s == syscall.SIGTERM {
+				if entry == nil && !entrypoints.isRestarting() {
+					// No entrypoint has ever been launched (runtime-init
+					// gating before POST /init): the container is being
+					// stopped before any workload exists.
+					log.Info("init: received SIGTERM before any entrypoint; stopping children and exiting")
+					stopChildrenExcept(nil)
+					os.Exit(128 + int(syscall.SIGTERM))
+				}
+				termPending = true
+				continue
+			}
+			if entry != nil {
+				log.Info("init: forwarding %v to workload", s)
+				if err := signalEntryGroup(entry, s); err != nil {
+					log.Warn("init: forward %v to entrypoint group: %v", s, err)
+				}
+			}
+			// With no entrypoint yet, non-TERM signals stay queued in sigCh
+			// and are forwarded once the entrypoint starts.
+		case <-entrypoints.started:
 		}
 	}
 }
@@ -494,6 +655,10 @@ func launchEntrypoint(args []string) (*managedProcess, error) {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// Resolve through the shared user-env layering so the entrypoint sees the
+	// /init RuntimeBinding envs; transport/credential names are stripped both
+	// here and again by the launcher at execve time (bootstrapEnv).
+	cmd.Env = mergeEnvs(filterEnvNames(os.Environ(), bootstrapStripEnv), UserEnvOverlay())
 	mp, err := launchManaged(cmd, bootstrapEnv())
 	if err != nil {
 		return nil, fmt.Errorf("start user entrypoint %q: %w", args[0], err)
@@ -502,11 +667,16 @@ func launchEntrypoint(args []string) (*managedProcess, error) {
 	return mp, nil
 }
 
-// waitEntrypointExit owns the container lifecycle: when the entrypoint exits,
-// the other children are stopped gracefully and execd exits with the
-// entrypoint's status so Docker/kubelet observe it.
+// waitEntrypointExit owns the container lifecycle: when the active
+// entrypoint exits, the other children are stopped gracefully and execd
+// exits with the entrypoint's status so Docker/kubelet observe it. A retired
+// entrypoint (replaced by runtime init) must not tear the container down.
 func waitEntrypointExit(entry *managedProcess) {
 	entryErr := entry.Wait()
+	if entrypoints.isRetired(entry) {
+		log.Info("init: previous entrypoint exited after runtime init: code=%d err=%v", initExitCode(entry), entryErr)
+		return
+	}
 	code := initExitCode(entry)
 	log.Info("init: user entrypoint exited: code=%d err=%v", code, entryErr)
 	stopChildrenExcept(entry)
@@ -525,28 +695,6 @@ func initExitCode(mp *managedProcess) int {
 		return ws.ExitStatus()
 	}
 	return 1
-}
-
-// forwardInitSignals forwards application signals to the entrypoint process
-// group. SIGTERM additionally starts the graceful shutdown sequence, matching
-// the runtime-initiated container stop contract (Docker/K8s send SIGTERM to
-// PID 1).
-func forwardInitSignals(entry *managedProcess, ch <-chan os.Signal) {
-	for sig := range ch {
-		s, ok := sig.(syscall.Signal)
-		if !ok {
-			continue
-		}
-		if s == syscall.SIGTERM {
-			log.Info("init: received SIGTERM; forwarding to workload and shutting down")
-			terminateInit(entry)
-			return
-		}
-		log.Info("init: forwarding %v to workload", s)
-		if err := killGroup(entry.pid(), s); err != nil {
-			log.Warn("init: forward %v to entrypoint group: %v", s, err)
-		}
-	}
 }
 
 // terminateInit performs the SIGTERM shutdown: forward TERM to the entrypoint

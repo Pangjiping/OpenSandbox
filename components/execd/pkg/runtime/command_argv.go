@@ -37,17 +37,19 @@ func (r *ExecuteCodeRequest) commandContent() string {
 	return string(data)
 }
 
-// ValidateCommandWorkingDir validates cwd with file and request environment overrides.
+// ValidateCommandWorkingDir validates cwd with request environment overrides.
 func ValidateCommandWorkingDir(cwd string, envs map[string]string) error {
 	if cwd == "" {
 		return nil
 	}
-	return ValidateWorkingDirWithEnv(cwd, mergeExtraEnvs(loadExtraEnvFromFile(), envs))
+	return ValidateWorkingDirWithEnv(cwd, UserEnvOverlay(envs))
 }
 
 // prepareCommand shares cwd and environment between executable lookup and startup.
 func prepareCommand(ctx context.Context, request *ExecuteCodeRequest) (*exec.Cmd, error) {
-	overrides := mergeExtraEnvs(loadExtraEnvFromFile(), request.Envs)
+	// Layered with the /init RuntimeBinding as authority:
+	// sandbox envs < EXECD_ENVS file < request envs.
+	overrides := UserEnvOverlay(request.Envs)
 	cwd, err := pathutil.ExpandPathWithEnv(request.Cwd, overrides)
 	if err != nil {
 		return nil, err

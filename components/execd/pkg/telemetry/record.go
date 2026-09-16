@@ -26,7 +26,7 @@ func RecordHTTPRequest(ctx context.Context, method, route string, statusCode int
 		return
 	}
 
-	attrs := append([]attribute.KeyValue{}, execdSharedAttrs()...)
+	attrs := append([]attribute.KeyValue{}, sharedAttrs()...)
 	attrs = append(attrs,
 		attribute.String("http_method", method),
 		attribute.String("http_route", normalizeRoute(route)),
@@ -41,7 +41,7 @@ func RecordExecutionDuration(ctx context.Context, operation, result string, dura
 	if executionDuration == nil {
 		return
 	}
-	attrs := append([]attribute.KeyValue{}, execdSharedAttrs()...)
+	attrs := append([]attribute.KeyValue{}, sharedAttrs()...)
 	attrs = append(attrs,
 		attribute.String("operation", operation),
 		attribute.String("result", result),
@@ -53,7 +53,7 @@ func RecordFilesystemOperation(ctx context.Context, operation, result string, du
 	if filesystemOperationDurMs == nil {
 		return
 	}
-	attrs := append([]attribute.KeyValue{}, execdSharedAttrs()...)
+	attrs := append([]attribute.KeyValue{}, sharedAttrs()...)
 	attrs = append(attrs,
 		attribute.String("operation", operation),
 		attribute.String("result", result),

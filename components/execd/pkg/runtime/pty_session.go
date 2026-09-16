@@ -260,7 +260,9 @@ func (s *ptySession) StartPTY() error {
 	}
 
 	cmd := buildPTYCommand(s.command)
-	cmd.Env = os.Environ()
+	// Resolve through the shared user-env layering (sandbox binding envs from
+	// /init < EXECD_ENVS file) instead of inheriting execd's raw environment.
+	cmd.Env = UserProcessEnvironment()
 	if s.cwd != "" {
 		cmd.Dir = s.cwd
 	}
@@ -328,7 +330,7 @@ func (s *ptySession) StartPipe() error {
 	}
 
 	cmd := buildPTYCommand(s.command)
-	cmd.Env = os.Environ()
+	cmd.Env = UserProcessEnvironment()
 	if s.cwd != "" {
 		cmd.Dir = s.cwd
 	}

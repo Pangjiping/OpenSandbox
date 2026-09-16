@@ -18,6 +18,7 @@ import (
 	"flag"
 	stdlog "log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ const (
 	gracefulShutdownTimeoutEnv = "EXECD_API_GRACE_SHUTDOWN"
 	jupyterIdlePollIntervalEnv = "EXECD_JUPYTER_IDLE_POLL_INTERVAL"
 	isolationConfigEnv         = "EXECD_ISOLATION_CONFIG"
+	runtimeInitEnv             = "EXECD_RUNTIME_INIT"
 )
 
 // InitFlags registers CLI flags and env overrides.
@@ -43,6 +45,7 @@ func InitFlags() {
 	IsolationConfigPath = ""
 	InitMode = false
 	LifecycleStartupStatusFile = ""
+	RuntimeInit = false
 
 	// First, set default values from environment variables
 	if jupyterFromEnv := os.Getenv(jupyterHostEnv); jupyterFromEnv != "" {
@@ -99,6 +102,15 @@ func InitFlags() {
 	// with EXECD_INIT so the shell's exec/background decision stays in lockstep.
 	flag.BoolVar(&InitMode, "init", false, "Run as the sandbox init: reap children, forward signals, own the container lifecycle")
 	flag.StringVar(&LifecycleStartupStatusFile, "lifecycle-startup-status-file", "", "Write the internal lifecycle startup result to this file")
+
+	if runtimeInitFromEnv := os.Getenv(runtimeInitEnv); runtimeInitFromEnv != "" {
+		enabled, err := strconv.ParseBool(runtimeInitFromEnv)
+		if err != nil {
+			stdlog.Panicf("Invalid %s=%s: must be a boolean value", runtimeInitEnv, runtimeInitFromEnv)
+		}
+		RuntimeInit = enabled
+	}
+	flag.BoolVar(&RuntimeInit, "runtime-init", RuntimeInit, "Gate preStart and the entrypoint on POST /init; until then only /ping, /ready, and /init are served")
 
 	// Parse flags - these will override environment variables if provided
 	flag.Parse()

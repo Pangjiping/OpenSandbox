@@ -44,7 +44,7 @@ func RecordIsolatedRun(ctx context.Context, result string, durationMillis float6
 	if isolationRunDurationMs == nil {
 		return
 	}
-	attrs := append([]attribute.KeyValue{}, execdSharedAttrs()...)
+	attrs := append([]attribute.KeyValue{}, sharedAttrs()...)
 	attrs = append(attrs, attribute.String("result", result))
 	isolationRunDurationMs.Record(ctx, durationMillis, metric.WithAttributes(attrs...))
 }

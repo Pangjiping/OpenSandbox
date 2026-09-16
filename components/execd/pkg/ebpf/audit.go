@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -101,19 +102,16 @@ type Observer struct {
 
 // Init activates the observer from the isolation config. The returned state
 // and message describe what is actually enforced (for the capabilities
-// endpoint).
+// endpoint). An empty sandboxID is allowed for resource-pool containers that
+// cannot inject OPENSANDBOX_ID at template time: the observer starts in a
+// degraded "attribution pending" state and POST /init completes it via
+// SetSandboxID.
 func Init(cfg *isolation.EbpfConfig, sandboxID string) (state, message string) {
 	disabled := func(msg string) (string, string) {
 		return "disabled", msg
 	}
 	if cfg == nil || !cfg.Enabled {
 		return disabled("eBPF observation is not enabled ([ebpf] enabled = false)")
-	}
-	if sandboxID == "" {
-		return "unsupported",
-			"eBPF observation cannot attribute audit records: OPENSANDBOX_ID is not set " +
-				"(pool fast-path allocations without a task template cannot inject it); " +
-				"set it via the runtime env to enable sandbox_id attribution"
 	}
 	if !effectiveCapsHave(capBpf) || !effectiveCapsHave(capPerfmon) {
 		return "unsupported",
@@ -132,8 +130,12 @@ func Init(cfg *isolation.EbpfConfig, sandboxID string) (state, message string) {
 	if err != nil {
 		return "degraded", fmt.Sprintf("eBPF observation failed to start: %v", err)
 	}
+	activeObserver.Store(observer)
 	observer.start()
 	msg := fmt.Sprintf("eBPF observation active (cgroup %d, audit file %s)", cgroupID, observer.logger.Filename)
+	if sandboxID == "" {
+		return "degraded", "eBPF observation active but sandbox_id attribution is pending runtime init (POST /init)"
+	}
 	if len(missing) > 0 {
 		// Fail-open per layer: hooks the kernel could not load/attach are
 		// skipped, the remaining ones keep auditing — but report the layer
@@ -143,6 +145,25 @@ func Init(cfg *isolation.EbpfConfig, sandboxID string) (state, message string) {
 		return "degraded", msg + fmt.Sprintf("; hooks not active: %v", missing)
 	}
 	return "active", msg
+}
+
+// activeObserver references the running observer so POST /init can bind the
+// sandbox ID after execd has started (resource-pool fast path has no
+// OPENSANDBOX_ID at template time).
+var activeObserver atomic.Pointer[Observer]
+
+// SetSandboxID binds sandbox attribution on the running observer. It returns
+// the new layer state for the capabilities report, or empty strings when
+// there is no observer to update (observation disabled/unsupported).
+func SetSandboxID(sandboxID string) (state, message string) {
+	observer := activeObserver.Load()
+	if observer == nil || sandboxID == "" {
+		return "", ""
+	}
+	observer.mu.Lock()
+	observer.sandboxID = sandboxID
+	observer.mu.Unlock()
+	return "active", fmt.Sprintf("eBPF observation active (sandbox %s, audit file %s)", sandboxID, observer.logger.Filename)
 }
 
 func newObserver(cfg *isolation.EbpfConfig, sandboxID string, cgroupID uint64) (*Observer, []string, error) {
@@ -372,13 +393,14 @@ func (o *Observer) handleRecord(raw []byte) {
 	if !o.kinds[event.Event] {
 		return
 	}
+	o.mu.Lock()
 	event.SandboxID = o.sandboxID
 	line, err := json.Marshal(event)
 	if err != nil {
+		o.mu.Unlock()
 		log.Warn("ebpf: marshal event: %v", err)
 		return
 	}
-	o.mu.Lock()
 	if _, err := o.logger.Write(append(line, '\n')); err != nil {
 		log.Error("ebpf: audit write failed: %v", err)
 	}

@@ -153,8 +153,9 @@ func newBashSession(cwd string, env map[string]string) *bashSession {
 
 // newBashSessionEnv builds the initial environment for a new bash session:
 // execd's process environment minus its own config/credential vars, overlaid
-// with the EXECD_ENVS file values (same source the command path applies, with
-// the same precedence over the daemon environment).
+// with the standard user env (sandbox binding envs from /init < EXECD_ENVS
+// file values — the same source the command path applies, with the same
+// precedence over the daemon environment).
 func newBashSessionEnv() map[string]string {
 	// The session env snapshot is exported into the wrapped script at the
 	// top, after the launcher has stripped the process environment — so it
@@ -168,10 +169,11 @@ func newBashSessionEnv() map[string]string {
 		}
 	}
 
-	// EXECD_ENVS file vars are user-code environment, not execd config.
-	// Blacklisted names stay excluded even if the file redefines them, so
-	// the snapshot cannot be used to smuggle execd credentials back in.
-	for k, v := range loadExtraEnvFromFile() {
+	// Sandbox binding vars and EXECD_ENVS file vars are user-code
+	// environment, not execd config. Blacklisted names stay excluded even if
+	// a layer redefines them, so the snapshot cannot be used to smuggle
+	// execd credentials back in.
+	for k, v := range UserEnvOverlay() {
 		if containsStr(blacklist, k) {
 			continue
 		}

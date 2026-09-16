@@ -447,12 +447,14 @@ func (c *IsolatedSessionController) Capabilities() {
 			Message: hardeningReport.Ebpf.Message,
 		},
 	}
+	runtimeInit := &model.RuntimeInitStatus{Version: 1}
 	if isolatedRunner == nil {
 		resp := model.CapabilitiesResponse{
 			Available:       false,
 			CommitSupported: false,
 			DiffSupported:   false,
 			Hardening:       hardening,
+			RuntimeInit:     runtimeInit,
 		}
 		if isolatedProbeResult != nil {
 			resp.Isolator = isolatedProbeResult.Isolator
@@ -474,6 +476,7 @@ func (c *IsolatedSessionController) Capabilities() {
 		CommitSupported:  caps.CommitSupported,
 		DiffSupported:    caps.DiffSupported,
 		Hardening:        hardening,
+		RuntimeInit:      runtimeInit,
 	}
 	// Probe results indicate overlay capability, not diff/commit implementation.
 	// Diff and commit are Phase 2; do not advertise them as supported.

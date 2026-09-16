@@ -181,13 +181,14 @@ type ListIsolatedSessionsResponse struct {
 // Capabilities
 
 type CapabilitiesResponse struct {
-	Available        bool             `json:"available"`
-	Isolator         string           `json:"isolator,omitempty"`
-	Version          string           `json:"version,omitempty"`
-	Message          string           `json:"message,omitempty"`
-	SetprivAvailable bool             `json:"setpriv_available"`
-	UsernsAvailable  bool             `json:"userns_available"`
-	CommitSupported  bool             `json:"commit_supported"`
-	DiffSupported    bool             `json:"diff_supported"`
-	Hardening        *HardeningStatus `json:"hardening,omitempty"`
+	Available        bool               `json:"available"`
+	Isolator         string             `json:"isolator,omitempty"`
+	Version          string             `json:"version,omitempty"`
+	Message          string             `json:"message,omitempty"`
+	SetprivAvailable bool               `json:"setpriv_available"`
+	UsernsAvailable  bool               `json:"userns_available"`
+	CommitSupported  bool               `json:"commit_supported"`
+	DiffSupported    bool               `json:"diff_supported"`
+	Hardening        *HardeningStatus   `json:"hardening,omitempty"`
+	RuntimeInit      *RuntimeInitStatus `json:"runtimeInit,omitempty"`
 }

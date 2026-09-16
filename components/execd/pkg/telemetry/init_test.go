@@ -66,6 +66,6 @@ func TestExecdSharedAttrs(t *testing.T) {
 	})
 	t.Cleanup(func() { execdSharedAttrs = orig })
 
-	attrs := execdSharedAttrs()
+	attrs := sharedAttrs()
 	assert.Len(t, attrs, 3)
 }

@@ -48,4 +48,11 @@ var (
 	// LifecycleStartupStatusFile is an internal bootstrap synchronization file.
 	// Execd writes the preStart result after its HTTP server is available.
 	LifecycleStartupStatusFile string
+
+	// RuntimeInit gates user workload startup on POST /init: when enabled,
+	// execd skips the legacy template-driven startup (preStart + entrypoint)
+	// and waits for the control plane to apply the RuntimeBinding. When
+	// disabled, /init is still accepted and becomes authoritative on apply,
+	// preserving legacy behavior for control planes that never call it.
+	RuntimeInit bool
 )

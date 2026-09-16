@@ -143,6 +143,19 @@ func decodeConfig(raw []byte) (*Config, error) {
 	return &cfg, nil
 }
 
+// ValidateConfig validates a lifecycle config decoded outside the standard
+// LoadConfig transport (e.g. the POST /init request body). A zero version is
+// defaulted to the current config version.
+func ValidateConfig(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.Version == 0 {
+		cfg.Version = configVersion
+	}
+	return cfg.validate()
+}
+
 func (c *Config) validate() error {
 	if c.Version != configVersion {
 		return fmt.Errorf("unsupported lifecycle config version %d", c.Version)

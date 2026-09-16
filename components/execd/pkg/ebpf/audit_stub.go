@@ -32,3 +32,8 @@ func Init(cfg *isolation.EbpfConfig, sandboxID string) (state, message string) {
 	return "disabled",
 		"eBPF observation is not enabled ([ebpf] enabled = false)"
 }
+
+// SetSandboxID is a no-op for this build: there is no observer to attribute.
+func SetSandboxID(sandboxID string) (state, message string) {
+	return "", ""
+}

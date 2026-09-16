@@ -29,6 +29,7 @@ const (
 	ErrorCodeNotSupported        ErrorCode = "NOT_SUPPORTED"
 	ErrorCodeServiceUnavailable  ErrorCode = "SERVICE_UNAVAILABLE"
 	ErrorCodeSessionNotFound     ErrorCode = "SESSION_NOT_FOUND"
+	ErrorCodeAlreadyInitialized  ErrorCode = "ALREADY_INITIALIZED"
 )
 
 type ErrorResponse struct {

@@ -17,9 +17,10 @@ package runtime
 import (
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 
+	"github.com/alibaba/opensandbox/execd/pkg/binding"
+	"github.com/alibaba/opensandbox/execd/pkg/isolation"
 	"github.com/alibaba/opensandbox/execd/pkg/log"
 	"github.com/alibaba/opensandbox/execd/pkg/util/pathutil"
 )
@@ -87,19 +88,87 @@ func mergeEnvs(base []string, extra map[string]string) []string {
 	return out
 }
 
-// mergeExtraEnvs merges environment maps from file and request-level overrides.
-func mergeExtraEnvs(fromFile, fromRequest map[string]string) map[string]string {
-	if len(fromRequest) == 0 && runtime.GOOS != goosWindows {
-		return fromFile
+// bindingSandboxEnvs returns the sandbox-level envs provided by POST /init,
+// or nil when no RuntimeBinding (or no envs) is applied.
+func bindingSandboxEnvs() map[string]string {
+	b := binding.Current()
+	if b == nil || len(b.Envs) == 0 {
+		return nil
+	}
+	return b.Envs
+}
+
+// UserEnvOverlay builds the standard user-workload env overlay, layered with
+// the /init RuntimeBinding as the authoritative source:
+//
+//	sandbox envs (/init) < EXECD_ENVS file < extras (session/request)
+//
+// Binding-authoritative values (OPENSANDBOX_ID) are forced on top so user
+// envs cannot spoof sandbox attribution.
+func UserEnvOverlay(extras ...map[string]string) map[string]string {
+	var merged map[string]string
+	layers := make([]map[string]string, 0, len(extras)+2)
+	if envs := bindingSandboxEnvs(); envs != nil {
+		layers = append(layers, envs)
+	}
+	if fileEnvs := loadExtraEnvFromFile(); len(fileEnvs) > 0 {
+		layers = append(layers, fileEnvs)
+	}
+	layers = append(layers, extras...)
+
+	for _, layer := range layers {
+		if len(layer) == 0 {
+			continue
+		}
+		if merged == nil {
+			merged = make(map[string]string, len(layer))
+		}
+		for k, v := range layer {
+			merged[pathutil.EnvKey(k)] = v
+		}
 	}
 
-	merged := make(map[string]string, len(fromFile)+len(fromRequest))
-	for k, v := range fromFile {
-		merged[pathutil.EnvKey(k)] = v
+	if merged == nil {
+		merged = make(map[string]string)
 	}
-	for k, v := range fromRequest {
-		merged[pathutil.EnvKey(k)] = v
+	if b := binding.Current(); b != nil && b.SandboxID != "" {
+		merged["OPENSANDBOX_ID"] = b.SandboxID
 	}
-
 	return merged
+}
+
+// filterEnvBlacklist removes execd's own config/credential env entries from a
+// base environ slice.
+func filterEnvBlacklist(env []string) []string {
+	return filterEnvNames(env, isolation.ExecdConfigEnvBlacklist())
+}
+
+// filterEnvNames removes the named env entries from a base environ slice
+// (case-insensitive on names).
+func filterEnvNames(env []string, names []string) []string {
+	blocked := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		blocked[strings.ToUpper(name)] = struct{}{}
+	}
+
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, found := blocked[strings.ToUpper(name)]; found {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
+}
+
+// UserProcessEnvironment returns the environment for user processes started
+// outside a request (PTY/pipe sessions, lifecycle hooks): the daemon
+// environment minus execd config/credential vars, overlaid with the standard
+// user env (sandbox binding envs < EXECD_ENVS file).
+func UserProcessEnvironment() []string {
+	return mergeEnvs(filterEnvBlacklist(os.Environ()), UserEnvOverlay())
 }
