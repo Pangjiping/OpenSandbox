@@ -30,6 +30,7 @@ Kubernetes: `>=1.21.1-0`
 | gateway.containerSecurityContext | object | `{}` | Container-level security context for the gateway container. |
 | gateway.dataplaneNamespace | string | `"opensandbox"` | Namespace where the gateway dataplane workloads run. |
 | gateway.env | list | `[]` | Additional environment variables for the gateway container (e.g. OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME for OTLP metrics). |
+| gateway.fastpathEndpoint | string | `""` | FastPath gRPC endpoint for the fast-sandbox provider (--fastpath-endpoint). Required when providerType is "fast-sandbox"; ignored otherwise. Example: fast-sandbox-fastpath.fast-sandbox-system.svc:9090 |
 | gateway.gatewayRouteMode | string | `"header"` | Gateway route mode: header or uri. Must match server.gateway.gatewayRouteMode. |
 | gateway.image | object | `{"repository":"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/ingress","tag":"v1.0.10"}` | Gateway image configuration. |
 | gateway.image.repository | string | `"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/ingress"` | Gateway image repository. |
@@ -46,7 +47,8 @@ Kubernetes: `>=1.21.1-0`
 | gateway.resources | object | `{"limits":{"cpu":"2","memory":"8Gi"},"requests":{"cpu":"1","memory":"4Gi"}}` | Resource requests and limits for the gateway. |
 | gateway.secureAccess.existingSecret | string | `""` | Name of an existing Secret holding the signing key ring. Mutually exclusive with keys. The Secret must carry a `keys` entry containing the ring, "a=<base64-secret>[,b=<base64-secret>...]". The chart wires it into the `--secure-access-keys` arg via $(...) env expansion, so key material never appears in values or pod args. |
 | gateway.secureAccess.keys | list | `[]` | List of signing keys. Each entry: { key_id: "a", key: "<base64-secret>" }. key_id must be exactly one character in [0-9a-z]. Mutually exclusive with existingSecret. |
-| gateway.service | object | `{"port":80,"type":"ClusterIP"}` | Service settings for the gateway. |
+| gateway.service | object | `{"nodePort":"","port":80,"type":"ClusterIP"}` | Service settings for the gateway. |
+| gateway.service.nodePort | string | `""` | Static nodePort (used when the service type is NodePort or LoadBalancer). |
 | gateway.service.port | int | `80` | Service port. The targetPort always points to gateway.port. |
 | gateway.service.type | string | `"ClusterIP"` | Service type for the gateway. |
 | gateway.tolerations | list | `[]` | Tolerations for the gateway pod. |

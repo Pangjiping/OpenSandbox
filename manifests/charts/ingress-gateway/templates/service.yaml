@@ -26,5 +26,8 @@ spec:
       targetPort: {{ .Values.gateway.port }}
       protocol: TCP
       name: http
+      {{- if and .Values.gateway.service.nodePort (ne .Values.gateway.service.type "ClusterIP") }}
+      nodePort: {{ .Values.gateway.service.nodePort }}
+      {{- end }}
   selector:
     {{- include "opensandbox-ingress-gateway.selectorLabels" . | nindent 4 }}

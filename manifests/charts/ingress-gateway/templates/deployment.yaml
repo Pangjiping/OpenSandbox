@@ -82,6 +82,10 @@ spec:
             - "--provider-type={{ .Values.gateway.providerType }}"
             - "--mode={{ .Values.gateway.gatewayRouteMode }}"
             - "--log-level={{ .Values.gateway.logLevel }}"
+            {{- if .Values.gateway.fastpathEndpoint }}
+            # FastPath gRPC endpoint for the fast-sandbox provider.
+            - "--fastpath-endpoint={{ .Values.gateway.fastpathEndpoint }}"
+            {{- end }}
 {{- if .Values.gateway.secureAccess.keys }}
             - "--secure-access-keys={{- range $i, $k := .Values.gateway.secureAccess.keys }}{{ if $i }},{{ end }}{{ $k.key_id }}={{ $k.key }}{{- end }}"
 {{- else if .Values.gateway.secureAccess.existingSecret }}

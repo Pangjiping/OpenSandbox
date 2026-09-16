@@ -54,6 +54,11 @@ gateway:
   # -- Gateway route mode: header or uri. Must match server.gateway.gatewayRouteMode.
   gatewayRouteMode: "header"
 
+  # -- FastPath gRPC endpoint for the fast-sandbox provider
+  # (--fastpath-endpoint). Required when providerType is "fast-sandbox";
+  # ignored otherwise. Example: fast-sandbox-fastpath.fast-sandbox-system.svc:9090
+  fastpathEndpoint: ""
+
   # -- Gateway log level.
   logLevel: "info"
 
@@ -91,6 +96,8 @@ gateway:
     type: ClusterIP
     # -- Service port. The targetPort always points to gateway.port.
     port: 80
+    # -- Static nodePort (used when the service type is NodePort or LoadBalancer).
+    nodePort: ""
 
   # -- Node selector for the gateway pod.
   nodeSelector: {}

@@ -17,21 +17,23 @@
 # driven from the OpenSandbox repository.
 #
 # Builds the full OpenSandbox ecosystem on a bare-metal Linux KVM host
-# (fast-sandbox checked out at master): two-node kind cluster with KVM
-# passthrough → CRDs + all-in-one control plane → MinIO artifact store →
-# node runtime installers → runtime-agent + node-local DART daemons (P2P
-# is the default data plane) → the firecracker-egress-pool SandboxPool
-# with the OpenSandbox egress sidecar attached through the Sandbox Actions
-# channel → the source-built OpenSandbox lifecycle server (fsb runtime)
-# and ingress gateway → an end-to-end verify (create through the server
+# (fast-sandbox checked out at the commit pinned in
+# manifests/third-party/fast-sandbox.commit): two-node kind cluster with KVM
+# passthrough → Helm charts/base (sandbox.fast.io CRDs + component RBAC) +
+# charts/fast-sandbox (all-in-one control plane, janitor, node installer,
+# runtime-agent + DART) → MinIO artifact store → the firecracker-egress-pool
+# SandboxPool with the OpenSandbox egress sidecar attached through the
+# Sandbox Actions channel → the source-built OpenSandbox lifecycle server
+# (fsb runtime) and ingress gateway via charts/server and
+# charts/ingress-gateway → an end-to-end verify (create through the server
 # API, execd /ping through the signed gateway route, delete); then
 # pause/resume (checkpoint to the artifact store, capacity released,
 # resume) and a public-snapshot verify (snapshot a Running sandbox, watch
 # it to Ready, restore a NEW sandbox from the snapshotId and boot it).
 #
-# Everything is source-built from this repository plus fast-sandbox@master,
-# except the execd image baked into the SandboxTemplate golden image
-# (EXECD, published image by default).
+# All Kubernetes resources come from the OpenSandbox Helm charts
+# (manifests/charts); the only env-owned manifests left are the kind cluster
+# config and the SandboxPool resource.
 #
 # Usage:
 #   ./scripts/fast-sandbox-env/fast-sandbox-env.sh up       # full environment + pool + server/ingress + verify
@@ -44,7 +46,8 @@
 #   WORK                 workspace + logs        (default $PWD/.fast-sandbox-env)
 #   FSB_DIR              fast-sandbox checkout  (default $WORK/fast-sandbox —
 #                        env-owned clone, created from FSB_GIT_URL when missing)
-#   FSB_GIT_URL / FSB_REF                       (default opensandbox-group/fast-sandbox, master)
+#   FSB_GIT_URL / FSB_REF  fork overrides       (default: the repo+commit pinned
+#                        in manifests/third-party/fast-sandbox.commit)
 #   WORK                  workspace root        (default /data/fast-sandbox-env when /data exists, else $PWD/.fast-sandbox-env)
 #   KIND_CLUSTER / KIND_NODE_IMAGE / KIND_RETAIN / KIND_SINGLE
 #   DOCKER_MIRROR        comma list injected as docker.io containerd mirrors
@@ -78,9 +81,13 @@ GEN_DIR="$WORK/gen"
 
 # Env-owned fast-sandbox clone under $WORK (independent of any checkout
 # outside the workspace); FSB_DIR still overrides for an existing one.
+# The source is pinned: manifests/third-party/fast-sandbox.commit names the
+# exact upstream commit this environment builds against (FSB_GIT_URL /
+# FSB_REF override the pin for fork testing).
+FSB_PIN_FILE="$OSB_ROOT/manifests/third-party/fast-sandbox.commit"
 FSB_DIR="${FSB_DIR:-$WORK/fast-sandbox}"
-FSB_GIT_URL="${FSB_GIT_URL:-https://github.com/opensandbox-group/fast-sandbox.git}"
-FSB_REF="${FSB_REF:-master}"
+FSB_REPO="${FSB_GIT_URL:-$(sed -n 's/^repo:[[:space:]]*//p' "$FSB_PIN_FILE")}"
+FSB_COMMIT="${FSB_REF:-$(sed -n 's/^commit:[[:space:]]*//p' "$FSB_PIN_FILE")}"
 
 KIND_CLUSTER="${KIND_CLUSTER:-fast-sandbox-integration}"
 KIND_SINGLE="${KIND_SINGLE:-0}"
@@ -127,11 +134,25 @@ fi
 IMG_CONTROLLER="${IMAGE_CONTROLLER:-fast-sandbox/controller:dev}"
 IMG_FASTLET="${IMAGE_FASTLET:-fast-sandbox/fastlet:dev}"
 IMG_FASTLET_PROXY="${IMAGE_FASTLET_PROXY:-fast-sandbox/fastlet-proxy:dev}"
-IMG_SANDBOX_PROXY="${IMAGE_SANDBOX_PROXY:-fast-sandbox/sandbox-proxy:dev}"
 IMG_JANITOR="${IMAGE_JANITOR:-fast-sandbox/janitor:dev}"
 IMG_BUILDER="${IMAGE_BUILDER:-fast-sandbox/sandboxtemplate-builder:dev}"
 IMG_AGENT="${IMAGE_AGENT:-fast-sandbox/firecracker-runtime-agent:dev}"
 IMG_EGRESS="${EGRESS_IMAGE:-docker.io/opensandbox/egress:latest}"
+
+image_repo() { printf '%s' "${1%:*}"; }
+image_tag() { printf '%s' "${1##*:}"; }
+
+# Firecracker node assets installed by charts/fast-sandbox's installer
+# DaemonSet. kind nodes share the host arch, so the kernel URL is resolved
+# from uname (the Amazon microvm CI kernel has ACPI/VMGenID support; the
+# quickstart vmlinux.bin is Linux 4.14, whose CRNG breaks snapshot resume).
+FC_VERSION="${FC_VERSION:-v1.16.1}"
+case "$(uname -m)" in
+	x86_64) FC_KERNEL_ARCH="x86_64" ;;
+	aarch64) FC_KERNEL_ARCH="aarch64" ;;
+	*) FC_KERNEL_ARCH="x86_64" ;;
+esac
+FC_KERNEL_URL="${FC_KERNEL_URL:-https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260722-38359b8055fc-0/${FC_KERNEL_ARCH}/vmlinux-6.1.176}"
 
 # --- OpenSandbox server + ingress gateway (source-built) ----------------------
 # Fixed shape of this environment: no knobs, the full stack always runs.
@@ -380,6 +401,7 @@ preflight() {
 	command -v go >/dev/null || die "go is required (>=1.25, used by make images and gen-registry)"
 	ensure_tool kind
 	ensure_tool kubectl
+	ensure_tool helm
 	ensure_tool jq
 	docker info >/dev/null 2>&1 || die "docker daemon is not reachable"
 	local cgver
@@ -446,41 +468,48 @@ FSB_GEN_DIR="$FSB_DIR/.fast-sandbox-env-gen"
 
 ensure_fsb() {
 	if [[ ! -d "$FSB_DIR/.git" ]]; then
-		log "cloning fast-sandbox ($FSB_GIT_URL) into $FSB_DIR"
-		git clone "$FSB_GIT_URL" "$FSB_DIR" || die "clone failed; check FSB_GIT_URL / network"
+		log "cloning $FSB_REPO into $FSB_DIR"
+		git clone "$FSB_REPO" "$FSB_DIR" || die "clone failed; check network / FSB_GIT_URL"
 	fi
-	# An existing checkout keeps its original origin; repoint it when
-	# FSB_GIT_URL targets a different source (e.g. a fork branch), so the
-	# fetch/ff-merge below run against the intended remote.
 	local current_url
 	current_url="$(git -C "$FSB_DIR" remote get-url origin)"
-	if [[ "$current_url" != "$FSB_GIT_URL" ]]; then
-		log "fast-sandbox origin: $current_url -> $FSB_GIT_URL"
-		git -C "$FSB_DIR" remote set-url origin "$FSB_GIT_URL" \
-			|| die "could not repoint fast-sandbox origin at $FSB_GIT_URL"
+	if [[ "$current_url" != "$FSB_REPO" ]]; then
+		log "fast-sandbox origin: $current_url -> $FSB_REPO"
+		git -C "$FSB_DIR" remote set-url origin "$FSB_REPO" \
+			|| die "could not repoint fast-sandbox origin at $FSB_REPO"
 	fi
 	rm -rf "$FSB_GEN_DIR"
 	[[ -z "$(git -C "$FSB_DIR" status --porcelain)" ]] \
 		|| die "fast-sandbox checkout at $FSB_DIR has local changes; delete it to re-clone or point FSB_DIR at a clean checkout"
-	git -C "$FSB_DIR" fetch -q origin "$FSB_REF" || die "git fetch origin $FSB_REF failed"
-	git -C "$FSB_DIR" checkout -q "$FSB_REF" || die "git checkout $FSB_REF failed"
-	git -C "$FSB_DIR" merge -q --ff-only "origin/$FSB_REF" \
-		|| die "local $FSB_REF diverged from origin/$FSB_REF; resolve manually or point FSB_DIR elsewhere"
-	FSB_COMMIT="$(git -C "$FSB_DIR" rev-parse --short HEAD)"
-	log "fast-sandbox @ $FSB_REF ($FSB_COMMIT)"
+	# A raw SHA fetch needs allow-reachable-sha1-in-want (GitHub supports
+	# it); fall back to a full ref fetch for other remotes.
+	if ! git -C "$FSB_DIR" fetch -q origin "$FSB_COMMIT" 2>/dev/null; then
+		git -C "$FSB_DIR" fetch -q origin '+refs/heads/*:refs/remotes/origin/*' \
+			|| die "git fetch failed for $FSB_REPO"
+		git -C "$FSB_DIR" rev-parse --verify --quiet "$FSB_COMMIT^{commit}" >/dev/null \
+			|| die "pinned commit $FSB_COMMIT is not reachable from $FSB_REPO"
+	fi
+	if [[ "$(git -C "$FSB_DIR" rev-parse HEAD)" != "$FSB_COMMIT" ]]; then
+		git -C "$FSB_DIR" clean -ffdx
+	fi
+	git -C "$FSB_DIR" checkout --force -q "$FSB_COMMIT" \
+		|| die "git checkout $FSB_COMMIT failed"
+	[[ "$(git -C "$FSB_DIR" rev-parse HEAD)" == "$FSB_COMMIT" ]] \
+		|| die "fast-sandbox checkout is not at the pinned commit $FSB_COMMIT"
+	log "fast-sandbox @ pinned $(git -C "$FSB_DIR" rev-parse --short HEAD) ($(basename "$FSB_PIN_FILE"))"
 	pass "fast-sandbox checkout ready"
 }
-FSB_COMMIT=""
 
 # --- stage: images ---------------------------------------------------------------------
 
 build_images() {
-	log "building fast-sandbox images (controller/fastlet/fastlet-proxy/sandbox-proxy/janitor/agent)"
-	local component
-	for component in controller fastlet fastlet-proxy sandbox-proxy janitor firecracker-runtime-agent; do
-		(cd "$FSB_DIR" && make images COMPONENT="$component" >/dev/null) \
-			|| die "make images COMPONENT=$component failed"
-	done
+	log "building fast-sandbox images (pinned commit, firecracker scope) via manifests/release/build-fast-sandbox.sh"
+	# Same checkout, same defaults (fast-sandbox/<component>:dev) as the
+	# standalone builder, so the env and the published build path cannot
+	# drift. boxlite / sandbox-action-fixture / sandbox-proxy are never
+	# built.
+	FSB_SRC_DIR="$FSB_DIR" "$OSB_ROOT/manifests/release/build-fast-sandbox.sh" \
+		|| die "fast-sandbox image build failed"
 	log "building the OpenSandbox egress image ($IMG_EGRESS)"
 	# Build context is the OpenSandbox repo root: the Dockerfile COPYs
 	# components/egress/* and components/internal paths.
@@ -789,11 +818,8 @@ credentials_up() {
 	kubectl -n "$NS" create secret generic fast-sandbox-agent-registry \
 		--from-file=registry.json="$WORK/agent-registry.json" \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
-	# Pin the shared artifact-store ConfigMap to the live MinIO endpoint.
-	kubectl -n "$NS" create configmap fast-sandbox-artifact-store \
-		--from-literal=store="s3://$MINIO_BUCKET/publish" \
-		--from-literal=endpoint="$MINIO_ENDPOINT" \
-		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	# The fast-sandbox-artifact-store ConfigMap (store + live endpoint) is
+	# rendered by charts/fast-sandbox at install time.
 	# Pull credentials for the fastlet (pool-compiled registry).
 	kubectl -n "$NS" create secret docker-registry registry-minio \
 		--docker-server="$host" --docker-username="$MINIO_AK" --docker-password="$MINIO_SK" \
@@ -811,35 +837,48 @@ credentials_up() {
 # --- stage: control plane -------------------------------------------------------------------
 
 control_plane_up() {
-	# Canonical, code-versioned fast-sandbox manifests are applied from the
-	# checkout (never duplicated here): CRDs and the all-in-one control
-	# plane (namespaces, RBAC, runtime-environments ConfigMap, dev route
-	# keys, single-process controller+fastpath, janitor).
-	kubectl apply -k "$FSB_DIR/config/crd" >/dev/null
-	kubectl apply -k "$FSB_DIR/config/all-in-one" >/dev/null
+	# The OpenSandbox Helm charts are the source of truth: charts/base ships
+	# the sandbox.opensandbox.io + sandbox.fast.io CRDs, the component RBAC
+	# and the namespaces; charts/fast-sandbox ships the all-in-one control
+	# plane (reconcilers + FastPath), the janitor, the node installer and
+	# the runtime-agent. This replaces the fast-sandbox checkout's
+	# config/crd + config/all-in-one kustomize applies and the env-owned
+	# node manifests.
+	helm upgrade --install fsb-base "$OSB_ROOT/manifests/charts/base" \
+		--namespace "$NS" --create-namespace >/dev/null
+	helm upgrade --install fast-sandbox "$OSB_ROOT/manifests/charts/fast-sandbox" \
+		--set controller.image.repository="$(image_repo "$IMG_CONTROLLER")" \
+		--set controller.image.tag="$(image_tag "$IMG_CONTROLLER")" \
+		--set controller.sandboxtemplateBuilderImage="$IMG_BUILDER" \
+		--set janitor.image.repository="$(image_repo "$IMG_JANITOR")" \
+		--set janitor.image.tag="$(image_tag "$IMG_JANITOR")" \
+		--set runtimeAgent.image.repository="$(image_repo "$IMG_AGENT")" \
+		--set runtimeAgent.image.tag="$(image_tag "$IMG_AGENT")" \
+		--set artifactStore.store="s3://$MINIO_BUCKET/publish" \
+		--set artifactStore.endpoint="$MINIO_ENDPOINT" \
+		--set firecrackerInstaller.fcVersion="$FC_VERSION" \
+		--set firecrackerInstaller.kernelUrl="$FC_KERNEL_URL" \
+		>/dev/null
 	local image
 	for image in "$IMG_CONTROLLER" "$IMG_FASTLET" "$IMG_FASTLET_PROXY" \
-		"$IMG_SANDBOX_PROXY" "$IMG_JANITOR" "$IMG_AGENT" "$IMG_EGRESS"; do
+		"$IMG_JANITOR" "$IMG_AGENT" "$IMG_EGRESS"; do
 		kind load docker-image "$image" --name "$KIND_CLUSTER" >/dev/null
 	done
 	wait_for "controller deployment ready" 120 \
 		kubectl -n "$NS" rollout status deploy/fast-sandbox-controller --timeout=10s
 	local crd
-	# The OpenSandbox server's composite list also reads BatchSandboxes:
-	# install the kubernetes-backend CRD alongside the fast-sandbox ones.
-	kubectl apply -f "$OSB_ROOT/kubernetes/config/crd/bases/sandbox.opensandbox.io_batchsandboxes.yaml" >/dev/null
-	for crd in sandboxpools sandboxtemplates sandboxes; do
+	for crd in sandboxpools sandboxtemplates sandboxes sandboxsnapshots; do
 		kubectl get crd "$crd.sandbox.fast.io" >/dev/null 2>&1 || die "CRD $crd missing"
 	done
 	kubectl get crd batchsandboxes.sandbox.opensandbox.io >/dev/null 2>&1 \
 		|| die "CRD batchsandboxes.sandbox.opensandbox.io missing"
-	pass "CRDs + control plane ready (fast-sandbox $FSB_COMMIT)"
+	pass "CRDs + control plane ready (charts @ pinned $(git -C "$FSB_DIR" rev-parse --short HEAD))"
 }
 
 # --- stage: node assets + runtime-agent (DART P2P) ---------------------------------------------
 
 installer_up() {
-	kubectl apply -f "$MANIFESTS_DIR/node/firecracker-installer.yaml" >/dev/null
+	# The installer DaemonSet ships with the charts/fast-sandbox release.
 	wait_for "firecracker installer ready" 60 \
 		kubectl -n "$NS" rollout status daemonset/firecracker-runtime-installer --timeout=15s
 	pass "firecracker/jailer/kernel installed on every node"
@@ -847,18 +886,6 @@ installer_up() {
 
 agent_pods() {
 	kubectl -n "$NS" get pods -l component=firecracker-runtime-agent -o jsonpath='{.items[*].metadata.name}' 2>/dev/null
-}
-
-# render_agent_manifest replaces the "@AGENT_IMAGE@" token so IMAGE_AGENT
-# overrides reach the DaemonSet (the script kind-loads $IMG_AGENT; without
-# the render the DS would keep requesting the default tag).
-render_agent_manifest() { # > $GEN_DIR/runtime-agent.yaml
-	local src="$MANIFESTS_DIR/node/runtime-agent.yaml" out="$GEN_DIR/runtime-agent.yaml"
-	mkdir -p "$GEN_DIR"
-	awk -v image="$IMG_AGENT" '{ gsub(/"@AGENT_IMAGE@"/, image); print }' "$src" > "$out"
-	if grep -Eq '^[[:space:]]*[A-Za-z][A-Za-z0-9]*:.*@[A-Z_]+@' "$out"; then
-		die "unrendered token left in $out"
-	fi
 }
 
 dart_roster_ready() { # pod expected-members
@@ -869,9 +896,10 @@ dart_roster_ready() { # pod expected-members
 }
 
 agent_up() {
-	kubectl apply -f "$MANIFESTS_DIR/node/dart-service.yaml" >/dev/null
-	render_agent_manifest
-	kubectl apply -f "$GEN_DIR/runtime-agent.yaml" >/dev/null
+	# The runtime-agent DaemonSet + dart headless Service ship with the
+	# charts/fast-sandbox release (artifact-store endpoint was pinned at
+	# install time; the registry Secret lands in credentials_up before
+	# this stage).
 	wait_for "runtime-agent DaemonSet ready" 120 \
 		kubectl -n "$NS" rollout status daemonset/firecracker-runtime-agent --timeout=10s
 
@@ -1147,46 +1175,107 @@ osb_signing_key() {
 	cat "$SIGNING_KEY_FILE"
 }
 
-# render_opensandbox replaces the @TOKEN@ placeholders of the server /
-# ingress gateway manifests. Unlike the pool render (which substitutes the
-# token together with its quotes so scalars keep natural YAML types), the
-# quotes live in these templates: the embedded config.toml strings need
-# their quotes preserved, so only the bare token is replaced.
-render_opensandbox() { # <src> <out>
-	local src="$1" out="$2"
+# render_server_config writes the lifecycle server's config.toml (fsb
+# runtime + gateway-mode ingress) with the workdir's tokens substituted.
+# The ingress gateway is configured entirely through chart values.
+render_server_config() { # > $GEN_DIR/osb-server-config.toml
 	mkdir -p "$GEN_DIR"
-	awk -v server_image="$IMG_SERVER" -v ingress_image="$IMG_INGRESS" \
-		-v api_key="$SERVER_API_KEY" -v signing_key="$(osb_signing_key)" \
+	awk -v api_key="$SERVER_API_KEY" -v signing_key="$(osb_signing_key)" \
 		-v fastpath="$FASTPATH_ENDPOINT" -v fsb_ns="$NS" -v pool="$POOL_NAME" \
-		-v execd="$EXECD" -v gateway="$GATEWAY_ADDRESS" \
-		-v server_np="$SERVER_NODEPORT" -v gateway_np="$GATEWAY_NODEPORT" '
-		{ gsub(/@SERVER_IMAGE@/, server_image)
-		  gsub(/@INGRESS_IMAGE@/, ingress_image)
-		  gsub(/@SERVER_API_KEY@/, api_key)
+		-v execd="$EXECD" -v gateway="$GATEWAY_ADDRESS" '
+		{ gsub(/@SERVER_API_KEY@/, api_key)
 		  gsub(/@SIGNING_KEY@/, signing_key)
 		  gsub(/@FASTPATH_ENDPOINT@/, fastpath)
 		  gsub(/@FSB_NAMESPACE@/, fsb_ns)
 		  gsub(/@POOL_NAME@/, pool)
 		  gsub(/@EXECD_IMAGE@/, execd)
 		  gsub(/@GATEWAY_ADDRESS@/, gateway)
-		  gsub(/@SERVER_NODEPORT@/, server_np)
-		  gsub(/@GATEWAY_NODEPORT@/, gateway_np)
 		  print }
-	' "$src" > "$out"
-	# Leftover-token guard: match only value positions (key: ...@T@...),
-	# never the header comments that document the tokens themselves.
-	if grep -Eq '^[[:space:]]*[A-Za-z][A-Za-z0-9]*:.*@[A-Z_]+@' "$out"; then
-		die "unrendered token left in $out"
+	' <<'TOML' > "$GEN_DIR/osb-server-config.toml"
+[server]
+host = "0.0.0.0"
+port = 80
+api_key = "@SERVER_API_KEY@"
+
+[log]
+level = "INFO"
+
+[runtime]
+type = "kubernetes"
+execd_image = "@EXECD_IMAGE@"
+
+[kubernetes]
+# One block serves both backends: CR reads (informer settings) and the
+# fsb (fast-sandbox) settings. Sandboxes are created in the pool's
+# namespace so poolRef resolves; execd comes from runtime.execd_image
+# above (the server injects it into server-created SandboxTemplates).
+namespace = "@FSB_NAMESPACE@"
+fastpath_endpoint = "@FASTPATH_ENDPOINT@"
+fastpath_resource_pool = "@POOL_NAME@"
+fastpath_wait_ready_seconds = 30.0
+template_s3_publish_secret = "sandbox-oss-credentials"
+informer_enabled = true
+
+# Gateway-mode ingress: endpoints are signed f1.* route scopes verified
+# by the ingress gateway (same key ring as --secure-access-keys there).
+[ingress]
+mode = "gateway"
+
+[ingress.gateway]
+address = "@GATEWAY_ADDRESS@"
+
+[ingress.gateway.route]
+mode = "header"
+
+[ingress.secure_access]
+active_key = "a"
+
+[[ingress.secure_access.keys]]
+key_id = "a"
+key = "@SIGNING_KEY@"
+TOML
+	if grep -Eq '@[A-Z_]+@' "$GEN_DIR/osb-server-config.toml"; then
+		die "unrendered token left in $GEN_DIR/osb-server-config.toml"
 	fi
 }
 
 opensandbox_up() {
 	kind load docker-image "$IMG_SERVER" --name "$KIND_CLUSTER" >/dev/null
 	kind load docker-image "$IMG_INGRESS" --name "$KIND_CLUSTER" >/dev/null
-	render_opensandbox "$MANIFESTS_DIR/opensandbox/server.yaml" "$GEN_DIR/osb-server.yaml"
-	render_opensandbox "$MANIFESTS_DIR/opensandbox/ingress-gateway.yaml" "$GEN_DIR/osb-ingress-gateway.yaml"
-	kubectl apply -f "$GEN_DIR/osb-server.yaml" >/dev/null
-	kubectl apply -f "$GEN_DIR/osb-ingress-gateway.yaml" >/dev/null
+	render_server_config
+	# charts/server: fsb RBAC (sandbox.fast.io reads + SandboxTemplate
+	# management) is built in; the config carries the fsb runtime wiring.
+	helm upgrade --install opensandbox-server "$OSB_ROOT/manifests/charts/server" \
+		--namespace "$OSB_NS" --create-namespace \
+		--set server.image.repository="$(image_repo "$IMG_SERVER")" \
+		--set server.image.tag="$(image_tag "$IMG_SERVER")" \
+		--set server.service.type=NodePort \
+		--set server.service.nodePort="$SERVER_NODEPORT" \
+		--set server.resources.requests.cpu=250m \
+		--set server.resources.requests.memory=512Mi \
+		--set server.resources.limits.cpu=1 \
+		--set server.resources.limits.memory=2Gi \
+		--set-file server.configToml="$GEN_DIR/osb-server-config.toml" \
+		>/dev/null
+	# charts/ingress-gateway: fast-sandbox provider resolving through
+	# FastPath, verifying the same signing key the server signs with.
+	helm upgrade --install opensandbox-ingress-gateway "$OSB_ROOT/manifests/charts/ingress-gateway" \
+		--namespace "$OSB_NS" --create-namespace \
+		--set gateway.image.repository="$(image_repo "$IMG_INGRESS")" \
+		--set gateway.image.tag="$(image_tag "$IMG_INGRESS")" \
+		--set gateway.replicaCount=1 \
+		--set gateway.providerType=fast-sandbox \
+		--set gateway.dataplaneNamespace="$NS" \
+		--set gateway.fastpathEndpoint="$FASTPATH_ENDPOINT" \
+		--set gateway.secureAccess.keys[0].key_id=a \
+		--set "gateway.secureAccess.keys[0].key=$(osb_signing_key)" \
+		--set gateway.service.type=NodePort \
+		--set gateway.service.nodePort="$GATEWAY_NODEPORT" \
+		--set gateway.resources.requests.cpu=100m \
+		--set gateway.resources.requests.memory=128Mi \
+		--set gateway.resources.limits.cpu=1 \
+		--set gateway.resources.limits.memory=1Gi \
+		>/dev/null
 	wait_for "server deployment ready" 180 \
 		kubectl -n "$OSB_NS" rollout status deploy/opensandbox-server --timeout=10s
 	wait_for "ingress gateway deployment ready" 180 \
@@ -1700,7 +1789,7 @@ status() {
 env_summary() {
 	highlight "== environment summary =="
 	printf '  %-22s %s\n' "kind cluster" "$KIND_CLUSTER ($(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ') nodes)"
-	printf '  %-22s %s\n' "fast-sandbox" "$FSB_REF @ $FSB_COMMIT ($FSB_DIR)"
+	printf '  %-22s %s\n' "fast-sandbox" "pinned $(git -C "$FSB_DIR" rev-parse --short HEAD 2>/dev/null || echo "$FSB_COMMIT") ($FSB_DIR)"
 	printf '  %-22s %s\n' "MinIO endpoint" "$MINIO_ENDPOINT"
 	printf '  %-22s %s\n' "pool" "$POOL_NAME (runtime=firecracker, poolMin=$POOL_MIN, egress=$IMG_EGRESS)"
 	printf '  %-22s %s\n' "P2P" "DART daemons=$(printf '%s' "$(agent_pods)" | wc -w | tr -d ' ') (on-demand pulls: cache -> peer -> origin)"
@@ -1758,7 +1847,7 @@ usage() {
 	cat <<'EOF'
 usage: fast-sandbox-env.sh [--auto-clean] {up|down|status|pool}
 
-  up       initialize the full environment: fast-sandbox@master images,
+  up       initialize the full environment: fast-sandbox@pinned-commit images,
            two-node kind cluster (KVM), MinIO, control plane, firecracker
            node assets, runtime-agent + DART (P2P), SandboxTemplate golden
            image, firecracker-egress-pool (egress attached), the
@@ -1821,7 +1910,7 @@ case "$ACTION" in
 		trap 'on_error up' ERR
 		run_stage "preflight + tooling" preflight
 		run_stage "sysctl (fs.inotify)" sysctl_set
-		run_stage "fast-sandbox checkout @$FSB_REF" ensure_fsb
+		run_stage "fast-sandbox checkout @ pinned commit" ensure_fsb
 		run_stage "build images (fast-sandbox + OpenSandbox)" build_images
 		run_stage "XFS StateRoot (reflink)" stateroot_xfs_up
 		run_stage "render kind config" render_kind_config
