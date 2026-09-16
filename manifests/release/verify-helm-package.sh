@@ -108,7 +108,13 @@ case "$expected_component" in
   *) die "Unsupported Helm component: ${expected_component}" ;;
 esac
 if [[ -n "$check_primary_image" ]]; then
-  awk '$1 == "image:" {gsub(/^"|"$/, "", $2); print $2}' "$work_dir/rendered.yaml" \
+  # CRD schemas may declare properties named "image" (multi-line, no inline
+  # value); skip CRD documents so they are not mistaken for container images.
+  awk '
+    /^kind: CustomResourceDefinition$/ { in_crd = 1 }
+    /^---$/ { in_crd = 0 }
+    !in_crd && $1 == "image:" { gsub(/^"|"$/, "", $2); print $2 }
+  ' "$work_dir/rendered.yaml" \
     >"$work_dir/rendered-images.txt"
   awk -v suffix="$expected_primary_image_suffix" '
     length($0) >= length(suffix) && substr($0, length($0) - length(suffix) + 1) == suffix { found = 1 }
@@ -119,8 +125,19 @@ fi
 
 case "$expected_component" in
   base)
-    [[ "$(grep -c '^kind: CustomResourceDefinition$' "$work_dir/rendered.yaml")" -eq 3 ]] || \
-      die "base package did not render the three OpenSandbox CRDs"
+    # The base chart ships the OpenSandbox CRDs plus the fast-sandbox CRDs
+    # (sandbox.fast.io, pinned in manifests/third-party/fast-sandbox.commit).
+    for crd in \
+      batchsandboxes.sandbox.opensandbox.io \
+      pools.sandbox.opensandbox.io \
+      sandboxsnapshots.sandbox.opensandbox.io \
+      sandboxes.sandbox.fast.io \
+      sandboxpools.sandbox.fast.io \
+      sandboxsnapshots.sandbox.fast.io \
+      sandboxtemplates.sandbox.fast.io; do
+      grep -Fq "name: ${crd}$" "$work_dir/rendered.yaml" ||
+        die "base package did not render the CRD ${crd}"
+    done
     ;;
   ingress-gateway)
     grep -Fq 'name: opensandbox-ingress-gateway' "$work_dir/rendered.yaml" || \

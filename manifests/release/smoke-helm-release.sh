@@ -372,8 +372,17 @@ if grep -Fq -- '--containerd-socket-path' "$rendered_file"; then
   die "Rendered controller unexpectedly contains --containerd-socket-path"
 fi
 
+# Extract container images from the rendered package. CRD documents are
+# excluded: their openAPIV3Schema may declare properties named "image"
+# (multi-line, no inline value), which must not be mistaken for container
+# images. Helm renders document separators as column-0 '---' and CRD kinds
+# at column 0, so doc-boundary tracking on those two anchors is exact.
 mapfile -t rendered_images < <(
-  awk '$1 == "image:" {gsub(/^"|"$/, "", $2); print $2}' "$rendered_file" | sort -u
+  awk '
+    /^kind: CustomResourceDefinition$/ { in_crd = 1 }
+    /^---$/ { in_crd = 0 }
+    !in_crd && $1 == "image:" { gsub(/^"|"$/, "", $2); print $2 }
+  ' "$rendered_file" | sort -u
 )
 execd_image="$(
   sed -n 's/^[[:space:]]*execd_image = "\([^"]*\)"[[:space:]]*$/\1/p' "$rendered_file" |
