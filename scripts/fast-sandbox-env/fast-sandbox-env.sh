@@ -189,6 +189,7 @@ SKIP_TOOL_INSTALL="${SKIP_TOOL_INSTALL:-0}"
 SKIP_LEFTOVER_CLEAN="${SKIP_LEFTOVER_CLEAN:-0}"
 KIND_VERSION="${KIND_VERSION:-v0.24.0}"
 KUBECTL_VERSION="${KUBECTL_VERSION:-v1.31.0}"
+HELM_VERSION="${HELM_VERSION:-v3.16.4}"
 
 # Internal goproxy mirrors can 500 on shared hosts; direct VCS just works there.
 FSB_GOPROXY="${FSB_GOPROXY:-direct}"
@@ -364,6 +365,17 @@ ensure_tool() { # name
 		kubectl)
 			install_release_binary kubectl "${KUBECTL_VERSION#v}" \
 				"https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+			;;
+		helm)
+			local tmp
+			log "installing helm $HELM_VERSION -> /usr/local/bin/helm"
+			tmp="$(mktemp -d)"
+			curl -fL --retry 3 -o "$tmp/helm.tgz" \
+				"https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
+				|| die "download helm failed; install it manually or retry"
+			sudo_ tar -xzf "$tmp/helm.tgz" -C "$tmp" linux-amd64/helm
+			sudo_ install -m 0755 "$tmp/linux-amd64/helm" /usr/local/bin/helm
+			rm -rf "$tmp"
 			;;
 		jq)
 			log "installing jq via package manager"
