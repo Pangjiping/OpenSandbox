@@ -49,10 +49,15 @@ fastSandbox:
     # -- Additional annotations to add to CRDs (merged with resource-policy when keep is true)
     annotations: {}
   namespaces:
-    # -- Specifies whether the fast-sandbox namespaces should be created
+    # -- Specifies whether the fast-sandbox dataplane namespace should be
+    # created. The system namespace (opensandbox-system) is NOT created
+    # here: it is owned by the install flow (--create-namespace or the
+    # controller/server releases), and a pre-existing namespace without
+    # Helm ownership metadata cannot be adopted into this release.
     create: true
-    # -- Namespace for the fast-sandbox control plane workloads (the
-    # OpenSandbox system namespace, shared with the controller/server)
+    # -- Namespace the fast-sandbox control-plane RBAC targets (the shared
+    # OpenSandbox system namespace where the fast-sandbox chart's workloads
+    # run). Referenced only; not created by this chart.
     system: opensandbox-system
     # -- Namespace for fast-sandbox resource objects (pools, templates,
     # sandboxes and the fastlet/builder Pods they spawn)

@@ -30,9 +30,9 @@ Kubernetes: `>=1.21.1-0`
 | fastSandbox.crds.annotations | object | `{}` | Additional annotations to add to CRDs (merged with resource-policy when keep is true) |
 | fastSandbox.crds.install | bool | `true` | Specifies whether the fast-sandbox CRDs should be installed |
 | fastSandbox.crds.keep | bool | `true` | Keep CRDs on chart uninstall (adds the helm.sh/resource-policy: keep annotation) |
-| fastSandbox.namespaces.create | bool | `true` | Specifies whether the fast-sandbox namespaces should be created |
+| fastSandbox.namespaces.create | bool | `true` | Specifies whether the fast-sandbox dataplane namespace should be created. The system namespace (opensandbox-system) is NOT created here: it is owned by the install flow (--create-namespace or the controller/server releases), and a pre-existing namespace without Helm ownership metadata cannot be adopted into this release. |
 | fastSandbox.namespaces.resources | string | `"opensandbox-dataplane"` | Namespace for fast-sandbox resource objects (pools, templates, sandboxes and the fastlet/builder Pods they spawn) |
-| fastSandbox.namespaces.system | string | `"opensandbox-system"` | Namespace for the fast-sandbox control plane workloads (the OpenSandbox system namespace, shared with the controller/server) |
+| fastSandbox.namespaces.system | string | `"opensandbox-system"` | Namespace the fast-sandbox control-plane RBAC targets (the shared OpenSandbox system namespace where the fast-sandbox chart's workloads run). Referenced only; not created by this chart. |
 | fastSandbox.rbac.create | bool | `true` | Specifies whether the fast-sandbox control-plane ServiceAccounts, ClusterRoles and ClusterRoleBindings should be installed (the workloads using them live in the fast-sandbox chart) |
 | fullnameOverride | string | `""` | Override the full name of the chart |
 | nameOverride | string | `""` | Override the name of the chart |

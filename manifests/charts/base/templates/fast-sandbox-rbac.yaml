@@ -16,14 +16,10 @@ ServiceAccount above.
 */}}
 {{- if .Values.fastSandbox.namespaces.create }}
 ---
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: {{ .Values.fastSandbox.namespaces.system }}
-  labels:
-    {{- include "opensandbox-base.labels" . | nindent 4 }}
-    app.kubernetes.io/component: fast-sandbox
----
+# Only the dataplane namespace is chart-created. The system namespace
+# (opensandbox-system) is owned by the install flow (--create-namespace or
+# the controller/server releases); a pre-existing namespace without Helm
+# ownership metadata cannot be adopted into this release.
 apiVersion: v1
 kind: Namespace
 metadata:
