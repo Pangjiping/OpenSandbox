@@ -97,8 +97,9 @@ manifests/
 ```
 
 Everything else comes from the OpenSandbox Helm charts (`manifests/charts`),
-installed with the workdir's rendered values (image tags, artifact-store
-endpoint, FastPath endpoint, signing key, NodePorts):
+rendered with `helm template` from the workdir's values (image tags,
+artifact-store endpoint, FastPath endpoint, signing key, NodePorts) and
+applied with plain `kubectl apply` — the cluster keeps no helm state:
 
 | Chart | Provides in this environment |
 |---|---|
@@ -112,9 +113,10 @@ endpoint, FastPath endpoint, signing key, NodePorts):
 preflight → sysctl → fast-sandbox checkout (pinned commit) → build images
 (6 fast-sandbox images via `manifests/release/build-fast-sandbox.sh` +
 egress + server + ingress) → XFS StateRoot → kind cluster + node labels
-(host ports 18080/18081) → MinIO → helm: base + fast-sandbox (CRDs, RBAC,
-control plane, installer, agent) → credentials → installer/agent roster
-asserted → helm: server + ingress gateway → SandboxTemplate golden image
+(host ports 18080/18081) → MinIO → charts rendered + applied: base +
+fast-sandbox (CRDs, RBAC, control plane, installer, agent) → credentials →
+installer/agent roster asserted → charts rendered + applied: server +
+ingress gateway → SandboxTemplate golden image
 **built through the server `POST /templates` API** → SandboxPool
 (fastlet Ready, egress Ready, pool conditions, actions protocol check) →
 end-to-end verify (templateId create → signed gateway route → execd

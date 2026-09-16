@@ -32,8 +32,11 @@
 # it to Ready, restore a NEW sandbox from the snapshotId and boot it).
 #
 # All Kubernetes resources come from the OpenSandbox Helm charts
-# (manifests/charts); the only env-owned manifests left are the kind cluster
-# config and the SandboxPool resource.
+# (manifests/charts), rendered with `helm template` and applied with plain
+# `kubectl apply` — helm is only a renderer here, the cluster keeps no helm
+# state, and re-runs keep the idempotent apply semantics. The only
+# env-owned manifests left are the kind cluster config and the SandboxPool
+# resource.
 #
 # Usage:
 #   ./scripts/fast-sandbox-env/fast-sandbox-env.sh up       # full environment + pool + server/ingress + verify
@@ -848,6 +851,21 @@ credentials_up() {
 
 # --- stage: control plane -------------------------------------------------------------------
 
+# The charts are rendered with `helm template` and applied with kubectl:
+# helm stays a renderer, the cluster keeps no helm release state, and
+# re-runs keep the plain idempotent `kubectl apply` semantics.
+helm_render() { # release chart ns out [set-args...]
+	local release="$1" chart="$2" ns="$3" out="$4"
+	shift 4
+	helm template "$release" "$chart" --namespace "$ns" "$@" > "$out" \
+		|| die "helm template $chart failed"
+}
+
+apply_ns() { # ns -> ensure the namespace exists (idempotent)
+	kubectl create namespace "$1" --dry-run=client -o yaml 2>/dev/null |
+		kubectl apply -f - >/dev/null
+}
+
 control_plane_up() {
 	# The OpenSandbox Helm charts are the source of truth: charts/base ships
 	# the sandbox.opensandbox.io + sandbox.fast.io CRDs, the component RBAC
@@ -856,9 +874,11 @@ control_plane_up() {
 	# the runtime-agent. This replaces the fast-sandbox checkout's
 	# config/crd + config/all-in-one kustomize applies and the env-owned
 	# node manifests.
-	helm upgrade --install fsb-base "$OSB_ROOT/manifests/charts/base" \
-		--namespace "$NS" --create-namespace >/dev/null
-	helm upgrade --install fast-sandbox "$OSB_ROOT/manifests/charts/fast-sandbox" \
+	apply_ns "$NS"
+	helm_render fsb-base "$OSB_ROOT/manifests/charts/base" "$NS" "$GEN_DIR/fsb-base.yaml"
+	kubectl apply -f "$GEN_DIR/fsb-base.yaml" >/dev/null
+	helm_render fast-sandbox "$OSB_ROOT/manifests/charts/fast-sandbox" "$NS" \
+		"$GEN_DIR/fast-sandbox.yaml" \
 		--set controller.image.repository="$(image_repo "$IMG_CONTROLLER")" \
 		--set controller.image.tag="$(image_tag "$IMG_CONTROLLER")" \
 		--set controller.sandboxtemplateBuilderImage="$IMG_BUILDER" \
@@ -869,8 +889,8 @@ control_plane_up() {
 		--set artifactStore.store="s3://$MINIO_BUCKET/publish" \
 		--set artifactStore.endpoint="$MINIO_ENDPOINT" \
 		--set firecrackerInstaller.fcVersion="$FC_VERSION" \
-		--set firecrackerInstaller.kernelUrl="$FC_KERNEL_URL" \
-		>/dev/null
+		--set firecrackerInstaller.kernelUrl="$FC_KERNEL_URL"
+	kubectl apply -f "$GEN_DIR/fast-sandbox.yaml" >/dev/null
 	local image
 	for image in "$IMG_CONTROLLER" "$IMG_FASTLET" "$IMG_FASTLET_PROXY" \
 		"$IMG_JANITOR" "$IMG_AGENT" "$IMG_EGRESS"; do
@@ -1255,10 +1275,11 @@ opensandbox_up() {
 	kind load docker-image "$IMG_SERVER" --name "$KIND_CLUSTER" >/dev/null
 	kind load docker-image "$IMG_INGRESS" --name "$KIND_CLUSTER" >/dev/null
 	render_server_config
+	apply_ns "$OSB_NS"
 	# charts/server: fsb RBAC (sandbox.fast.io reads + SandboxTemplate
 	# management) is built in; the config carries the fsb runtime wiring.
-	helm upgrade --install opensandbox-server "$OSB_ROOT/manifests/charts/server" \
-		--namespace "$OSB_NS" --create-namespace \
+	helm_render opensandbox-server "$OSB_ROOT/manifests/charts/server" "$OSB_NS" \
+		"$GEN_DIR/osb-server.yaml" \
 		--set server.image.repository="$(image_repo "$IMG_SERVER")" \
 		--set server.image.tag="$(image_tag "$IMG_SERVER")" \
 		--set server.service.type=NodePort \
@@ -1267,27 +1288,27 @@ opensandbox_up() {
 		--set server.resources.requests.memory=512Mi \
 		--set server.resources.limits.cpu=1 \
 		--set server.resources.limits.memory=2Gi \
-		--set-file server.configToml="$GEN_DIR/osb-server-config.toml" \
-		>/dev/null
+		--set-file server.configToml="$GEN_DIR/osb-server-config.toml"
+	kubectl apply -f "$GEN_DIR/osb-server.yaml" >/dev/null
 	# charts/ingress-gateway: fast-sandbox provider resolving through
 	# FastPath, verifying the same signing key the server signs with.
-	helm upgrade --install opensandbox-ingress-gateway "$OSB_ROOT/manifests/charts/ingress-gateway" \
-		--namespace "$OSB_NS" --create-namespace \
+	helm_render opensandbox-ingress-gateway "$OSB_ROOT/manifests/charts/ingress-gateway" "$OSB_NS" \
+		"$GEN_DIR/osb-ingress-gateway.yaml" \
 		--set gateway.image.repository="$(image_repo "$IMG_INGRESS")" \
 		--set gateway.image.tag="$(image_tag "$IMG_INGRESS")" \
 		--set gateway.replicaCount=1 \
 		--set gateway.providerType=fast-sandbox \
 		--set gateway.dataplaneNamespace="$NS" \
 		--set gateway.fastpathEndpoint="$FASTPATH_ENDPOINT" \
-		--set gateway.secureAccess.keys[0].key_id=a \
+		--set "gateway.secureAccess.keys[0].key_id=a" \
 		--set "gateway.secureAccess.keys[0].key=$(osb_signing_key)" \
 		--set gateway.service.type=NodePort \
 		--set gateway.service.nodePort="$GATEWAY_NODEPORT" \
 		--set gateway.resources.requests.cpu=100m \
 		--set gateway.resources.requests.memory=128Mi \
 		--set gateway.resources.limits.cpu=1 \
-		--set gateway.resources.limits.memory=1Gi \
-		>/dev/null
+		--set gateway.resources.limits.memory=1Gi
+	kubectl apply -f "$GEN_DIR/osb-ingress-gateway.yaml" >/dev/null
 	wait_for "server deployment ready" 180 \
 		kubectl -n "$OSB_NS" rollout status deploy/opensandbox-server --timeout=10s
 	wait_for "ingress gateway deployment ready" 180 \

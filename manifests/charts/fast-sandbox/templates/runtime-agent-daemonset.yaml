@@ -1,6 +1,7 @@
 {{- if .Values.runtimeAgent.enabled }}
 {{- $ns := include "fast-sandbox.namespace" . }}
 {{- $dartDiscover := printf "dns:dart.%s.svc.cluster.local:%d" $ns (int .Values.runtimeAgent.dartPeerPort) }}
+{{- $probeCmd := printf "curl -fsS -X POST --unix-socket %s/runtime.sock -H 'Content-Type: application/json' -d '{\"podUid\":\"$POD_UID\",\"namespace\":\"%s\"}' http://firecracker-agent/v1/health | grep -q '\"ok\":true'" .Values.runtimeAgent.socketDir $ns }}
 ---
 # Headless Service backing DART peer discovery: DNS seeding hands out the
 # ready agent Pod IPs so node-local DART daemons can find each other
@@ -96,7 +97,7 @@ spec:
             command:
             - /bin/sh
             - -ec
-            - curl -fsS -X POST --unix-socket {{ .Values.runtimeAgent.socketDir }}/runtime.sock -H 'Content-Type: application/json' -d '{"podUid":"$POD_UID","namespace":"{{ $ns }}"}' http://firecracker-agent/v1/health | grep -q '"ok":true'
+            - {{ $probeCmd | quote }}
           initialDelaySeconds: 2
           periodSeconds: 5
           timeoutSeconds: 3
