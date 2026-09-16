@@ -40,7 +40,7 @@ apiVersion: sandbox.fast.io/v1alpha2
 kind: SandboxPool
 metadata:
   name: firecracker-egress-pool
-  namespace: fast-sandbox-system
+  namespace: opensandbox-dataplane
 spec:
   fastletTemplate:
     spec:

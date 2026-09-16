@@ -433,7 +433,7 @@ pushes `:latest`. Images are linux/amd64 only.
 
 # Provision the agent registry Secret (artifact-store pull credentials,
 # compiled registry.json)
-kubectl -n fast-sandbox-system create secret generic fast-sandbox-agent-registry \
+kubectl -n opensandbox-system create secret generic fast-sandbox-agent-registry \
   --from-file=registry.json=<compiled-registry.json>
 ```
 

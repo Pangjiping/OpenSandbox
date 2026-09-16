@@ -53,7 +53,7 @@ opensandbox-node-agent:
 # companion images built by manifests/release/build-fast-sandbox.sh from the source
 # pinned in manifests/third-party/fast-sandbox.commit, Firecracker-capable
 # (KVM) nodes labeled fast-sandbox.io/firecracker-node=true, and the
-# fast-sandbox-agent-registry Secret provisioned in fast-sandbox-system.
+# fast-sandbox-agent-registry Secret provisioned in opensandbox-system.
 fast-sandbox:
   # -- Whether the fast-sandbox control plane + node runtime is enabled.
   enabled: false

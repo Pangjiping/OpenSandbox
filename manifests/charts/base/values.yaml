@@ -51,10 +51,12 @@ fastSandbox:
   namespaces:
     # -- Specifies whether the fast-sandbox namespaces should be created
     create: true
-    # -- Namespace for the fast-sandbox control plane workloads
-    system: fast-sandbox-system
-    # -- Namespace for fast-sandbox resource objects (pools, templates, ...)
-    resources: fast-sandbox
+    # -- Namespace for the fast-sandbox control plane workloads (the
+    # OpenSandbox system namespace, shared with the controller/server)
+    system: opensandbox-system
+    # -- Namespace for fast-sandbox resource objects (pools, templates,
+    # sandboxes and the fastlet/builder Pods they spawn)
+    resources: opensandbox-dataplane
   rbac:
     # -- Specifies whether the fast-sandbox control-plane ServiceAccounts,
     # ClusterRoles and ClusterRoleBindings should be installed (the

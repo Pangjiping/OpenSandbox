@@ -30,7 +30,7 @@ Kubernetes: `>=1.21.1-0`
 | gateway.containerSecurityContext | object | `{}` | Container-level security context for the gateway container. |
 | gateway.dataplaneNamespace | string | `"opensandbox"` | Namespace where the gateway dataplane workloads run. |
 | gateway.env | list | `[]` | Additional environment variables for the gateway container (e.g. OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME for OTLP metrics). |
-| gateway.fastpathEndpoint | string | `""` | FastPath gRPC endpoint for the fast-sandbox provider (--fastpath-endpoint). Required when providerType is "fast-sandbox"; ignored otherwise. Example: fast-sandbox-fastpath.fast-sandbox-system.svc:9090 |
+| gateway.fastpathEndpoint | string | `""` | FastPath gRPC endpoint for the fast-sandbox provider (--fastpath-endpoint). Required when providerType is "fast-sandbox"; ignored otherwise. Example: fast-sandbox-fastpath.opensandbox-system.svc:9090 |
 | gateway.gatewayRouteMode | string | `"header"` | Gateway route mode: header or uri. Must match server.gateway.gatewayRouteMode. |
 | gateway.image | object | `{"repository":"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/ingress","tag":"v1.0.10"}` | Gateway image configuration. |
 | gateway.image.repository | string | `"sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/ingress"` | Gateway image repository. |

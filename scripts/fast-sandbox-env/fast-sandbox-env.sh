@@ -91,7 +91,12 @@ FSB_COMMIT="$(sed -n 's/^commit:[[:space:]]*//p' "$OSB_ROOT/manifests/third-part
 KIND_CLUSTER="${KIND_CLUSTER:-fast-sandbox-integration}"
 KIND_SINGLE="${KIND_SINGLE:-0}"
 KIND_RETAIN="${KIND_RETAIN:-0}"
-NS="fast-sandbox-system"
+# Control plane + node runtime (controller/fastpath, firecracker-runtime,
+# agent credentials, artifact-store config) ...
+NS="opensandbox-system"
+# ... while the SandboxPool/Template/Sandbox resources and the fastlet and
+# builder Pods they spawn live in the dataplane namespace.
+RESOURCE_NS="opensandbox-dataplane"
 
 MINIO_IMAGE="${MINIO_IMAGE:-minio/minio:latest}"
 MC_IMAGE="${MC_IMAGE:-minio/mc:latest}"
@@ -148,7 +153,7 @@ OSB_NS="opensandbox-system"
 IMG_SERVER="${SERVER_IMAGE:-docker.io/opensandbox/server:env}"
 IMG_INGRESS="${INGRESS_IMAGE:-docker.io/opensandbox/ingress:env}"
 # FastPath v2 of this cluster's all-in-one control plane (in-cluster DNS).
-FASTPATH_ENDPOINT="fast-sandbox-fastpath.fast-sandbox-system.svc:9090"
+FASTPATH_ENDPOINT="fast-sandbox-fastpath.opensandbox-system.svc:9090"
 SERVER_API_KEY="fast-sandbox-env"
 # Shared f1.* route-scope signing key (server [ingress.secure_access] and
 # ingress --secure-access-keys), generated once per workdir so re-applies
@@ -252,7 +257,7 @@ wait_for() { # description attempts command [args...]
 	pass "$description"
 }
 
-kubectl_get() { kubectl -n "$NS" get "$1" -o jsonpath="$2"; }
+kubectl_get() { kubectl -n "$RESOURCE_NS" get "$1" -o jsonpath="$2"; }
 
 sudo_() { if [[ "$(id -u)" == 0 ]]; then "$@"; else sudo "$@"; fi; }
 
@@ -308,7 +313,7 @@ failure_dump() {
 		echo "--- SandboxTemplates (status carries the build failure reason) ---"
 		kubectl get sandboxtemplates -n "$NS" -o yaml 2>&1 || true
 		echo "--- recent events ($NS) ---"
-		kubectl get events -n "$NS" --sort-by=.lastTimestamp 2>&1 | tail -30 || true
+		kubectl get events -n "$RESOURCE_NS" --sort-by=.lastTimestamp 2>&1 | tail -30 || true
 		echo "--- OpenSandbox pods ($OSB_NS) ---"
 		kubectl get pods -n "$OSB_NS" -o wide 2>&1 || true
 		echo "--- server logs (tail) ---"
@@ -316,7 +321,7 @@ failure_dump() {
 		echo "--- ingress gateway logs (tail) ---"
 		kubectl logs -n "$OSB_NS" deploy/opensandbox-ingress-gateway --tail=80 2>&1 || true
 		echo "--- pool ---"
-		kubectl get sandboxpool -n "$NS" -o yaml 2>&1 || true
+		kubectl get sandboxpool -n "$RESOURCE_NS" -o yaml 2>&1 || true
 		echo "--- minio docker logs (tail) ---"
 		docker logs "$MINIO_CONTAINER" --tail=80 2>&1 || true
 	} > "$dump" 2>&1 || true
@@ -789,11 +794,14 @@ credentials_up() {
 	# The platform namespace exists even if the control plane has not been
 	# applied yet (resume after a partial up).
 	kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	kubectl create namespace "$RESOURCE_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	local host
 	host="${MINIO_ENDPOINT#http://}"
 	host="${host#https://}"
-	# Publish credentials: SecretKeyRef'd by the builder Pod (template stage).
-	kubectl -n "$NS" create secret generic sandbox-oss-credentials \
+	# Publish credentials: SecretKeyRef'd by the builder Pod (template
+	# stage); builder Pods run next to their SandboxTemplate in the
+	# dataplane namespace.
+	kubectl -n "$RESOURCE_NS" create secret generic sandbox-oss-credentials \
 		--from-literal=accessKeyId="$MINIO_AK" \
 		--from-literal=secretAccessKey="$MINIO_SK" \
 		--from-literal=endpoint="$MINIO_ENDPOINT" \
@@ -809,11 +817,12 @@ credentials_up() {
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	# The fast-sandbox-artifact-store ConfigMap (store + live endpoint) is
 	# rendered by charts/fast-sandbox at install time.
-	# Pull credentials for the fastlet (pool-compiled registry).
-	kubectl -n "$NS" create secret docker-registry registry-minio \
+	# Pull credentials for the fastlet (pool-compiled registry); fastlets
+	# run in the dataplane namespace.
+	kubectl -n "$RESOURCE_NS" create secret docker-registry registry-minio \
 		--docker-server="$host" --docker-username="$MINIO_AK" --docker-password="$MINIO_SK" \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
-	kubectl -n "$NS" create configmap fast-sandbox-registry \
+	kubectl -n "$RESOURCE_NS" create configmap fast-sandbox-registry \
 		--from-literal="registries.yaml=registries:
   - host: $host
     secretRef:
@@ -1198,7 +1207,7 @@ osb_signing_key() {
 render_server_config() { # > $GEN_DIR/osb-server-config.toml
 	mkdir -p "$GEN_DIR"
 	awk -v api_key="$SERVER_API_KEY" \
-		-v fastpath="$FASTPATH_ENDPOINT" -v fsb_ns="$NS" -v pool="$POOL_NAME" \
+		-v fastpath="$FASTPATH_ENDPOINT" -v fsb_ns="$RESOURCE_NS" -v pool="$POOL_NAME" \
 		-v execd="$EXECD" '
 		{ gsub(/@SERVER_API_KEY@/, api_key)
 		  gsub(/@SIGNING_KEY@/, signing_key)
@@ -1394,7 +1403,7 @@ verify_one_sandbox() { # <label> <ping-budget-ms>
 	local state raw raw_filter
 	raw_filter='{rt:.status.runtime.state,dp:.status.dataPlane.state,infra:[.status.infraComponents[]?|{n:.name,s:.state}],bind:[.status.actionBindings[]?|{h:.handler,s:.state}],ready:(.status.conditions[]?|select(.type=="Ready")|.status)}'
 	state="$(server_api GET "/sandboxes/$VERIFY_ID" 2>/dev/null | jq -r '.status.state // empty')"
-	raw="$(kubectl -n "$NS" get sandbox "$VERIFY_ID" -o json 2>/dev/null | jq -c "$raw_filter")"
+	raw="$(kubectl -n "$RESOURCE_NS" get sandbox "$VERIFY_ID" -o json 2>/dev/null | jq -c "$raw_filter")"
 	log "verify ($label): $VERIFY_ID access via ingress gateway: curl -H \"OpenSandbox-Ingress-To: $route\" $GATEWAY_URL/ping"
 	log "verify ($label): $VERIFY_ID create POST $(( (t1 - t0) / 1000000 ))ms, POST->execd /ping 200 $(( (t2 - t1) / 1000000 ))ms (${attempt} polls @10ms), total $(( (t2 - t0) / 1000000 ))ms"
 	log "verify ($label): CR at ping: server=$state raw=${raw:-unreachable}"
@@ -1765,13 +1774,14 @@ status() {
 	echo
 	log "status: pods ($NS)"
 	kubectl -n "$NS" get pods -o wide
+	kubectl -n "$RESOURCE_NS" get pods -o wide
 	echo
 	log "status: SandboxPool"
-	kubectl -n "$NS" get sandboxpool \
+	kubectl -n "$RESOURCE_NS" get sandboxpool \
 		-o custom-columns='NAME:.metadata.name,RUNTIME:.spec.runtime,READY:.status.readyPods,CAPACITY:.spec.capacity.poolMin,WARM_IMAGES:.status.warmImages' 2>/dev/null || true
 	echo
 	log "status: fastlet pods (egress sidecar)"
-	kubectl -n "$NS" get pods -l app=sandbox-fastlet \
+	kubectl -n "$RESOURCE_NS" get pods -l app=sandbox-fastlet \
 		-o custom-columns='NAME:.metadata.name,NODE:.spec.nodeName,CONTAINERS:.status.containerStatuses[*].name,READY:.status.containerStatuses[*].ready' 2>/dev/null || true
 	echo
 	log "status: DART P2P (block_source cache/peer/origin per node)"

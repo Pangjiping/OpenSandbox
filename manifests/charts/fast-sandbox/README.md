@@ -27,7 +27,7 @@ boxlite, containerd-based runtimes and the upstream central sandbox-proxy are ou
 - The agent registry Secret with artifact-store pull credentials (compiled `registry.json`):
 
   ```bash
-  kubectl -n fast-sandbox-system create secret generic fast-sandbox-agent-registry \
+  kubectl -n opensandbox-system create secret generic fast-sandbox-agent-registry \
     --from-file=registry.json=<compiled-registry.json>
   ```
 
@@ -67,7 +67,7 @@ The following table lists the configurable parameters of the chart and their def
 | janitor.orphanTimeout | string | `"30s"` | Orphan timeout before cleanup |
 | janitor.scanInterval | string | `"2m"` | Orphan scan interval |
 | nameOverride | string | `""` | Override the name of the chart |
-| resourceNamespace | string | `"fast-sandbox"` | Namespace for fast-sandbox resource objects (reserved for future use; workloads always run in systemNamespace). Must match base.fastSandbox.namespaces.resources. |
+| resourceNamespace | string | `"opensandbox-dataplane"` | Namespace for fast-sandbox resource objects (SandboxPools, Templates, Sandboxes and the fastlet/builder Pods they spawn). Must match base.fastSandbox.namespaces.resources. |
 | routeKeys.create | bool | `true` | Specifies whether the fast-sandbox-route-keys Secret is created here |
 | routeKeys.developmentOnly | bool | `true` | Mark the Secret with fast-sandbox.io/development-only (set false when provisioning real keys via privateKey/publicKey) |
 | routeKeys.existingSecret | string | `""` | Use an existing Secret instead of creating one (its keys must be private-key / public-key) |
@@ -84,7 +84,7 @@ The following table lists the configurable parameters of the chart and their def
 | runtime.socketDir | string | `"/run/fast-sandbox/firecracker"` | Node hostPath sharing the agent UDS socket with fastlet Pods |
 | runtime.stateRoot | string | `"/var/lib/fast-sandbox/firecracker"` | Node hostPath holding per-node Firecracker state (rootfs, snapshots). Each node needs its own directory; do not share across nodes. |
 | runtimeEnvironments | string | `"version: v1alpha2\nenvironments:\n  default:\n    containerd:\n      socket: /run/containerd/containerd.sock\n      namespace: k8s.io\n      defaultSnapshotter: overlayfs\n      root: /var/lib/containerd\n    kubelet:\n      root: /var/lib/kubelet\n    runtimes:\n      container: {}\n      gvisor: {}\n      kata-qemu: {}\n      kata-clh: {}\n      kata-fc:\n        snapshotter: blockfile\n        configPath: /opt/kata/share/defaults/kata-containers/configuration-fc-fast-sandbox.toml\n      kata-dragonball:\n        configPath: /opt/kata/share/defaults/kata-containers/runtime-rs/configuration-dragonball-fast-sandbox.toml\n      boxlite: {}\n      firecracker:\n        firecracker:\n          binaryPath: /opt/fast-sandbox/firecracker/firecracker\n          jailerPath: /opt/fast-sandbox/firecracker/jailer\n          kernelPath: /opt/fast-sandbox/firecracker/vmlinux.bin\n          rootfsPath: /var/lib/fast-sandbox/firecracker/rootfs\n          stateRoot: /var/lib/fast-sandbox/firecracker"` |  |
-| systemNamespace | string | `"fast-sandbox-system"` | Namespace for the fast-sandbox control plane workloads. Must match base.fastSandbox.namespaces.system (where the ServiceAccounts live). |
+| systemNamespace | string | `"opensandbox-system"` | Namespace for the fast-sandbox control plane workloads (the shared OpenSandbox system namespace). Must match base.fastSandbox.namespaces.system (where the ServiceAccounts live). |
 
 ## Signing keys: two independent systems
 

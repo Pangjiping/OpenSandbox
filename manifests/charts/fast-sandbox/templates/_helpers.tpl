@@ -65,5 +65,5 @@ Component image reference.
 Namespace the workloads run in.
 */}}
 {{- define "fast-sandbox.namespace" -}}
-{{- default "fast-sandbox-system" .Values.systemNamespace }}
+{{- default "opensandbox-system" .Values.systemNamespace }}
 {{- end }}

@@ -27,7 +27,7 @@ boxlite, containerd-based runtimes and the upstream central sandbox-proxy are ou
 - The agent registry Secret with artifact-store pull credentials (compiled `registry.json`):
 
   ```bash
-  kubectl -n fast-sandbox-system create secret generic fast-sandbox-agent-registry \
+  kubectl -n opensandbox-system create secret generic fast-sandbox-agent-registry \
     --from-file=registry.json=<compiled-registry.json>
   ```
 

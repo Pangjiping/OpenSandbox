@@ -35,14 +35,15 @@ nameOverride: ""
 # -- Override the full name of the chart
 fullnameOverride: ""
 
-# -- Namespace for the fast-sandbox control plane workloads. Must match
+# -- Namespace for the fast-sandbox control plane workloads (the shared
+# OpenSandbox system namespace). Must match
 # base.fastSandbox.namespaces.system (where the ServiceAccounts live).
-systemNamespace: fast-sandbox-system
+systemNamespace: opensandbox-system
 
-# -- Namespace for fast-sandbox resource objects (reserved for future use;
-# workloads always run in systemNamespace). Must match
+# -- Namespace for fast-sandbox resource objects (SandboxPools, Templates,
+# Sandboxes and the fastlet/builder Pods they spawn). Must match
 # base.fastSandbox.namespaces.resources.
-resourceNamespace: fast-sandbox
+resourceNamespace: opensandbox-dataplane
 
 # -- Image pull secrets for every workload in this chart
 imagePullSecrets: []

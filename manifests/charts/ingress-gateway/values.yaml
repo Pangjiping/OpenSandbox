@@ -56,7 +56,7 @@ gateway:
 
   # -- FastPath gRPC endpoint for the fast-sandbox provider
   # (--fastpath-endpoint). Required when providerType is "fast-sandbox";
-  # ignored otherwise. Example: fast-sandbox-fastpath.fast-sandbox-system.svc:9090
+  # ignored otherwise. Example: fast-sandbox-fastpath.opensandbox-system.svc:9090
   fastpathEndpoint: ""
 
   # -- Gateway log level.
