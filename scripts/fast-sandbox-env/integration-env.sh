@@ -306,13 +306,13 @@ failure_dump() {
 		echo "--- firecracker-runtime logs (tail) ---"
 		kubectl logs -n "$NS" daemonset/firecracker-runtime --all-containers --tail=80 2>&1 || true
 		echo "--- fastlet logs (tail) ---"
-		kubectl logs -n "$NS" -l app=sandbox-fastlet --tail=80 2>&1 || true
+		kubectl logs -n "$RESOURCE_NS" -l app=sandbox-fastlet --tail=80 2>&1 || true
 		echo "--- builder pods + logs (tail) ---"
-		kubectl get pods -n "$NS" -l sandbox.fast.io/sandboxtemplate --show-labels 2>&1 || true
-		kubectl logs -n "$NS" -l sandbox.fast.io/sandboxtemplate --tail=80 2>&1 || true
+		kubectl get pods -n "$RESOURCE_NS" -l sandbox.fast.io/sandboxtemplate --show-labels 2>&1 || true
+		kubectl logs -n "$RESOURCE_NS" -l sandbox.fast.io/sandboxtemplate --tail=80 2>&1 || true
 		echo "--- SandboxTemplates (status carries the build failure reason) ---"
-		kubectl get sandboxtemplates -n "$NS" -o yaml 2>&1 || true
-		echo "--- recent events ($NS) ---"
+		kubectl get sandboxtemplates -n "$RESOURCE_NS" -o yaml 2>&1 || true
+		echo "--- recent events ($RESOURCE_NS) ---"
 		kubectl get events -n "$RESOURCE_NS" --sort-by=.lastTimestamp 2>&1 | tail -30 || true
 		echo "--- OpenSandbox pods ($OSB_NS) ---"
 		kubectl get pods -n "$OSB_NS" -o wide 2>&1 || true
@@ -1036,13 +1036,13 @@ template_up() {
 # --- stage: SandboxPool (egress attached, P2P spread) --------------------------------------------
 
 pool_pods() {
-	kubectl -n "$NS" get pods \
+	kubectl -n "$RESOURCE_NS" get pods \
 		-l "app=sandbox-fastlet,fast-sandbox.io/pool=$POOL_NAME" \
 		-o jsonpath='{.items[*].metadata.name}' 2>/dev/null
 }
 
 first_pool_pod() {
-	kubectl -n "$NS" get pods \
+	kubectl -n "$RESOURCE_NS" get pods \
 		-l "app=sandbox-fastlet,fast-sandbox.io/pool=$POOL_NAME" \
 		-o jsonpath='{.items[0].metadata.name}' 2>/dev/null
 }
@@ -1050,7 +1050,7 @@ first_pool_pod() {
 fastlet_pods_ready() {
 	local ready=0 pod
 	for pod in $(pool_pods); do
-		if kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True; then
+		if kubectl -n "$RESOURCE_NS" get pod "$pod" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True; then
 			ready=$((ready + 1))
 		fi
 	done
@@ -1062,7 +1062,7 @@ egress_containers_ready() {
 	pods="$(pool_pods)"
 	[[ -n "$pods" ]] || return 1
 	for pod in $pods; do
-		kubectl -n "$NS" get pod "$pod" -o jsonpath='{range .status.containerStatuses[*]}{.name}{"="}{.ready}{" "}{end}' 2>/dev/null \
+		kubectl -n "$RESOURCE_NS" get pod "$pod" -o jsonpath='{range .status.containerStatuses[*]}{.name}{"="}{.ready}{" "}{end}' 2>/dev/null \
 			| grep -q 'egress=true' || return 1
 	done
 }
@@ -1075,7 +1075,7 @@ egress_status_ready() {
 	local pod out
 	pod="$(first_pool_pod)"
 	[[ -n "$pod" ]] || return 1
-	out="$(kubectl -n "$NS" exec "pod/$pod" -c egress -- \
+	out="$(kubectl -n "$RESOURCE_NS" exec "pod/$pod" -c egress -- \
 		curl -fsS -m 5 "http://127.0.0.1:18080/_fastlet/v1/actions/status" 2>/dev/null)" || return 1
 	[[ "$out" == *'"apiVersion":"sandbox.fast.io/actions/v1"'* && "$out" == *'"ready":true'* && "$out" == *'"instanceId":'* ]]
 }
@@ -1091,7 +1091,7 @@ pool_condition_true() { # condition-type
 }
 
 warm_images_ready() {
-	kubectl -n "$NS" get sandboxpool "$POOL_NAME" -o jsonpath='{.status.warmImages[*].cachedFastlets}' 2>/dev/null | grep -qv '^0*$'
+	kubectl -n "$RESOURCE_NS" get sandboxpool "$POOL_NAME" -o jsonpath='{.status.warmImages[*].cachedFastlets}' 2>/dev/null | grep -qv '^0*$'
 }
 
 render_pool() { # > $GEN_DIR/firecracker-egress-pool.yaml
