@@ -88,7 +88,7 @@ func mergeEnvs(base []string, extra map[string]string) []string {
 	return out
 }
 
-// bindingSandboxEnvs returns the sandbox-level envs provided by POST /init,
+// bindingSandboxEnvs returns the sandbox-level envs provided by POST /internal/init,
 // or nil when no RuntimeBinding (or no envs) is applied.
 func bindingSandboxEnvs() map[string]string {
 	b := binding.Current()
@@ -101,7 +101,7 @@ func bindingSandboxEnvs() map[string]string {
 // UserEnvOverlay builds the standard user-workload env overlay, layered with
 // the /init RuntimeBinding as the authoritative source:
 //
-//	sandbox envs (/init) < EXECD_ENVS file < extras (session/request)
+//	sandbox envs (/internal/init) < EXECD_ENVS file < extras (session/request)
 //
 // Binding-authoritative values (OPENSANDBOX_ID) are forced on top so user
 // envs cannot spoof sandbox attribution.

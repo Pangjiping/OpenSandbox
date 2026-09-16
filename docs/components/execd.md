@@ -59,7 +59,7 @@ curl -v http://localhost:44772/ping
 
 - OpenAPI spec: [execd-api.yaml](/api/)
 - Common capability groups:
-  - Runtime init (`/init`, `/ready` — per-allocation RuntimeBinding)
+  - Runtime init (`/internal/init`, `/ready` — per-allocation RuntimeBinding)
   - Code execution (`/code`, SSE stream)
   - Session and command execution (`/session`, `/command`)
   - Filesystem operations (`/files`, `/directories`)
@@ -93,7 +93,7 @@ search absolute entries in the child `PATH`. Use `./tool` to run a local
 executable.
 
 Both modes use the environment priority request `envs` > `EXECD_ENVS` >
-sandbox envs (`POST /init`, see [Runtime init](#runtime-init)) > daemon
+sandbox envs (`POST /internal/init`, see [Runtime init](#runtime-init)) > daemon
 environment. Request values are literal. `cwd` expands `$NAME` and `${NAME}`
 using that environment, and leading `~` using the daemon user's home.
 Undefined variables fail validation; omitted `cwd` inherits the daemon
@@ -242,7 +242,7 @@ override it.
 | `--jupyter-idle-poll-interval` | `100ms` | Poll interval after Jupyter reports idle. |
 | `--isolation-config` | `""` | Path to the isolation TOML config (see below). |
 | `--init` | `false` | Run as the sandbox init (OSEP-0018): reap children, forward signals, own the container lifecycle. Set together with `EXECD_INIT`; see [Init mode](#init-mode). |
-| `--runtime-init` | `false` | Gate preStart and the entrypoint on `POST /init`: until the control plane applies the RuntimeBinding, only `/ping`, `/ready`, and `/init` are served. See [Runtime init](#runtime-init). |
+| `--runtime-init` | `false` | Gate preStart and the entrypoint on `POST /internal/init`: until the control plane applies the RuntimeBinding, only `/ping`, `/ready`, and `/internal/init` are served. See [Runtime init](#runtime-init). |
 
 ### Environment Variables
 
@@ -261,7 +261,7 @@ override it.
 | `EXECD_ENVS` | Optional file of `KEY=VALUE` lines supplying environment variables for commands and bash sessions. Values expand daemon environment variables; blank lines and `#` comments are ignored. Bash session `cwd` values also expand `$NAME` and `${NAME}` using the session environment. |
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | Preferred OTLP metrics endpoint. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Fallback OTLP endpoint when metrics-specific endpoint is unset. |
-| `OPENSANDBOX_ID` | Sandbox id stamped into eBPF audit records (`sandbox_id`) and metrics; the server injects it on Docker/Kubernetes task-template paths. When a RuntimeBinding is applied via `POST /init`, its `sandboxId` becomes authoritative and is also forced into every user-process environment. Lifecycle Pool requests always schedule a task template and receive this value. Direct BatchSandbox resources that omit the task template cannot inject it; with the eBPF layer enabled, execd starts the observer in a degraded "attribution pending" state and binds the id when `/init` arrives. |
+| `OPENSANDBOX_ID` | Sandbox id stamped into eBPF audit records (`sandbox_id`) and metrics; the server injects it on Docker/Kubernetes task-template paths. When a RuntimeBinding is applied via `POST /internal/init`, its `sandboxId` becomes authoritative and is also forced into every user-process environment. Lifecycle Pool requests always schedule a task template and receive this value. Direct BatchSandbox resources that omit the task template cannot inject it; with the eBPF layer enabled, execd starts the observer in a degraded "attribution pending" state and binds the id when `/internal/init` arrives. |
 | `OPENSANDBOX_EXECD_METRICS_EXTRA_ATTRS` | Optional extra metric attrs (`k=v,k2=v2`). |
 
 ### Transparent MITM CA trust
@@ -429,13 +429,13 @@ and cumulative/delta export settings, see [component telemetry configuration](/g
 
 Container templates only keep configuration that does not change during the
 container lifetime. Everything that is decided when a sandbox is created,
-resumed, or re-assigned from a resource pool arrives via `POST /init` as a
+resumed, or re-assigned from a resource pool arrives via `POST /internal/init` as a
 **RuntimeBinding**: the authoritative sandbox id, the execd API token hash,
 sandbox-level user envs, the lifecycle configuration, and telemetry
 attributes.
 
 ```json
-POST /init
+POST /internal/init
 {
   "sandboxId": "sandbox-123",
   "generation": 7,
@@ -476,7 +476,7 @@ Semantics:
   plane recycles the container.
 - **Generation**: the control-plane-assigned allocation counter. It is the
   identity of this one-shot init (echoed by `/ready` and stamped onto
-  metrics); it is not compared monotonically because a second `/init` is
+  metrics); it is not compared monotonically because a second `/internal/init` is
   always rejected.
 - **Entrypoint policy** (`entrypointPolicy`, default `keep`): by default
   execd never starts or restarts the user entrypoint.
@@ -488,33 +488,33 @@ Semantics:
   - `restart` (init mode only): retire the running entrypoint and start a
     fresh one with the RuntimeBinding env. In classic mode execd does not
     own the entrypoint, so the request is ignored with a warning.
-- **Token rotation**: `/init` receives only `sha256:<hex>` of the raw token.
+- **Token rotation**: `/internal/init` receives only `sha256:<hex>` of the raw token.
   After apply, API authentication verifies request tokens against the hash
   and the legacy `EXECD_ACCESS_TOKEN` container-env token is no longer
-  accepted. `/init` itself must not be authenticated with the token it
+  accepted. `/internal/init` itself must not be authenticated with the token it
   delivers; the first version relies on control-plane network position.
 - **Envs**: replace semantics with layering
-  `daemon env (filtered) < sandbox envs (/init) < EXECD_ENVS file < session env < request env`.
-  A later `/init` that omits a key removes it. Keys reserved by execd
+  `daemon env (filtered) < sandbox envs (/internal/init) < EXECD_ENVS file < session env < request env`.
+  A later `/internal/init` that omits a key removes it. Keys reserved by execd
   (`EXECD_ACCESS_TOKEN`, `JUPYTER_TOKEN`, ...) are rejected.
 - **Lifecycle**: when the `lifecycle` field is omitted, the template-level
   configuration keeps applying; when present (even empty), it replaces it.
   Binding a new generation stops the previous periodic hooks before preStart
   runs.
-- **Telemetry**: the OTLP exporter is created at execd startup; `/init` only
+- **Telemetry**: the OTLP exporter is created at execd startup; `/internal/init` only
   updates the dynamic attributes. Metrics are stamped with the current
   `sandbox_id`, `generation`, and the request's attributes at record time.
 
-Before a successful `/init`, only `/ping`, `/ready`, and `/init` are served.
+Before a successful `/internal/init`, only `/ping`, `/ready`, and `/internal/init` are served.
 
 Compatibility:
 
 - **Legacy control planes**: when `--runtime-init` / `EXECD_RUNTIME_INIT` is
   not set, execd keeps the template-driven startup (preStart + entrypoint at
-  boot, container-env token). `/init` is still accepted any time and becomes
+  boot, container-env token). `/internal/init` is still accepted any time and becomes
   authoritative on apply.
 - **Resource-pool mode** sets `EXECD_RUNTIME_INIT=1`: execd skips the
-  template-driven startup entirely and waits for `/init` (the startup
+  template-driven startup entirely and waits for `/internal/init` (the startup
   sequence above must not fall back to the legacy protocol, or envs, tokens,
   and observability attribution would leak across sandboxes).
 - New execd advertises `runtimeInit.version = 1` on
@@ -523,12 +523,12 @@ Compatibility:
 Gating scope by topology:
 
 - **Init mode** (`EXECD_INIT=1`, execd supervises the entrypoint): full
-  gating — nothing user-owned runs before `/init`. By default the entrypoint
+  gating — nothing user-owned runs before `/internal/init`. By default the entrypoint
   is not started (`entrypointPolicy=keep`, API-only sandbox); `restart`
   starts it with the RuntimeBinding env.
 - **Classic mode with a lifecycle config**: bootstrap waits on the lifecycle
   status file (armed with a 10-second watchdog) before launching the user
-  command, so `/init` must arrive within that window; the entrypoint itself
+  command, so `/internal/init` must arrive within that window; the entrypoint itself
   stays owned by bootstrap and is never restarted.
 - **Classic mode without a lifecycle config**: bootstrap launches the user
   command immediately, so gating cannot cover the entrypoint — only the

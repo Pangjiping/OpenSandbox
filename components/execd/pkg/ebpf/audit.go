@@ -104,7 +104,7 @@ type Observer struct {
 // and message describe what is actually enforced (for the capabilities
 // endpoint). An empty sandboxID is allowed for resource-pool containers that
 // cannot inject OPENSANDBOX_ID at template time: the observer starts in a
-// degraded "attribution pending" state and POST /init completes it via
+// degraded "attribution pending" state and POST /internal/init completes it via
 // SetSandboxID.
 func Init(cfg *isolation.EbpfConfig, sandboxID string) (state, message string) {
 	disabled := func(msg string) (string, string) {
@@ -134,7 +134,7 @@ func Init(cfg *isolation.EbpfConfig, sandboxID string) (state, message string) {
 	observer.start()
 	msg := fmt.Sprintf("eBPF observation active (cgroup %d, audit file %s)", cgroupID, observer.logger.Filename)
 	if sandboxID == "" {
-		return "degraded", "eBPF observation active but sandbox_id attribution is pending runtime init (POST /init)"
+		return "degraded", "eBPF observation active but sandbox_id attribution is pending runtime init (POST /internal/init)"
 	}
 	if len(missing) > 0 {
 		// Fail-open per layer: hooks the kernel could not load/attach are
@@ -147,7 +147,7 @@ func Init(cfg *isolation.EbpfConfig, sandboxID string) (state, message string) {
 	return "active", msg
 }
 
-// activeObserver references the running observer so POST /init can bind the
+// activeObserver references the running observer so POST /internal/init can bind the
 // sandbox ID after execd has started (resource-pool fast path has no
 // OPENSANDBOX_ID at template time).
 var activeObserver atomic.Pointer[Observer]

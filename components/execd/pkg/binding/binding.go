@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package binding holds the RuntimeBinding applied by POST /init: the
+// Package binding holds the RuntimeBinding applied by POST /internal/init: the
 // sandbox-scoped parameters (sandbox ID, API token hash, user envs, telemetry
 // attributes) that are only known when a sandbox is created, resumed, or
 // re-assigned from a resource pool. The binding is swapped atomically so

@@ -21,7 +21,7 @@ import (
 // Reset terminates and clears every user-facing session: jupyter contexts
 // and kernels, foreground/background commands, bash sessions, and PTY
 // sessions. It is best effort — teardown errors are logged, not returned —
-// and is used by POST /init to stop any pre-init user workloads (the legacy
+// and is used by POST /internal/init to stop any pre-init user workloads (the legacy
 // fallback path may have started the template-driven startup already) before
 // applying the RuntimeBinding. Isolated sessions are owned by the
 // IsolatedRunner and are closed separately.

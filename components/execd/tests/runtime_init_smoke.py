@@ -15,7 +15,7 @@
 # limitations under the License.
 
 """
-Smoke tests for the execd runtime-init API (POST /init, GET /ready).
+Smoke tests for the execd runtime-init API (POST /internal/init, GET /ready).
 
 Prerequisites:
 - execd server running locally with the mode under test
@@ -23,7 +23,7 @@ Prerequisites:
     MODE          "gated" (EXECD_RUNTIME_INIT=1) or "legacy" (fallback path)
     BASE_URL      e.g. http://localhost:44773
     LEGACY_TOKEN  value of the server's EXECD_ACCESS_TOKEN
-    NEW_TOKEN     raw token whose sha256 the /init payload delivers
+    NEW_TOKEN     raw token whose sha256 the /internal/init payload delivers
 """
 
 import hashlib
@@ -139,13 +139,13 @@ def smoke_gated():
         f"gated /metrics with legacy token expected 503, got {r.status_code}",
     )
 
-    # A malformed /init must not consume the one-shot slot.
-    r = requests.post(f"{BASE_URL}/init", json={"sandboxId": "x", "generation": 0}, timeout=5)
-    expect(r.status_code == 400, f"invalid /init expected 400, got {r.status_code}")
+    # A malformed /internal/init must not consume the one-shot slot.
+    r = requests.post(f"{BASE_URL}/internal/init", json={"sandboxId": "x", "generation": 0}, timeout=5)
+    expect(r.status_code == 400, f"invalid /internal/init expected 400, got {r.status_code}")
 
     # The valid call initializes.
-    r = requests.post(f"{BASE_URL}/init", json=init_payload(), timeout=30)
-    expect(r.status_code == 200, f"/init failed: {r.status_code} {r.text}")
+    r = requests.post(f"{BASE_URL}/internal/init", json=init_payload(), timeout=30)
+    expect(r.status_code == 200, f"/internal/init failed: {r.status_code} {r.text}")
     body = r.json()
     expect(body.get("status") == "initialized", f"unexpected init body: {body}")
 
@@ -164,16 +164,16 @@ def smoke_gated():
     r = requests.get(f"{BASE_URL}/metrics", headers=auth(NEW_TOKEN), timeout=5)
     expect(r.status_code == 200, f"new-token /metrics expected 200, got {r.status_code}")
 
-    # /init envs must reach user processes.
+    # /internal/init envs must reach user processes.
     out = run_background_command(NEW_TOKEN, 'printf %s "$SMOKE_INIT_VAR"')
-    expect("bound-by-init" in out, f"/init envs did not reach the command: {out!r}")
+    expect("bound-by-init" in out, f"/internal/init envs did not reach the command: {out!r}")
 
     # Strictly one-shot: identical and different retries all conflict.
-    r = requests.post(f"{BASE_URL}/init", json=init_payload(), timeout=5)
+    r = requests.post(f"{BASE_URL}/internal/init", json=init_payload(), timeout=5)
     expect(r.status_code == 409, f"identical retry expected 409, got {r.status_code}")
     expect(r.json().get("code") == "ALREADY_INITIALIZED", f"unexpected 409 body: {r.text}")
     r = requests.post(
-        f"{BASE_URL}/init", json=init_payload(sandboxId="sandbox-other", generation=9), timeout=5
+        f"{BASE_URL}/internal/init", json=init_payload(sandboxId="sandbox-other", generation=9), timeout=5
     )
     expect(r.status_code == 409, f"different-identity retry expected 409, got {r.status_code}")
 
@@ -192,15 +192,15 @@ def smoke_legacy():
         time.sleep(0.2)
     expect(r.json().get("initialized") is True, "legacy ready must be initialized")
 
-    # Legacy auth still active before /init.
+    # Legacy auth still active before /internal/init.
     r = requests.get(f"{BASE_URL}/metrics", timeout=5)
     expect(r.status_code == 401, f"unauthenticated /metrics expected 401, got {r.status_code}")
     r = requests.get(f"{BASE_URL}/metrics", headers=auth(LEGACY_TOKEN), timeout=5)
     expect(r.status_code == 200, f"legacy-token /metrics expected 200, got {r.status_code}")
 
-    # A late /init is accepted and becomes authoritative.
-    r = requests.post(f"{BASE_URL}/init", json=init_payload(), timeout=30)
-    expect(r.status_code == 200, f"/init failed: {r.status_code} {r.text}")
+    # A late /internal/init is accepted and becomes authoritative.
+    r = requests.post(f"{BASE_URL}/internal/init", json=init_payload(), timeout=30)
+    expect(r.status_code == 200, f"/internal/init failed: {r.status_code} {r.text}")
 
     r = requests.get(f"{BASE_URL}/metrics", headers=auth(LEGACY_TOKEN), timeout=5)
     expect(r.status_code == 401, f"legacy-token /metrics expected 401 after init, got {r.status_code}")
@@ -208,8 +208,8 @@ def smoke_legacy():
     expect(r.status_code == 200, f"new-token /metrics expected 200 after init, got {r.status_code}")
 
     # Still strictly one-shot.
-    r = requests.post(f"{BASE_URL}/init", json=init_payload(), timeout=5)
-    expect(r.status_code == 409, f"second /init expected 409, got {r.status_code}")
+    r = requests.post(f"{BASE_URL}/internal/init", json=init_payload(), timeout=5)
+    expect(r.status_code == 409, f"second /internal/init expected 409, got {r.status_code}")
 
 
 def main():

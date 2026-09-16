@@ -19,9 +19,9 @@ import (
 )
 
 // RuntimeInitRequest carries the sandbox-scoped parameters applied by
-// POST /init. Container templates only keep configuration that does not
+// POST /internal/init. Container templates only keep configuration that does not
 // change during the container lifetime; everything tied to a sandbox
-// allocation arrives here. /init is strictly one-shot: the first valid call
+// allocation arrives here. /internal/init is strictly one-shot: the first valid call
 // consumes the init slot for the container's lifetime.
 type RuntimeInitRequest struct {
 	// SandboxID is the authoritative sandbox identity, replacing any
@@ -30,7 +30,7 @@ type RuntimeInitRequest struct {
 
 	// Generation is the control-plane-assigned allocation counter. It acts
 	// as the identity of this one-shot init (reported on /ready and in
-	// metrics); it is not compared monotonically because a second /init is
+	// metrics); it is not compared monotonically because a second /internal/init is
 	// always rejected.
 	Generation uint64 `json:"generation"`
 
@@ -52,7 +52,7 @@ type RuntimeInitRequest struct {
 	AccessTokenHash string `json:"accessTokenHash,omitempty"`
 
 	// Envs are the sandbox-level user envs, applied with replace semantics:
-	// keys omitted from a later /init are removed.
+	// keys omitted from a later /internal/init are removed.
 	Envs map[string]string `json:"envs,omitempty"`
 
 	// Lifecycle replaces the creation-time lifecycle configuration

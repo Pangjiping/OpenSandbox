@@ -27,12 +27,16 @@ import (
 )
 
 // Paths that must be reachable before the RuntimeBinding is applied (and
-// without the API access token): liveness, readiness, and the init call
-// itself.
+// without the API access token): liveness, readiness, and the internal
+// runtime-init call.
+//
+// /internal/init is an internal control-plane protocol: it is not part of
+// the public execd API surface and carries no external compatibility
+// guarantee.
 var preInitPaths = map[string]struct{}{
-	"/ping":  {},
-	"/ready": {},
-	"/init":  {},
+	"/ping":          {},
+	"/ready":         {},
+	"/internal/init": {},
 }
 
 func NewRouter(accessToken string) *gin.Engine {
@@ -45,7 +49,7 @@ func NewRouter(accessToken string) *gin.Engine {
 	r.Use(logMiddleware(), otelHTTPMetricsMiddleware(), runtimeInitGate(), accessTokenMiddleware(accessToken), ProxyMiddleware())
 
 	r.GET("/ping", controller.PingHandler)
-	r.POST("/init", withInit(func(c *controller.InitController) { c.Init() }))
+	r.POST("/internal/init", withInit(func(c *controller.InitController) { c.Init() }))
 	r.GET("/ready", withInit(func(c *controller.InitController) { c.Ready() }))
 
 	files := r.Group("/files")
@@ -172,7 +176,7 @@ func withInit(fn func(*controller.InitController)) gin.HandlerFunc {
 }
 
 // accessTokenMiddleware guards API entrypoints. Once a RuntimeBinding with a
-// token hash is applied (/init is authoritative), request tokens are verified
+// token hash is applied (/internal/init is authoritative), request tokens are verified
 // against the hash; before that, the legacy container-env token applies.
 // /init, /ready, and /ping are always reachable without the token.
 func accessTokenMiddleware(legacyToken string) gin.HandlerFunc {
@@ -194,6 +198,12 @@ func accessTokenMiddleware(legacyToken string) gin.HandlerFunc {
 			return
 		}
 
+		// TODO(runtime-init): dynamic authentication is undecided. When the
+		// binding carries no token hash (/internal/init omitted
+		// accessTokenHash), auth falls back to the legacy container-env
+		// token below. This is an internal-protocol compatibility fallback:
+		// it must not be relied on long-term, and the control plane should
+		// always deliver a token hash until a credential scheme replaces it.
 		if legacyToken == "" {
 			ctx.Next()
 			return
@@ -229,7 +239,7 @@ func runtimeInitGate() gin.HandlerFunc {
 			return
 		}
 		ctx.AbortWithStatusJSON(http.StatusServiceUnavailable, map[string]any{
-			"error": "execd is not initialized yet: POST /init must be called first",
+			"error": "execd is not initialized yet: POST /internal/init must be called first",
 		})
 	}
 }

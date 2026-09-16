@@ -29,7 +29,7 @@ func PrepareInitMode() func([]string) error {
 }
 
 // LaunchUserEntrypoint is a no-op off Linux: there is no supervised
-// entrypoint to (re)start, and POST /init only applies the RuntimeBinding.
+// entrypoint to (re)start, and POST /internal/init only applies the RuntimeBinding.
 func LaunchUserEntrypoint([]string) error { return nil }
 
 // EntrypointRunning is always false off Linux: no supervised entrypoint.

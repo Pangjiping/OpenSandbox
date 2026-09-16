@@ -425,7 +425,7 @@ func exitStatusError(ws syscall.WaitStatus) error {
 // PrepareInitMode activates the init/reaper duties and registers signal
 // handling before any managed child starts. The returned function launches
 // (or replaces) the user entrypoint; the legacy startup path calls it once
-// and POST /init calls it again when a RuntimeBinding reassigns the sandbox.
+// and POST /internal/init calls it again when a RuntimeBinding reassigns the sandbox.
 func PrepareInitMode() func([]string) error {
 	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
 		log.Warn("init: PR_SET_DUMPABLE(0) failed: %v", err)
@@ -591,7 +591,7 @@ func EntrypointRunning() bool {
 
 // StopUserProcesses terminates every child process execd owns. In init mode
 // this includes the entrypoint and all session process groups (reaper
-// tracked); POST /init uses it to stop any pre-init workloads before
+// tracked); POST /internal/init uses it to stop any pre-init workloads before
 // applying the binding. With keepEntrypoint the supervised entrypoint (and
 // only it) is spared — entrypointPolicy=keep adopts the running process.
 // Outside init mode, sessions tear themselves down through Controller.Reset.
@@ -627,7 +627,7 @@ func forwardInitSignals(sigCh chan os.Signal) {
 			if s == syscall.SIGTERM {
 				if entry == nil && !entrypoints.isRestarting() {
 					// No entrypoint has ever been launched (runtime-init
-					// gating before POST /init): the container is being
+					// gating before POST /internal/init): the container is being
 					// stopped before any workload exists.
 					log.Info("init: received SIGTERM before any entrypoint; stopping children and exiting")
 					stopChildrenExcept(nil)

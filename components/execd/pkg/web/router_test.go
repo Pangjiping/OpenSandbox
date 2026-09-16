@@ -35,7 +35,7 @@ func newMiddlewareTestRouter(t *testing.T, legacyToken string) *gin.Engine {
 	r.Use(runtimeInitGate(), accessTokenMiddleware(legacyToken))
 	r.GET("/ping", okHandler)
 	r.GET("/ready", okHandler)
-	r.POST("/init", okHandler)
+	r.POST("/internal/init", okHandler)
 	r.GET("/api", okHandler)
 	return r
 }
@@ -89,8 +89,8 @@ func TestAccessTokenBindingHashIsAuthoritative(t *testing.T) {
 	r := newMiddlewareTestRouter(t, "legacy-token")
 
 	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodGet, "/api", "rotated-token").Code)
-	// The legacy container-env token is no longer accepted once /init
-	// provided a token hash (/init is the authoritative source).
+	// The legacy container-env token is no longer accepted once /internal/init
+	// provided a token hash (/internal/init is the authoritative source).
 	require.Equal(t, http.StatusUnauthorized, doRequest(t, r, http.MethodGet, "/api", "legacy-token").Code)
 	require.Equal(t, http.StatusUnauthorized, doRequest(t, r, http.MethodGet, "/api", "").Code)
 }
@@ -102,10 +102,10 @@ func TestAccessTokenPreInitPathsSkipToken(t *testing.T) {
 	})
 	r := newMiddlewareTestRouter(t, "legacy-token")
 
-	// /ping, /ready, /init stay reachable without the API token.
+	// /ping, /ready, /internal/init stay reachable without the API token.
 	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodGet, "/ping", "").Code)
 	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodGet, "/ready", "").Code)
-	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodPost, "/init", "").Code)
+	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodPost, "/internal/init", "").Code)
 }
 
 func TestRuntimeInitGateBlocksUninitializedAPIs(t *testing.T) {
@@ -113,12 +113,12 @@ func TestRuntimeInitGateBlocksUninitializedAPIs(t *testing.T) {
 	withTestBinding(t, nil)
 	r := newMiddlewareTestRouter(t, "")
 
-	// Business APIs are unavailable before /init...
+	// Business APIs are unavailable before /internal/init...
 	require.Equal(t, http.StatusServiceUnavailable, doRequest(t, r, http.MethodGet, "/api", "").Code)
 	// ...while liveness, readiness, and init stay reachable.
 	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodGet, "/ping", "").Code)
 	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodGet, "/ready", "").Code)
-	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodPost, "/init", "").Code)
+	require.Equal(t, http.StatusOK, doRequest(t, r, http.MethodPost, "/internal/init", "").Code)
 }
 
 func TestRuntimeInitGateOpenAfterInit(t *testing.T) {
@@ -150,9 +150,9 @@ func TestNewRouterServesInitRoutes(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	require.Contains(t, w.Body.String(), `"initialized":false`)
 
-	// /init without a manager reports unavailability (this process never
+	// /internal/init without a manager reports unavailability (this process never
 	// wired the manager), not a routing failure.
-	w = doRequest(t, r, http.MethodPost, "/init", `{"sandboxId":"s","generation":1}`)
+	w = doRequest(t, r, http.MethodPost, "/internal/init", `{"sandboxId":"s","generation":1}`)
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
 

@@ -35,11 +35,11 @@ import (
 	"github.com/alibaba/opensandbox/execd/pkg/web/model"
 )
 
-// ErrAlreadyInitialized is returned when /init is called after the one-shot
+// ErrAlreadyInitialized is returned when /internal/init is called after the one-shot
 // init slot has been consumed.
 var ErrAlreadyInitialized = errors.New("runtime init already accepted")
 
-// maxInitTelemetryAttrs bounds the /init telemetry attribute map.
+// maxInitTelemetryAttrs bounds the /internal/init telemetry attribute map.
 const maxInitTelemetryAttrs = 64
 
 // RuntimeInitConfig wires the manager to the process-wide collaborators it
@@ -60,7 +60,7 @@ type RuntimeInitConfig struct {
 	EntrypointArgs []string
 
 	// TemplateLifecycle is the lifecycle config from the container template
-	// (OPENSANDBOX_LIFECYCLE / persisted file). Used when /init omits the
+	// (OPENSANDBOX_LIFECYCLE / persisted file). Used when /internal/init omits the
 	// lifecycle field.
 	TemplateLifecycle *lifecycle.Config
 
@@ -69,10 +69,10 @@ type RuntimeInitConfig struct {
 	AppendStartupStatus func(string) error
 }
 
-// RuntimeInitManager serializes POST /init handling and owns the active
+// RuntimeInitManager serializes POST /internal/init handling and owns the active
 // periodic-hook manager. It also tracks readiness for GET /ready.
 //
-// /init is strictly one-shot: the first VALID call consumes the init slot
+// /internal/init is strictly one-shot: the first VALID call consumes the init slot
 // (accepted) regardless of whether the apply succeeds. Subsequent calls are
 // rejected with 409 without waiting; a failed apply is not retried — the
 // control plane recycles the container.
@@ -105,7 +105,7 @@ func GetRuntimeInitManager() *RuntimeInitManager {
 }
 
 // SetPeriodic hands a legacy-startup periodic manager to the manager so
-// shutdown and /init swaps stop the right instance.
+// shutdown and /internal/init swaps stop the right instance.
 func (m *RuntimeInitManager) SetPeriodic(manager *lifecycle.PeriodicManager) {
 	if m == nil {
 		return
@@ -134,7 +134,7 @@ func (m *RuntimeInitManager) stopPeriodicLocked() {
 }
 
 // MarkReady records that user workloads are allowed to run. The legacy
-// startup path calls it after preStart + entrypoint; the /init path after
+// startup path calls it after preStart + entrypoint; the /internal/init path after
 // applying the binding.
 func (m *RuntimeInitManager) MarkReady() {
 	if m == nil {
@@ -143,7 +143,7 @@ func (m *RuntimeInitManager) MarkReady() {
 	m.ready.Store(true)
 }
 
-// InitController serves POST /init and GET /ready.
+// InitController serves POST /internal/init and GET /ready.
 type InitController struct {
 	*basicController
 }
@@ -170,7 +170,7 @@ func (c *InitController) Ready() {
 	c.ctx.JSON(status, resp)
 }
 
-// Init implements POST /init: validate, consume the one-shot init slot,
+// Init implements POST /internal/init: validate, consume the one-shot init slot,
 // apply the RuntimeBinding, run preStart, start the entrypoint, and mark
 // execd ready.
 func (c *InitController) Init() {
@@ -199,7 +199,7 @@ func (c *InitController) Init() {
 	})
 }
 
-// Apply runs the one-shot /init sequence. Status mapping: 400 invalid
+// Apply runs the one-shot /internal/init sequence. Status mapping: 400 invalid
 // request (the slot is not consumed), 409 the init slot was already
 // consumed by any earlier valid call, 500 startup failure after apply (no
 // retry: the slot stays consumed).
@@ -216,7 +216,7 @@ func (m *RuntimeInitManager) Apply(req *model.RuntimeInitRequest) ([]string, mod
 	// waiting; the control plane reconciles via GET /ready.
 	if !m.accepted.CompareAndSwap(false, true) {
 		return nil, model.ErrorCodeAlreadyInitialized, http.StatusConflict,
-			fmt.Errorf("%w; /init is strictly one-shot (see GET /ready)", ErrAlreadyInitialized)
+			fmt.Errorf("%w; /internal/init is strictly one-shot (see GET /ready)", ErrAlreadyInitialized)
 	}
 
 	m.mu.Lock()
@@ -309,7 +309,7 @@ func (m *RuntimeInitManager) Apply(req *model.RuntimeInitRequest) ([]string, mod
 // launching the user command; the init-mode topology has no such file).
 // Status-file failures are logged, never fatal: the file may already have
 // been consumed and removed by bootstrap. A preStart failure itself is
-// returned so /init reports 500 and execd stays uninitialized (the one-shot
+// returned so /internal/init reports 500 and execd stays uninitialized (the one-shot
 // slot stays consumed; the control plane recycles the container).
 func (m *RuntimeInitManager) runPreStart(cfg *lifecycle.Config) error {
 	if cfg != nil && cfg.PreStart != nil {
@@ -334,7 +334,7 @@ func (m *RuntimeInitManager) appendStartupStatus(status string) {
 	}
 }
 
-// validateInitRequest sanity-checks the /init payload. Env keys colliding
+// validateInitRequest sanity-checks the /internal/init payload. Env keys colliding
 // with execd's own config/credential names are rejected outright; reserved
 // telemetry attribute keys are dropped with a warning.
 func validateInitRequest(req *model.RuntimeInitRequest) ([]string, error) {
@@ -395,7 +395,7 @@ func validateInitEnvs(envs map[string]string) error {
 			return fmt.Errorf("env key %q must not exceed 256 characters", key)
 		}
 		if _, found := blocked[strings.ToUpper(key)]; found {
-			return fmt.Errorf("env key %q is reserved by execd and must not be set via /init", key)
+			return fmt.Errorf("env key %q is reserved by execd and must not be set via /internal/init", key)
 		}
 	}
 	return nil

@@ -144,7 +144,7 @@ func decodeConfig(raw []byte) (*Config, error) {
 }
 
 // ValidateConfig validates a lifecycle config decoded outside the standard
-// LoadConfig transport (e.g. the POST /init request body). A zero version is
+// LoadConfig transport (e.g. the POST /internal/init request body). A zero version is
 // defaulted to the current config version.
 func ValidateConfig(cfg *Config) error {
 	if cfg == nil {

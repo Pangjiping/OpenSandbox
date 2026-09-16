@@ -204,7 +204,7 @@ var execdSharedAttrs = sync.OnceValue(func() []attribute.KeyValue {
 
 // bindingDynamicAttrs renders the current RuntimeBinding as metric
 // attributes: the authoritative sandbox_id and generation, plus the extra
-// attributes delivered by POST /init.
+// attributes delivered by POST /internal/init.
 func bindingDynamicAttrs(b *binding.RuntimeBinding) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, len(b.TelemetryAttrs)+2)
 	if b.SandboxID != "" {

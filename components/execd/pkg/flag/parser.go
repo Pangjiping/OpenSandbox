@@ -110,7 +110,7 @@ func InitFlags() {
 		}
 		RuntimeInit = enabled
 	}
-	flag.BoolVar(&RuntimeInit, "runtime-init", RuntimeInit, "Gate preStart and the entrypoint on POST /init; until then only /ping, /ready, and /init are served")
+	flag.BoolVar(&RuntimeInit, "runtime-init", RuntimeInit, "Gate preStart and the entrypoint on POST /internal/init; until then only /ping, /ready, and /internal/init are served")
 
 	// Parse flags - these will override environment variables if provided
 	flag.Parse()

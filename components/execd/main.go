@@ -242,9 +242,9 @@ func runHTTPServer(
 	startup := func() error {
 		if flag.RuntimeInit {
 			// Runtime-init mode: preStart and the entrypoint are applied by
-			// POST /init; only the lifecycle/startup probe surface is set up
+			// POST /internal/init; only the lifecycle/startup probe surface is set up
 			// here.
-			log.Info("execd: runtime-init mode: waiting for POST /init before starting user workloads")
+			log.Info("execd: runtime-init mode: waiting for POST /internal/init before starting user workloads")
 			return nil
 		}
 		preStartCtx := serverCtx
