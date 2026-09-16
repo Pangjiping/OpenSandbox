@@ -11,4 +11,4 @@
 # Bump by updating `commit` to a full 40-character SHA, then run:
 #   manifests/release/build-fast-sandbox.sh --sync-crds
 repo: https://github.com/opensandbox-group/fast-sandbox.git
-commit: 4211a8ced2f0ce8baa41e4c3cfab64b1db3347d3
+commit: 1a420a224afc56b7e8adb3da2c1f03aefa98b58c
