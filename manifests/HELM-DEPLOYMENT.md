@@ -448,10 +448,20 @@ helm install opensandbox manifests/charts/opensandbox \
   --set fast-sandbox.enabled=true
 ```
 
-The route signing keys default to the published development-only test keys
-(`fast-sandbox.io/development-only: "true"` label). For production, set
-`routeKeys.existingSecret` or `routeKeys.privateKey` / `routeKeys.publicKey`
-with `routeKeys.developmentOnly=false`. Point the OpenSandbox server's
+Two key systems apply (do not conflate them):
+
+- The fast-sandbox controller's Ed25519 route keys default to the published
+  development-only test keys (`fast-sandbox.io/development-only: "true"`
+  label). For production, set `routeKeys.existingSecret` or
+  `routeKeys.privateKey` / `routeKeys.publicKey` with
+  `routeKeys.developmentOnly=false`.
+- The OpenSandbox f1.* route-scope ring is HMAC-SHA256 and independent: the
+  server signs with `[ingress.secure_access]` (`server.gateway.secureAccess`
+  in charts/server) and the ingress gateway verifies with the same symmetric
+  ring (`gateway.secureAccess` in charts/ingress-gateway). Configure both
+  with matching key material for production.
+
+Point the OpenSandbox server's
 `[runtime]`/fsb configuration and the ingress gateway's
 `--provider-type=fast-sandbox` at the deployed FastPath endpoint to
 serve sandboxes through this runtime (see

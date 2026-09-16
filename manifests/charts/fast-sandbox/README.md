@@ -82,8 +82,8 @@ The following table lists the configurable parameters of the chart and their def
 | routeKeys.create | bool | `true` | Specifies whether the fast-sandbox-route-keys Secret is created here |
 | routeKeys.developmentOnly | bool | `true` | Mark the Secret with fast-sandbox.io/development-only (set false when provisioning real keys via privateKey/publicKey) |
 | routeKeys.existingSecret | string | `""` | Use an existing Secret instead of creating one (its keys must be private-key / public-key) |
-| routeKeys.privateKey | string | `"nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A="` | Ed25519 private key (base64) used to sign f1.* gateway routes |
-| routeKeys.publicKey | string | `"11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="` | Ed25519 public key (base64) used to verify f1.* gateway routes |
+| routeKeys.privateKey | string | `"nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A="` | Ed25519 private key (base64) used by the controller's route signer |
+| routeKeys.publicKey | string | `"11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="` | Ed25519 public key (base64) used by the controller's route verifier |
 | runtimeAgent.dartPeerPort | int | `9000` | DART P2P peer listen port (also the headless dart Service port) |
 | runtimeAgent.enabled | bool | `true` | Whether the runtime-agent DaemonSet + dart headless Service are installed |
 | runtimeAgent.image.pullPolicy | string | `"IfNotPresent"` | Image pull policy |
@@ -96,9 +96,12 @@ The following table lists the configurable parameters of the chart and their def
 | runtimeEnvironments | string | `"version: v1alpha2\nenvironments:\n  default:\n    containerd:\n      socket: /run/containerd/containerd.sock\n      namespace: k8s.io\n      defaultSnapshotter: overlayfs\n      root: /var/lib/containerd\n    kubelet:\n      root: /var/lib/kubelet\n    runtimes:\n      container: {}\n      gvisor: {}\n      kata-qemu: {}\n      kata-clh: {}\n      kata-fc:\n        snapshotter: blockfile\n        configPath: /opt/kata/share/defaults/kata-containers/configuration-fc-fast-sandbox.toml\n      kata-dragonball:\n        configPath: /opt/kata/share/defaults/kata-containers/runtime-rs/configuration-dragonball-fast-sandbox.toml\n      boxlite: {}\n      firecracker:\n        firecracker:\n          binaryPath: /opt/fast-sandbox/firecracker/firecracker\n          jailerPath: /opt/fast-sandbox/firecracker/jailer\n          kernelPath: /opt/fast-sandbox/firecracker/vmlinux.bin\n          rootfsPath: /var/lib/fast-sandbox/firecracker/rootfs\n          stateRoot: /var/lib/fast-sandbox/firecracker"` |  |
 | systemNamespace | string | `"fast-sandbox-system"` | Namespace for the fast-sandbox control plane workloads. Must match base.fastSandbox.namespaces.system (where the ServiceAccounts live). |
 
-## Route signing keys
+## Signing keys: two independent systems
 
-The controller signs the `f1.*` gateway routes with the Ed25519 private key from the `fast-sandbox-route-keys` Secret; the OpenSandbox ingress gateway verifies them with the public key (`ingress-gateway --secure-access-keys`). By default the chart creates this Secret with the published development-only test keys (labeled `fast-sandbox.io/development-only: "true"`). For production, either provision the Secret yourself and set `routeKeys.existingSecret`, or set `routeKeys.privateKey` / `routeKeys.publicKey` with `routeKeys.developmentOnly=false`.
+There are two distinct key systems in a fast-sandbox-on-OpenSandbox deployment; do not mix them:
+
+1. **fast-sandbox controller route keys (Ed25519)** — the `fast-sandbox-route-keys` Secret this chart creates (consumed by the controller as `FAST_SANDBOX_ROUTE_SIGNING_PRIVATE_KEY` / `FAST_SANDBOX_ROUTE_VERIFY_PUBLIC_KEY`). By default it holds the published development-only test keys (labeled `fast-sandbox.io/development-only: "true"`). For production, either provision the Secret yourself and set `routeKeys.existingSecret`, or set `routeKeys.privateKey` / `routeKeys.publicKey` with `routeKeys.developmentOnly=false`.
+2. **OpenSandbox f1.* route-scope key ring (HMAC-SHA256)** — the server signs sandbox endpoint scopes with its `[ingress.secure_access]` key (`server.gateway.secureAccess` in charts/server) and the ingress gateway verifies them with the same symmetric ring (`--secure-access-keys`, `gateway.secureAccess` in charts/ingress-gateway). An operator must configure this ring on both charts with matching key material; the controller's Ed25519 public key must NOT be used here.
 
 ## Uninstalling the Chart
 

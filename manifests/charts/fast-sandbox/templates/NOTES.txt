@@ -29,7 +29,9 @@ Next steps:
      against it (see docs/ and examples/).
 {{- if and .Values.routeKeys.create .Values.routeKeys.developmentOnly }}
 
-WARNING: the route signing keys in fast-sandbox-route-keys are the
-published development-only test keys. Provision production keys via
-routeKeys.existingSecret or routeKeys.privateKey/publicKey.
+WARNING: the Ed25519 controller route keys in fast-sandbox-route-keys are
+the published development-only test keys. Provision production keys via
+routeKeys.existingSecret or routeKeys.privateKey/publicKey. (This is not
+the OpenSandbox f1.* HMAC route-scope ring — configure that separately on
+the server and ingress-gateway charts.)
 {{- end }}

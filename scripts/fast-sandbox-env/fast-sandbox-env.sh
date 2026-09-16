@@ -504,6 +504,12 @@ ensure_fsb() {
 		git -C "$FSB_DIR" rev-parse --verify --quiet "$FSB_COMMIT^{commit}" >/dev/null \
 			|| die "pinned commit $FSB_COMMIT is not reachable from $FSB_REPO"
 	fi
+	# Resolve the pinned SHA or the fork-override ref (branch/tag) to an
+	# exact commit once, so every later comparison is SHA-vs-SHA. Branch
+	# names live on remote-tracking refs in a fresh clone.
+	FSB_COMMIT="$(git -C "$FSB_DIR" rev-parse --verify --quiet "${FSB_COMMIT}^{commit}" ||
+		git -C "$FSB_DIR" rev-parse --verify --quiet "origin/${FSB_COMMIT}^{commit}")" \
+		|| die "cannot resolve fast-sandbox ref '${FSB_REF:-<pinned commit>}' to a commit"
 	if [[ "$(git -C "$FSB_DIR" rev-parse HEAD)" != "$FSB_COMMIT" ]]; then
 		git -C "$FSB_DIR" clean -ffdx
 	fi

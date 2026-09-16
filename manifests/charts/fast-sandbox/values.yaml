@@ -81,19 +81,23 @@ artifactStore:
   # -- S3-compatible endpoint (empty = AWS default)
   endpoint: ""
 
-# Route signing keys shared by the controller (signing) and the OpenSandbox
-# ingress gateway (verification). Development-only RFC 8032 test keys by
-# default; production must provision real keys via routeKeys.existingSecret
-# or explicit values.
+# Ed25519 keypair consumed by the fast-sandbox controller itself
+# (FAST_SANDBOX_ROUTE_SIGNING_PRIVATE_KEY / FAST_SANDBOX_ROUTE_VERIFY_PUBLIC_KEY).
+# This is NOT the OpenSandbox f1.* route-scope key ring: those f1.* scopes
+# are HMAC-SHA256, signed by the lifecycle server ([ingress.secure_access],
+# server.gateway.* in charts/server) and verified by the ingress gateway
+# (--secure-access-keys, gateway.secureAccess in charts/ingress-gateway).
+# Development-only RFC 8032 test keys by default; production must provision
+# real keys via routeKeys.existingSecret or explicit values.
 routeKeys:
   # -- Specifies whether the fast-sandbox-route-keys Secret is created here
   create: true
   # -- Use an existing Secret instead of creating one (its keys must be
   # private-key / public-key)
   existingSecret: ""
-  # -- Ed25519 private key (base64) used to sign f1.* gateway routes
+  # -- Ed25519 private key (base64) used by the controller's route signer
   privateKey: nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A=
-  # -- Ed25519 public key (base64) used to verify f1.* gateway routes
+  # -- Ed25519 public key (base64) used by the controller's route verifier
   publicKey: 11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=
   # -- Mark the Secret with fast-sandbox.io/development-only (set false when
   # provisioning real keys via privateKey/publicKey)

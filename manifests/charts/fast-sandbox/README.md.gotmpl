@@ -52,9 +52,12 @@ helm install opensandbox manifests/charts/opensandbox \
 
 {{ template "chart.valuesSection" . }}
 
-## Route signing keys
+## Signing keys: two independent systems
 
-The controller signs the `f1.*` gateway routes with the Ed25519 private key from the `fast-sandbox-route-keys` Secret; the OpenSandbox ingress gateway verifies them with the public key (`ingress-gateway --secure-access-keys`). By default the chart creates this Secret with the published development-only test keys (labeled `fast-sandbox.io/development-only: "true"`). For production, either provision the Secret yourself and set `routeKeys.existingSecret`, or set `routeKeys.privateKey` / `routeKeys.publicKey` with `routeKeys.developmentOnly=false`.
+There are two distinct key systems in a fast-sandbox-on-OpenSandbox deployment; do not mix them:
+
+1. **fast-sandbox controller route keys (Ed25519)** — the `fast-sandbox-route-keys` Secret this chart creates (consumed by the controller as `FAST_SANDBOX_ROUTE_SIGNING_PRIVATE_KEY` / `FAST_SANDBOX_ROUTE_VERIFY_PUBLIC_KEY`). By default it holds the published development-only test keys (labeled `fast-sandbox.io/development-only: "true"`). For production, either provision the Secret yourself and set `routeKeys.existingSecret`, or set `routeKeys.privateKey` / `routeKeys.publicKey` with `routeKeys.developmentOnly=false`.
+2. **OpenSandbox f1.* route-scope key ring (HMAC-SHA256)** — the server signs sandbox endpoint scopes with its `[ingress.secure_access]` key (`server.gateway.secureAccess` in charts/server) and the ingress gateway verifies them with the same symmetric ring (`--secure-access-keys`, `gateway.secureAccess` in charts/ingress-gateway). An operator must configure this ring on both charts with matching key material; the controller's Ed25519 public key must NOT be used here.
 
 ## Uninstalling the Chart
 

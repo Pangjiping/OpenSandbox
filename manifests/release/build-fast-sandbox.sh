@@ -205,8 +205,6 @@ log "fast-sandbox checkout ready @ $(git -C "$FSB_SRC_DIR" rev-parse --short HEA
 
 # --- build ------------------------------------------------------------------------------------
 
-command -v docker >/dev/null 2>&1 || die "docker not found in PATH"
-
 build_images() {
 	local entry image component var
 	for entry in "${IMAGES[@]}"; do
