@@ -33,6 +33,13 @@ spec:
         - --health-probe-bind-address=:5758
         - --fastpath-bind-address=:9090
         - --sandboxtemplate-builder-image={{ .Values.controller.sandboxtemplateBuilderImage }}
+        # The controller's default namespace for the platform
+        # runtime-environment ConfigMap is the upstream-hardcoded
+        # fast-sandbox-system; pin it to this chart's system namespace so
+        # the runtime plans resolve from the ConfigMap we render here
+        # (falling back to the built-in catalog would inject /usr/local/bin
+        # asset paths the node readiness loop never installs).
+        - --runtime-environment-namespace={{ include "fast-sandbox.namespace" . }}
         env:
         - name: FAST_SANDBOX_ROUTE_SIGNING_PRIVATE_KEY
           valueFrom:
