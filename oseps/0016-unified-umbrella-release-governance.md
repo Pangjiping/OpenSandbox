@@ -254,15 +254,18 @@ that is not a qualifying CVE waits for the next line birth (≤ 2 weeks).
 ### Bill of Materials (BOM)
 
 Every release adds workflow-authored, Sigstore-signed files on the
-release branch, flat under `releases/` (the umbrella is the only
+release branch, flat under `docs/releases/` (the umbrella is the only
 release train, so no per-product nesting):
 
 ```
-releases/
+docs/releases/
   1.1.0.yaml               # BOM — authoritative for image digests
   1.1.0.md                 # release notes — authoritative copy
   1.1.0.yaml.sigstore.json # BOM signature bundle
 ```
+
+Living under `docs/` means the docs site also serves the BOMs and notes
+as static assets — reachable even where GitHub is not.
 
 The BOM pins image digests (built at `release-X.Y.Z`), package
 versions (`==X.Y.Z`), Helm
@@ -295,7 +298,7 @@ the file name. It is workflow-generated, so version-string drift is
 impossible (~4 KB per release).
 
 **Release notes are hand-authored.** The release manager writes
-`releases/X.Y.Z.md` and commits it on the release branch **before**
+`docs/releases/X.Y.Z.md` and commits it on the release branch **before**
 triggering the workflow. Preflight fails if the file is missing or
 empty — a release never starts without its notes. The workflow never
 rewrites the file; it consumes it as-is for the BOM commit and the
@@ -304,7 +307,7 @@ Release mirrors the same bytes. Rationale: notes must survive org
 migrations and stay reachable for users behind GitHub-blocked networks
 (ACR mirror users), and they feed generated docs
 (`docs/community/releases.md`, compatibility matrix). Legacy-era notes
-are not backfilled — `releases/` starts at `release-1.1.0-rc.1`.
+are not backfilled — `docs/releases/` starts at `release-1.1.0-rc.1`.
 
 ### Release Workflow
 
@@ -323,7 +326,7 @@ Steps:
 
 1. **Preflight** — reuse `release-preflight.yml` (approval + commit
    reachability of the build commit `C_build`); verify
-   `releases/X.Y.Z.md` exists and is non-empty (hand-authored notes,
+   `docs/releases/X.Y.Z.md` exists and is non-empty (hand-authored notes,
    committed before the release is triggered).
 2. **Version-consistency scan** — scoped, path-listed check
    (`scripts/release/version-consistency-paths.txt`): umbrella chart
@@ -337,8 +340,8 @@ Steps:
 3. **Fan-out build** — images to staging; packages held as workflow
    artifacts. Any leg failure aborts before any publish, tag, or BOM.
 4. **BOM commit (`C_bom`)** — assemble the BOM and commit
-   `releases/X.Y.Z.yaml` on `<release_branch>` on top of `C_build`; the
-   hand-authored `releases/X.Y.Z.md` travels unchanged; no code changes.
+   `docs/releases/X.Y.Z.yaml` on `<release_branch>` on top of `C_build`; the
+   hand-authored `docs/releases/X.Y.Z.md` travels unchanged; no code changes.
 5. **Publish** — `crane tag` images to `release-X.Y.Z`; language
    packages in verify-then-continue order (PyPI → npm → NuGet → Maven
    Central last, which is irreversible); each leg verified externally

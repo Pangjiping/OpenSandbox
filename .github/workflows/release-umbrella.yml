@@ -404,5 +404,5 @@ jobs:
           gh release create "release-${VERSION}" \
             --verify-tag \
             --title "OpenSandbox ${VERSION}" \
-            --notes-file "releases/${VERSION}.md" \
-            "releases/${VERSION}.yaml"
+            --notes-file "docs/releases/${VERSION}.md" \
+            "docs/releases/${VERSION}.yaml"
