@@ -259,6 +259,7 @@ jobs:
     uses: ./.github/workflows/umbrella-packages.yml
     with:
       version: ${{ needs.resolve.outputs.version }}
+      channel: ${{ needs.resolve.outputs.channel }}
       publish: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' }}
     secrets: inherit
 
@@ -401,8 +402,10 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
+          PRERELEASE=""
+          [ "${{ needs.resolve.outputs.channel }}" = "rc" ] && PRERELEASE="--prerelease"
           gh release create "release-${VERSION}" \
-            --verify-tag \
+            --verify-tag $PRERELEASE \
             --title "OpenSandbox ${VERSION}" \
             --notes-file "docs/releases/${VERSION}.md" \
             "docs/releases/${VERSION}.yaml"

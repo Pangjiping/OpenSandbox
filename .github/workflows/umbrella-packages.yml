@@ -23,6 +23,11 @@ on:
         description: 'Umbrella version, e.g. 1.1.0'
         required: true
         type: string
+      channel:
+        description: 'stable | rc — rc publishes npm under a separate dist-tag'
+        required: false
+        type: string
+        default: stable
       publish:
         description: 'Publish held packages to public registries'
         required: false
@@ -284,10 +289,12 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+          DIST_TAG="latest"
+          [ "${{ inputs.channel }}" = "rc" ] && DIST_TAG="rc"
           publish_one() {
             local tarball="$1" package="$2"
-            echo "::group::npm publish ${package}"
-            pnpm publish "$tarball" --access public --no-git-checks
+            echo "::group::npm publish ${package} (dist-tag: ${DIST_TAG})"
+            pnpm publish "$tarball" --access public --no-git-checks --tag "$DIST_TAG"
             for i in 1 2 3 4 5; do
               if npm view "${package}@${{ inputs.version }}" version >/dev/null 2>&1; then
                 echo "verified ${package} ${{ inputs.version }} on npm"; echo "::endgroup::"; return 0
