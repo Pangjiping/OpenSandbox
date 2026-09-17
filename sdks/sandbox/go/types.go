@@ -169,8 +169,14 @@ type SandboxLifecycle struct {
 
 // CreateSandboxRequest is the request body for creating a new sandbox.
 type CreateSandboxRequest struct {
-	Image            *ImageSpec             `json:"image,omitempty"`
-	SnapshotID       string                 `json:"snapshotId,omitempty"`
+	Image      *ImageSpec `json:"image,omitempty"`
+	SnapshotID string     `json:"snapshotId,omitempty"`
+	// TemplateID creates the sandbox from a Succeeded fsb template. It is
+	// mutually exclusive with Image and SnapshotID; in template mode the
+	// workload shape is fixed by the template's golden image, so only
+	// Metadata, NetworkPolicy and Extensions may accompany it, and Timeout
+	// is required.
+	TemplateID       string                 `json:"templateId,omitempty"`
 	Timeout          *int                   `json:"timeout,omitempty"`
 	ResourceLimits   ResourceLimits         `json:"resourceLimits"`
 	ResourceRequests ResourceLimits         `json:"resourceRequests,omitempty"`
@@ -292,6 +298,152 @@ type ListSnapshotsOptions struct {
 type Endpoint struct {
 	Endpoint string            `json:"endpoint"`
 	Headers  map[string]string `json:"headers,omitempty"`
+	// Origin is the sandbox origin reported by the server's
+	// OPEN-SANDBOX-ORIGIN response header (see SandboxOrigin). Empty when
+	// the server does not send it.
+	Origin SandboxOrigin `json:"-"`
+}
+
+// SandboxOrigin describes what backs a sandbox.
+//
+// The protocol currently defines a single meaningful value:
+// SandboxOriginTemplate, reported by the server via the
+// OPEN-SANDBOX-ORIGIN response header on endpoint lookups and set locally
+// when the sandbox was explicitly created from a template. Template-backed
+// sandboxes have no sandbox-side egress sidecar: egress policy operations
+// go through the lifecycle control plane. Anything else means the sandbox
+// is not template-backed.
+//
+// The set of origin values may grow in future versions; treat a missing or
+// unknown origin as "not template-backed".
+//
+// See specs/sandbox-lifecycle.yml#/components/headers/SandboxOrigin.
+type SandboxOrigin string
+
+const (
+	// SandboxOriginTemplate indicates the sandbox runs on a fsb
+	// golden-image template.
+	SandboxOriginTemplate SandboxOrigin = "template"
+
+	// SandboxOriginUnknown indicates the origin could not be determined
+	// (created from an image or snapshot, or an older server that does not
+	// send the origin header).
+	SandboxOriginUnknown SandboxOrigin = "unknown"
+)
+
+// SandboxOriginHeader is the lifecycle response header that reports a
+// sandbox's origin on endpoint lookups.
+const SandboxOriginHeader = "Open-Sandbox-Origin"
+
+// TemplatePhase is the high-level lifecycle phase of a fsb template build.
+// The server may introduce new phases in future versions; handle unknown
+// values gracefully.
+type TemplatePhase string
+
+const (
+	// TemplatePhasePending indicates the build was accepted but not started.
+	TemplatePhasePending TemplatePhase = "Pending"
+	// TemplatePhaseBuilding indicates the golden-image build is in progress.
+	TemplatePhaseBuilding TemplatePhase = "Building"
+	// TemplatePhaseSucceeded indicates the build finished; the template can
+	// back sandbox creation.
+	TemplatePhaseSucceeded TemplatePhase = "Succeeded"
+	// TemplatePhaseFailed indicates the build failed; see
+	// TemplateStatus.Message.
+	TemplatePhaseFailed TemplatePhase = "Failed"
+)
+
+// TemplateFormat is the storage encoding of a template's produced snapshot
+// set.
+type TemplateFormat string
+
+const (
+	// TemplateFormatNative stores raw snapshots.
+	TemplateFormatNative TemplateFormat = "native"
+	// TemplateFormatOverlayBD stores overlaybd snapshots (server default).
+	TemplateFormatOverlayBD TemplateFormat = "overlaybd"
+)
+
+// TemplateReadiness is the build-side readiness gate for a fsb template.
+type TemplateReadiness struct {
+	// Probe is checked first during the golden-image build;
+	// e.g. "tcp://127.0.0.1:44772" or "cmd://<command>".
+	Probe string `json:"probe,omitempty"`
+	// WarmupSeconds is the fallback warmup window in seconds (default 60).
+	WarmupSeconds *int `json:"warmupSeconds,omitempty"`
+}
+
+// TemplateStatus is the build status of a fsb template.
+type TemplateStatus struct {
+	Phase TemplatePhase `json:"phase"`
+	// ManifestRef is the S3 manifest reference of the published artifacts;
+	// present when the phase is Succeeded.
+	ManifestRef string `json:"manifestRef,omitempty"`
+	// Message is the failure reason when the phase is Failed.
+	Message string `json:"message,omitempty"`
+}
+
+// CreateTemplateRequest is the request body for creating a fsb (fast-sandbox)
+// template: a golden-image build.
+//
+// The build runs asynchronously: the response starts at
+// TemplatePhasePending; poll GetTemplate until the phase is Succeeded (or
+// Failed). Kernel, execd and guest init are server-side build inputs, not
+// client fields.
+type CreateTemplateRequest struct {
+	// Image is the source OCI image reference the golden image is built from.
+	Image string `json:"image"`
+	// Publish is the S3-compatible publish target for the built artifacts,
+	// e.g. "s3://bucket/publish".
+	Publish string `json:"publish"`
+	// ResourceLimits is the guest machine sizing, e.g.
+	// {"cpu": "1", "memory": "512Mi", "disk": "2Gi"}. Server defaults when
+	// omitted: cpu "1", memory "512Mi", disk "2Gi".
+	ResourceLimits ResourceLimits `json:"resourceLimits,omitempty"`
+	// Entrypoint is the guest business command (argv); empty defaults to
+	// ["tail", "-f", "/dev/null"].
+	Entrypoint []string `json:"entrypoint,omitempty"`
+	// Metadata is custom key-value metadata for management, filtering, and
+	// tagging.
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// Readiness is the build-side readiness gate.
+	Readiness *TemplateReadiness `json:"readiness,omitempty"`
+	// Format is the storage encoding of the produced snapshot set. Defaults
+	// to overlaybd.
+	Format TemplateFormat `json:"format,omitempty"`
+}
+
+// TemplateInfo is a fsb template: a golden image whose build is declared and
+// executed by fast-sandbox.
+type TemplateInfo struct {
+	TemplateID string         `json:"templateId"`
+	Image      string         `json:"image"`
+	Publish    string         `json:"publish"`
+	Format     TemplateFormat `json:"format"`
+	Status     TemplateStatus `json:"status"`
+	CreatedAt  time.Time      `json:"createdAt"`
+	UpdatedAt  time.Time      `json:"updatedAt"`
+
+	ResourceLimits ResourceLimits     `json:"resourceLimits,omitempty"`
+	Entrypoint     []string           `json:"entrypoint,omitempty"`
+	Metadata       map[string]string  `json:"metadata,omitempty"`
+	Readiness      *TemplateReadiness `json:"readiness,omitempty"`
+}
+
+// ListTemplatesOptions configures filtering and pagination for ListTemplates.
+type ListTemplatesOptions struct {
+	// Metadata filters by key-value metadata (AND logic).
+	Metadata map[string]string
+	// Page number (1-based). Defaults to 1.
+	Page int
+	// PageSize is the number of items per page (1-200). Defaults to 20.
+	PageSize int
+}
+
+// ListTemplatesResponse is the paginated response from listing templates.
+type ListTemplatesResponse struct {
+	Items      []TemplateInfo `json:"items"`
+	Pagination PaginationInfo `json:"pagination"`
 }
 
 // RenewExpirationRequest is the request body for renewing sandbox expiration.

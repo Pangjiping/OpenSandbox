@@ -17,6 +17,7 @@ package opensandbox
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"time"
@@ -93,6 +94,100 @@ func (c *LifecycleClient) ListSandboxes(ctx context.Context, opts ListOptions) (
 func (c *LifecycleClient) CreateSandbox(ctx context.Context, req CreateSandboxRequest) (*SandboxInfo, error) {
 	var resp SandboxInfo
 	if err := c.doRequest(ctx, "POST", "/sandboxes", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// CreateTemplate declares a new fsb template (golden-image build).
+// The build runs asynchronously: the response starts at
+// TemplatePhasePending; poll GetTemplate until the phase is Succeeded (or
+// Failed). Only Succeeded templates can back template-based sandbox
+// creation.
+func (c *LifecycleClient) CreateTemplate(ctx context.Context, req CreateTemplateRequest) (*TemplateInfo, error) {
+	var resp TemplateInfo
+	if err := c.doRequest(ctx, "POST", "/templates", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// GetTemplate retrieves one template with its latest build status by ID.
+func (c *LifecycleClient) GetTemplate(ctx context.Context, templateID string) (*TemplateInfo, error) {
+	var resp TemplateInfo
+	if err := c.doRequest(ctx, "GET", "/templates/"+url.PathEscape(templateID), nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ListTemplates returns a paginated list of templates with optional filtering.
+func (c *LifecycleClient) ListTemplates(ctx context.Context, opts ListTemplatesOptions) (*ListTemplatesResponse, error) {
+	params := url.Values{}
+	if len(opts.Metadata) > 0 {
+		metaVals := url.Values{}
+		for k, v := range opts.Metadata {
+			metaVals.Set(k, v)
+		}
+		params.Set("metadata", metaVals.Encode())
+	}
+	if opts.Page > 0 {
+		params.Set("page", strconv.Itoa(opts.Page))
+	}
+	if opts.PageSize > 0 {
+		params.Set("pageSize", strconv.Itoa(opts.PageSize))
+	}
+
+	path := "/templates"
+	if encoded := params.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+
+	var resp ListTemplatesResponse
+	if err := c.doRequest(ctx, "GET", path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// DeleteTemplate deletes a template by ID. Sandboxes already created from the
+// template are unaffected.
+func (c *LifecycleClient) DeleteTemplate(ctx context.Context, templateID string) error {
+	return c.doRequest(ctx, "DELETE", "/templates/"+url.PathEscape(templateID), nil, nil)
+}
+
+// GetNetworkPolicy returns the sandbox's egress policy intent from the
+// lifecycle control plane. This is the template-backed path for egress
+// policy: fsb sandboxes have no sandbox-side egress sidecar.
+func (c *LifecycleClient) GetNetworkPolicy(ctx context.Context, sandboxID string) (*PolicyStatusResponse, error) {
+	var resp PolicyStatusResponse
+	if err := c.doRequest(ctx, "GET", "/sandboxes/"+url.PathEscape(sandboxID)+"/networkpolicy", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// PatchNetworkPolicy merges egress rules into the sandbox's policy using the
+// same semantics as the sandbox-side egress service: incoming rules take
+// priority over existing rules with the same target and replace them in
+// place; within one patch payload, the first rule for a target wins;
+// existing rules for other targets and the current defaultAction are
+// preserved.
+func (c *LifecycleClient) PatchNetworkPolicy(ctx context.Context, sandboxID string, rules []NetworkRule) (*PolicyStatusResponse, error) {
+	var resp PolicyStatusResponse
+	if err := c.doRequest(ctx, "PATCH", "/sandboxes/"+url.PathEscape(sandboxID)+"/networkpolicy", rules, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// DeleteNetworkPolicyRules removes the sandbox's egress rules whose target
+// matches one of the given entries. Matching is by exact target string;
+// unknown targets are silently ignored (idempotent). The current
+// defaultAction is preserved.
+func (c *LifecycleClient) DeleteNetworkPolicyRules(ctx context.Context, sandboxID string, targets []string) (*PolicyStatusResponse, error) {
+	var resp PolicyStatusResponse
+	if err := c.doRequest(ctx, "DELETE", "/sandboxes/"+url.PathEscape(sandboxID)+"/networkpolicy", targets, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -232,7 +327,9 @@ func (c *LifecycleClient) getEndpointFromServer(ctx context.Context, sandboxID s
 		path += "?" + encoded
 	}
 	var resp Endpoint
-	if err := c.doRequest(ctx, "GET", path, nil, &resp); err != nil {
+	if err := c.doRequestCapture(ctx, "GET", path, nil, &resp, func(h http.Header) {
+		resp.Origin = SandboxOrigin(h.Get(SandboxOriginHeader))
+	}); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -244,7 +341,9 @@ func (c *LifecycleClient) getEndpointFromServer(ctx context.Context, sandboxID s
 func (c *LifecycleClient) GetSignedEndpoint(ctx context.Context, sandboxID string, port int, expires int64) (*Endpoint, error) {
 	path := fmt.Sprintf("/sandboxes/%s/endpoints/%d?expires=%d", url.PathEscape(sandboxID), port, expires)
 	var resp Endpoint
-	if err := c.doRequest(ctx, "GET", path, nil, &resp); err != nil {
+	if err := c.doRequestCapture(ctx, "GET", path, nil, &resp, func(h http.Header) {
+		resp.Origin = SandboxOrigin(h.Get(SandboxOriginHeader))
+	}); err != nil {
 		return nil, err
 	}
 	return &resp, nil

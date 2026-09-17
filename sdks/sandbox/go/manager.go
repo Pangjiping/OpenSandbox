@@ -87,5 +87,28 @@ func (m *SandboxManager) DeleteSnapshot(ctx context.Context, snapshotID string) 
 	return m.lifecycle.DeleteSnapshot(ctx, snapshotID)
 }
 
+// CreateTemplate declares a fsb template (golden-image build).
+// The build is asynchronous: the response starts at TemplatePhasePending;
+// poll GetTemplate until the phase reaches TemplatePhaseSucceeded.
+func (m *SandboxManager) CreateTemplate(ctx context.Context, req CreateTemplateRequest) (*TemplateInfo, error) {
+	return m.lifecycle.CreateTemplate(ctx, req)
+}
+
+// GetTemplate retrieves a template with its latest build status by ID.
+func (m *SandboxManager) GetTemplate(ctx context.Context, templateID string) (*TemplateInfo, error) {
+	return m.lifecycle.GetTemplate(ctx, templateID)
+}
+
+// ListTemplates returns a paginated list of templates with optional filtering.
+func (m *SandboxManager) ListTemplates(ctx context.Context, opts ListTemplatesOptions) (*ListTemplatesResponse, error) {
+	return m.lifecycle.ListTemplates(ctx, opts)
+}
+
+// DeleteTemplate deletes a template by ID. Sandboxes already created from the
+// template are unaffected.
+func (m *SandboxManager) DeleteTemplate(ctx context.Context, templateID string) error {
+	return m.lifecycle.DeleteTemplate(ctx, templateID)
+}
+
 // Close releases local resources. Currently a no-op placeholder.
 func (m *SandboxManager) Close() error { return nil }

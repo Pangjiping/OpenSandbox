@@ -115,6 +115,10 @@ Native argv execution requires an updated execd. See [command execution modes](/
 
 ### Check egress policy
 
+Runtime egress reads and patches go directly to the sandbox egress sidecar.
+The SDK first resolves the sandbox endpoint on port `18080`, then calls the
+sidecar `/policy` API.
+
 ```go
 egress := opensandbox.NewEgressClient("http://localhost:18080", "your-egress-token")
 
@@ -125,6 +129,16 @@ updated, err := egress.PatchPolicy(ctx, []opensandbox.NetworkRule{
     {Action: "allow", Target: "api.example.com"},
 })
 ```
+
+Template-backed sandboxes have no sandbox-side egress sidecar: the SDK detects
+them via the server's `OPEN-SANDBOX-ORIGIN` response header (see
+[Fsb Template Management](#fsb-template-management)) and routes the same
+`GetEgressPolicy` / `PatchEgressRules` / `DeleteEgressRules` calls through the
+lifecycle control plane (`/sandboxes/{sandboxId}/networkpolicy`) instead.
+
+Patch uses merge semantics:
+- Incoming rules take priority over existing rules with the same `target`.
+- Existing rules for other targets remain unchanged.
 
 ### Use Credential Vault
 
@@ -185,6 +199,12 @@ _, err = sandbox.CreateCredentialVault(ctx, opensandbox.CredentialVaultCreateReq
 
 See [Credential Vault](/guides/credential-vault) for auth types, binding
 guidance, and Git/curl examples.
+
+::: warning
+Credential Vault is unavailable for template-backed sandboxes: they have no
+sandbox-side egress sidecar. `sandbox.CredentialVault(ctx)` returns an error
+for them.
+:::
 
 ### Sandbox Pool (Client-Side)
 
@@ -349,6 +369,75 @@ sandbox, err := opensandbox.CreateSandbox(ctx, config, opensandbox.SandboxCreate
 
 The Server validates `TimeoutSeconds`; `PreStart` accepts 1–10800 seconds, while `Periodic` accepts 1–300 seconds. Both default to 60 seconds when omitted. See [Lifecycle Hooks](/guides/lifecycle-hooks) for timing, failure behavior, and provider limitations.
 
+## Fsb Template Management
+
+fsb (fast-sandbox microVM) golden-image templates are managed through
+`SandboxManager`. Template builds are asynchronous: `CreateTemplate` returns
+with `Status.Phase` set to `Pending`; poll `GetTemplate` until the phase
+reaches `Succeeded` or `Failed`. Only a `Succeeded` template can create
+sandboxes. Template management requires a Kubernetes-backed runtime.
+
+```go
+manager := opensandbox.NewSandboxManager(config)
+
+// Start the async build (starts at TemplatePhasePending)
+template, err := manager.CreateTemplate(ctx, opensandbox.CreateTemplateRequest{
+    Image:          "alpine:3.19",
+    Publish:        "s3://bucket/publish",
+    ResourceLimits: opensandbox.ResourceLimits{"cpu": "1", "memory": "512Mi", "disk": "2Gi"},
+    Readiness:      &opensandbox.TemplateReadiness{Probe: "tcp://127.0.0.1:44772"},
+    Metadata:       map[string]string{"team": "backend"},
+})
+if err != nil {
+    return err
+}
+
+// Poll until the build finishes
+for template.Status.Phase != opensandbox.TemplatePhaseSucceeded &&
+    template.Status.Phase != opensandbox.TemplatePhaseFailed {
+    time.Sleep(2 * time.Second)
+    template, err = manager.GetTemplate(ctx, template.TemplateID)
+    if err != nil {
+        return err
+    }
+}
+
+// List with metadata filters (1-indexed paging)
+listed, err := manager.ListTemplates(ctx, opensandbox.ListTemplatesOptions{
+    Metadata: map[string]string{"team": "backend"},
+    Page:     1,
+    PageSize: 20,
+})
+
+// Delete a template. Sandboxes already created from it are unaffected.
+err = manager.DeleteTemplate(ctx, template.TemplateID)
+```
+
+### Creating a Sandbox from a Template
+
+Use `CreateSandboxFromTemplate` to create a sandbox from a `Succeeded`
+template. Template mode fixes the workload shape on the server: only
+`Metadata`, `NetworkPolicy` and `Extensions` may accompany the template ID,
+and `TimeoutSeconds` is required.
+
+```go
+sandbox, err := opensandbox.CreateSandboxFromTemplate(ctx, config, "tpl-abc",
+    opensandbox.SandboxFromTemplateOptions{
+        TimeoutSeconds: 600,
+        NetworkPolicy: &opensandbox.NetworkPolicy{
+            DefaultAction: "deny",
+            Egress: []opensandbox.NetworkRule{
+                {Action: "allow", Target: "api.example.com"},
+            },
+        },
+    })
+if err != nil {
+    return err
+}
+
+fmt.Println(sandbox.Origin()) // "template"
+```
+
 ## API Reference
 
 ### LifecycleClient
@@ -366,6 +455,13 @@ Created with `NewLifecycleClient(baseURL, apiKey string, opts ...Option)`.
 | `RenewExpiration(ctx, id, expiresAt)` | Extend sandbox expiration time |
 | `GetEndpoint(ctx, sandboxID, port, useServerProxy)` | Get public endpoint for a sandbox port |
 | `GetSignedEndpoint(ctx, sandboxID, port, expires)` | Get signed endpoint URL with OSEP-0011 route token |
+| `CreateTemplate(ctx, req)` | Declare a fsb template (async golden-image build) |
+| `GetTemplate(ctx, templateID)` | Get a template with its latest build status |
+| `ListTemplates(ctx, opts)` | List templates with metadata filtering and pagination |
+| `DeleteTemplate(ctx, templateID)` | Delete a template |
+| `GetNetworkPolicy(ctx, sandboxID)` | Get a sandbox's egress policy from the control plane |
+| `PatchNetworkPolicy(ctx, sandboxID, rules)` | Merge egress rules into a sandbox's policy |
+| `DeleteNetworkPolicyRules(ctx, sandboxID, targets)` | Remove a sandbox's egress rules by target |
 
 ### ExecdClient
 

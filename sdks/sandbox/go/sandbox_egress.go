@@ -14,10 +14,19 @@
 
 package opensandbox
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // GetEgressPolicy retrieves the current egress network policy.
+//
+// Template-backed sandboxes have no sandbox-side egress sidecar: the policy
+// is read from the lifecycle control plane instead.
 func (s *Sandbox) GetEgressPolicy(ctx context.Context) (*PolicyStatusResponse, error) {
+	if s.templateBacked() {
+		return s.lifecycle.GetNetworkPolicy(ctx, s.id)
+	}
 	if err := s.resolveEgress(ctx); err != nil {
 		return nil, err
 	}
@@ -25,7 +34,13 @@ func (s *Sandbox) GetEgressPolicy(ctx context.Context) (*PolicyStatusResponse, e
 }
 
 // PatchEgressRules merges network rules into the current egress policy.
+//
+// Template-backed sandboxes have no sandbox-side egress sidecar: the rules
+// are merged through the lifecycle control plane instead.
 func (s *Sandbox) PatchEgressRules(ctx context.Context, rules []NetworkRule) (*PolicyStatusResponse, error) {
+	if s.templateBacked() {
+		return s.lifecycle.PatchNetworkPolicy(ctx, s.id, rules)
+	}
 	if err := s.resolveEgress(ctx); err != nil {
 		return nil, err
 	}
@@ -34,7 +49,13 @@ func (s *Sandbox) PatchEgressRules(ctx context.Context, rules []NetworkRule) (*P
 
 // DeleteEgressRules removes egress rules matching the given targets from the
 // current egress policy. Targets not present in the policy are silently ignored.
+//
+// Template-backed sandboxes have no sandbox-side egress sidecar: the rules
+// are removed through the lifecycle control plane instead.
 func (s *Sandbox) DeleteEgressRules(ctx context.Context, targets []string) (*PolicyStatusResponse, error) {
+	if s.templateBacked() {
+		return s.lifecycle.DeleteNetworkPolicyRules(ctx, s.id, targets)
+	}
 	if err := s.resolveEgress(ctx); err != nil {
 		return nil, err
 	}
@@ -43,7 +64,13 @@ func (s *Sandbox) DeleteEgressRules(ctx context.Context, targets []string) (*Pol
 
 // CredentialVault returns the sandbox-scoped egress client used for Credential
 // Vault operations.
+//
+// Template-backed sandboxes have no sandbox-side egress sidecar, so
+// Credential Vault is not available for them and this method fails.
 func (s *Sandbox) CredentialVault(ctx context.Context) (*EgressClient, error) {
+	if s.templateBacked() {
+		return nil, fmt.Errorf("opensandbox: credential vault is not available for template-backed sandboxes: they have no sandbox-side egress sidecar")
+	}
 	if err := s.resolveEgress(ctx); err != nil {
 		return nil, err
 	}

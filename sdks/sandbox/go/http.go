@@ -196,14 +196,22 @@ func NewClient(baseURL, apiKey, authHeader string, opts ...Option) *Client {
 // not retried and cannot double the effective timeout. This is always on and
 // independent of the opt-in RetryConfig.
 func (c *Client) doRequest(ctx context.Context, method, path string, body any, result any) error {
+	return c.doRequestCapture(ctx, method, path, body, result, nil)
+}
+
+// doRequestCapture behaves like doRequest and additionally invokes capture
+// with the response headers of the successful response when capture is
+// non-nil. It exists for callers that need server-reported response metadata
+// (e.g. the OPEN-SANDBOX-ORIGIN header) that is not part of the JSON body.
+func (c *Client) doRequestCapture(ctx context.Context, method, path string, body, result any, capture func(http.Header)) error {
 	return c.withRetry(ctx, func() error {
 		var reused bool
-		err := c.doRequestOnce(ctx, method, path, body, result, &reused)
+		err := c.doRequestOnce(ctx, method, path, body, result, &reused, capture)
 		if err != nil && reused && c.shouldRetryOnFreshConn(ctx, method, err) {
 			// The reused pooled connection was likely silently dropped by an
 			// intermediary. Drop idle connections so the retry dials a new one.
 			c.httpClient.CloseIdleConnections()
-			err = c.doRequestOnce(ctx, method, path, body, result, nil)
+			err = c.doRequestOnce(ctx, method, path, body, result, nil, capture)
 		}
 		return err
 	})
@@ -245,8 +253,9 @@ func (c *Client) shouldRetryOnFreshConn(ctx context.Context, method string, err 
 
 // doRequestOnce is the single-attempt implementation of doRequest. If reused is
 // non-nil it is set to whether this attempt was carried over a reused pooled
-// connection (observed via httptrace GotConn).
-func (c *Client) doRequestOnce(ctx context.Context, method, path string, body any, result any, reused *bool) error {
+// connection (observed via httptrace GotConn). If capture is non-nil it is
+// invoked with the response headers once the response is deemed successful.
+func (c *Client) doRequestOnce(ctx context.Context, method, path string, body any, result any, reused *bool, capture func(http.Header)) error {
 	var bodyReader io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -289,6 +298,10 @@ func (c *Client) doRequestOnce(ctx context.Context, method, path string, body an
 
 	if resp.StatusCode >= 400 {
 		return handleError(resp)
+	}
+
+	if capture != nil {
+		capture(resp.Header)
 	}
 
 	// No content (e.g. 204)
