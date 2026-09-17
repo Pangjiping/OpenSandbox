@@ -55,7 +55,7 @@ controller:
   enabled: true
   image:
     # -- Controller image repository (built by manifests/release/build-fast-sandbox.sh)
-    repository: fast-sandbox/controller
+    repository: opensandbox/fsb-controller
     # -- Image tag
     tag: dev
     # -- Image pull policy
@@ -64,7 +64,7 @@ controller:
   replicaCount: 1
   # -- Image that executes SandboxTemplate golden-image builds (builder Pods
   # are created by the controller; build it with manifests/release/build-fast-sandbox.sh)
-  sandboxtemplateBuilderImage: fast-sandbox/sandboxtemplate-builder:dev
+  sandboxtemplateBuilderImage: opensandbox/fsb-sandboxtemplate-builder:dev
   # -- Resource requests and limits for the controller
   resources:
     limits:
@@ -145,7 +145,7 @@ runtimeEnvironments: |-
 janitor:
   image:
     # -- Janitor image repository (built by manifests/release/build-fast-sandbox.sh)
-    repository: fast-sandbox/janitor
+    repository: opensandbox/fsb-janitor
     # -- Image tag
     tag: dev
     # -- Image pull policy
@@ -169,7 +169,7 @@ runtime:
   enabled: true
   image:
     # -- Runtime image repository (built by manifests/release/build-fast-sandbox.sh)
-    repository: fast-sandbox/firecracker-runtime
+    repository: opensandbox/fsb-firecracker-runtime
     # -- Image tag
     tag: dev
     # -- Image pull policy

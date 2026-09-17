@@ -135,12 +135,12 @@ else
 fi
 
 # Image tags (env-overridable per component).
-IMG_CONTROLLER="${IMAGE_CONTROLLER:-fast-sandbox/controller:dev}"
-IMG_FASTLET="${IMAGE_FASTLET:-fast-sandbox/fastlet:dev}"
-IMG_FASTLET_PROXY="${IMAGE_FASTLET_PROXY:-fast-sandbox/fastlet-proxy:dev}"
-IMG_JANITOR="${IMAGE_JANITOR:-fast-sandbox/janitor:dev}"
-IMG_BUILDER="${IMAGE_BUILDER:-fast-sandbox/sandboxtemplate-builder:dev}"
-IMG_RUNTIME="${IMAGE_RUNTIME:-fast-sandbox/firecracker-runtime:dev}"
+IMG_CONTROLLER="${IMAGE_CONTROLLER:-opensandbox/fsb-controller:dev}"
+IMG_FASTLET="${IMAGE_FASTLET:-opensandbox/fsb-fastlet:dev}"
+IMG_FASTLET_PROXY="${IMAGE_FASTLET_PROXY:-opensandbox/fsb-fastlet-proxy:dev}"
+IMG_JANITOR="${IMAGE_JANITOR:-opensandbox/fsb-janitor:dev}"
+IMG_BUILDER="${IMAGE_BUILDER:-opensandbox/fsb-sandboxtemplate-builder:dev}"
+IMG_RUNTIME="${IMAGE_RUNTIME:-opensandbox/fsb-firecracker-runtime:dev}"
 IMG_EGRESS="${EGRESS_IMAGE:-docker.io/opensandbox/egress:latest}"
 
 image_repo() { printf '%s' "${1%:*}"; }
