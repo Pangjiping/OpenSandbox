@@ -3,8 +3,8 @@ title: Unified Umbrella Release Governance
 authors:
   - "@Pangjiping"
 creation-date: 2026-07-21
-last-updated: 2026-07-21
-status: draft
+last-updated: 2026-09-17
+status: implementing
 ---
 
 # OSEP-0016: Unified Umbrella Release Governance
@@ -17,7 +17,7 @@ status: draft
 - [Proposal](#proposal)
   - [Unified Versioning](#unified-versioning)
   - [Naming Rules](#naming-rules)
-  - [Starting Version: `1.0.0` as GA](#starting-version-100-as-ga)
+  - [Starting Version: `1.1.0` as GA](#starting-version-110-as-ga)
   - [Cadence and Support](#cadence-and-support)
 - [Design Details](#design-details)
   - [Bill of Materials (BOM)](#bill-of-materials-bom)
@@ -40,17 +40,19 @@ can install, audit, or roll back to.
 This OSEP unifies release governance: every artifact of a given
 umbrella release carries the **same** `X.Y.Z`, cut from a single
 release commit, driven by a single fan-out workflow, and pinned in
-an immutable BOM. The first umbrella `opensandbox/1.0.0` is the GA
+an immutable BOM. The first umbrella `release-1.1.0` is the GA
 declaration of OpenSandbox. Cadence is one line every two weeks;
 only the most recent line is supported.
 
 ## Motivation
 
-Current latest tags: `server/v0.2.1`, `docker/execd/v1.0.21`,
-`docker/ingress/v1.0.10`, `docker/egress/v1.1.4`, `java/sandbox/v1.0.16`,
-`python/sandbox/v0.1.14`, `js/sandbox/v0.1.10`, `sdks/sandbox/go/v1.0.4`,
-`csharp/sandbox/v0.1.4`. These numbers reflect each component's
-private iteration count and encode no relationship between components.
+Current latest tags: `server/v0.2.3`, `docker/execd/v1.1.0`,
+`docker/ingress/v1.0.10`, `docker/egress/v1.1.7`,
+`helm/opensandbox/0.2.2`, `java/sandbox/v1.0.19`,
+`python/sandbox/v0.1.17.dev0`, `js/sandbox/v0.1.11`,
+`sdks/sandbox/go/v1.0.5`, `csharp/sandbox/v0.1.5`. These numbers
+reflect each component's private iteration count and encode no
+relationship between components.
 
 Concrete pain points:
 
@@ -59,7 +61,7 @@ Concrete pain points:
 2. **Unverified combinations.** No assertion that any specific
    `{server, execd, ingress, …}` set has been e2e-tested together.
 3. **Opaque client compatibility.** Users cannot answer "does
-   `python/sandbox v0.1.14` work with `server v0.2.1`?" from release
+   `python/sandbox v0.1.17` work with `server v0.2.3`?" from release
    notes alone.
 4. **Drift.** Docs, Helm defaults, and examples reference components
    individually and slip out of sync between releases.
@@ -72,7 +74,9 @@ Concrete pain points:
 - One canonical git tag per release, backed by a signed BOM.
 - Fan-out from a single trigger; partial releases are impossible.
 - Public 2-week cadence, no LTS, latest-only support.
-- Start the umbrella at `1.0.0` and treat that as GA.
+- Start the umbrella at `1.1.0` — the smallest version strictly
+  greater than every version already consumed in immutable
+  registries — and treat that as GA.
 
 ## Non-Goals
 
@@ -145,18 +149,22 @@ byte-exact fingerprint of the whole platform.
 
 Boolean rules that keep the eras mechanically distinguishable:
 
-1. **Umbrella git tags** are v-less: `opensandbox/1.4.0`.
-2. **Container image tags** carry a `release-` prefix:
-   `opensandbox/execd:release-1.4.0`. Chosen because pre-umbrella
-   images (`opensandbox/execd:v1.1.0`) sit in the same registry
-   repositories; the prefix eliminates any collision or ambiguity
-   at a glance.
+1. **Umbrella git tags** are `release-X.Y.Z` (v-less):
+   `release-1.4.0`. Annotated, minted on `C_bom`.
+2. **Container image tags** use the **same string**:
+   `opensandbox/execd:release-1.4.0`. Git and registries share one
+   release identity — `git tag` and `docker pull` show the identical
+   string for the same release. The `release-` prefix is also
+   disjoint from pre-umbrella images (`opensandbox/execd:v1.1.0`)
+   sitting in the same registry repositories, eliminating collision
+   or ambiguity at a glance.
 3. **Package-registry artifacts** use bare `X.Y.Z`. PyPI, npm,
    Maven Central, NuGet, and Helm OCI all reject arbitrary
    prefixes and enforce semver ordering.
 4. **Historical per-component tags** keep their existing `v` prefix
-   in both git and image registries. Frozen at `1.0.0`, never
-   deleted, never extended.
+   in both git and image registries. Frozen when the first umbrella
+   pre-release (`release-1.1.0-rc.1`) is cut — never deleted,
+   never extended.
 5. **Go SDK exception.** The Go SDK ships **two** modules that
    both live in repository subdirectories:
    - `sdks/sandbox/go` (`module github.com/alibaba/OpenSandbox/sdks/sandbox/go`)
@@ -168,10 +176,15 @@ Boolean rules that keep the eras mechanically distinguishable:
    or `.../poolredis@v1.4.0` cannot resolve. Therefore, every
    umbrella release additionally mints two companion git tags:
    `sdks/sandbox/go/vX.Y.Z` and `sdks/sandbox/go/poolredis/vX.Y.Z`,
-   both pointing at the same commit as `opensandbox/X.Y.Z` (i.e.
-   at `C_bom`). This is a forced technical concession scoped to
-   the Go module system, not a general exception to rule 4 —
-   no non-Go component gets its own per-umbrella tag. If a new
+   both pointing at the same commit as `release-X.Y.Z` (i.e.
+    at `C_bom`). This is a forced technical concession scoped to
+    the Go module system, not a general exception to rule 4 —
+    no non-Go component gets its own per-umbrella tag. Note that
+    this namespace **reuses** the legacy Go tag namespace
+    (`sdks/sandbox/go/v1.0.0`–`v1.0.5` are already published module
+    versions), so the first umbrella companion tags are
+    `sdks/sandbox/go/v1.1.0` and `sdks/sandbox/go/poolredis/v1.1.0`.
+    If a new
    Go module is added in the future at another subdirectory, it
    must be listed here and receive the same companion-tag
    treatment.
@@ -180,44 +193,84 @@ Mapping at a glance:
 
 ```
 Umbrella version                    → 1.4.0
-Git tag                             → opensandbox/1.4.0
+Git tag                             → release-1.4.0
+Container image tag (same string)   → opensandbox/<comp>:release-1.4.0
 Go SDK companion tags (same commit) → sdks/sandbox/go/v1.4.0
                                       sdks/sandbox/go/poolredis/v1.4.0
-Container image tag                 → release-1.4.0
 Helm chart / SDK / CLI version      → 1.4.0
 ```
 
 Users never write `release-` by hand: the Helm chart resolves
 `image.tag` from `.Chart.AppVersion` internally.
 
-### Starting Version: `1.0.0` as GA
+### Starting Version: `1.1.0` as GA
 
-The first umbrella release is `opensandbox/1.0.0`, treated as GA.
+The first umbrella release is `release-1.1.0`, treated as GA.
 
-Rationale:
+**The immutable-registry floor rule.** The umbrella's starting
+version must be **strictly greater than the highest version already
+consumed** in every registry where published versions are immutable
+or monotonic. This is not a stylistic preference — those registries
+make `1.0.0` unusable:
 
-- The umbrella is the first version identity that spans the entire
-  project; `1.0.0` therefore carries the semver meaning the project
-  has never before been able to assert as a whole.
-- No tag or image collision. `refs/tags/opensandbox/1.0.0` and
-  `opensandbox/execd:release-1.0.0` are namespace-disjoint from
-  every existing tag/image.
-- `X` continues to mean "major/GA line"; `1 → 2` is reserved for
-  breaking cross-component changes and needs its own OSEP.
+| Registry | Highest consumed | Why it binds |
+|---|---|---|
+| Maven Central (`com.alibaba.opensandbox:*`) | `sandbox` `1.0.19` (tags `java/sandbox/v1.0.0`–`v1.0.19`), `code-interpreter` `1.0.16` | Central versions are permanently immutable; republishing `1.0.0` fails outright. |
+| Go module proxy (`sdks/sandbox/go`) | `v1.0.5` (tags `sdks/sandbox/go/v1.0.0`–`v1.0.5`) | The companion-tag namespace reuses the legacy Go tag namespace; the sum database forbids re-pointing an existing version, and `go get` never downgrades. |
+| Go module proxy (`sdks/sandbox/go/poolredis`) | never published | No constraint; its first umbrella tag is its first release. |
+
+Everything else is collision-free at any `1.x`: PyPI (all packages
+≤ `0.2.x`), npm (`0.1.x`), NuGet (`0.1.5`), Helm OCI (`0.2.2`), and
+the git/image tag namespace `release-*` (empty today — no existing
+tag matches; the prefix is disjoint from every legacy `v` tag).
+Semver ordering makes `1.1.0` strictly greater than both floors
+(`1.0.19 < 1.1.0`, `1.0.5 < 1.1.0`), so `1.1.0` is the minimal safe
+start.
+
+**The jump is monotonic everywhere but conditional.** Every SDK can
+legally move from its current version to `1.1.0` (Maven: normal
+minor bump; Go: monotonic increase; PEP 440 / npm / NuGet / Helm: no
+jump restrictions). The jump only materializes if the Phase 2
+migration PR lands these enablers in the same release commit:
+
+1. hatch-vcs `tag_regex` migration to the umbrella pattern —
+   without it the derived version falls back to `0.0.0` and the
+   jump silently does not happen (see
+   [Release Workflow](#release-workflow), step 2).
+2. Python inter-package ranges `opensandbox>=0.1.10,<0.2.0` →
+   `>=1.1.0,<2.0.0`, otherwise pip resolves `opensandbox` back to
+   `0.1.x` against the new release.
+3. The .NET `<OpenSandboxDependencyVersionRange>` rewritten to
+   `[1.1.0,2.0.0)` — substituting the version alone yields the
+   empty range `[1.1.0,0.2.0)`, which breaks NuGet restore.
+4. Kotlin `sandbox-bom` constraints and the umbrella Helm chart's
+   `version`/`appVersion`/sub-chart dependency versions aligned to
+   `1.1.0`.
+
+**The `1.0.0` gap.** Most package registries will jump from `0.x`
+straight to `1.1.0` with no `1.0.0` in between; for Java/Go users
+`1.0.19 → 1.1.0` reads like a routine minor bump that understates
+the governance switch. Release notes and
+`docs/community/releases.md` must state why `1.0.0` is skipped
+(consumed by legacy `java/sandbox` and `sdks/sandbox/go` releases)
+and label `1.1.0` explicitly as the unified-umbrella GA.
+
+`X` continues to mean "major/GA line"; `1 → 2` is reserved for
+breaking cross-component changes and needs its own OSEP.
 
 Scope note: this OSEP binds only release-governance mechanics.
 The concrete API/CRD/spec stability contract that "GA" implies is
 **out of scope** and must land in a follow-up OSEP before or
-alongside `1.0.0`.
+alongside `1.1.0`.
 
 ### Cadence and Support
 
 | Release type | Frequency | Support | Tag |
 |---|---|---|---|
-| Line birth (`X.Y.0`) | Every 2 weeks (even ISO-week Wednesdays) | Latest only; supersedes previous line on release | `opensandbox/X.Y.0` |
-| In-line snapshot (`X.Y.Z`, `Z > 0`) | On demand within the current 2-week window | Same as current line | `opensandbox/X.Y.Z` |
-| N-1 emergency CVE | CVSS ≥ 8.0, ≤72h from disclosure, only if no current-line fix already ships | One-off snapshot on the immediately previous line | `opensandbox/X.(Y-1).Z` |
-| Pre-release | Ahead of a line birth | Not supported | `opensandbox/X.Y.0-rc.N` |
+| Line birth (`X.Y.0`) | Every 2 weeks (even ISO-week Wednesdays) | Latest only; supersedes previous line on release | `release-X.Y.0` |
+| In-line snapshot (`X.Y.Z`, `Z > 0`) | On demand within the current 2-week window | Same as current line | `release-X.Y.Z` |
+| N-1 emergency CVE | CVSS ≥ 8.0, ≤72h from disclosure, only if no current-line fix already ships | One-off snapshot on the immediately previous line | `release-X.(Y-1).Z` |
+| Pre-release | Ahead of a line birth | Not supported | `release-X.Y.0-rc.N` |
 
 **No LTS.** At 2-week cadence, a back-port is a full umbrella
 rebuild anyway; supporting a 6-month-old line costs more than
@@ -443,7 +496,7 @@ Steps:
    Implementation must change every affected `pyproject.toml`
    `tool.hatch.version.raw-options.tag_regex` (and matching
    `git_describe_command`) to the umbrella pattern
-   `^opensandbox/(?P<version>\d+\.\d+\.\d+(?:[.\w+\-]*)?)$` **as
+   `^release-(?P<version>\d+\.\d+\.\d+(?:[.\w+\-]*)?)$` **as
    part of the same PR that lands this OSEP's Phase 2 workflow**.
    The version-consistency scan verifies that every hatch-vcs
    `tag_regex` in the tree references the umbrella tag pattern
@@ -458,6 +511,14 @@ Steps:
    - `sdks/mcp/sandbox/python/pyproject.toml` — same range.
    - `sdks/Directory.Build.props` —
      `<OpenSandboxDependencyVersionRange>[$(OpenSandboxPackageVersion),0.2.0)</OpenSandboxDependencyVersionRange>`.
+
+   These ranges are **jump enablers** for the `1.1.0` start: if only
+   the version number is substituted, the .NET range becomes
+   `[1.1.0,0.2.0)` — an empty range (upper bound below lower bound)
+   that breaks NuGet restore — and the Python ranges would resolve
+   `opensandbox` back to `0.1.x` against a `1.1.0` release. The
+   scan therefore additionally rejects any range whose upper bound
+   is ≤ its lower bound.
 
    The scan verifies that every inter-OpenSandbox dependency
    range (a) uses the current umbrella version as its lower bound
@@ -509,11 +570,11 @@ Steps:
    step falls back to the ecosystem's rollback / yank primitive
    as a best-effort remediation and files a P0 incident. See
    "Residual atomicity risk" below.
-7. **Umbrella tag.** `git tag -a opensandbox/X.Y.Z` on `C_bom`
+7. **Umbrella tag.** `git tag -a release-X.Y.Z` on `C_bom`
    (not `C_build`), push, attach BOM + attestations to the GitHub
    Release via `gh release create`. Rationale for tagging `C_bom`:
    the tag's tree contains the BOM the release advertises; walking
-   from the tag one commit back (`opensandbox/X.Y.Z^`) yields
+   from the tag one commit back (`release-X.Y.Z^`) yields
    `C_build`, which is recorded in the BOM's `metadata.gitCommit`
    field. Both commits are permanent on the release branch.
 
@@ -526,7 +587,7 @@ Steps:
    umbrella tag.
 
 `scripts/release/create-release.sh` gains a new target
-`--target opensandbox` that computes `opensandbox/X.Y.Z` (no `v`),
+`--target opensandbox` that computes `release-X.Y.Z` (no `v`),
 takes no path filter, and requires `--version X.Y.Z`. It orchestrates
 the build → hold → publish sequence above by invoking the per-target
 routines under a new umbrella-mode flag.
@@ -536,7 +597,7 @@ verbatim.** Today, `server --version 1.4.0` produces the git tag
 `server/v1.4.0` and image tag `1.4.0`; `docker/execd --version 1.4.0`
 produces `docker/execd/1.4.0` and image tag `1.4.0`; `helm/opensandbox`
 only edits `appVersion` in the checked-in chart. None of these match
-the umbrella identities defined by this OSEP (`opensandbox/1.4.0`
+the umbrella identities defined by this OSEP (`release-1.4.0`
 git tag, `release-1.4.0` image tags, `opensandbox-1.4.0.tgz` chart).
 Implementation must:
 
@@ -558,8 +619,8 @@ Implementation must:
 
 Legacy per-target tag namespaces (`server/vX.Y.Z`,
 `docker/execd/vX.Y.Z`, …) remain in the protected ruleset for
-history but are frozen at umbrella `1.0.0` — no new tags in those
-namespaces are minted afterward.
+history but are frozen at umbrella `1.1.0-rc.1` — no new tags in
+those namespaces are minted afterward.
 
 **Two commits, one release.** The two-commit shape (`C_build` +
 `C_bom`) is a deliberate choice that reviewers should understand:
@@ -568,7 +629,7 @@ namespaces are minted afterward.
   not contain the BOM.
 - `C_bom` is the release commit; its tree contains the BOM, which
   in turn pins the digests of the artifacts built from `C_build`.
-- The umbrella tag points at `C_bom`. `git show opensandbox/X.Y.Z`
+- The umbrella tag points at `C_bom`. `git show release-X.Y.Z`
   reveals only the BOM change, which is exactly what a release
   reviewer needs to verify.
 - `metadata.gitCommit` in the BOM points at `C_build`, so the
@@ -647,8 +708,11 @@ commit exists. They are accepted as known limitations of
 unified versioning on public registries.
 
 **Release branches.** New line: cut `release-X.Y` from `main` at
-the release commit; tag `opensandbox/X.Y.0` on it. Subsequent
-`X.Y.Z` snapshots go on `release-X.Y`. `main` receives feature
+the release commit; tag `release-X.Y.0` on it. Subsequent
+`X.Y.Z` snapshots go on `release-X.Y`. (`release-X.Y` is a branch,
+`release-X.Y.Z` a tag — separate git namespaces, no conflict; the
+pairing mirrors the K8s `release-1.30` branch habit.) `main`
+receives feature
 work for the next line. `release-X.Y` closes when
 `release-X.(Y+1)` opens, except for the emergency-CVE window.
 
@@ -660,7 +724,7 @@ uses the same workflow again, pointed at `release-X.(Y-1)`. There
 is **no separate hotfix mechanism**; unified versioning means a
 back-port is a full umbrella rebuild.
 
-Concrete steps for producing `opensandbox/1.3.6` from a current
+Concrete steps for producing `release-1.3.6` from a current
 `1.4.x` line:
 
 1. Confirm eligibility: CVSS ≥ 8.0, ≤72h from disclosure, and the
@@ -780,8 +844,13 @@ CLI (extends existing surface, no new subsystem):
   per SDK per year. Accepted as the cost of unified versioning.
 - **No per-component hotfix agility.** A 1-line ingress fix ships
   as a full umbrella rebuild. This is the central trade.
-- **`1.0.0` = GA is a strong claim.** A follow-up API-stability OSEP
+- **`1.1.0` = GA is a strong claim.** A follow-up API-stability OSEP
   must land in time to back it credibly.
+- **The `1.0.0` gap.** Most package registries jump from `0.x`
+  straight to `1.1.0`, and for Java/Go users `1.0.19 → 1.1.0` reads
+  like a routine minor bump that understates the governance switch.
+  Mitigated by explicit GA labeling in release notes and docs (see
+  [Starting Version](#starting-version-110-as-ga)).
 - **Small permanent history** — one BOM YAML + attestation per
   release, well under 1 MB over five years.
 
@@ -804,15 +873,27 @@ versioning. Rejected.
 is a full rebuild anyway, so LTS is more expensive than in model
 A. Deferred to `2.0.0`.
 
+**E. Start the umbrella at `1.0.0`.** The natural "clean slate"
+choice, but `1.0.0` is already consumed: Maven Central carries
+`com.alibaba.opensandbox:sandbox` `1.0.0`–`1.0.19` and the Go module
+proxy serves `sdks/sandbox/go v1.0.0`–`v1.0.5`. Both registries are
+immutable/monotonic, so a `1.0.0` umbrella would fail to publish
+(Maven) or break sum-database verification for existing pins (Go),
+and the Go companion-tag namespace would collide with legacy tags.
+Rejected — superseded by the immutable-registry floor rule (see
+[Starting Version](#starting-version-110-as-ga)).
+
 ## Migration
 
 **Phase 1 — Provisional.** Land BOM schema and workflow with
 `dry_run: true` forced on. No user-visible tag change.
 
-**Phase 2 — `opensandbox/1.0.0-rc.1`.** First full pre-release.
-Historical component tag namespaces frozen at this point.
+**Phase 2 — `release-1.1.0-rc.1`.** First full pre-release.
+Historical component tag namespaces frozen at this point. The
+version-jump enablers (hatch-vcs regex migration, dependency-range
+rewrites, chart alignment) land in the same PR.
 
-**Phase 3 — GA `opensandbox/1.0.0`.** Workflow enabled unconditionally.
+**Phase 3 — GA `release-1.1.0`.** Workflow enabled unconditionally.
 Docs, Helm defaults, `osb version` all switch to the umbrella.
 Doubles as the GA declaration.
 
@@ -821,7 +902,7 @@ and emergency-CVE snapshots.
 
 **Historical tags.** Never deleted, never extended. Registries and
 git keep resolving them forever. Docs keep a "legacy component
-tags" appendix for at least six lines after `1.0.0`, plus a
+tags" appendix for at least six lines after `1.1.0`, plus a
 lookup script mapping any legacy tag to its superseding umbrella.
 Existing user scripts that pin per-component tags keep working.
 

@@ -263,6 +263,10 @@ export default defineConfig({
           text: "Releases",
           items: [
             {
+              text: "Versioning",
+              link: "/community/versioning",
+            },
+            {
               text: "Release Automation",
               link: "/community/release-automation",
             },
