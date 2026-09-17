@@ -269,6 +269,12 @@ jobs:
   packages:
     name: SDK / CLI / server packages (hold${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' && ' + publish' || '' }})
     needs: [resolve, preflight, scan]
+    # the called workflow's publish leg attests held bytes — grant it
+    # id-token/attestations here or the workflow fails validation
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/release-packages.yml
     with:
       version: ${{ needs.resolve.outputs.version }}
