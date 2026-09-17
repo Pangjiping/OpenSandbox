@@ -264,6 +264,31 @@ func TestEndpoint_OriginHeaderCaptured(t *testing.T) {
 	}
 }
 
+func TestEndpoint_OriginPreservedThroughEndpointCache(t *testing.T) {
+	_, client := newLifecycleServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/endpoints/") {
+			assert.Fail(t, fmt.Sprintf("expected an endpoint lookup, got %s", r.URL.Path))
+		}
+		w.Header().Set(SandboxOriginHeader, string(SandboxOriginTemplate))
+		jsonResponse(w, http.StatusOK, Endpoint{Endpoint: "http://127.0.0.1:8080"})
+	})
+
+	// First lookup goes through the cache's GetOrFetch, which clones even
+	// the freshly fetched result; cached lookups clone the stored entry.
+	// Both paths must preserve Origin.
+	first, err := client.GetEndpoint(context.Background(), "fsb-1", DefaultExecdPort, nil)
+	require.NoErrorf(t, err, "GetEndpoint (fresh)")
+	if first.Origin != SandboxOriginTemplate {
+		assert.Fail(t, fmt.Sprintf("Origin = %q, want %q", first.Origin, SandboxOriginTemplate))
+	}
+
+	cached, err := client.GetEndpoint(context.Background(), "fsb-1", DefaultExecdPort, nil)
+	require.NoErrorf(t, err, "GetEndpoint (cached)")
+	if cached.Origin != SandboxOriginTemplate {
+		assert.Fail(t, fmt.Sprintf("Origin = %q, want %q", cached.Origin, SandboxOriginTemplate))
+	}
+}
+
 func TestCreateSandboxFromTemplate(t *testing.T) {
 	var mu sync.Mutex
 	var received *CreateSandboxRequest

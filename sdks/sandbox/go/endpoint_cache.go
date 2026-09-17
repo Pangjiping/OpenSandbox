@@ -50,7 +50,7 @@ func cloneEndpoint(ep *Endpoint) *Endpoint {
 	for k, v := range ep.Headers {
 		headers[k] = v
 	}
-	return &Endpoint{Endpoint: ep.Endpoint, Headers: headers}
+	return &Endpoint{Endpoint: ep.Endpoint, Headers: headers, Origin: ep.Origin}
 }
 
 // EndpointCache is a thread-safe LRU+TTL cache for sandbox endpoints.
