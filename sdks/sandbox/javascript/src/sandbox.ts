@@ -36,6 +36,7 @@ import type { IsolationService, IsolationSession } from "./services/isolatedSess
 import type { CommandExecution } from "./models/execd.js";
 import type { IsolatedCapabilities, IsolatedSessionSummary } from "./models/isolated.js";
 import type {
+  CreateSandboxFromTemplateRequest,
   CreateSandboxRequest,
   CredentialProxyConfig,
   Endpoint,
@@ -49,9 +50,13 @@ import type {
   SandboxMetadataPatch,
   Volume,
 } from "./models/sandboxes.js";
+import { SandboxOrigin } from "./models/sandboxes.js";
 import { ReadinessBudget, validatePollingInterval } from "./internal/readiness.js";
 
 const HOST_PATH_PATTERN = /^([/]|[A-Za-z]:[\\/])/;
+
+const TEMPLATE_CREDENTIAL_VAULT_UNAVAILABLE =
+  "Credential Vault is not available for template-backed sandboxes: they have no sandbox-side egress sidecar.";
 
 const unavailableIsolation: IsolationService = {
   create(): Promise<IsolationSession> {
@@ -100,11 +105,11 @@ function isCredentialVault(value: unknown): value is CredentialVault {
   );
 }
 
-function unavailableCredentialVault(): CredentialVault {
+function unavailableCredentialVault(
+  message = "Credential Vault is not available for this adapter factory. Provide EgressStack.credentialVault to use Credential Vault with a custom adapter.",
+): CredentialVault {
   const fail = async (..._args: unknown[]): Promise<never> => {
-    throw new Error(
-      "Credential Vault is not available for this adapter factory. Provide EgressStack.credentialVault to use Credential Vault with a custom adapter."
-    );
+    throw new Error(message);
   };
   return {
     create: fail,
@@ -263,6 +268,60 @@ export interface SandboxConnectOptions {
   signal?: AbortSignal;
 }
 
+export interface SandboxCreateFromTemplateOptions {
+  /**
+   * Connection configuration for calling the OpenSandbox Lifecycle API and the sandbox's execd API.
+   */
+  connectionConfig?: ConnectionConfig | ConnectionConfigOptions;
+  /**
+   * Advanced override: inject a custom adapter factory (custom transports, dependency injection).
+   */
+  adapterFactory?: AdapterFactory;
+  /**
+   * ID of a `Succeeded` fsb template (see {@link SandboxManager.createTemplate}).
+   */
+  templateId: string;
+  /**
+   * Sandbox timeout in seconds (server semantics). Required in template mode.
+   */
+  timeoutSeconds: number;
+  /**
+   * Custom metadata tags (used for filtering/management).
+   */
+  metadata?: Record<string, string>;
+  /**
+   * Optional outbound network policy for the sandbox.
+   * If provided without defaultAction, defaults to "deny".
+   */
+  networkPolicy?: NetworkPolicy;
+  /**
+   * Opaque extension parameters passed through to the server as-is.
+   * Prefer namespaced keys (e.g. `storage.id`).
+   */
+  extensions?: Record<string, string>;
+  /**
+   * Optional signal used to cancel creation and readiness requests.
+   */
+  signal?: AbortSignal;
+  /**
+   * Skip readiness checks during create.
+   *
+   * When true, the SDK will not wait for lifecycle state `Running` or perform the health check.
+   * The returned sandbox instance may not be ready yet.
+   */
+  skipHealthCheck?: boolean;
+  /**
+   * Optional custom readiness check used by {@link Sandbox.waitUntilReady}.
+   * Custom checks are not cancelled on timeout.
+   *
+   * If provided, the SDK will call this function during readiness checks instead of
+   * using the default `execd` ping check.
+   */
+  healthCheck?: (sbx: Sandbox) => boolean | Promise<boolean>;
+  readyTimeoutSeconds?: number;
+  healthCheckPollingInterval?: number;
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
   signal?.throwIfAborted();
 }
@@ -275,9 +334,75 @@ function toImageSpec(
   return { uri: image.uri, auth: image.auth };
 }
 
+/**
+ * Resolve the egress stack for a sandbox.
+ *
+ * Template-backed sandboxes (origin `template`) have no sandbox-side egress
+ * sidecar: policy operations go through the lifecycle control plane, and the
+ * egress sidecar endpoint is never resolved. For any other origin the
+ * sandbox-side egress sidecar endpoint is resolved and used.
+ */
+async function resolveEgressStack(
+  adapterFactory: AdapterFactory,
+  sandboxes: Sandboxes,
+  connectionConfig: ConnectionConfig,
+  lifecycleBaseUrl: string,
+  sandboxId: SandboxId,
+  endpointOrigin: string | undefined,
+  signal?: AbortSignal,
+): Promise<{ egress: Egress; credentialVault?: CredentialVault; origin: SandboxOrigin }> {
+  if (endpointOrigin === SandboxOrigin.TEMPLATE) {
+    const stack = adapterFactory.createNetworkPolicyStack?.({
+      connectionConfig,
+      lifecycleBaseUrl,
+      sandboxId,
+    });
+    if (!stack) {
+      throw new Error(
+        "The sandbox is template-backed but the adapter factory does not provide createNetworkPolicyStack; cannot route egress policy operations."
+      );
+    }
+    return {
+      egress: stack.egress,
+      credentialVault: unavailableCredentialVault(TEMPLATE_CREDENTIAL_VAULT_UNAVAILABLE),
+      origin: SandboxOrigin.TEMPLATE,
+    };
+  }
+  const egressEndpoint = await sandboxes.getSandboxEndpoint(
+    sandboxId,
+    DEFAULT_EGRESS_PORT,
+    connectionConfig.useServerProxy,
+    signal,
+  );
+  const stack = adapterFactory.createEgressStack({
+    connectionConfig,
+    egressBaseUrl: `${connectionConfig.protocol}://${egressEndpoint.endpoint}`,
+    endpointHeaders: egressEndpoint.headers,
+  });
+  return {
+    egress: stack.egress,
+    credentialVault: stack.credentialVault,
+    origin: SandboxOrigin.UNKNOWN,
+  };
+}
+
 export class Sandbox {
   readonly id: SandboxId;
   readonly connectionConfig: ConnectionConfig;
+  /**
+   * Origin of this sandbox (see {@link SandboxOrigin}).
+   *
+   * `template` when the sandbox runs on a fsb golden-image template: set
+   * locally by {@link Sandbox.createFromTemplate}, and reported by the
+   * server's `OPEN-SANDBOX-ORIGIN` response header otherwise (also honored
+   * for snapshot restores, which boot the template's published artifact set).
+   * `unknown` for everything else.
+   *
+   * Template-backed sandboxes route egress policy operations through the
+   * lifecycle control plane (`/sandboxes/{sandboxId}/networkpolicy`) instead
+   * of the sandbox-side egress sidecar.
+   */
+  readonly origin: string;
 
   /**
    * Lifecycle (sandbox management) service.
@@ -329,6 +454,7 @@ export class Sandbox {
     isolation: IsolationService;
     egress: Egress;
     credentialVault?: CredentialVault;
+    origin?: string;
   }) {
     this.id = opts.id;
     this.connectionConfig = opts.connectionConfig;
@@ -345,6 +471,7 @@ export class Sandbox {
       egress: opts.egress,
     });
 
+    this.origin = opts.origin ?? SandboxOrigin.UNKNOWN;
     this.sandboxes = opts.sandboxes;
     this.commands = opts.commands;
     this.files = opts.files;
@@ -456,14 +583,21 @@ export class Sandbox {
         connectionConfig.useServerProxy,
         opts.signal,
       );
-      const egressEndpoint = await sandboxes.getSandboxEndpoint(
+      const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
+
+      // The server is authoritative about the runtime backing: for fsb
+      // template-backed sandboxes (including snapshot restores of a template)
+      // it reports origin `template` and there is no sidecar endpoint, so the
+      // egress stack is routed through the lifecycle control plane.
+      const egressStack = await resolveEgressStack(
+        adapterFactory,
+        sandboxes,
+        connectionConfig,
+        lifecycleBaseUrl,
         sandboxId,
-        DEFAULT_EGRESS_PORT,
-        connectionConfig.useServerProxy,
+        endpoint.origin,
         opts.signal,
       );
-      const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
-      const egressBaseUrl = `${connectionConfig.protocol}://${egressEndpoint.endpoint}`;
 
       const execdStack =
         adapterFactory.createExecdStack({
@@ -471,11 +605,6 @@ export class Sandbox {
           execdBaseUrl,
           endpointHeaders: endpoint.headers,
         });
-      const { egress, credentialVault } = adapterFactory.createEgressStack({
-        connectionConfig,
-        egressBaseUrl,
-        endpointHeaders: egressEndpoint.headers,
-      });
 
       const { commands, files, health, metrics, isolation } = execdStack;
 
@@ -491,8 +620,174 @@ export class Sandbox {
         health,
         metrics,
         isolation: isolation ?? unavailableIsolation,
-        egress,
-        credentialVault,
+        egress: egressStack.egress,
+        credentialVault: egressStack.credentialVault,
+        origin: egressStack.origin,
+      });
+
+      if (!(opts.skipHealthCheck ?? false)) {
+        await sbx.waitUntilReady({
+          readyTimeoutSeconds:
+            opts.readyTimeoutSeconds ?? DEFAULT_READY_TIMEOUT_SECONDS,
+          pollingIntervalMillis:
+            opts.healthCheckPollingInterval ??
+            DEFAULT_HEALTH_CHECK_POLLING_INTERVAL_MILLIS,
+          healthCheck: opts.healthCheck,
+          signal: opts.signal,
+        });
+      }
+
+      reportSandboxCreateMetric(connectionConfig, {
+        sandboxId,
+        image: startupSource,
+        createDurationMs: Date.now() - createStarted,
+        success: true,
+      });
+
+      return sbx;
+    } catch (err) {
+      reportSandboxCreateMetric(connectionConfig, {
+        sandboxId,
+        image: startupSource,
+        createDurationMs: Date.now() - createStarted,
+        success: false,
+      });
+      if (opts.signal?.aborted) {
+        void (async () => {
+          try {
+            if (sandboxId) {
+              await sandboxes.deleteSandbox(sandboxId);
+            }
+          } catch {
+            // Preserve the caller's abort error if sandbox cleanup fails.
+          } finally {
+            await connectionConfig.closeTransport().catch(() => undefined);
+          }
+        })();
+        throw err;
+      }
+      if (sandboxId) {
+        try {
+          await sandboxes.deleteSandbox(sandboxId);
+        } catch {
+          // Preserve the original creation error if sandbox cleanup fails.
+        }
+      }
+      await connectionConfig.closeTransport();
+      throw err;
+    }
+  }
+
+  /**
+   * Create a new sandbox from a `Succeeded` fsb template.
+   *
+   * Template mode fixes the workload shape on the server: the entrypoint,
+   * env, resources, volumes, platform and lifecycle of the sandbox come
+   * from the template's golden image and cannot be overridden here. Only
+   * metadata, network policy and extensions may accompany the template id,
+   * and the timeout is required.
+   *
+   * The returned sandbox routes egress policy operations through the
+   * lifecycle control plane and has no Credential Vault (template-backed
+   * sandboxes have no sandbox-side egress sidecar).
+   */
+  static async createFromTemplate(opts: SandboxCreateFromTemplateOptions): Promise<Sandbox> {
+    if (!opts.templateId?.trim()) {
+      throw new Error("Template ID must be specified");
+    }
+    if (typeof opts.timeoutSeconds !== "number" || !Number.isFinite(opts.timeoutSeconds)) {
+      throw new Error(
+        `timeoutSeconds must be a finite number, got ${opts.timeoutSeconds}`
+      );
+    }
+    if (!(opts.skipHealthCheck ?? false) && opts.healthCheckPollingInterval !== undefined) {
+      validatePollingInterval(opts.healthCheckPollingInterval);
+    }
+    throwIfAborted(opts.signal);
+
+    const baseConnectionConfig =
+      opts.connectionConfig instanceof ConnectionConfig
+        ? opts.connectionConfig
+        : new ConnectionConfig(opts.connectionConfig);
+    const connectionConfig = baseConnectionConfig.withTransportIfMissing();
+    const lifecycleBaseUrl = connectionConfig.getBaseUrl();
+    const adapterFactory = opts.adapterFactory ?? createDefaultAdapterFactory();
+
+    let sandboxes: Sandboxes;
+    try {
+      sandboxes = adapterFactory.createLifecycleStack({
+        connectionConfig,
+        lifecycleBaseUrl,
+      }).sandboxes;
+    } catch (err) {
+      await connectionConfig.closeTransport();
+      throw err;
+    }
+
+    const req: CreateSandboxFromTemplateRequest = {
+      templateId: opts.templateId,
+      timeout: Math.floor(opts.timeoutSeconds),
+      metadata: opts.metadata ?? {},
+      networkPolicy: opts.networkPolicy
+        ? {
+            ...opts.networkPolicy,
+            defaultAction: opts.networkPolicy.defaultAction ?? "deny",
+          }
+        : undefined,
+      extensions: opts.extensions ?? {},
+    };
+
+    let sandboxId: SandboxId | undefined;
+    const startupSource = `template:${opts.templateId}`;
+    const createStarted = Date.now();
+    try {
+      const created = await sandboxes.createSandboxFromTemplate(req, opts.signal);
+      sandboxId = created.id as SandboxId;
+
+      const endpoint = await sandboxes.getSandboxEndpoint(
+        sandboxId,
+        DEFAULT_EXECD_PORT,
+        connectionConfig.useServerProxy,
+        opts.signal,
+      );
+      const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
+
+      // Template-backed sandboxes have no sandbox-side egress sidecar:
+      // policy operations go through the lifecycle control plane.
+      const egressStack = await resolveEgressStack(
+        adapterFactory,
+        sandboxes,
+        connectionConfig,
+        lifecycleBaseUrl,
+        sandboxId,
+        SandboxOrigin.TEMPLATE,
+        opts.signal,
+      );
+
+      const execdStack =
+        adapterFactory.createExecdStack({
+          connectionConfig,
+          execdBaseUrl,
+          endpointHeaders: endpoint.headers,
+        });
+
+      const { commands, files, health, metrics, isolation } = execdStack;
+
+      const sbx = new Sandbox({
+        id: sandboxId,
+        connectionConfig,
+        adapterFactory,
+        lifecycleBaseUrl,
+        execdBaseUrl,
+        sandboxes,
+        commands,
+        files,
+        health,
+        metrics,
+        isolation: isolation ?? unavailableIsolation,
+        egress: egressStack.egress,
+        credentialVault: egressStack.credentialVault,
+        origin: egressStack.origin,
       });
 
       if (!(opts.skipHealthCheck ?? false)) {
@@ -576,22 +871,27 @@ export class Sandbox {
       const endpoint = await budget.endpoint(signal => sandboxes.getSandboxEndpoint(
         opts.sandboxId, DEFAULT_EXECD_PORT, connectionConfig.useServerProxy, signal,
       ), interval);
-      const egressEndpoint = await budget.endpoint(signal => sandboxes.getSandboxEndpoint(
-        opts.sandboxId, DEFAULT_EGRESS_PORT, connectionConfig.useServerProxy, signal,
-      ), interval);
       const execdBaseUrl = `${connectionConfig.protocol}://${endpoint.endpoint}`;
-      const egressBaseUrl = `${connectionConfig.protocol}://${egressEndpoint.endpoint}`;
+      // The server is authoritative about the runtime backing: template-backed
+      // sandboxes (origin `template`) have no sandbox-side egress sidecar, so
+      // policy operations go through the lifecycle control plane and the
+      // egress sidecar endpoint is never resolved.
+      const egressStack = await resolveEgressStack(
+        adapterFactory,
+        sandboxes,
+        connectionConfig,
+        lifecycleBaseUrl,
+        opts.sandboxId,
+        endpoint.origin,
+        opts.signal,
+      );
+
       const execdStack =
         adapterFactory.createExecdStack({
           connectionConfig,
           execdBaseUrl,
           endpointHeaders: endpoint.headers,
         });
-      const { egress, credentialVault } = adapterFactory.createEgressStack({
-        connectionConfig,
-        egressBaseUrl,
-        endpointHeaders: egressEndpoint.headers,
-      });
 
       const { commands, files, health, metrics, isolation } = execdStack;
 
@@ -607,8 +907,9 @@ export class Sandbox {
         health,
         metrics,
         isolation: isolation ?? unavailableIsolation,
-        egress,
-        credentialVault,
+        egress: egressStack.egress,
+        credentialVault: egressStack.credentialVault,
+        origin: egressStack.origin,
       });
 
       if (!(opts.skipHealthCheck ?? false)) {

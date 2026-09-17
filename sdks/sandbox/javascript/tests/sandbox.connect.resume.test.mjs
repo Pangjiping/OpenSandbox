@@ -90,9 +90,10 @@ test("Sandbox.connect wires execd and egress stacks and getEndpointUrl uses prot
       ["sbx-1", 8080],
     ],
   );
-  assert.equal(calls[2].method, "createExecdStack");
-  assert.equal(calls[2].args[0].execdBaseUrl, `https://sandbox.internal:${DEFAULT_EXECD_PORT}`);
-  assert.deepEqual(calls[2].args[0].endpointHeaders, { "x-port": String(DEFAULT_EXECD_PORT) });
+  assert.equal(calls[2].method, "createEgressStack");
+  assert.equal(calls[3].method, "createExecdStack");
+  assert.equal(calls[3].args[0].execdBaseUrl, `https://sandbox.internal:${DEFAULT_EXECD_PORT}`);
+  assert.deepEqual(calls[3].args[0].endpointHeaders, { "x-port": String(DEFAULT_EXECD_PORT) });
 });
 
 test("Sandbox.resume refreshes endpoints through connect after resuming lifecycle", async () => {

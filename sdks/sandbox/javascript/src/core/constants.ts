@@ -33,3 +33,6 @@ export const DEFAULT_USER_AGENT = "OpenSandbox-JS-SDK/0.1.11";
 // purpose: standard forwarded headers (X-Forwarded-For, etc.) are rewritten or
 // stripped by intermediaries, so a dedicated name conveys it reliably.
 export const CLIENT_IP_HEADER = "OPEN-SANDBOX-CLIENT-IP";
+
+// Response header reporting a sandbox's origin (see SandboxOrigin in models).
+export const OPEN_SANDBOX_ORIGIN_HEADER = "OPEN-SANDBOX-ORIGIN";

@@ -532,6 +532,30 @@ export interface CreateSandboxRequest extends Record<string, unknown> {
   extensions?: Record<string, unknown>;
 }
 
+export interface CreateSandboxFromTemplateRequest extends Record<string, unknown> {
+  /**
+   * Succeeded fsb template to create the sandbox from.
+   *
+   * Template mode fixes the workload shape on the server: only metadata,
+   * network policy and extensions may accompany the template id, and the
+   * timeout is required.
+   */
+  templateId: string;
+  /**
+   * Sandbox timeout in seconds (server semantics). Required in template mode.
+   */
+  timeout: number;
+  metadata?: Record<string, string>;
+  /**
+   * Optional outbound network policy for the sandbox.
+   */
+  networkPolicy?: NetworkPolicy;
+  /**
+   * Opaque extension parameters passed through to the server as-is.
+   */
+  extensions?: Record<string, string>;
+}
+
 export interface CreateSandboxResponse extends Record<string, unknown> {
   id: SandboxId;
   status: SandboxStatus;
@@ -608,6 +632,36 @@ export interface Endpoint extends Record<string, unknown> {
    * (e.g. when the server requires them for routing or auth). Omit or empty if not required.
    */
   headers?: Record<string, string>;
+  /**
+   * Origin of the sandbox taken from the server's `OPEN-SANDBOX-ORIGIN`
+   * response header (see {@link SandboxOrigin}). Omitted when the server
+   * does not send it.
+   */
+  origin?: string;
+}
+
+/**
+ * Origin backing a sandbox.
+ *
+ * The protocol defines a single origin value: `template` (reported by the
+ * server via the `OPEN-SANDBOX-ORIGIN` response header, and set locally when
+ * the sandbox was explicitly created from a template). Anything else -
+ * including sandboxes created from an image or a snapshot - is `unknown`.
+ *
+ * The server may introduce new values in future versions; treat a missing or
+ * unknown value as "not template-backed" and keep using the egress sidecar.
+ */
+export enum SandboxOrigin {
+  /**
+   * Runs on a fsb golden-image template (no sandbox-side egress sidecar;
+   * egress policy goes through the lifecycle control plane).
+   */
+  TEMPLATE = "template",
+  /**
+   * The origin could not be determined (create from an image or snapshot,
+   * or an older server that does not send the header).
+   */
+  UNKNOWN = "unknown",
 }
 
 export interface ListSandboxesParams {

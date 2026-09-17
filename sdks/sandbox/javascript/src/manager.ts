@@ -26,6 +26,12 @@ import type {
   SandboxMetadataPatch,
   SnapshotInfo,
 } from "./models/sandboxes.js";
+import type {
+  CreateTemplateRequest,
+  ListTemplatesParams,
+  ListTemplatesResponse,
+  TemplateInfo,
+} from "./models/templates.js";
 import type { Sandboxes } from "./services/sandboxes.js";
 
 export interface SandboxManagerOptions {
@@ -146,6 +152,37 @@ export class SandboxManager {
 
   deleteSnapshot(snapshotId: string): Promise<void> {
     return this.sandboxes.deleteSnapshot(snapshotId);
+  }
+
+  /**
+   * Create a fsb template (golden-image build).
+   *
+   * The build is asynchronous: the response starts at `status.phase: Pending`;
+   * poll `getTemplate` until `Succeeded` (or `Failed`).
+   */
+  createTemplate(req: CreateTemplateRequest): Promise<TemplateInfo> {
+    return this.sandboxes.createTemplate(req);
+  }
+
+  /**
+   * Get a template with its latest build status by id.
+   */
+  getTemplate(templateId: string): Promise<TemplateInfo> {
+    return this.sandboxes.getTemplate(templateId);
+  }
+
+  /**
+   * List templates with metadata filtering and pagination options.
+   */
+  listTemplates(filter: ListTemplatesParams = {}): Promise<ListTemplatesResponse> {
+    return this.sandboxes.listTemplates(filter);
+  }
+
+  /**
+   * Delete a template by id. Running sandboxes are unaffected.
+   */
+  deleteTemplate(templateId: string): Promise<void> {
+    return this.sandboxes.deleteTemplate(templateId);
   }
 
   /**

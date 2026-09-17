@@ -38,6 +38,7 @@ export type { paths as EgressPaths } from "./api/egress.js";
 export { SandboxesAdapter } from "./adapters/sandboxesAdapter.js";
 export { EgressAdapter } from "./adapters/egressAdapter.js";
 export type { EgressRawHttpOptions } from "./adapters/egressAdapter.js";
+export { NetworkPolicyAdapter } from "./adapters/networkPolicyAdapter.js";
 export { HealthAdapter } from "./adapters/healthAdapter.js";
 export { MetricsAdapter } from "./adapters/metricsAdapter.js";
 export { FilesystemAdapter } from "./adapters/filesystemAdapter.js";

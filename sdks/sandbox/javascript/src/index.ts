@@ -56,6 +56,7 @@ export type {
   CredentialVaultPatchRequest,
   CredentialVaultState,
   CreateSnapshotRequest,
+  CreateSandboxFromTemplateRequest,
   CreateSandboxRequest,
   CreateSandboxResponse,
   CustomHeaderEntry,
@@ -85,6 +86,18 @@ export type {
   SandboxMetadataPatch,
   Volume,
 } from "./models/sandboxes.js";
+export { SandboxOrigin } from "./models/sandboxes.js";
+
+export type {
+  CreateTemplateRequest,
+  ListTemplatesParams,
+  ListTemplatesResponse,
+  TemplateFormat,
+  TemplateInfo,
+  TemplatePhase,
+  TemplateReadiness,
+  TemplateStatus,
+} from "./models/templates.js";
 
 export type { Sandboxes } from "./services/sandboxes.js";
 export type { CredentialVault, Egress } from "./services/egress.js";
@@ -143,6 +156,7 @@ export {
 
 export type {
   SandboxConnectOptions,
+  SandboxCreateFromTemplateOptions,
   SandboxCreateOptions,
 } from "./sandbox.js";
 export { Sandbox } from "./sandbox.js";
