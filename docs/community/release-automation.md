@@ -26,6 +26,35 @@ $EDITOR docs/releases/1.1.0.md
 git push
 ```
 
+## Prereleases (rc)
+
+An rc is always cut on the **line-birth version** (`X.Y.0-rc.N` — there
+is no `X.Y.Z-rc` for `Z > 0`). It validates that the platform deploys
+and the fan-out runs: images are published, **all packages are held
+(not published)**, and only the umbrella tag is minted (marked
+`--prerelease` on GitHub).
+
+```bash
+# 1. bump (channel=rc is derived from the suffix)
+manifests/release/create-umbrella-release.sh --version 1.1.0-rc.1 --bump-only
+
+# 2. notes, then push
+cp docs/releases/TEMPLATE.md docs/releases/1.1.0-rc.1.md
+$EDITOR docs/releases/1.1.0-rc.1.md
+git push
+
+# 3. dispatch
+gh workflow run release-umbrella.yml \
+  -f version=1.1.0-rc.1 -f channel=rc -f release_branch=release-1.1 \
+  -f dry_run=false
+```
+
+Repeat with `-rc.2`, `-rc.3`, … as fixes land — every rc is a full
+rebuild and previous rc artifacts stay frozen in the registries. The
+stable release of the line (`1.1.0`, no suffix) then publishes packages
+for real. Prereleases are never resolved by default (PyPI / NuGet /
+Maven / Go hide them; npm publishes under the `rc` dist-tag).
+
 ## Release Execution (workflow)
 
 Dispatch `.github/workflows/release-umbrella.yml`

@@ -67,7 +67,8 @@ registries use the bare semver core because they reject prefixes.
 ## Cadence and support
 
 - A line is born every 2 weeks (`X.Y.0`); in-line snapshots (`X.Y.Z`,
-  `Z > 0`) ship on demand. Pre-releases look like `X.Y.0-rc.N`.
+  `Z > 0`) ship on demand. Pre-releases look like `X.Y.0-rc.N` and publish images only —
+  packages are held until the line's stable release.
 - **Latest line only, no LTS.** When `X.(Y+1).0` ships, `X.Y.*` is EOL
   except for a single emergency-CVE window (CVSS ≥ 8.0, ≤ 72h from
   disclosure, one-shot `X.(Y-1).Z` snapshot).
