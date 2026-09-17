@@ -17,6 +17,7 @@ name: Umbrella Packages
 # tags, so hold injects it via the pretend-version env vars.
 
 on:
+  workflow_dispatch:
   workflow_call:
     inputs:
       version:
