@@ -11,9 +11,9 @@ name: Umbrella Release
 # Package legs (PyPI, npm, Maven, NuGet) run through the reusable
 # umbrella-packages.yml workflow: hold-only on dry runs; ordered
 # verify-then-continue publish when publish gates are open. Helm charts
-# are not published — they ship in-repo at the release tag (the legacy
-# publish-helm-chart.yml workflow is frozen). Legacy tag-triggered
-# publish-* workflows stay untouched until Phase 3 retirement.
+# are not published — they ship in-repo at the release tag. The legacy
+# tag-triggered publish-* workflows have been deleted; the umbrella is
+# the only release path.
 
 permissions:
   contents: write

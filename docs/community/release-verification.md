@@ -55,7 +55,15 @@ Expected identity values:
 
 - Repository: `opensandbox-group/OpenSandbox`
 - OIDC issuer: `https://token.actions.githubusercontent.com`
-- Source release workflow: `opensandbox-group/OpenSandbox/.github/workflows/release-generic.yml`
+
+::: warning Legacy workflow identities (pre-umbrella releases only)
+The per-target publish workflows below were removed when OpenSandbox
+moved to unified umbrella releases. They remain the verification
+identity for artifacts published before that point. New umbrella
+releases are produced by `release-umbrella.yml` and
+`umbrella-packages.yml`.
+:::
+
 - Component image workflow: `opensandbox-group/OpenSandbox/.github/workflows/publish-components.yml`
 - Server image workflow: `opensandbox-group/OpenSandbox/.github/workflows/publish-server.yml`
 - CLI package workflow: `opensandbox-group/OpenSandbox/.github/workflows/publish-cli.yml`
