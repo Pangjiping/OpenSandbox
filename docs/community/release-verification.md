@@ -61,7 +61,7 @@ The per-target publish workflows below were removed when OpenSandbox
 moved to unified umbrella releases. They remain the verification
 identity for artifacts published before that point. New umbrella
 releases are produced by `release-umbrella.yml` and
-`umbrella-packages.yml`.
+`release-packages.yml`.
 :::
 
 - Component image workflow: `opensandbox-group/OpenSandbox/.github/workflows/publish-components.yml`

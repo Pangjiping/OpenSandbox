@@ -9,7 +9,7 @@ name: Umbrella Release
 # variable, which stays unset until GA.
 #
 # Package legs (PyPI, npm, Maven, NuGet) run through the reusable
-# umbrella-packages.yml workflow: hold-only on dry runs AND on rc
+# release-packages.yml workflow: hold-only on dry runs AND on rc
 # builds; ordered verify-then-continue publish only for stable releases
 # with publish gates open. Helm charts
 # are not published — they ship in-repo at the release tag. The legacy

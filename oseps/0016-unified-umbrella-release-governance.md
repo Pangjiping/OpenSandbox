@@ -401,7 +401,7 @@ audit chain from tag → BOM → source.
 gains `--target opensandbox` (computes `release-X.Y.Z`; umbrella mode
 suppresses legacy `<target>/v<version>` tags, forces `release-<version>`
 image tags, and syncs chart `version` + `appVersion` before packaging).
-Package legs run through the reusable `umbrella-packages.yml` workflow
+Package legs run through the reusable `release-packages.yml` workflow
 (hold-only on dry runs; ordered verify-then-continue publish when
 gates are open). The legacy tag-triggered publish-* workflows and the
 per-target `create-release.sh` driver are **deleted** — the umbrella is
