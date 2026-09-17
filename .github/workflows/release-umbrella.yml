@@ -9,8 +9,9 @@ name: Umbrella Release
 # variable, which stays unset until GA.
 #
 # Package legs (PyPI, npm, Maven, NuGet) run through the reusable
-# umbrella-packages.yml workflow: hold-only on dry runs; ordered
-# verify-then-continue publish when publish gates are open. Helm charts
+# umbrella-packages.yml workflow: hold-only on dry runs AND on rc
+# builds; ordered verify-then-continue publish only for stable releases
+# with publish gates open. Helm charts
 # are not published — they ship in-repo at the release tag. The legacy
 # tag-triggered publish-* workflows have been deleted; the umbrella is
 # the only release path.
@@ -260,7 +261,9 @@ jobs:
     with:
       version: ${{ needs.resolve.outputs.version }}
       channel: ${{ needs.resolve.outputs.channel }}
-      publish: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' }}
+      # packages are published for stable releases only — rc builds hold
+      # them to validate the fan-out without touching immutable registries
+      publish: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' && needs.resolve.outputs.channel == 'stable' }}
     secrets: inherit
 
   bom:
@@ -388,13 +391,19 @@ jobs:
       - name: Mint umbrella and Go companion tags
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
+          CHANNEL: ${{ needs.resolve.outputs.channel }}
         run: |
           set -euo pipefail
           git config user.name "opensandbox-release-bot"
           git config user.email "opensandbox-release-bot@users.noreply.github.com"
           git tag -a "release-${VERSION}" -m "release: OpenSandbox ${VERSION}" -m "Umbrella release built from ${GITHUB_SHA}."
-          git tag -a "sdks/sandbox/go/v${VERSION}" -m "release: OpenSandbox Go SDK ${VERSION}" -m "Companion tag for the umbrella release-${VERSION} (same commit)."
-          git push origin "release-${VERSION}" "sdks/sandbox/go/v${VERSION}"
+          # rc releases ship no SDK artifacts, so no companion tag either
+          if [ "$CHANNEL" = "stable" ]; then
+            git tag -a "sdks/sandbox/go/v${VERSION}" -m "release: OpenSandbox Go SDK ${VERSION}" -m "Companion tag for the umbrella release-${VERSION} (same commit)."
+            git push origin "release-${VERSION}" "sdks/sandbox/go/v${VERSION}"
+          else
+            git push origin "release-${VERSION}"
+          fi
 
       - name: Create GitHub Release
         env:

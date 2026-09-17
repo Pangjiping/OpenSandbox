@@ -256,7 +256,14 @@ and keeps versioning independently.
 | Line birth (`X.Y.0`) | Every 2 weeks (even ISO-week Wednesdays) | Latest only | `release-X.Y.0` |
 | In-line snapshot (`X.Y.Z`, `Z > 0`) | On demand within the current window | Same as current line | `release-X.Y.Z` |
 | N-1 emergency CVE | CVSS ≥ 8.0, ≤72h from disclosure, no current-line fix | One-off snapshot | `release-X.(Y-1).Z` |
-| Pre-release | Ahead of a line birth | Not supported | `release-X.Y.0-rc.N` |
+| Pre-release | Ahead of a line birth | Not supported; **images published, all packages held** (no package publishes, no Go companion tag) | `release-X.Y.0-rc.N` |
+
+**Pre-releases publish images only.** An rc exists to validate that
+the platform deploys and the fan-out runs — so images are promoted,
+packages are built and held (never published to immutable registries),
+and only the umbrella tag is minted. SDK artifacts of an rc live solely
+as held workflow artifacts; the stable release of the line publishes
+packages for real.
 
 **No LTS.** At 2-week cadence a backport is a full umbrella rebuild
 anyway. When `X.(Y+1).0` ships, `X.Y.*` is EOL except for the single
