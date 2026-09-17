@@ -149,6 +149,23 @@ public class SandboxesAdapterTests
     }
 
     [Fact]
+    public async Task ListSandboxesAsync_ShouldEncodeMetadataFilterRoundTrip()
+    {
+        var handler = new CapturingHandler("""{"items": []}""");
+        var client = new HttpClient(handler);
+        var wrapper = new HttpClientWrapper(client, "http://localhost:8080/v1");
+        var adapter = new SandboxesAdapter(wrapper);
+
+        await adapter.ListSandboxesAsync(new ListSandboxesParams
+        {
+            Metadata = new Dictionary<string, string> { ["team"] = "platform&a=1" }
+        });
+
+        ParseQsl(ExtractQueryValue(handler.PathAndQuery!, "metadata"))
+            .Should().ContainSingle().Which.Should().Be(new KeyValuePair<string, string>("team", "platform&a=1"));
+    }
+
+    [Fact]
     public async Task CreateSandboxAsync_ShouldTreatMissingExpiresAtAsNull()
     {
         var payload = """
@@ -447,9 +464,15 @@ public class SandboxesAdapterTests
         });
 
         // Keys and values must survive the server's parse_qsl round trip,
-        // so the joined k=v string is percent-encoded once more.
+        // so each key/value is percent-encoded before joining.
         handler.PathAndQuery.Should().Be(
-            "/v1/templates?metadata=team%3Dplatform%26a%3D1&page=2&pageSize=20");
+            "/v1/templates?metadata=team%3Dplatform%2526a%253D1&page=2&pageSize=20");
+
+        // Simulate the server: decode the query value, split with parse_qsl,
+        // then decode each key/value.
+        ParseQsl(ExtractQueryValue(handler.PathAndQuery!, "metadata"))
+            .Should().ContainSingle().Which.Should().Be(new KeyValuePair<string, string>("team", "platform&a=1"));
+
         response.Items.Should().ContainSingle();
         response.Items[0].Status.Phase.Should().Be(TemplatePhases.Building);
         response.Pagination!.TotalItems.Should().Be(21);
@@ -476,6 +499,28 @@ public class SandboxesAdapterTests
         var client = new HttpClient(handler);
         var wrapper = new HttpClientWrapper(client, "http://localhost:8080/v1");
         return new SandboxesAdapter(wrapper);
+    }
+
+    private static string ExtractQueryValue(string pathAndQuery, string key)
+    {
+        var query = pathAndQuery.Substring(pathAndQuery.IndexOf('?') + 1);
+        var part = query.Split('&').Single(p => p.StartsWith($"{key}=", StringComparison.Ordinal));
+        return Uri.UnescapeDataString(part.Substring(key.Length + 1));
+    }
+
+    /// <summary>
+    /// Mimics the server: split the (already query-decoded) value with
+    /// parse_qsl semantics, then percent-decode each key and value.
+    /// </summary>
+    private static List<KeyValuePair<string, string>> ParseQsl(string value)
+    {
+        return value.Split('&').Select(pair =>
+        {
+            var separator = pair.IndexOf('=');
+            return new KeyValuePair<string, string>(
+                Uri.UnescapeDataString(pair[..separator]),
+                Uri.UnescapeDataString(pair[(separator + 1)..]));
+        }).ToList();
     }
 
     private sealed class CaptureHandler : HttpMessageHandler

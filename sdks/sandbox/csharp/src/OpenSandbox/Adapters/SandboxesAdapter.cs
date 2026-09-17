@@ -42,6 +42,18 @@ internal sealed class SandboxesAdapter : ISandboxes
         _endpointCache = endpointCache;
     }
 
+    /// <summary>
+    /// Percent-encodes a metadata filter for the <c>metadata</c> query parameter.
+    ///
+    /// The HTTP layer percent-encodes the value once more and the server decodes
+    /// its layer before splitting with <c>parse_qsl</c>, so encoding each key and
+    /// value here round-trips keys and values containing <c>&amp;</c>, <c>=</c> or <c>%</c>.
+    /// </summary>
+    internal static string EncodeMetadataFilter(IReadOnlyDictionary<string, string> metadata)
+    {
+        return string.Join("&", metadata.Select(kv => $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}"));
+    }
+
     public async Task<CreateSandboxResponse> CreateSandboxAsync(
         CreateSandboxRequest request,
         CancellationToken cancellationToken = default)
@@ -72,9 +84,7 @@ internal sealed class SandboxesAdapter : ISandboxes
 
         if (@params?.Metadata != null && @params.Metadata.Count > 0)
         {
-            // Encode metadata as k=v&k2=v2
-            var metadataStr = string.Join("&", @params.Metadata.Select(kv => $"{kv.Key}={kv.Value}"));
-            queryParts.Add($"metadata={Uri.EscapeDataString(metadataStr)}");
+            queryParts.Add($"metadata={Uri.EscapeDataString(EncodeMetadataFilter(@params.Metadata))}");
         }
 
         if (@params?.Page.HasValue == true)
@@ -237,11 +247,7 @@ internal sealed class SandboxesAdapter : ISandboxes
 
         if (@params?.Metadata != null && @params.Metadata.Count > 0)
         {
-            // Encode metadata as k=v&k2=v2; the server splits the decoded
-            // value with parse_qsl, so percent-encoding must survive one
-            // extra decode round-trip.
-            var metadataStr = string.Join("&", @params.Metadata.Select(kv => $"{kv.Key}={kv.Value}"));
-            queryParts.Add($"metadata={Uri.EscapeDataString(metadataStr)}");
+            queryParts.Add($"metadata={Uri.EscapeDataString(EncodeMetadataFilter(@params.Metadata))}");
         }
 
         if (@params?.Page.HasValue == true)
