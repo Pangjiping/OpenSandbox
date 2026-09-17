@@ -51,7 +51,12 @@ class EndpointCache(
 
     private val inflight = mutableMapOf<EndpointCacheKey, InflightEntry>()
 
-    private fun cloneEndpoint(ep: SandboxEndpoint) = SandboxEndpoint(endpoint = ep.endpoint, headers = ep.headers.toMap())
+    private fun cloneEndpoint(ep: SandboxEndpoint) =
+        SandboxEndpoint(
+            endpoint = ep.endpoint,
+            headers = ep.headers.toMap(),
+            origin = ep.origin,
+        )
 
     private class InflightEntry {
         @Volatile var result: SandboxEndpoint? = null

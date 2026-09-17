@@ -130,6 +130,47 @@ class SandboxTemplateLaunchTest {
     }
 
     @Test
+    fun `endpoint origin survives endpoint cache fetch and hit`() {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(
+                MockResponse()
+                    .setHeader(SandboxOrigin.HEADER_NAME, SandboxOrigin.TEMPLATE)
+                    .setBody("""{"endpoint":"localhost:${server.port}","headers":{}}"""),
+            )
+            server.enqueue(
+                MockResponse()
+                    .setHeader(SandboxOrigin.HEADER_NAME, SandboxOrigin.TEMPLATE)
+                    .setBody("""{"endpoint":"localhost:${server.port}","headers":{}}"""),
+            )
+
+            val config =
+                ConnectionConfig
+                    .builder()
+                    .domain(server.url("/").toString())
+                    .disableMetrics()
+                    .build()
+            val sandbox =
+                Sandbox
+                    .connector()
+                    .sandboxId("fsb-001")
+                    .connectionConfig(config)
+                    .skipHealthCheck()
+                    .connect()
+
+            // Fresh fetch of a not-yet-cached port carries the server-reported origin.
+            assertEquals(SandboxOrigin.TEMPLATE, sandbox.getEndpoint(8080).origin)
+            // Cache hits keep it: the execd endpoint was resolved (and cached) during
+            // connect, and the second lookup reuses the 8080 entry.
+            assertEquals(SandboxOrigin.TEMPLATE, sandbox.getEndpoint(44772).origin)
+            assertEquals(SandboxOrigin.TEMPLATE, sandbox.getEndpoint(8080).origin)
+            assertEquals(2, server.requestCount)
+
+            sandbox.close()
+        }
+    }
+
+    @Test
     fun `image-based create keeps resolving the egress sidecar endpoint`() {
         MockWebServer().use { server ->
             server.start()
