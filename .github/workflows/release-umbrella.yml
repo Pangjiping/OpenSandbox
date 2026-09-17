@@ -263,6 +263,14 @@ jobs:
       channel: ${{ needs.resolve.outputs.channel }}
       # packages are published for stable releases only — rc builds hold
       # them to validate the fan-out without touching immutable registries
+      #
+      # TODO(GA): with rc holding packages, the publish legs (registry
+      # credentials, verify-then-continue, rollback ledger) execute for
+      # real only at a line's first stable release. Before opening the
+      # gates for 1.1.0, rehearse the publish path end-to-end — e.g. a
+      # staging-registry rehearsal mode, or a one-off gated publish of a
+      # throwaway version per ecosystem — and record the result in the
+      # release runbook.
       publish: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' && needs.resolve.outputs.channel == 'stable' }}
     secrets: inherit
 
