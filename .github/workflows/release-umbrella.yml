@@ -1,0 +1,286 @@
+name: Umbrella Release
+
+# OSEP-0016 unified umbrella release — build-hold-publish fan-out.
+#
+# Phase 1 (this file): preflight, version-consistency scan, staging image
+# builds, and BOM assembly/commit on the release branch. Publish-facing
+# steps (image promotion to release-X.Y.Z, tags, GitHub Release) are
+# gated behind dry_run=false AND the UMBRELLA_PUBLISH_ENABLED repo
+# variable, which stays unset until GA.
+#
+# Phase 2 (follow-up): per-ecosystem package legs (Helm, PyPI, npm,
+# Maven, NuGet) are wired by adapting the existing publish-* workflows
+# to umbrella mode, per OSEP-0016 "Script and workflow changes".
+
+permissions:
+  contents: write
+  packages: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Umbrella version, e.g. 1.1.0 or 1.1.0-rc.1'
+        required: true
+        type: string
+      channel:
+        description: 'Release channel'
+        required: true
+        type: choice
+        default: 'stable'
+        options:
+          - stable
+          - rc
+      release_branch:
+        description: 'Branch the BOM commit lands on'
+        required: true
+        type: string
+        default: 'main'
+      dry_run:
+        description: 'Dry run (no publish-facing side effects)'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  preflight:
+    uses: ./.github/workflows/release-preflight.yml
+    with:
+      require_approval: ${{ !inputs.dry_run }}
+
+  scan:
+    name: Version-consistency scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Scan version consistency
+        run: |
+          ./manifests/release/create-umbrella-release.sh \
+            --version "${{ inputs.version }}" \
+            --scan-only \
+            --skip-remote-check
+
+  build-images:
+    name: Build and stage ${{ matrix.component }} image
+    needs: [preflight, scan]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: server
+            dir: server
+          - component: execd
+            dir: components/execd
+          - component: ingress
+            dir: components/ingress
+          - component: egress
+            dir: components/egress
+          - component: image-committer
+            dir: kubernetes
+          - component: controller
+            dir: kubernetes
+          - component: task-executor
+            dir: kubernetes
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Build and push staging image
+        id: build
+        env:
+          COMPONENT: ${{ matrix.component }}
+          STAGING_TAG: staging-${{ github.sha }}-${{ github.run_id }}
+          GHCR_REPO: ghcr.io/${{ github.repository_owner }}
+        run: |
+          cd "${{ matrix.dir }}"
+          export TAG="$STAGING_TAG"
+          chmod +x build.sh
+          ./build.sh
+
+          DIGEST="$(docker buildx imagetools inspect "docker.io/opensandbox/${COMPONENT}:${STAGING_TAG}" --format '{{.Manifest.Digest}}')"
+          if [[ -z "$DIGEST" ]]; then
+            echo "Unable to resolve staging digest" >&2
+            exit 1
+          fi
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "staging_tag=$STAGING_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Record digest in manifest
+        run: |
+          printf '{"%s": "%s"}\n' \
+            "${{ matrix.component }}" \
+            "${{ steps.build.outputs.digest }}" > "digest-${{ matrix.component }}.json"
+
+      - name: Upload digest manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.component }}
+          path: digest-${{ matrix.component }}.json
+          retention-days: 14
+
+  bom:
+    name: Assemble and commit BOM
+    needs: build-images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_branch }}
+          fetch-depth: 0
+
+      - name: Download digest manifests
+        uses: actions/download-artifact@v4
+        with:
+          path: digests
+          pattern: digest-*
+
+      - name: Merge digest manifests
+        run: |
+          jq -s 'add' digests/digest-*/digest-*.json > /tmp/digests.json
+          cat /tmp/digests.json
+
+      - name: Commit BOM and release notes
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+        run: |
+          git config user.name "opensandbox-release-bot"
+          git config user.email "opensandbox-release-bot@users.noreply.github.com"
+          ./manifests/release/create-umbrella-release.sh \
+            --version "$VERSION" \
+            --channel "$CHANNEL" \
+            --release-branch "$RELEASE_BRANCH" \
+            --digests-manifest /tmp/digests.json \
+            --no-tags \
+            --skip-remote-check \
+            --push
+
+  # Phase 1: publish-facing steps below stay locked behind the repo
+  # variable UMBRELLA_PUBLISH_ENABLED (and dry_run=false). Phase 2 adds
+  # the per-ecosystem package legs before this gate is opened.
+  promote:
+    name: Promote images to release tag
+    needs: bom
+    if: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to registries
+        run: echo "logins are performed per-registry below"
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@v0.3
+
+      - name: Promote staged images to release-${{ inputs.version }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          STAGING_TAG: staging-${{ github.sha }}-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          components=(server execd ingress egress image-committer controller task-executor)
+          registries=(
+            "docker.io/opensandbox"
+            "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/opensandbox"
+            "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox"
+          )
+          for comp in "${components[@]}"; do
+            for reg in "${registries[@]}"; do
+              crane tag "${reg}/${comp}:${STAGING_TAG}" "release-${VERSION}"
+              echo "promoted ${reg}/${comp}:${STAGING_TAG} -> release-${VERSION}"
+            done
+          done
+
+  release:
+    name: Mint tags and publish GitHub Release
+    needs: promote
+    if: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_branch }}
+          fetch-depth: 0
+
+      - name: Mint umbrella and Go companion tags
+        env:
+          VERSION: ${{ inputs.version }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "opensandbox-release-bot"
+          git config user.email "opensandbox-release-bot@users.noreply.github.com"
+          git tag -a "release-${VERSION}" -m "release: OpenSandbox ${VERSION}" -m "Umbrella release built from ${GITHUB_SHA}."
+          git tag -a "sdks/sandbox/go/v${VERSION}" -m "release: OpenSandbox Go SDK ${VERSION}" -m "Companion tag for the umbrella release-${VERSION} (same commit)."
+          git push origin "release-${VERSION}" "sdks/sandbox/go/v${VERSION}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "release-${VERSION}" \
+            --verify-tag \
+            --title "OpenSandbox ${VERSION}" \
+            --notes-file "releases/${VERSION}.md" \
+            "releases/${VERSION}.yaml"
