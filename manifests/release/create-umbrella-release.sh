@@ -49,6 +49,10 @@ Required:
   --version <version>       Umbrella version, e.g. 1.1.0 or 1.1.0-rc.1.
 
 Options:
+  --bump-only               One-time prep commit: rewrite every chart version, image
+                            reference, and SDK/dependency version to the target version,
+                            then commit and exit. Run this on the release branch before
+                            writing the release notes. Requires a clean worktree.
   --channel <stable|rc>     Defaults to rc when the version has a suffix, else stable.
   --release-branch <name>   Branch the BOM commit lands on. Default: current branch.
   --skip-remote-check       Skip reachability check against origin (offline use).
@@ -139,6 +143,7 @@ RELEASE_BRANCH=""
 SKIP_REMOTE_CHECK=false
 SKIP_CONSISTENCY=false
 SCAN_ONLY=false
+BUMP_ONLY=false
 NO_TAGS=false
 ALLOW_PENDING=false
 DIGESTS_MANIFEST=""
@@ -149,6 +154,7 @@ DRY_RUN=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) [[ $# -ge 2 ]] || die "--version requires a value"; VERSION="$2"; shift 2 ;;
+    --bump-only) BUMP_ONLY=true; shift ;;
     --channel) [[ $# -ge 2 ]] || die "--channel requires a value"; CHANNEL="$2"; shift 2 ;;
     --release-branch) [[ $# -ge 2 ]] || die "--release-branch requires a value"; RELEASE_BRANCH="$2"; shift 2 ;;
     --skip-remote-check) SKIP_REMOTE_CHECK=true; shift ;;
@@ -209,6 +215,78 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Must run inside a gi
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [[ -n "$RELEASE_BRANCH" ]] || RELEASE_BRANCH="$CURRENT_BRANCH"
 [[ "$CURRENT_BRANCH" == "$RELEASE_BRANCH" ]] || die "Current branch '${CURRENT_BRANCH}' != --release-branch '${RELEASE_BRANCH}'. Check out the release branch first."
+
+# ---------------------------------------------------------------------------
+# --bump-only: one-command release prep commit (machine-deterministic part)
+# ---------------------------------------------------------------------------
+
+if [[ "$BUMP_ONLY" == true ]]; then
+  git diff-index --quiet HEAD -- || die "Worktree not clean. Commit or stash before --bump-only."
+
+  # 1) Chart.yaml top-level versions
+  for chart in base controller server ingress-gateway node-agent fast-sandbox opensandbox; do
+    f="manifests/charts/${chart}/Chart.yaml"
+    [[ -f "$f" ]] || { warn "missing ${f}; skipped"; continue; }
+    awk -v v="$VERSION" '
+      /^dependencies:/ { deps = 1 }
+      !deps && /^version:/ { print "version: " v; next }
+      { print }' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+  done
+
+  # 2) Umbrella appVersion + dependency versions
+  f="manifests/charts/opensandbox/Chart.yaml"
+  awk -v v="$VERSION" '
+    /^appVersion:/ { print "appVersion: \"" v "\""; next }
+    /^dependencies:/ { deps = 1 }
+    deps && /^([[:space:]])+version:/ {
+      match($0, /^[[:space:]]+/)
+      print substr($0, 1, RLENGTH) "version: \"" v "\""
+      next
+    }
+    { print }' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+
+  # 3) Image references in chart values: pinned split tags and full-image strings
+  while IFS= read -r -d '' f; do
+    sed -E       -e 's|(opensandbox/[A-Za-z0-9._/-]+):v[0-9][^"[:space:]]*|\1:release-'"${VERSION}"'|g'       -e 's|^([[:space:]]*tag:[[:space:]]*")v[0-9][^"]*(")|\1release-'"${VERSION}"'\2|'       -e 's|^([[:space:]]*tag:[[:space:]]*)v[0-9][^"[:space:]]*|\1release-'"${VERSION}"'|'       "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+  done < <(find manifests/charts -name 'values*.yaml' -print0)
+
+  # 4) JS SDK package versions (top-level field)
+  for f in sdks/sandbox/javascript/package.json sdks/code-interpreter/javascript/package.json; do
+    [[ -f "$f" ]] || { warn "missing ${f}; skipped"; continue; }
+    awk -v v="$VERSION" '
+      !done && /"version":/ { sub(/"version":[[:space:]]*"[^"]*"/, "\"version\": \"" v "\""); done = 1 }
+      { print }' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+  done
+
+  # 5) Kotlin/JVM project version
+  f="sdks/sandbox/kotlin/gradle.properties"
+  [[ -f "$f" ]] && sed -i.bak "s/^project\.version=.*/project.version=${VERSION}/" "$f" && rm -f "${f}.bak"
+
+  # 6) .NET package version + dependency range
+  f="sdks/Directory.Build.props"
+  if [[ -f "$f" ]]; then
+    sed -i.bak \
+      -e "s|<OpenSandboxPackageVersion>[^<]*</OpenSandboxPackageVersion>|<OpenSandboxPackageVersion>${VERSION}</OpenSandboxPackageVersion>|" \
+      -e "s|<OpenSandboxDependencyVersionRange>[^<]*</OpenSandboxDependencyVersionRange>|<OpenSandboxDependencyVersionRange>[${VERSION},${NEXT_MAJOR}.0.0)</OpenSandboxDependencyVersionRange>|" \
+      "$f" && rm -f "${f}.bak"
+  fi
+
+  # 7) Python inter-package dependency ranges
+  for f in sdks/code-interpreter/python/pyproject.toml sdks/mcp/sandbox/python/pyproject.toml; do
+    [[ -f "$f" ]] || continue
+    sed -i.bak -E "s|opensandbox>=[^,']*,<[^']*|opensandbox>=${VERSION},<${NEXT_MAJOR}.0.0|g" "$f" && rm -f "${f}.bak"
+  done
+
+  git add manifests/charts sdks
+  if git diff --cached --quiet; then
+    warn "Nothing to bump; already at ${VERSION}."
+  else
+    git commit -m "release(opensandbox): bump platform version to ${VERSION}"
+    log "Bump commit created for ${VERSION}."
+  fi
+  log "Next: write releases/${VERSION}.md, commit it, then run the full release (drop --bump-only)."
+  exit 0
+fi
 
 C_BUILD="$(git rev-parse HEAD)"
 BUILD_DATE="$(date +%F)"
