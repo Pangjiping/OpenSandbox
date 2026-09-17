@@ -37,9 +37,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
-  attestations: write
-  artifact-metadata: write
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -211,6 +208,14 @@ jobs:
     if: ${{ inputs.publish }}
     needs: [pypi-hold, npm-hold, maven-hold, nuget-hold]
     runs-on: ubuntu-latest
+    permissions:
+      # only the publish leg attests held bytes; hold jobs need nothing
+      # privileged (some fork Actions policies reject definitions that
+      # declare privileged permissions outright, which silently swallowed
+      # the workflow_call inputs and caused startup_failure)
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
