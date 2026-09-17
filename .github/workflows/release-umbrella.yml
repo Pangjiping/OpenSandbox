@@ -20,6 +20,11 @@ permissions:
   packages: write
 
 on:
+  schedule:
+    # Weekly dry-run (OSEP-0016 test plan): exercises the fan-out so the
+    # chain cannot rot between real release windows. No side effects:
+    # images stay on staging tags, packages are held, no git tags.
+    - cron: '0 3 * * 3'
   workflow_dispatch:
     inputs:
       version:
@@ -46,13 +51,46 @@ on:
         default: true
 
 jobs:
+  resolve:
+    name: Resolve release parameters
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.params.outputs.version }}
+      channel: ${{ steps.params.outputs.channel }}
+      release_branch: ${{ steps.params.outputs.release_branch }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Resolve parameters
+        id: params
+        env:
+          IN_VERSION: ${{ needs.resolve.outputs.version }}
+          IN_CHANNEL: ${{ inputs.channel }}
+          IN_BRANCH: ${{ inputs.release_branch }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$IN_VERSION" ]]; then
+            version="$IN_VERSION"
+          else
+            # scheduled dry-run: use the chart version carried by this ref
+            version="$(sed -n 's/^version:[[:space:]]*//p' manifests/charts/opensandbox/Chart.yaml | head -1 | tr -d '"'"'"'')"
+          fi
+          channel="${IN_CHANNEL:-stable}"
+          branch="${IN_BRANCH:-${GITHUB_REF_NAME}}"
+          echo "version=$version"   >> "$GITHUB_OUTPUT"
+          echo "channel=$channel"   >> "$GITHUB_OUTPUT"
+          echo "release_branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "resolved: version=$version channel=$channel branch=$branch"
+
   preflight:
+    needs: resolve
     uses: ./.github/workflows/release-preflight.yml
     with:
       require_approval: ${{ !inputs.dry_run }}
 
   scan:
     name: Version-consistency scan
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -61,13 +99,13 @@ jobs:
       - name: Scan version consistency
         run: |
           ./manifests/release/create-umbrella-release.sh \
-            --version "${{ inputs.version }}" \
+            --version "${{ needs.resolve.outputs.version }}" \
             --scan-only \
             --skip-remote-check
 
   build-images:
     name: Build and stage ${{ matrix.component }} image
-    needs: [preflight, scan]
+    needs: [resolve, preflight, scan]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -158,7 +196,7 @@ jobs:
 
   build-fast-sandbox:
     name: Build and stage fast-sandbox images
-    needs: [preflight, scan]
+    needs: [resolve, preflight, scan]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -217,10 +255,10 @@ jobs:
 
   packages:
     name: SDK / CLI / server packages (hold${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' && ' + publish' || '' }})
-    needs: [preflight, scan]
+    needs: [resolve, preflight, scan]
     uses: ./.github/workflows/umbrella-packages.yml
     with:
-      version: ${{ inputs.version }}
+      version: ${{ needs.resolve.outputs.version }}
       publish: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' }}
     secrets: inherit
 
@@ -232,7 +270,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.release_branch }}
+          ref: ${{ needs.resolve.outputs.release_branch }}
           fetch-depth: 0
 
       - name: Download digest manifests
@@ -248,12 +286,17 @@ jobs:
 
       - name: Commit BOM and release notes
         env:
-          VERSION: ${{ inputs.version }}
-          CHANNEL: ${{ inputs.channel }}
-          RELEASE_BRANCH: ${{ inputs.release_branch }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          CHANNEL: ${{ needs.resolve.outputs.channel }}
+          RELEASE_BRANCH: ${{ needs.resolve.outputs.release_branch }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           git config user.name "opensandbox-release-bot"
           git config user.email "opensandbox-release-bot@users.noreply.github.com"
+          # scheduled dry-runs run on a non-bumped ref: the scan would fail
+          # by design, so it is exercised on dispatch only
+          SKIP=""
+          [[ "$EVENT_NAME" != "schedule" ]] || SKIP="--skip-consistency"
           ./manifests/release/create-umbrella-release.sh \
             --version "$VERSION" \
             --channel "$CHANNEL" \
@@ -261,6 +304,7 @@ jobs:
             --digests-manifest /tmp/digests.json \
             --no-tags \
             --skip-remote-check \
+            $SKIP \
             --push
 
   # Phase 1: publish-facing steps below stay locked behind the repo
@@ -298,10 +342,10 @@ jobs:
       - name: Install crane
         uses: imjasonh/setup-crane@v0.3
 
-      - name: Promote staged images to release-${{ inputs.version }}
+      - name: Promote staged images to release-${{ needs.resolve.outputs.version }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
           STAGING_TAG: staging-${{ github.sha }}-${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -337,13 +381,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.release_branch }}
+          ref: ${{ needs.resolve.outputs.release_branch }}
           fetch-depth: 0
 
       - name: Mint umbrella and Go companion tags
         env:
-          VERSION: ${{ inputs.version }}
-          RELEASE_BRANCH: ${{ inputs.release_branch }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
           git config user.name "opensandbox-release-bot"
@@ -355,7 +398,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
           gh release create "release-${VERSION}" \
