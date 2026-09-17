@@ -34,6 +34,7 @@ import com.alibaba.opensandbox.sandbox.infrastructure.adapters.service.Filesyste
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.service.HealthAdapter
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.service.IsolatedSessionsAdapter
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.service.MetricsAdapter
+import com.alibaba.opensandbox.sandbox.infrastructure.adapters.service.NetworkPolicyAdapter
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.service.SandboxesAdapter
 
 /**
@@ -68,6 +69,18 @@ internal class AdapterFactory(
 
     fun createEgressStack(endpoint: SandboxEndpoint): EgressStack {
         val adapter = EgressAdapter(httpClientProvider, endpoint)
+        return EgressStack(
+            egress = adapter,
+            credentialVault = adapter,
+        )
+    }
+
+    /**
+     * Builds an egress stack backed by the lifecycle control plane for
+     * template-backed sandboxes, which have no sandbox-side egress sidecar.
+     */
+    fun createNetworkPolicyStack(sandboxId: String): EgressStack {
+        val adapter = NetworkPolicyAdapter(httpClientProvider, sandboxId)
         return EgressStack(
             egress = adapter,
             credentialVault = adapter,

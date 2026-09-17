@@ -910,10 +910,12 @@ class SandboxRenewResponse(
  *
  * @property endpoint Sandbox endpoint
  * @property headers Headers that must be included on every request targeting this endpoint (e.g. when the server requires them for routing or auth). Empty if not required.
+ * @property origin Server-reported sandbox origin (see [SandboxOrigin]); null when the server does not report one. Only endpoint lookups carry it.
  */
 class SandboxEndpoint(
     val endpoint: String,
     val headers: Map<String, String> = emptyMap(),
+    val origin: String? = null,
 )
 
 /**

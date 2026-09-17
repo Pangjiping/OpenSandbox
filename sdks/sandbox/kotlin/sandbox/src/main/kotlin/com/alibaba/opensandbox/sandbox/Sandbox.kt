@@ -18,6 +18,7 @@ package com.alibaba.opensandbox.sandbox
 
 import com.alibaba.opensandbox.sandbox.config.ConnectionConfig
 import com.alibaba.opensandbox.sandbox.domain.exceptions.InvalidArgumentException
+import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxError
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxInternalException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutException
@@ -33,6 +34,7 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxLifecycle
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxMetrics
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxOrigin
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Volume
@@ -102,6 +104,7 @@ class Sandbox internal constructor(
     private val customHealthCheck: ((sandbox: Sandbox) -> Boolean)? = null,
     private val httpClientProvider: HttpClientProvider,
     private val diagnosticsService: Diagnostics,
+    val origin: String = SandboxOrigin.UNKNOWN,
 ) : AutoCloseable {
     private val logger = LoggerFactory.getLogger(Sandbox::class.java)
 
@@ -137,8 +140,25 @@ class Sandbox internal constructor(
      *
      * Credential Vault writes go directly to the sandbox egress sidecar and
      * preserve endpoint routing/auth headers resolved for this sandbox.
+     *
+     * @throws SandboxException if this sandbox is template-backed: template-backed
+     * sandboxes have no sandbox-side egress sidecar
      */
-    fun credentialVault(): CredentialVault = credentialVaultService
+    fun credentialVault(): CredentialVault {
+        if (origin == SandboxOrigin.TEMPLATE) {
+            throw SandboxException(
+                message =
+                    "Credential Vault is not available for template-backed sandboxes: " +
+                        "they have no sandbox-side egress sidecar.",
+                error =
+                    SandboxError(
+                        SandboxError.UNEXPECTED_RESPONSE,
+                        "Credential Vault is not available for template-backed sandboxes",
+                    ),
+            )
+        }
+        return credentialVaultService
+    }
 
     /**
      * Provides access to sandbox diagnostic log and event descriptors.
@@ -179,6 +199,15 @@ class Sandbox internal constructor(
         fun resumer(): Resumer = Resumer()
 
         /**
+         * Creates a new [TemplateLauncher] for creating a sandbox from a fsb
+         * golden-image template.
+         *
+         * @return A new TemplateLauncher instance
+         */
+        @JvmStatic
+        fun fromTemplate(): TemplateLauncher = TemplateLauncher()
+
+        /**
          * Initialization result indicating the type of sandbox being initialized.
          */
         private sealed class InitializationResult {
@@ -198,6 +227,8 @@ class Sandbox internal constructor(
          * @param healthCheck Custom health check function
          * @param timeout Timeout for readiness check
          * @param healthCheckPollingInterval Polling interval for health check
+         * @param origin Known sandbox origin before endpoint lookup (e.g. template-based creation);
+         * the server-reported `OPEN-SANDBOX-ORIGIN` header takes precedence when present
          * @param initAction Initialization action that returns the sandbox ID and type
          * @return Fully initialized Sandbox instance
          * @throws SandboxException if initialization fails
@@ -211,6 +242,7 @@ class Sandbox internal constructor(
             healthCheckPollingInterval: Duration,
             skipHealthCheck: Boolean,
             execdPort: Int = DEFAULT_EXECD_PORT,
+            origin: String = SandboxOrigin.UNKNOWN,
             initAction: (Sandboxes) -> InitializationResult,
         ): Sandbox {
             logger.info("Starting {} operation", operationName)
@@ -251,12 +283,24 @@ class Sandbox internal constructor(
                     return budget?.endpoint(action) ?: action()
                 }
                 val execdEndpoint = resolveEndpoint(execdPort)
-                val egressEndpoint = resolveEndpoint(DEFAULT_EGRESS_PORT)
+                // The server-reported origin is authoritative: template-backed sandboxes
+                // (fsb golden images, including snapshot restores) have no egress sidecar,
+                // so their egress policy is routed through the lifecycle control plane.
+                val sandboxOrigin = execdEndpoint.origin ?: origin
+                val egressStack =
+                    if (sandboxOrigin == SandboxOrigin.TEMPLATE) {
+                        logger.info(
+                            "Sandbox {} is template-backed; routing egress policy through the lifecycle control plane",
+                            sandboxId,
+                        )
+                        factory.createNetworkPolicyStack(sandboxId)
+                    } else {
+                        factory.createEgressStack(resolveEndpoint(DEFAULT_EGRESS_PORT))
+                    }
                 val fileSystemService = factory.createFilesystem(execdEndpoint)
                 val commandService = factory.createCommands(execdEndpoint)
                 val metricsService = factory.createMetrics(execdEndpoint)
                 val healthService = factory.createHealth(execdEndpoint)
-                val egressStack = factory.createEgressStack(egressEndpoint)
                 val diagnosticsService = factory.createDiagnostics()
                 val isolatedService = factory.createIsolatedSessions(execdEndpoint)
 
@@ -274,6 +318,7 @@ class Sandbox internal constructor(
                         customHealthCheck = healthCheck,
                         httpClientProvider = httpClientProvider,
                         diagnosticsService = diagnosticsService,
+                        origin = sandboxOrigin,
                     )
 
                 if (!skipHealthCheck) {
@@ -447,6 +492,82 @@ class Sandbox internal constructor(
         private fun elapsedMillis(startNanos: Long): Long {
             val elapsed = (System.nanoTime() - startNanos) / 1_000_000L
             return if (elapsed < 0L) 0L else elapsed
+        }
+
+        /**
+         * Creates a sandbox instance from a fsb golden-image template.
+         *
+         * Template mode fixes the workload shape on the server: only metadata,
+         * network policy and extensions may accompany the template id, and the
+         * timeout is required.
+         *
+         * @param templateId Unique identifier of a `Succeeded` template owned by the requester
+         * @param timeout Sandbox lifetime. Required in template mode.
+         * @param readyTimeout Timeout for waiting for sandbox readiness
+         * @param metadata Metadata for the sandbox
+         * @param networkPolicy Optional outbound network policy (egress)
+         * @param extensions Optional extension parameters for server-side customized behaviors
+         * @param connectionConfig Connection configuration
+         * @param healthCheck Custom health check function (optional)
+         * @param healthCheckPollingInterval Polling interval for readiness/health check
+         * @param skipHealthCheck When true, do NOT wait for sandbox readiness
+         * @return Fully configured and ready Sandbox instance
+         * @throws SandboxException if sandbox creation or initialization fails
+         */
+        private fun createFromTemplate(
+            templateId: String,
+            timeout: Duration,
+            readyTimeout: Duration,
+            metadata: Map<String, String>,
+            networkPolicy: NetworkPolicy?,
+            extensions: Map<String, String>,
+            connectionConfig: ConnectionConfig,
+            healthCheck: ((Sandbox) -> Boolean)?,
+            healthCheckPollingInterval: Duration,
+            skipHealthCheck: Boolean,
+        ): Sandbox {
+            val started = System.nanoTime()
+            var createdSandboxId: String? = null
+            try {
+                val sandbox =
+                    initializeSandbox(
+                        operationName = "create sandbox from template $templateId (timeout: ${timeout.seconds}s)",
+                        connectionConfig = connectionConfig,
+                        healthCheck = healthCheck,
+                        timeout = readyTimeout,
+                        healthCheckPollingInterval = healthCheckPollingInterval,
+                        skipHealthCheck = skipHealthCheck,
+                        origin = SandboxOrigin.TEMPLATE,
+                    ) { sandboxService ->
+                        val response =
+                            sandboxService.createSandboxFromTemplate(
+                                templateId = templateId,
+                                timeout = timeout,
+                                metadata = metadata,
+                                networkPolicy = networkPolicy,
+                                extensions = extensions,
+                            )
+                        createdSandboxId = response.id
+                        InitializationResult.NewSandbox(response.id)
+                    }
+                LifecycleMetricsReporter.reportSandboxCreate(
+                    connectionConfig = connectionConfig,
+                    sandboxId = sandbox.id,
+                    image = "template:$templateId",
+                    createDurationMs = elapsedMillis(started),
+                    success = true,
+                )
+                return sandbox
+            } catch (e: Throwable) {
+                LifecycleMetricsReporter.reportSandboxCreate(
+                    connectionConfig = connectionConfig,
+                    sandboxId = createdSandboxId,
+                    image = "template:$templateId",
+                    createDurationMs = elapsedMillis(started),
+                    success = false,
+                )
+                throw e
+            }
         }
 
         /**
@@ -1610,6 +1731,279 @@ class Sandbox internal constructor(
                 connectionConfig = connectionConfig ?: ConnectionConfig.builder().build(),
                 healthCheck = healthCheck,
                 resumeTimeout = resumeTimeout,
+                healthCheckPollingInterval = healthCheckPollingInterval,
+                skipHealthCheck = skipHealthCheck,
+            )
+        }
+    }
+
+    /**
+     * Fluent launcher for creating sandbox instances from fsb golden-image templates.
+     *
+     * Template mode fixes the workload shape on the server: only metadata,
+     * network policy and extensions may accompany the template id. Workload-shaping
+     * options (image, entrypoint, env, resources, volumes, platform, lifecycle,
+     * credential proxy) are not available, and the sandbox [timeout] is required.
+     *
+     * ## Basic Usage
+     *
+     * ```kotlin
+     * val sandbox = Sandbox.fromTemplate()
+     *     .templateId("tpl_123")
+     *     .timeout(Duration.ofMinutes(30))
+     *     .create()
+     * ```
+     */
+    class TemplateLauncher internal constructor() {
+        /**
+         * Template ID to create the sandbox from
+         */
+        private var templateId: String? = null
+
+        /**
+         * Metadata
+         */
+        private val metadata = mutableMapOf<String, String>()
+
+        /**
+         * Optional outbound network policy (egress).
+         */
+        private var networkPolicy: NetworkPolicy? = null
+
+        /**
+         * Optional extension parameters for server-side custom behaviors.
+         */
+        private val extensions = mutableMapOf<String, String>()
+
+        /**
+         * Sandbox timeout (automatic termination time). Required.
+         */
+        private var timeout: Duration? = null
+
+        /**
+         * Max time to wait for the sandbox to become ready after creation
+         */
+        private var readyTimeout: Duration = Duration.ofSeconds(30)
+
+        /**
+         * Polling interval for readiness/health check
+         */
+        private var healthCheckPollingInterval: Duration = Duration.ofMillis(200)
+
+        /**
+         * Health check logic
+         */
+        private var healthCheck: ((Sandbox) -> Boolean)? = null
+
+        /**
+         * When true, do NOT wait for sandbox readiness/health during [create].
+         *
+         * Default is false (wait until ready).
+         */
+        private var skipHealthCheck: Boolean = false
+
+        /**
+         * Connection config
+         */
+        private var connectionConfig: ConnectionConfig? = null
+
+        /**
+         * Sets the fsb golden-image template to create the sandbox from.
+         *
+         * @param templateId Unique identifier of a `Succeeded` template owned by the requester
+         * @return This launcher for method chaining
+         * @throws InvalidArgumentException if templateId is blank
+         */
+        fun templateId(templateId: String): TemplateLauncher {
+            if (templateId.isBlank()) {
+                throw InvalidArgumentException(
+                    message = "Template ID cannot be blank",
+                )
+            }
+            this.templateId = templateId
+            return this
+        }
+
+        /**
+         * Adds a single metadata entry.
+         *
+         * @param key Metadata key
+         * @param value Metadata value
+         * @return This launcher for method chaining
+         */
+        fun metadata(
+            key: String,
+            value: String,
+        ): TemplateLauncher {
+            if (key.isBlank()) {
+                throw InvalidArgumentException(
+                    message = "Metadata key cannot be blank",
+                )
+            }
+            metadata[key] = value
+            return this
+        }
+
+        /**
+         * Adds multiple metadata entries.
+         */
+        fun metadata(metadata: Map<String, String>): TemplateLauncher {
+            this.metadata.putAll(metadata)
+            return this
+        }
+
+        /**
+         * Configures metadata using a fluent configuration block.
+         */
+        fun metadata(configure: MutableMap<String, String>.() -> Unit): TemplateLauncher {
+            metadata.configure()
+            return this
+        }
+
+        /**
+         * Sets a sandbox outbound network policy (egress).
+         */
+        fun networkPolicy(networkPolicy: NetworkPolicy): TemplateLauncher {
+            this.networkPolicy = networkPolicy
+            return this
+        }
+
+        /**
+         * Configures a sandbox outbound network policy (egress).
+         */
+        fun networkPolicy(configure: NetworkPolicy.Builder.() -> Unit): TemplateLauncher {
+            val builder = NetworkPolicy.builder()
+            builder.configure()
+            this.networkPolicy = builder.build()
+            return this
+        }
+
+        /**
+         * Adds a single extension parameter.
+         *
+         * Extensions are opaque client-side and are passed through to the server.
+         * Prefer stable, namespaced keys (e.g. `storage.id`).
+         *
+         * @throws InvalidArgumentException if [key] is blank
+         */
+        fun extension(
+            key: String,
+            value: String,
+        ): TemplateLauncher {
+            if (key.isBlank()) {
+                throw InvalidArgumentException(
+                    message = "Extension key cannot be blank",
+                )
+            }
+            extensions[key] = value
+            return this
+        }
+
+        /**
+         * Adds multiple extension parameters.
+         */
+        fun extensions(extensions: Map<String, String>): TemplateLauncher {
+            this.extensions.putAll(extensions)
+            return this
+        }
+
+        /**
+         * Configures extension parameters using a fluent configuration block.
+         */
+        fun extensions(configure: MutableMap<String, String>.() -> Unit): TemplateLauncher {
+            extensions.configure()
+            return this
+        }
+
+        /**
+         * Sets the sandbox timeout (automatic termination time). Required in
+         * template mode.
+         *
+         * @param timeout Maximum sandbox lifetime
+         * @return This launcher for method chaining
+         * @throws InvalidArgumentException if timeout is negative or zero
+         */
+        fun timeout(timeout: Duration): TemplateLauncher {
+            if (timeout.isNegative || timeout.isZero) {
+                throw InvalidArgumentException(
+                    message = "Timeout must be positive, got: $timeout",
+                )
+            }
+            this.timeout = timeout
+            return this
+        }
+
+        /**
+         * Sets the timeout for waiting for sandbox readiness.
+         */
+        fun readyTimeout(readyTimeout: Duration): TemplateLauncher {
+            if (readyTimeout.isNegative || readyTimeout.isZero) {
+                throw InvalidArgumentException(
+                    message = "Ready timeout must be positive, got: $readyTimeout",
+                )
+            }
+            this.readyTimeout = readyTimeout
+            return this
+        }
+
+        /**
+         * Sets the interval between readiness polling attempts.
+         */
+        fun healthCheckPollingInterval(pollingInterval: Duration): TemplateLauncher {
+            if (pollingInterval.isNegative || pollingInterval.isZero) {
+                throw InvalidArgumentException(
+                    message = "Ready polling interval must be positive, got: $pollingInterval",
+                )
+            }
+            this.healthCheckPollingInterval = pollingInterval
+            return this
+        }
+
+        fun healthCheck(healthCheck: (Sandbox) -> Boolean): TemplateLauncher {
+            this.healthCheck = healthCheck
+            return this
+        }
+
+        /**
+         * Skip readiness/health check during [create]. The returned sandbox may not be ready yet.
+         */
+        fun skipHealthCheck(skip: Boolean = true): TemplateLauncher {
+            this.skipHealthCheck = skip
+            return this
+        }
+
+        fun connectionConfig(connectionConfig: ConnectionConfig): TemplateLauncher {
+            this.connectionConfig = connectionConfig
+            return this
+        }
+
+        /**
+         * Creates and starts the sandbox from the configured template.
+         *
+         * @return Fully configured and ready Sandbox instance with [Sandbox.origin]
+         * set to [SandboxOrigin.TEMPLATE]
+         * @throws InvalidArgumentException if required configuration is missing or invalid
+         * @throws SandboxException if sandbox creation or initialization fails
+         */
+        fun create(): Sandbox {
+            val id =
+                templateId ?: throw InvalidArgumentException(
+                    message = "Template ID must be specified",
+                )
+            val sandboxTimeout =
+                timeout ?: throw InvalidArgumentException(
+                    message = "Timeout must be specified: template mode requires an explicit sandbox lifetime",
+                )
+
+            return createFromTemplate(
+                templateId = id,
+                timeout = sandboxTimeout,
+                readyTimeout = readyTimeout,
+                metadata = metadata,
+                networkPolicy = networkPolicy,
+                extensions = extensions,
+                connectionConfig = connectionConfig ?: ConnectionConfig.builder().build(),
+                healthCheck = healthCheck,
                 healthCheckPollingInterval = healthCheckPollingInterval,
                 skipHealthCheck = skipHealthCheck,
             )

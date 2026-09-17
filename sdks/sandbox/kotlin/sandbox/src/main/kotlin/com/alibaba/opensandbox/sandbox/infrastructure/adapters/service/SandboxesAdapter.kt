@@ -19,11 +19,22 @@ package com.alibaba.opensandbox.sandbox.infrastructure.adapters.service
 import com.alibaba.opensandbox.sandbox.HttpClientProvider
 import com.alibaba.opensandbox.sandbox.api.SandboxesApi
 import com.alibaba.opensandbox.sandbox.api.SnapshotsApi
+import com.alibaba.opensandbox.sandbox.api.TemplatesApi
+import com.alibaba.opensandbox.sandbox.api.infrastructure.ApiResponse
+import com.alibaba.opensandbox.sandbox.api.infrastructure.ClientError
+import com.alibaba.opensandbox.sandbox.api.infrastructure.ClientException
+import com.alibaba.opensandbox.sandbox.api.infrastructure.ResponseType
 import com.alibaba.opensandbox.sandbox.api.infrastructure.Serializer
+import com.alibaba.opensandbox.sandbox.api.infrastructure.ServerError
+import com.alibaba.opensandbox.sandbox.api.infrastructure.ServerException
+import com.alibaba.opensandbox.sandbox.api.infrastructure.Success
+import com.alibaba.opensandbox.sandbox.api.models.Endpoint
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CreateTemplateRequest
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CredentialProxyConfig
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSnapshotInfos
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedTemplateInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PlatformSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxCreateResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
@@ -31,9 +42,12 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxLifecycle
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxOrigin
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotInfo
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateFilter
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Volume
 import com.alibaba.opensandbox.sandbox.domain.services.Sandboxes
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter
@@ -45,6 +59,10 @@ import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.Sandbox
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter.toSandboxInfo
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter.toSandboxRenewResponse
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.SandboxModelConverter.toSnapshotInfo
+import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.TemplateModelConverter.toApiCreateTemplateRequest
+import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.TemplateModelConverter.toApiCreateTemplateSandboxRequest
+import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.TemplateModelConverter.toPagedTemplateInfos
+import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.TemplateModelConverter.toTemplateInfo
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.toSandboxApiException
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.toSandboxException
 import com.alibaba.opensandbox.sandbox.transport.RequestDeadline
@@ -55,6 +73,8 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.slf4j.LoggerFactory
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.time.Duration
 import java.time.OffsetDateTime
 import com.alibaba.opensandbox.sandbox.api.models.Sandbox as ApiSandbox
@@ -72,6 +92,7 @@ internal class SandboxesAdapter(
 
     private val api = SandboxesApi(provider.config.getBaseUrl(), provider.authenticatedClient)
     private val snapshotApi = SnapshotsApi(provider.config.getBaseUrl(), provider.authenticatedClient)
+    private val templateApi = TemplatesApi(provider.config.getBaseUrl(), provider.authenticatedClient)
 
     private val endpointCache: com.alibaba.opensandbox.sandbox.infrastructure.cache.EndpointCache? =
         if (!provider.config.endpointCacheDisabled) {
@@ -209,8 +230,7 @@ internal class SandboxesAdapter(
 
     override fun listSandboxes(filter: SandboxFilter): PagedSandboxInfos {
         logger.debug("Listing sandboxes with filter: {}", filter)
-        val metadataQuery: String? =
-            filter.metadata?.entries?.joinToString("&") { "${it.key}=${it.value}" }
+        val metadataQuery = filter.metadata?.takeUnless { it.isEmpty() }?.let(::encodeMetadataFilter)
         return try {
             api.sandboxesGet(filter.states, metadataQuery, filter.page, filter.pageSize).toPagedSandboxInfos()
         } catch (e: Exception) {
@@ -302,6 +322,73 @@ internal class SandboxesAdapter(
         }
     }
 
+    override fun createSandboxFromTemplate(
+        templateId: String,
+        timeout: Duration,
+        metadata: Map<String, String>,
+        networkPolicy: NetworkPolicy?,
+        extensions: Map<String, String>,
+    ): SandboxCreateResponse {
+        logger.info("Creating sandbox from template: {}", templateId)
+
+        return try {
+            val createRequest =
+                toApiCreateTemplateSandboxRequest(
+                    templateId = templateId,
+                    timeout = timeout,
+                    metadata = metadata,
+                    networkPolicy = networkPolicy,
+                    extensions = extensions,
+                )
+            val response = api.sandboxesPost(createRequest).toSandboxCreateResponse()
+
+            logger.info("Successfully created sandbox {} from template {}", response.id, templateId)
+            response
+        } catch (e: Exception) {
+            throw e.toSandboxException()
+        }
+    }
+
+    override fun createTemplate(request: CreateTemplateRequest): TemplateInfo {
+        logger.info("Creating template for image: {}", request.image)
+
+        return try {
+            templateApi.createTemplate(request.toApiCreateTemplateRequest()).toTemplateInfo()
+        } catch (e: Exception) {
+            throw e.toSandboxException()
+        }
+    }
+
+    override fun getTemplate(templateId: String): TemplateInfo {
+        logger.debug("Retrieving template information: {}", templateId)
+
+        return try {
+            templateApi.getTemplate(templateId).toTemplateInfo()
+        } catch (e: Exception) {
+            throw e.toSandboxException()
+        }
+    }
+
+    override fun listTemplates(filter: TemplateFilter): PagedTemplateInfos {
+        logger.debug("Listing templates with filter: {}", filter)
+        val metadataQuery = filter.metadata?.takeUnless { it.isEmpty() }?.let(::encodeMetadataFilter)
+        return try {
+            templateApi.listTemplates(metadataQuery, filter.page, filter.pageSize).toPagedTemplateInfos()
+        } catch (e: Exception) {
+            throw e.toSandboxException()
+        }
+    }
+
+    override fun deleteTemplate(templateId: String) {
+        logger.info("Deleting template: {}", templateId)
+
+        try {
+            templateApi.deleteTemplate(templateId)
+        } catch (e: Exception) {
+            throw e.toSandboxException()
+        }
+    }
+
     override fun getSandboxEndpoint(
         sandboxId: String,
         port: Int,
@@ -328,7 +415,8 @@ internal class SandboxesAdapter(
         return try {
             RequestDeadline.execute(provider.authenticatedClient) { client ->
                 SandboxesApi(provider.config.getBaseUrl(), client)
-                    .sandboxesSandboxIdEndpointsPortGet(sandboxId, port, useServerProxy).toSandboxEndpoint()
+                    .sandboxesSandboxIdEndpointsPortGetWithHttpInfo(sandboxId, port, useServerProxy, null)
+                    .toSandboxEndpointWithOrigin()
             }
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -351,7 +439,8 @@ internal class SandboxesAdapter(
     ): SandboxEndpoint {
         logger.debug("Retrieving signed sandbox endpoint: {}, port {}", sandboxId, port)
         return try {
-            api.sandboxesSandboxIdEndpointsPortGet(sandboxId, port, useServerProxy, expires.toString()).toSandboxEndpoint()
+            api.sandboxesSandboxIdEndpointsPortGetWithHttpInfo(sandboxId, port, useServerProxy, expires.toString())
+                .toSandboxEndpointWithOrigin()
         } catch (e: Exception) {
             logger.error("Failed to retrieve signed sandbox endpoint for sandbox {}", sandboxId, e)
             throw e.toSandboxException()
@@ -415,4 +504,52 @@ internal class SandboxesAdapter(
             throw e.toSandboxException()
         }
     }
+
+    /**
+     * Encodes a metadata filter for the `metadata` query parameter.
+     *
+     * Keys and values are percent-encoded exactly once before joining. The HTTP
+     * client percent-encodes the query value once more and the server decodes its
+     * layer before splitting with parse_qsl, so keys and values containing `&`,
+     * `=` or `%` round-trip losslessly.
+     */
+    private fun encodeMetadataFilter(metadata: Map<String, String>): String =
+        metadata.entries.joinToString("&") { (key, value) ->
+            "${encodeMetadataFilterToken(key)}=${encodeMetadataFilterToken(value)}"
+        }
+
+    private fun encodeMetadataFilterToken(token: String): String = URLEncoder.encode(token, StandardCharsets.UTF_8.name())
+
+    /**
+     * Unwraps a successful endpoint lookup and carries the server-reported sandbox
+     * origin (`OPEN-SANDBOX-ORIGIN` response header) into the domain endpoint.
+     *
+     * Non-success responses are rethrown as the generated client exceptions so the
+     * standard error mapping keeps applying, mirroring the generated plain-method
+     * unwrapping.
+     */
+    private fun ApiResponse<Endpoint?>.toSandboxEndpointWithOrigin(): SandboxEndpoint =
+        when (responseType) {
+            ResponseType.Success -> {
+                val success = this as Success<Endpoint?>
+                val body =
+                    success.data
+                        ?: throw IllegalStateException("Sandbox endpoint response did not contain body")
+                body.toSandboxEndpoint(success.headers.extractSandboxOrigin())
+            }
+            ResponseType.Informational, ResponseType.Redirection ->
+                throw UnsupportedOperationException("Client does not support informational/redirection responses.")
+            ResponseType.ClientError -> {
+                val error = this as ClientError<*>
+                throw ClientException("Client error : ${error.statusCode} ${error.message.orEmpty()} ${error.body}", error.statusCode, this)
+            }
+            ResponseType.ServerError -> {
+                val error = this as ServerError<*>
+                throw ServerException("Server error : ${error.statusCode} ${error.message.orEmpty()} ${error.body}", error.statusCode, this)
+            }
+        }
+
+    private fun Map<String, List<String>>.extractSandboxOrigin(): String? =
+        entries.firstOrNull { (key, _) -> key.equals(SandboxOrigin.HEADER_NAME, ignoreCase = true) }
+            ?.value?.firstOrNull()?.takeIf { it.isNotBlank() }
 }

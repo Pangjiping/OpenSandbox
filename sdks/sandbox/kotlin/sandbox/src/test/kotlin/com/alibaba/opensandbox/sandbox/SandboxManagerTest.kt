@@ -20,7 +20,9 @@ import com.alibaba.opensandbox.sandbox.domain.exceptions.InvalidArgumentExceptio
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SnapshotFailedException
 import com.alibaba.opensandbox.sandbox.domain.models.diagnostics.DiagnosticContent
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CreateTemplateRequest
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedTemplateInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PaginationInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxImageSpec
@@ -31,6 +33,11 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxStatus
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotState
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotStatus
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateFilter
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateFormat
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateInfo
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplatePhase
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateStatus
 import com.alibaba.opensandbox.sandbox.domain.services.Diagnostics
 import com.alibaba.opensandbox.sandbox.domain.services.Sandboxes
 import io.mockk.Runs
@@ -300,4 +307,67 @@ class SandboxManagerTest {
             sandboxManager.waitForSnapshotReady("snapshot-id", Duration.ofMillis(100), Duration.ofMillis(10))
         }
     }
+
+    @Test
+    fun `createTemplate should delegate to service`() {
+        val request =
+            CreateTemplateRequest
+                .builder()
+                .image("ubuntu:22.04")
+                .publish("s3://bucket/publish")
+                .build()
+        val expected = templateInfo(TemplatePhase.PENDING)
+
+        every { sandboxService.createTemplate(request) } returns expected
+
+        val result = sandboxManager.createTemplate(request)
+
+        assertEquals(expected, result)
+        verify { sandboxService.createTemplate(request) }
+    }
+
+    @Test
+    fun `getTemplate should delegate to service`() {
+        val expected = templateInfo(TemplatePhase.SUCCEEDED)
+
+        every { sandboxService.getTemplate("tpl_1") } returns expected
+
+        val result = sandboxManager.getTemplate("tpl_1")
+
+        assertEquals(expected, result)
+        verify { sandboxService.getTemplate("tpl_1") }
+    }
+
+    @Test
+    fun `listTemplates should delegate to service`() {
+        val filter = TemplateFilter.builder().metadata(mapOf("env" to "prod")).build()
+        val expected = PagedTemplateInfos(listOf(templateInfo(TemplatePhase.PENDING)), PaginationInfo(1, 20, 1, 1, false))
+
+        every { sandboxService.listTemplates(filter) } returns expected
+
+        val result = sandboxManager.listTemplates(filter)
+
+        assertEquals(expected, result)
+        verify { sandboxService.listTemplates(filter) }
+    }
+
+    @Test
+    fun `deleteTemplate should delegate to service`() {
+        every { sandboxService.deleteTemplate("tpl_1") } returns Unit
+
+        sandboxManager.deleteTemplate("tpl_1")
+
+        verify { sandboxService.deleteTemplate("tpl_1") }
+    }
+
+    private fun templateInfo(phase: String): TemplateInfo =
+        TemplateInfo(
+            templateId = "tpl_1",
+            image = "ubuntu:22.04",
+            publish = "s3://bucket/publish",
+            format = TemplateFormat.OVERLAYBD,
+            status = TemplateStatus(phase = phase),
+            createdAt = OffsetDateTime.now(),
+            updatedAt = OffsetDateTime.now(),
+        )
 }

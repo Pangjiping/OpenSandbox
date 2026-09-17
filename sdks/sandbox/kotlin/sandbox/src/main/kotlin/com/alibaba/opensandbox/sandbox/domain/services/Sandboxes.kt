@@ -16,10 +16,12 @@
 
 package com.alibaba.opensandbox.sandbox.domain.services
 
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CreateTemplateRequest
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CredentialProxyConfig
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.NetworkPolicy
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSnapshotInfos
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedTemplateInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PlatformSpec
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxCreateResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxEndpoint
@@ -30,6 +32,8 @@ import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxLifecycle
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotInfo
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateFilter
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.Volume
 import java.time.Duration
 import java.time.OffsetDateTime
@@ -161,6 +165,86 @@ interface Sandboxes {
         }
         throw UnsupportedOperationException(
             "Sandbox lifecycle hooks are not supported by this Sandboxes implementation",
+        )
+    }
+
+    /**
+     * Creates a sandbox from a fsb golden-image template.
+     *
+     * Template mode fixes the workload shape on the server: only [metadata],
+     * [networkPolicy] and [extensions] may accompany the [templateId], and the
+     * [timeout] is required.
+     *
+     * @param templateId Unique identifier of a `Succeeded` template owned by the requester
+     * @param timeout Sandbox lifetime. Required in template mode.
+     * @param metadata User-defined metadata used for management and filtering
+     * @param networkPolicy Optional outbound network policy (egress)
+     * @param extensions Opaque extension parameters passed through to the server as-is. Prefer namespaced keys
+     * @return Sandbox creation response containing the sandbox id
+     * @throws UnsupportedOperationException if requested from an implementation that does not override this method
+     */
+    fun createSandboxFromTemplate(
+        templateId: String,
+        timeout: Duration,
+        metadata: Map<String, String> = emptyMap(),
+        networkPolicy: NetworkPolicy? = null,
+        extensions: Map<String, String> = emptyMap(),
+    ): SandboxCreateResponse =
+        throw UnsupportedOperationException(
+            "Template-based sandbox creation is not supported by this Sandboxes implementation",
+        )
+
+    /**
+     * Creates a new fsb golden-image template.
+     *
+     * The build is asynchronous: the response starts at [TemplatePhase.PENDING];
+     * poll [getTemplate] until the status reaches `Succeeded` or `Failed`. Only a
+     * `Succeeded` template can create sandboxes.
+     *
+     * @param request Template build request
+     * @return Current template information
+     * @throws UnsupportedOperationException if requested from an implementation that does not override this method
+     */
+    fun createTemplate(request: CreateTemplateRequest): TemplateInfo =
+        throw UnsupportedOperationException(
+            "Template management is not supported by this Sandboxes implementation",
+        )
+
+    /**
+     * Retrieves information about an existing template.
+     *
+     * @param templateId Unique identifier of the template
+     * @return Current template information
+     * @throws UnsupportedOperationException if requested from an implementation that does not override this method
+     */
+    fun getTemplate(templateId: String): TemplateInfo =
+        throw UnsupportedOperationException(
+            "Template management is not supported by this Sandboxes implementation",
+        )
+
+    /**
+     * Lists templates with optional filtering.
+     *
+     * @param filter Optional filter criteria
+     * @return List of template information matching the filter
+     * @throws UnsupportedOperationException if requested from an implementation that does not override this method
+     */
+    fun listTemplates(filter: TemplateFilter): PagedTemplateInfos =
+        throw UnsupportedOperationException(
+            "Template management is not supported by this Sandboxes implementation",
+        )
+
+    /**
+     * Deletes a template by id.
+     *
+     * Sandboxes already created from the template are unaffected.
+     *
+     * @param templateId Unique identifier of the template
+     * @throws UnsupportedOperationException if requested from an implementation that does not override this method
+     */
+    fun deleteTemplate(templateId: String) {
+        throw UnsupportedOperationException(
+            "Template management is not supported by this Sandboxes implementation",
         )
     }
 

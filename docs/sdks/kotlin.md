@@ -556,6 +556,12 @@ Sandbox sandbox = Sandbox.builder()
 Runtime egress reads and patches go directly to the sandbox egress sidecar.
 The SDK first resolves the sandbox endpoint on port `18080`, then calls the sidecar `/policy` API.
 
+Template-backed sandboxes have no sandbox-side egress sidecar: the SDK detects
+them via the server's `OPEN-SANDBOX-ORIGIN` response header (see
+[Fsb Template Management](#fsb-template-management)) and routes the same
+`getEgressPolicy` / `patchEgressRules` / `deleteEgressRules` calls through the
+lifecycle control plane (`/sandboxes/{sandboxId}/networkpolicy`) instead.
+
 Patch uses merge semantics:
 - Incoming rules take priority over existing rules with the same `target`.
 - Existing rules for other targets remain unchanged.
@@ -638,3 +644,89 @@ sandbox.credentialVault().create(
 
 See [Credential Vault](/guides/credential-vault) for auth types, binding
 guidance, and Git/curl examples.
+
+::: warning
+Credential Vault is unavailable for template-backed sandboxes: they have no
+sandbox-side egress sidecar. `sandbox.credentialVault()` throws for them.
+:::
+
+## Fsb Template Management
+
+fsb (fast-sandbox microVM) golden-image templates are managed through
+`SandboxManager`. Template builds are asynchronous: `createTemplate` returns
+with `status.phase` set to `Pending`; poll `getTemplate` until the phase
+reaches `Succeeded` or `Failed`. Only a `Succeeded` template can create
+sandboxes.
+
+```java
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CreateTemplateRequest;
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateFilter;
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateInfo;
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplatePhase;
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateReadiness;
+
+CreateTemplateRequest request = CreateTemplateRequest.builder()
+    .image("alpine:3.19")
+    .publish("s3://bucket/publish")
+    .resourceLimits(Map.of("cpu", "1", "memory", "512Mi", "disk", "2Gi"))
+    .readiness(TemplateReadiness.builder().probe("tcp://127.0.0.1:44772").build())
+    .metadata("team", "backend")
+    .build();
+
+// Start the async build (starts at TemplatePhase.PENDING)
+TemplateInfo template = manager.createTemplate(request);
+
+// Poll until the build finishes
+while (!template.getStatus().getPhase().equals(TemplatePhase.SUCCEEDED)
+    && !template.getStatus().getPhase().equals(TemplatePhase.FAILED)) {
+    Thread.sleep(2000);
+    template = manager.getTemplate(template.getTemplateId());
+}
+
+// List with metadata filters (1-indexed paging)
+manager.listTemplates(
+    TemplateFilter.builder()
+        .metadata(Map.of("team", "backend"))
+        .pageSize(20)
+        .page(1)
+        .build()
+);
+
+// Delete a template. Sandboxes already created from it are unaffected.
+manager.deleteTemplate(template.getTemplateId());
+```
+
+### Creating a Sandbox from a Template
+
+Use `Sandbox.fromTemplate()` to create a sandbox from a `Succeeded` template.
+Template mode fixes the workload shape on the server: only `metadata`,
+`networkPolicy` and `extensions` may accompany the template id, and `timeout`
+is required.
+
+```java
+import java.time.Duration;
+
+Sandbox sandbox = Sandbox.fromTemplate()
+    .connectionConfig(config)
+    .templateId("tpl_123")
+    .timeout(Duration.ofMinutes(30))
+    .metadata("project", "demo")
+    .networkPolicy(
+        NetworkPolicy.builder()
+            .defaultAction(NetworkPolicy.DefaultAction.DENY)
+            .addEgress(
+                NetworkRule.builder()
+                    .action(NetworkRule.Action.ALLOW)
+                    .target("pypi.org")
+                    .build()
+            )
+            .build()
+    )
+    .create();
+```
+
+The created sandbox reports `SandboxOrigin.TEMPLATE` from `sandbox.getOrigin()`.
+Template-backed sandboxes have no egress sidecar, so the SDK routes their
+egress policy through the lifecycle control plane automatically — including
+`Sandbox.connector()` and `Sandbox.resumer()` re-attach flows, which detect
+the origin from the server's `OPEN-SANDBOX-ORIGIN` response header.

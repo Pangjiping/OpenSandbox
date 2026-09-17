@@ -22,14 +22,18 @@ import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SandboxReadyTimeoutException
 import com.alibaba.opensandbox.sandbox.domain.exceptions.SnapshotFailedException
 import com.alibaba.opensandbox.sandbox.domain.models.diagnostics.DiagnosticContent
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.CreateTemplateRequest
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSandboxInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedSnapshotInfos
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.PagedTemplateInfos
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SandboxRenewResponse
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotFilter
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotInfo
 import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.SnapshotState
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateFilter
+import com.alibaba.opensandbox.sandbox.domain.models.sandboxes.TemplateInfo
 import com.alibaba.opensandbox.sandbox.domain.services.Diagnostics
 import com.alibaba.opensandbox.sandbox.domain.services.Sandboxes
 import com.alibaba.opensandbox.sandbox.infrastructure.factory.AdapterFactory
@@ -214,6 +218,58 @@ class SandboxManager internal constructor(
     fun resumeSandbox(sandboxId: String) {
         logger.info("Resuming sandbox: {}", sandboxId)
         sandboxService.resumeSandbox(sandboxId)
+    }
+
+    /**
+     * Creates a new fsb golden-image template.
+     *
+     * The build is asynchronous: the response starts at [TemplatePhase.PENDING];
+     * poll [getTemplate] until the status reaches `Succeeded` or `Failed`. Only a
+     * `Succeeded` template can create sandboxes.
+     *
+     * @param request Template build request
+     * @return Current template information
+     * @throws SandboxException if the operation fails
+     */
+    fun createTemplate(request: CreateTemplateRequest): TemplateInfo {
+        logger.info("Creating template for image: {}", request.image)
+        return sandboxService.createTemplate(request)
+    }
+
+    /**
+     * Gets information for a single template by its ID.
+     *
+     * @param templateId Template ID to retrieve information for
+     * @return TemplateInfo for the specified template
+     * @throws SandboxException if the operation fails
+     */
+    fun getTemplate(templateId: String): TemplateInfo {
+        logger.debug("Getting info for template: {}", templateId)
+        return sandboxService.getTemplate(templateId)
+    }
+
+    /**
+     * Lists templates with optional filtering.
+     *
+     * @param filter Filter criteria
+     * @return List of template information matching the filter
+     * @throws SandboxException if the operation fails
+     */
+    fun listTemplates(filter: TemplateFilter): PagedTemplateInfos {
+        return sandboxService.listTemplates(filter)
+    }
+
+    /**
+     * Deletes a single template by ID.
+     *
+     * Sandboxes already created from the template are unaffected.
+     *
+     * @param templateId Template ID to delete
+     * @throws SandboxException if the operation fails
+     */
+    fun deleteTemplate(templateId: String) {
+        logger.info("Deleting template: {}", templateId)
+        sandboxService.deleteTemplate(templateId)
     }
 
     fun createSnapshot(

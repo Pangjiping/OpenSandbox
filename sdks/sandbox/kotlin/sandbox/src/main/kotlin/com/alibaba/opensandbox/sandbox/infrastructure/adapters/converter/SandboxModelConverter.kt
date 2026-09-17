@@ -398,8 +398,8 @@ internal object SandboxModelConverter {
     /**
      * API Endpoint -> Domain Endpoint
      */
-    fun Endpoint.toSandboxEndpoint(): SandboxEndpoint {
-        return SandboxEndpoint(this.endpoint, this.headers ?: emptyMap())
+    fun Endpoint.toSandboxEndpoint(origin: String? = null): SandboxEndpoint {
+        return SandboxEndpoint(this.endpoint, this.headers ?: emptyMap(), origin)
     }
 
     /**
