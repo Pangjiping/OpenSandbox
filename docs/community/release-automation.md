@@ -12,6 +12,24 @@ tag for every image, chart, CLI, and SDK. See
 operative until the umbrella GA.
 :::
 
+## Umbrella Release Driver (OSEP-0016)
+
+The umbrella release is driven by a single all-in-one script:
+
+```bash
+manifests/release/create-umbrella-release.sh --version 1.1.0-rc.1 --dry-run
+manifests/release/create-umbrella-release.sh --version 1.1.0 --push --release
+```
+
+It performs, in order: preflight (commit reachability), a version
+consistency scan (blocks the release until every chart, SDK, and
+dependency range matches the umbrella version), aggregated release
+notes, a BOM + notes commit (`releases/X.Y.Z.yaml` / `.md`), and mints
+three tags on the same commit — `release-X.Y.Z` plus the Go companion
+tags `sdks/sandbox/go/vX.Y.Z` and `sdks/sandbox/go/poolredis/vX.Y.Z`.
+Image digests in the BOM are pinned by the CI fan-out. See
+[OSEP-0016](https://github.com/opensandbox-group/OpenSandbox/blob/main/oseps/0016-unified-umbrella-release-governance.md).
+
 This repository uses tag-driven publish workflows. The script below standardizes:
 
 - canonical tag creation for each release target
