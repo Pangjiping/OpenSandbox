@@ -223,12 +223,13 @@ CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 if [[ "$BUMP_ONLY" == true ]]; then
   git diff-index --quiet HEAD -- || die "Worktree not clean. Commit or stash before --bump-only."
 
-  # 1) Chart.yaml top-level versions
+  # 1) Chart.yaml top-level versions + appVersion (where present)
   for chart in base controller server ingress-gateway node-agent fast-sandbox opensandbox; do
     f="manifests/charts/${chart}/Chart.yaml"
     [[ -f "$f" ]] || { warn "missing ${f}; skipped"; continue; }
     awk -v v="$VERSION" '
       /^dependencies:/ { deps = 1 }
+      !deps && /^appVersion:/ { print "appVersion: \"" v "\""; next }
       !deps && /^version:/ { print "version: " v; next }
       { print }' "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
   done
@@ -266,17 +267,18 @@ if [[ "$BUMP_ONLY" == true ]]; then
   f="sdks/sandbox/kotlin/gradle.properties"
   [[ -f "$f" ]] && sed -i.bak "s/^project\.version=.*/project.version=${VERSION}/" "$f" && rm -f "${f}.bak"
 
-  # 6) .NET package version + dependency range
+  # 6) .NET package versions + dependency range
   f="sdks/Directory.Build.props"
   if [[ -f "$f" ]]; then
     sed -i.bak \
       -e "s|<OpenSandboxPackageVersion>[^<]*</OpenSandboxPackageVersion>|<OpenSandboxPackageVersion>${VERSION}</OpenSandboxPackageVersion>|" \
+      -e "s|<OpenSandboxCodeInterpreterPackageVersion>[^<]*</OpenSandboxCodeInterpreterPackageVersion>|<OpenSandboxCodeInterpreterPackageVersion>${VERSION}</OpenSandboxCodeInterpreterPackageVersion>|" \
       -e "s|<OpenSandboxDependencyVersionRange>[^<]*</OpenSandboxDependencyVersionRange>|<OpenSandboxDependencyVersionRange>[${VERSION},${NEXT_MAJOR}.0.0)</OpenSandboxDependencyVersionRange>|" \
       "$f" && rm -f "${f}.bak"
   fi
 
-  # 7) Python inter-package dependency ranges
-  for f in sdks/code-interpreter/python/pyproject.toml sdks/mcp/sandbox/python/pyproject.toml; do
+  # 7) Python inter-package dependency ranges (cli + sdks)
+  for f in cli/pyproject.toml sdks/code-interpreter/python/pyproject.toml sdks/mcp/sandbox/python/pyproject.toml; do
     [[ -f "$f" ]] || continue
     sed -i.bak -E "s|opensandbox>=[^,']*,<[^']*|opensandbox>=${VERSION},<${NEXT_MAJOR}.0.0|g" "$f" && rm -f "${f}.bak"
   done
@@ -341,15 +343,17 @@ if [[ "$SKIP_CONSISTENCY" != true ]]; then
     else
       scan_fail "${file} version='${ver}' != ${VERSION}"
     fi
+    app_ver="$(sed -n 's/^appVersion:[[:space:]]*//p' "$file" | head -1 | tr -d '"'"'"'')"
+    if [[ -n "$app_ver" ]]; then
+      if [[ "$app_ver" == "$VERSION" ]]; then
+        scan_ok "${file} appVersion=${app_ver}"
+      else
+        scan_fail "${file} appVersion='${app_ver}' != ${VERSION}"
+      fi
+    fi
   done
 
   UMBRELLA_CHART="manifests/charts/opensandbox/Chart.yaml"
-  app_ver="$(sed -n 's/^appVersion:[[:space:]]*//p' "$UMBRELLA_CHART" | head -1 | tr -d '"'"'"'')"
-  if [[ "$app_ver" == "$VERSION" ]]; then
-    scan_ok "${UMBRELLA_CHART} appVersion=${app_ver}"
-  else
-    scan_fail "${UMBRELLA_CHART} appVersion='${app_ver}' != ${VERSION}"
-  fi
 
   bad_deps="$(sed -n '/^dependencies:/,$p' "$UMBRELLA_CHART" | awk -v want="${VERSION}" '
     /^[[:space:]]+- name:/ { name=$NF }
@@ -409,6 +413,9 @@ if [[ "$SKIP_CONSISTENCY" != true ]]; then
     ver="$(sed -n 's:.*<OpenSandboxPackageVersion>\(.*\)</OpenSandboxPackageVersion>.*:\1:p' "$f" | head -1)"
     if [[ "$ver" == "$VERSION" ]]; then scan_ok "${f} OpenSandboxPackageVersion=${ver}"
     else scan_fail "${f} OpenSandboxPackageVersion='${ver}' != ${VERSION}"; fi
+    ver_ci="$(sed -n 's:.*<OpenSandboxCodeInterpreterPackageVersion>\(.*\)</OpenSandboxCodeInterpreterPackageVersion>.*:\1:p' "$f" | head -1)"
+    if [[ "$ver_ci" == "$VERSION" ]]; then scan_ok "${f} OpenSandboxCodeInterpreterPackageVersion=${ver_ci}"
+    else scan_fail "${f} OpenSandboxCodeInterpreterPackageVersion='${ver_ci}' != ${VERSION}"; fi
     want_range="[${VERSION},${NEXT_MAJOR}.0.0)"
     range="$(sed -n 's:.*<OpenSandboxDependencyVersionRange>\(.*\)</OpenSandboxDependencyVersionRange>.*:\1:p' "$f" | head -1)"
     if [[ "$range" == "$want_range" ]]; then scan_ok "${f} dependency range=${range}"
@@ -417,8 +424,8 @@ if [[ "$SKIP_CONSISTENCY" != true ]]; then
     scan_fail "missing ${f}"
   fi
 
-  # Python inter-package ranges
-  for f in sdks/code-interpreter/python/pyproject.toml sdks/mcp/sandbox/python/pyproject.toml; do
+  # Python inter-package ranges (cli + sdks)
+  for f in cli/pyproject.toml sdks/code-interpreter/python/pyproject.toml sdks/mcp/sandbox/python/pyproject.toml; do
     if [[ -f "$f" ]]; then
       if grep -Eq "opensandbox>=${ESC_VERSION},<${NEXT_MAJOR}\\.0\\.0" "$f"; then
         scan_ok "${f} opensandbox range >=${VERSION},<${NEXT_MAJOR}.0.0"
@@ -429,9 +436,10 @@ if [[ "$SKIP_CONSISTENCY" != true ]]; then
   done
 
   # hatch-vcs tag patterns: umbrella-only; legacy per-component regexes are frozen
+  # (both tag_regex and git_describe_command pin the namespace)
   bad_regex="$(grep -rl --include='pyproject.toml' 'tag_regex' server cli sdks 2>/dev/null \
     | while IFS= read -r pf; do
-        grep -Eq 'tag_regex.*(cli/v|server/v|python/|js/|java/|csharp/)' "$pf" 2>/dev/null && echo "$pf"
+        grep -Eq '(tag_regex|git_describe_command).*(cli/v|server/v|python/|js/|java/|csharp/)' "$pf" 2>/dev/null && echo "$pf"
       done || true)"
   if [[ -n "$bad_regex" ]]; then
     while IFS= read -r pf; do

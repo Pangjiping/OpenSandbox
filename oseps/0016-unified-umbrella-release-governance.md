@@ -146,8 +146,13 @@ Notes:
   first companion tag is `v1.1.0`. `poolredis` is merged into the
   parent module before GA ([#1900](https://github.com/opensandbox-group/OpenSandbox/issues/1900)):
   its import path is unchanged and it is versioned by this single tag.
-- Historical per-component tags (`server/v*`, `docker/*/v*`,
-  `helm/opensandbox/*`, …) are frozen when `release-1.1.0-rc.1` is cut.
+- Historical per-component tags — `server/v*`, `cli/v*`,
+  `docker/*/v*`, `k8s/*/v*`, `helm/opensandbox/*`,
+  `helm/opensandbox-controller/*`, `java/*/v*`, `python/*/v*`,
+  `js/*/v*`, `csharp/*/v*`, `sdks/sandbox/go/v*` — are frozen when
+  `release-1.1.0-rc.1` is cut. (`release-` is disjoint from all of them
+  because legacy tags are path-prefixed, not because of the `v` — some
+  legacy tags carry no `v` at all.)
 
 ### Starting Version: `1.1.0` as GA
 
@@ -161,9 +166,15 @@ Notes:
 | Go proxy (`sdks/sandbox/go`) | `v1.0.5` | Companion tags share the legacy namespace; the sum database forbids re-pointing, and `go get` never downgrades. |
 | Go proxy (`sdks/sandbox/go/poolredis`) | never published | No constraint; merging into the parent module pre-GA ([#1900](https://github.com/opensandbox-group/OpenSandbox/issues/1900)). |
 
-All other surfaces are collision-free at any `1.x`, and semver makes
-`1.1.0` strictly greater than both floors (`1.0.19`, `1.0.5`): the
-minimal safe start.
+All other surfaces are collision-free at any `1.x`. The floor rule
+alone does **not** yield `1.1.0` — the smallest version strictly greater
+than `1.0.19` is `1.0.20`. Two constraints jointly do:
+
+1. **floor**: `> max(1.0.19, 1.0.5)` — the immutable-registry rule above;
+2. **shape**: a GA start must be an `X.Y.0` **line birth**; `Z > 0` is
+   reserved for in-line snapshots, so `1.0.20` is not a legal start.
+
+`1.1.0` is the minimum satisfying both.
 
 **The jump is monotonic everywhere but conditional.** Every SDK can
 legally move to `1.1.0`, but the jump only materializes if the Phase 2
@@ -210,7 +221,11 @@ forever:
 | Artifact | Registry | Last legacy version (frozen) | First umbrella |
 |---|---|---|---|
 | `opensandbox` umbrella chart (in-repo, not published) | git tag | `0.2.2` | `1.1.0` |
+| `opensandbox-controller` chart (in-repo, not published) | git tag | `0.2.0` (`helm/opensandbox-controller/0.2.0`) | `1.1.0` |
+| `opensandbox-server` chart (in-repo, not published) | git tag | never released | `1.1.0` |
+| `base` / `ingress-gateway` charts (in-repo sub-charts, never independently released) | git tag | never released | `1.1.0` |
 | `opensandbox-node-agent` chart (in-repo, not published) | git tag | never released | `1.1.0` |
+| `fast-sandbox` chart (in-repo, not published; `appVersion` was `"dev"`) | git tag | never released | `1.1.0` |
 | `opensandbox-server` | PyPI | `0.2.3` | `1.1.0` |
 | `opensandbox-cli` | PyPI | `0.1.1` | `1.1.0` |
 
@@ -226,7 +241,7 @@ forever:
 | `com.alibaba.opensandbox:sandbox` / `:sandbox-api` / `:sandbox-bom` / `:sandbox-pool-redis` | Maven Central | `1.0.19` | `1.1.0` |
 | `com.alibaba.opensandbox:code-interpreter` | Maven Central | `1.0.16` | `1.1.0` |
 | `Alibaba.OpenSandbox` | NuGet | `0.1.5` | `1.1.0` |
-| `Alibaba.OpenSandbox.CodeInterpreter` | NuGet | `0.1.0` | `1.1.0` |
+| `Alibaba.OpenSandbox.CodeInterpreter` | NuGet | `0.1.0` (registry truth; props carried an unpublished `0.1.1`) | `1.1.0` |
 | `github.com/alibaba/OpenSandbox/sdks/sandbox/go` | Go proxy | `v1.0.5` | `v1.1.0` |
 | `github.com/alibaba/OpenSandbox/sdks/sandbox/go/poolredis` (package of the parent module after [#1900](https://github.com/opensandbox-group/OpenSandbox/issues/1900)) | Go proxy | never released | `v1.1.0` via the parent tag |
 
@@ -275,6 +290,7 @@ versions (`==X.Y.Z`), Helm
 apiVersion: opensandbox.io/v1
 kind: UmbrellaRelease
 metadata: { version: 1.4.0, line: "1.4", channel: stable, releaseDate: "2026-10-15", gitCommit: 6b1e… }
+compatibility: { kubernetes: { minVersion: v1.24, maxVersion: v1.34 }, crd: [{ group: sandbox.opensandbox.io, versions: [v1alpha1] }] }
 images:
   execd: { image: docker.io/opensandbox/execd, tag: release-1.4.0, digest: sha256:… }
   fsbController: { image: docker.io/opensandbox/fsb-controller, tag: release-1.4.0, digest: sha256:… }
@@ -332,14 +348,17 @@ Steps:
    `docs/releases/X.Y.Z.md` exists and is non-empty (hand-authored notes,
    committed before the release is triggered).
 2. **Version-consistency scan** — scoped, path-listed check
-   (`scripts/release/version-consistency-paths.txt`): umbrella chart
-   `version`/`appVersion` and every sub-chart image ref =
-   `release-${version}`; SDK `package.json` / `gradle.properties` /
-   `*.csproj` + `Directory.Build.props`; Go version constant; server
-   `/version` source; every hatch-vcs `tag_regex` on the umbrella
-   pattern; every inter-OpenSandbox range with lower bound =
-   `${version}` and same-major upper bound (upper ≤ lower is
-   release-blocking). OpenAPI fields, lockfiles, examples out of scope.
+   (`manifests/release/version-consistency-paths.txt`): every chart's
+   `version` and `appVersion` (present ones) plus the umbrella chart's
+   `dependencies[].version` and every sub-chart image ref =
+   `${version}` / `release-${version}`; SDK `package.json` /
+   `gradle.properties` / `*.csproj` + both
+   `Directory.Build.props` version fields; Go version constant; server
+   `/version` source; every hatch-vcs `tag_regex` **and**
+   `git_describe_command` on the umbrella pattern; every
+   inter-OpenSandbox range with lower bound = `${version}` and
+   same-major upper bound (upper ≤ lower is release-blocking).
+   OpenAPI fields, lockfiles, examples out of scope.
 3. **Fan-out build** — images to staging; packages held as workflow
    artifacts. Any leg failure aborts before any publish, tag, or BOM.
 4. **BOM commit (`C_bom`)** — assemble the BOM and commit
@@ -431,8 +450,9 @@ against the BOM bundled with the CLI.
   and never pushes the tag.
 - **Idempotency**: re-running at the same version short-circuits to no-ops.
 - **Staging GC**: tags from runs that never reached publish are deleted after 14 days.
-- **hatch-vcs / dependency-range tests**: no legacy `tag_regex` remains;
-  all inter-package ranges are `[X.Y.0, X+1.0.0)`-shaped.
+- **hatch-vcs / dependency-range tests**: no legacy `tag_regex` or
+  `git_describe_command` namespace remains; all inter-package ranges
+  are `[X.Y.0, X+1.0.0)`-shaped.
 - **Skew tests** (`±1`/`±2` minor) and a Helm golden test against
   BOM-derived values.
 - **`osb devops doctor` e2e** on Kind: an out-of-BOM image is flagged.

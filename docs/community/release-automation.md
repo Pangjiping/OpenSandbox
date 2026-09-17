@@ -57,6 +57,46 @@ between release windows.
   Kotlin/JVM coordinates), NuGet (2) — all at the umbrella version
 - Helm charts: **not published**; they ship in-repo at the release tag
 
+## Release Runbook
+
+### Publish order and rollback
+
+Packages publish in verify-then-continue order — each leg is externally
+verified before the next starts. Maven Central runs **last** because a
+released Maven version is immutable: ordering it last means every
+reversible ecosystem is already verified before the irreversible step.
+On a failure, remediate already-published legs in reverse order:
+
+| Ecosystem | Revocation |
+|---|---|
+| Maven Central | not released if its leg failed; after release, immutable — deprecate only |
+| NuGet | `dotnet nuget delete <pkg> <version>` (72 h), else unlist |
+| npm | `npm unpublish <pkg>@<version>` (72 h), else `npm deprecate` |
+| PyPI | manual yank via project settings (no scriptable API) |
+| images | `crane delete <image>:release-X.Y.Z` |
+
+Always file a P0 release incident with the run link before remediating.
+Global mirror caches may retain revoked artifacts; revocation is
+authoritative upstream only.
+
+### N-1 emergency backport (CVSS ≥ 8.0, ≤ 72 h, one-shot per line)
+
+1. Land the fix on `main` (standard PR review).
+2. `git checkout release-X.(Y-1) && git cherry-pick <sha> && git push`.
+3. Dispatch `release-umbrella.yml` with `version=X.(Y-1).Z`,
+   `release_branch=release-X.(Y-1)`, `dry_run=false`. The full fan-out
+   reruns; the release notes must link the CVE and name the equivalent
+   current-line snapshot.
+
+Anything that is not a qualifying CVE waits for the next line birth.
+
+### Staging cleanup
+
+Staging image tags (`staging-<sha>-<runid>`) are namespaced and never
+referenced by user-facing surfaces; a scheduled job deletes staging tags
+whose run did not complete within 14 days. Held package artifacts use
+the default 14-day workflow-artifact retention.
+
 ## Legacy Releases
 
 Historical per-component tags (`server/v0.2.3`, `docker/execd/v1.1.0`,

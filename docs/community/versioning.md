@@ -27,7 +27,9 @@ declaration. `1.0.0` is deliberately skipped: Maven Central
 (`com.alibaba.opensandbox:sandbox` up to `1.0.19`) and the Go module
 proxy (`sdks/sandbox/go` up to `v1.0.5`) already consumed those
 versions, and both registries are immutable. The umbrella starts at the
-smallest version strictly greater than all of them.
+lowest new **line** (`X.Y.0`) above every already-consumed version —
+`1.0.20` would clear the registries but is not a valid line birth
+(`Z > 0` is reserved for in-line snapshots), so `1.1.0` it is.
 
 ## Naming rules
 
@@ -71,3 +73,6 @@ registries use the bare semver core because they reject prefixes.
   disclosure, one-shot `X.(Y-1).Z` snapshot).
 - There are no per-component hotfixes: a backport is a full umbrella
   rebuild at the new `X.Y.Z`.
+
+To verify a release you installed, see
+[Release Verification](/community/release-verification).
