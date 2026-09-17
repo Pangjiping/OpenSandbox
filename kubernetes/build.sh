@@ -98,13 +98,13 @@ else
         --platform linux/amd64 \
         $BUILD_ARG \
         "${BUILD_ARGS[@]}" \
-        -t ${IMAGE_NAME}:${TAG} \
+        -t "${DOCKERHUB_REPO}/${IMAGE_NAME}:${TAG}" \
         -f "$DOCKERFILE" \
         --load \
         .
     
     echo "========================================="
     echo "Successfully built (local only):"
-    echo "  ${IMAGE_NAME}:${TAG}"
+    echo "  ${DOCKERHUB_REPO}/${IMAGE_NAME}:${TAG}"
     echo "========================================="
 fi

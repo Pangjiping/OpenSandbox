@@ -75,6 +75,17 @@ Any failure before the tag step leaves no trace consumers can resolve;
 the weekly scheduled dry-run (`dry_run=true`) keeps the fan-out healthy
 between release windows.
 
+### Dry runs
+
+`dry_run=true` exercises everything except publishing: images are built
+**locally** (single-arch, `--load` — no registry push, no credentials
+needed), packages are built and held as workflow artifacts, the BOM is
+committed to the release branch with local image IDs standing in for
+registry digests, and no git tags are minted. To rehearse a release in
+a fork, prepare the release branch (bump + notes) and dispatch the
+workflow with `dry_run=true` — the `UMBRELLA_PUBLISH_ENABLED` variable
+does not need to exist there.
+
 ## Release Artifacts
 
 - `docs/releases/<version>.yaml` — BOM, authoritative for image digests
