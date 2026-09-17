@@ -60,6 +60,17 @@ test("connect/resume retry only unresolved endpoint and keep fresh headers", asy
   }
 });
 
+test("connect retries a transient egress endpoint failure within the budget", async () => {
+  let egressCalls = 0;
+  const opts = options(async (_, port) => {
+    if (port === 18080 && ++egressCalls === 1) throw unavailable();
+    return { endpoint: "localhost:44772", headers: { token: "new" } };
+  });
+  const sb = await Sandbox.connect(opts);
+  assert.equal(egressCalls, 2);
+  await sb.close();
+});
+
 test("ordinary endpoint errors are returned unchanged without retry", async () => {
   for (const error of [unavailable("SANDBOX_NOT_FOUND"), unavailable(undefined, 401), unavailable(undefined, 403)]) {
     let calls = 0;

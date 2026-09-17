@@ -340,7 +340,10 @@ function toImageSpec(
  * Template-backed sandboxes (origin `template`) have no sandbox-side egress
  * sidecar: policy operations go through the lifecycle control plane, and the
  * egress sidecar endpoint is never resolved. For any other origin the
- * sandbox-side egress sidecar endpoint is resolved and used.
+ * sandbox-side egress sidecar endpoint is resolved and used; when a
+ * `ReadinessBudget` is supplied (connect/resume), the lookup shares the execd
+ * endpoint's budget so transient failures are retried within the remaining
+ * `readyTimeoutSeconds`.
  */
 async function resolveEgressStack(
   adapterFactory: AdapterFactory,
@@ -349,6 +352,8 @@ async function resolveEgressStack(
   lifecycleBaseUrl: string,
   sandboxId: SandboxId,
   endpointOrigin: string | undefined,
+  budget?: ReadinessBudget,
+  interval?: number,
   signal?: AbortSignal,
 ): Promise<{ egress: Egress; credentialVault?: CredentialVault; origin: SandboxOrigin }> {
   if (endpointOrigin === SandboxOrigin.TEMPLATE) {
@@ -368,12 +373,15 @@ async function resolveEgressStack(
       origin: SandboxOrigin.TEMPLATE,
     };
   }
-  const egressEndpoint = await sandboxes.getSandboxEndpoint(
+  const fetchEgressEndpoint = (fetchSignal?: AbortSignal) => sandboxes.getSandboxEndpoint(
     sandboxId,
     DEFAULT_EGRESS_PORT,
     connectionConfig.useServerProxy,
-    signal,
+    fetchSignal,
   );
+  const egressEndpoint = budget && interval !== undefined
+    ? await budget.endpoint(fetchEgressEndpoint, interval)
+    : await fetchEgressEndpoint(signal);
   const stack = adapterFactory.createEgressStack({
     connectionConfig,
     egressBaseUrl: `${connectionConfig.protocol}://${egressEndpoint.endpoint}`,
@@ -596,6 +604,8 @@ export class Sandbox {
         lifecycleBaseUrl,
         sandboxId,
         endpoint.origin,
+        undefined,
+        undefined,
         opts.signal,
       );
 
@@ -761,6 +771,8 @@ export class Sandbox {
         lifecycleBaseUrl,
         sandboxId,
         SandboxOrigin.TEMPLATE,
+        undefined,
+        undefined,
         opts.signal,
       );
 
@@ -883,6 +895,11 @@ export class Sandbox {
         lifecycleBaseUrl,
         opts.sandboxId,
         endpoint.origin,
+        // Same readiness budget as the execd lookup: transient 404
+        // POD_IP_NOT_AVAILABLE is retried and slow lookups stay bounded by
+        // the remaining readyTimeoutSeconds.
+        budget,
+        interval,
         opts.signal,
       );
 
