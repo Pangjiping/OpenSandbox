@@ -65,7 +65,7 @@ jobs:
       - name: Resolve parameters
         id: params
         env:
-          IN_VERSION: ${{ needs.resolve.outputs.version }}
+          IN_VERSION: ${{ inputs.version }}
           IN_CHANNEL: ${{ inputs.channel }}
           IN_BRANCH: ${{ inputs.release_branch }}
         run: |
@@ -92,6 +92,7 @@ jobs:
   scan:
     name: Version-consistency scan
     if: github.event_name == 'workflow_dispatch'
+    needs: resolve
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -287,7 +288,7 @@ jobs:
 
   bom:
     name: Assemble and commit BOM
-    needs: [build-images, build-fast-sandbox]
+    needs: [resolve, build-images, build-fast-sandbox]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -335,7 +336,7 @@ jobs:
   # the per-ecosystem package legs before this gate is opened.
   promote:
     name: Promote images to release tag
-    needs: [bom, packages]
+    needs: [resolve, bom, packages]
     if: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -395,7 +396,7 @@ jobs:
 
   release:
     name: Mint tags and publish GitHub Release
-    needs: [promote, packages]
+    needs: [resolve, promote, packages]
     if: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     permissions:

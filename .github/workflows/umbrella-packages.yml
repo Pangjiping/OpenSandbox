@@ -33,7 +33,6 @@ on:
         required: false
         type: boolean
         default: false
-    secrets: inherit
 
 permissions:
   contents: read
