@@ -20,12 +20,26 @@ The umbrella release is driven by a single all-in-one script:
 manifests/release/create-umbrella-release.sh --version 1.1.0-rc.1 --dry-run
 manifests/release/create-umbrella-release.sh --version 1.1.0 --push --release
 ```
+Release preparation is manual and happens before triggering the
+workflow. On the release branch:
 
-It performs, in order: preflight (commit reachability, plus a check
+```bash
+# 1. one-command bump: chart versions, image references, SDK versions,
+#    and dependency ranges rewritten to the target version in one commit
+manifests/release/create-umbrella-release.sh --version 1.1.0 --bump-only
+
+# 2. hand-author the release notes, then commit both
+$EDITOR releases/1.1.0.md
+git push
+```
+
+The release driver then performs, in order: preflight (commit
+reachability, plus a check
 that the hand-authored release notes `releases/<version>.md` are
 committed on the release branch — a release never starts without
 them), a version consistency scan (blocks the release until every
-chart, SDK, and dependency range matches the umbrella version), a BOM
+chart, SDK, and
+dependency range matches the umbrella version), a BOM
 commit (`releases/<version>.yaml`), and mints two tags on the same
 commit — `release-X.Y.Z` plus the Go companion tag
 `sdks/sandbox/go/vX.Y.Z`. Image digests in the BOM are pinned by the

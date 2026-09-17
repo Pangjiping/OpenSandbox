@@ -69,8 +69,8 @@ source = "vcs"
 [tool.hatch.version.raw-options]
 # This package is in a subdirectory; explicitly point setuptools-scm at the git root.
 root = "../../.."
-tag_regex = "^python/sandbox/v(?P<version>\\d+\\.\\d+\\.\\d+(?:[\\.\\w\\+\\-]*)?)$"
-git_describe_command = 'git describe --dirty --tags --long --match "python/sandbox/v*"'
+tag_regex = "^release-(?P<version>\d+\.\d+\.\d+(?:[\.\w\+\-]*)?)$"
+git_describe_command = 'git describe --dirty --tags --long --match "release-*"'
 fallback_version = "0.1.16"
 
 [tool.hatch.build]
