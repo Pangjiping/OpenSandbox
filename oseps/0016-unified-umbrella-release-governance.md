@@ -299,8 +299,10 @@ impossible (~4 KB per release).
 
 **Release notes are hand-authored.** The release manager writes
 `docs/releases/X.Y.Z.md` from the template at `docs/releases/TEMPLATE.md`
-and commits it on the release branch **before** triggering the
-workflow. Preflight fails if the file is missing or
+— Highlights first, then one section per component (Server, SDKs,
+Controller incl. task-executor and image-committer, Execd, Egress,
+Ingress, Fast Sandbox, Misc) — and commits it
+on the release branch **before** triggering the workflow. Preflight fails if the file is missing or
 empty — a release never starts without its notes. The workflow never
 rewrites the file; it consumes it as-is for the BOM commit and the
 GitHub Release. The in-repo copy is **authoritative**; the GitHub

@@ -5,9 +5,16 @@ Usage: copy this file to docs/releases/X.Y.Z.md, fill it in, remove all
 HTML comments, and commit it on the release branch BEFORE triggering
 release-umbrella.yml — preflight fails if the file is missing or empty.
 
-Conventions: entries reference PRs as (#NNNN); mark experimental or
-unstable items with **[EXPERIMENTAL]** / **[UNSTABLE]**; keep the
-section order below (GitHub Release mirrors this file verbatim).
+Conventions:
+- Sections are organized BY COMPONENT; use only the components that
+  actually shipped changes in this release, and delete empty sections.
+- Within a component, list Features first, then Bug Fixes; reference
+  PRs as (#NNNN).
+- Mark experimental or unstable items with **[EXPERIMENTAL]** /
+  **[UNSTABLE]**.
+- Anything that does not belong to a listed component (CLI, node-agent,
+  image-committer, docs, CI, deps) goes under Misc.
+- The GitHub Release mirrors this file verbatim.
 -->
 
 # OpenSandbox X.Y.Z
@@ -20,25 +27,57 @@ section order below (GitHub Release mirrors this file verbatim).
 
 -
 
-## What's New
+## Server
 
-### ✨ Features
+<!-- Lifecycle API, proxy, snapshot store, FastPath fleets backend. -->
 
-<!-- feat:/feat(scope): commits; link PRs as (#NNNN) -->
+-
 
-### 🐛 Bug Fixes
+## SDKs
 
-<!-- fix:/fix(scope): commits -->
+<!-- Python / JavaScript / Kotlin-JVM / C# / Go — group by language when
+     a change is language-specific; cross-SDK changes go first. -->
 
-### ⚠️ Breaking Changes
+-
 
-<!-- BREAKING CHANGE footers or type!:/feat!:/fix!: commits; include the migration path inline -->
+## Controller
 
-- None
+<!-- BatchSandbox reconciliation, CRD changes, capacity/OTLP metrics.
+     Includes the task-executor and image-committer images — they ship
+     from the same codebase. -->
 
-### 📦 Misc
+-
 
-<!-- chores, deps, docs, CI -->
+## Execd
+
+<!-- In-sandbox execution daemon, lifecycle hooks, runtime init. -->
+
+-
+
+## Egress
+
+<!-- Egress policy sidecar, TLS interception, credential snapshots. -->
+
+-
+
+## Ingress
+
+<!-- Gateway routing, endpoints, upstream readiness. -->
+
+-
+
+## Fast Sandbox
+
+<!-- fsb-* images: controller, fastlet, fastlet-proxy, janitor,
+     firecracker-runtime, sandboxtemplate-builder. -->
+
+-
+
+## Misc
+
+<!-- CLI, node-agent, docs, CI, dependencies. -->
+
+-
 
 ## Upgrade & Compatibility
 
@@ -55,3 +94,37 @@ section order below (GitHub Release mirrors this file verbatim).
 Thanks to these contributors ❤️
 
 -
+
+## Artifacts
+
+<!-- The BOM is the audit record: every image digest of this release,
+     one hop from tag -> BOM -> source commit. On GitHub it is attached
+     to this release as an asset with the same name. -->
+
+- BOM: [docs/releases/X.Y.Z.yaml](./X.Y.Z.yaml)
+- Images: `opensandbox/<component>:release-X.Y.Z` (Docker Hub / GHCR / ACR)
+- Packages: PyPI ×5, npm ×2, Maven Central ×5, NuGet ×2 — all at `X.Y.Z`
+- Go module: `github.com/alibaba/OpenSandbox/sdks/sandbox/go@vX.Y.Z`
+
+## Installation
+
+```bash
+# Platform (Kubernetes) — render the chart at this tag and apply
+git clone https://github.com/opensandbox-group/OpenSandbox
+git checkout release-X.Y.Z
+helm template ./manifests/charts/opensandbox | kubectl apply -f -
+# or point your GitOps platform (Argo / Flux) at the repo path + tag
+
+# SDKs
+pip install opensandbox==X.Y.Z            # Python
+npm install @alibaba-group/opensandbox@X.Y.Z   # JavaScript
+# Kotlin/JVM: implementation("com.alibaba.opensandbox:sandbox:X.Y.Z")
+dotnet add package Alibaba.OpenSandbox --version X.Y.Z
+go get github.com/alibaba/OpenSandbox/sdks/sandbox/go@vX.Y.Z
+
+# Run the server locally
+uvx opensandbox-server==X.Y.Z
+```
+
+Verify what you installed against the BOM: see
+[Release Verification](/community/release-verification).
