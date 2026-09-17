@@ -54,15 +54,11 @@ Conventions:
 
 -
 
-## Egress
+## Networking
 
-<!-- Egress policy sidecar, TLS interception, credential snapshots. -->
-
--
-
-## Ingress
-
-<!-- Gateway routing, endpoints, upstream readiness. -->
+<!-- Egress (policy sidecar, TLS interception, credential snapshots)
+     and Ingress (gateway routing, endpoints, upstream readiness).
+     Prefix entries with egress: / ingress: when the split matters. -->
 
 -
 
