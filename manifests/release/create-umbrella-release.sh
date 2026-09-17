@@ -280,10 +280,10 @@ if [[ "$BUMP_ONLY" == true ]]; then
   # 7) Python inter-package dependency ranges (cli + sdks)
   for f in cli/pyproject.toml sdks/code-interpreter/python/pyproject.toml sdks/mcp/sandbox/python/pyproject.toml; do
     [[ -f "$f" ]] || continue
-    sed -i.bak -E "s|opensandbox>=[^,']*,<[^']*|opensandbox>=${VERSION},<${NEXT_MAJOR}.0.0|g" "$f" && rm -f "${f}.bak"
+    sed -i.bak -E "s|\"opensandbox>=[^\"]*\"|\"opensandbox>=${VERSION},<${NEXT_MAJOR}.0.0\"|g" "$f" && rm -f "${f}.bak"
   done
 
-  git add manifests/charts sdks
+  git add manifests/charts sdks cli
   if git diff --cached --quiet; then
     warn "Nothing to bump; already at ${VERSION}."
   else
@@ -427,7 +427,7 @@ if [[ "$SKIP_CONSISTENCY" != true ]]; then
   # Python inter-package ranges (cli + sdks)
   for f in cli/pyproject.toml sdks/code-interpreter/python/pyproject.toml sdks/mcp/sandbox/python/pyproject.toml; do
     if [[ -f "$f" ]]; then
-      if grep -Eq "opensandbox>=${ESC_VERSION},<${NEXT_MAJOR}\\.0\\.0" "$f"; then
+      if grep -Eq "\"opensandbox>=${ESC_VERSION},<${NEXT_MAJOR}\\.0\\.0\"" "$f"; then
         scan_ok "${f} opensandbox range >=${VERSION},<${NEXT_MAJOR}.0.0"
       else
         scan_fail "${f} opensandbox range must be 'opensandbox>=${VERSION},<${NEXT_MAJOR}.0.0'"
