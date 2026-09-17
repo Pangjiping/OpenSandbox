@@ -43,7 +43,10 @@ dependency range matches the umbrella version), a BOM
 commit (`releases/<version>.yaml`), and mints two tags on the same
 commit — `release-X.Y.Z` plus the Go companion tag
 `sdks/sandbox/go/vX.Y.Z`. Image digests in the BOM are pinned by the
-CI fan-out. See
+CI fan-out. All PyPI, npm, Maven Central, and NuGet packages build and
+hold through the reusable `umbrella-packages.yml` workflow in the same
+run, and publish in verify-then-continue order (PyPI → npm → NuGet →
+Maven Central last) when the publish gates are open. See
 [OSEP-0016](https://github.com/opensandbox-group/OpenSandbox/blob/main/oseps/0016-unified-umbrella-release-governance.md).
 
 This repository uses tag-driven publish workflows. The script below standardizes:

@@ -8,9 +8,12 @@ name: Umbrella Release
 # gated behind dry_run=false AND the UMBRELLA_PUBLISH_ENABLED repo
 # variable, which stays unset until GA.
 #
-# Phase 2 (follow-up): per-ecosystem package legs (Helm, PyPI, npm,
-# Maven, NuGet) are wired by adapting the existing publish-* workflows
-# to umbrella mode, per OSEP-0016 "Script and workflow changes".
+# Package legs (PyPI, npm, Maven, NuGet) run through the reusable
+# umbrella-packages.yml workflow: hold-only on dry runs; ordered
+# verify-then-continue publish when publish gates are open. Helm remains
+# on its dedicated gate workflow until its Kind-gate machinery is
+# adapted (follow-up). Legacy tag-triggered publish-* workflows stay
+# untouched until Phase 3 retirement.
 
 permissions:
   contents: write
@@ -212,6 +215,15 @@ jobs:
           path: digest-fast-sandbox.json
           retention-days: 14
 
+  packages:
+    name: SDK / CLI / server packages (hold${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' && ' + publish' || '' }})
+    needs: [preflight, scan]
+    uses: ./.github/workflows/umbrella-packages.yml
+    with:
+      version: ${{ inputs.version }}
+      publish: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' }}
+    secrets: inherit
+
   bom:
     name: Assemble and commit BOM
     needs: [build-images, build-fast-sandbox]
@@ -256,7 +268,7 @@ jobs:
   # the per-ecosystem package legs before this gate is opened.
   promote:
     name: Promote images to release tag
-    needs: bom
+    needs: [bom, packages]
     if: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -316,7 +328,7 @@ jobs:
 
   release:
     name: Mint tags and publish GitHub Release
-    needs: promote
+    needs: [promote, packages]
     if: ${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     permissions:

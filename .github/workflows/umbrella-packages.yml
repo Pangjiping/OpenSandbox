@@ -1,0 +1,359 @@
+name: Umbrella Packages
+
+# Reusable package fan-out for the unified umbrella release (OSEP-0016).
+#
+# One call, two phases in the same run so held artifacts never cross a
+# run boundary:
+#   hold    — build every package at the umbrella version and hold the
+#             bytes as workflow artifacts. Nothing reaches a public
+#             registry.
+#   publish — gated by inputs.publish: ordered, verify-then-continue
+#             publish of the held bytes (PyPI → npm → NuGet → Maven
+#             Central last, which is irreversible once released).
+#
+# Versions come from the release-branch prep commit (--bump-only):
+# package.json / gradle.properties / Directory.Build.props already carry
+# the umbrella version. Python packages derive their version from git
+# tags, so hold injects it via the pretend-version env vars.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Umbrella version, e.g. 1.1.0'
+        required: true
+        type: string
+      publish:
+        description: 'Publish held packages to public registries'
+        required: false
+        type: boolean
+        default: false
+    secrets: inherit
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # hold — build and hold; no registry receives anything
+  # ---------------------------------------------------------------------------
+
+  pypi-hold:
+    name: Hold PyPI (${{ matrix.pkg.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg:
+          - { name: server, dir: server }
+          - { name: cli, dir: cli }
+          - { name: sandbox, dir: sdks/sandbox/python }
+          - { name: code-interpreter, dir: sdks/code-interpreter/python }
+          - { name: mcp-sandbox, dir: sdks/mcp/sandbox/python }
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Build package
+        working-directory: ${{ matrix.pkg.dir }}
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ inputs.version }}
+          HATCH_VCS_PRETEND_VERSION: ${{ inputs.version }}
+        run: |
+          uv build
+
+      - name: Record checksums
+        working-directory: ${{ matrix.pkg.dir }}
+        run: |
+          sha256sum dist/* > dist/SHA256SUMS
+
+      - name: Upload held artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-pypi-${{ matrix.pkg.name }}
+          path: ${{ matrix.pkg.dir }}/dist/
+          retention-days: 14
+
+  npm-hold:
+    name: Hold npm (${{ matrix.sdk.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk:
+          - { name: sandbox, dir: sdks/sandbox/javascript, package: "@alibaba-group/opensandbox" }
+          - { name: code-interpreter, dir: sdks/code-interpreter/javascript, package: "@alibaba-group/opensandbox-code-interpreter" }
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+
+      - name: Install workspace dependencies
+        working-directory: sdks
+        run: pnpm install --frozen-lockfile
+
+      - name: Build SDK
+        working-directory: sdks
+        run: pnpm --filter ${{ matrix.sdk.package }}... --sort run build
+
+      - name: Pack SDK
+        working-directory: ${{ matrix.sdk.dir }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          pnpm pack --pack-destination dist
+          sha256sum dist/* > dist/SHA256SUMS
+
+      - name: Upload held artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-npm-${{ matrix.sdk.name }}
+          path: ${{ matrix.sdk.dir }}/dist/
+          retention-days: 14
+
+  maven-hold:
+    name: Hold Maven Central (Kotlin/JVM)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Build Kotlin/JVM multi-project
+        working-directory: sdks/sandbox/kotlin
+        run: |
+          ./gradlew build
+          echo "project.version=$(sed -n 's/^project\.version=//p' gradle.properties)" >> "$GITHUB_STEP_SUMMARY"
+
+  nuget-hold:
+    name: Hold NuGet (${{ matrix.sdk.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk:
+          - { name: sandbox, csproj: sdks/sandbox/csharp/src/OpenSandbox/OpenSandbox.csproj, extra: "" }
+          - { name: code-interpreter, csproj: sdks/code-interpreter/csharp/src/OpenSandbox.CodeInterpreter/OpenSandbox.CodeInterpreter.csproj, extra: "-p:UseLocalOpenSandboxProjectReference=false" }
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore ${{ matrix.sdk.csproj }} ${{ matrix.sdk.extra }}
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/${{ matrix.sdk.name }}
+          dotnet pack ${{ matrix.sdk.csproj }} \
+            --configuration Release \
+            --no-restore \
+            -p:ContinuousIntegrationBuild=true \
+            ${{ matrix.sdk.extra }} \
+            --output ./artifacts/${{ matrix.sdk.name }}
+          sha256sum artifacts/${{ matrix.sdk.name }}/* > artifacts/${{ matrix.sdk.name }}/SHA256SUMS
+
+      - name: Upload held artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-nuget-${{ matrix.sdk.name }}
+          path: artifacts/${{ matrix.sdk.name }}/
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # publish — ordered, verify-then-continue, from the held bytes only
+  # ---------------------------------------------------------------------------
+
+  publish:
+    name: Publish held packages
+    if: ${{ inputs.publish }}
+    needs: [pypi-hold, npm-hold, maven-hold, nuget-hold]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Download held packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          path: held
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      # ---- leg 1: PyPI (server → cli → sandbox → code-interpreter → mcp) ----
+
+      - name: Publish PyPI packages
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          publish_one() {
+            local name="$1" dir="$2"
+            echo "::group::uv publish ${name}"
+            uv publish "$dir"/*
+            for i in 1 2 3 4 5; do
+              if pip index versions "$name" 2>/dev/null | grep -q "${{ inputs.version }}"; then
+                echo "verified ${name} ${{ inputs.version }} on PyPI"; echo "::endgroup::"; return 0
+              fi
+              sleep 10
+            done
+            echo "verification failed for ${name}" >&2; return 1
+          }
+          publish_one opensandbox-server            held/pkg-pypi-server
+          publish_one opensandbox-cli               held/pkg-pypi-cli
+          publish_one opensandbox                   held/pkg-pypi-sandbox
+          publish_one opensandbox-code-interpreter  held/pkg-pypi-code-interpreter
+          publish_one opensandbox-mcp               held/pkg-pypi-mcp-sandbox
+
+      # ---- leg 2: npm ----
+
+      - name: Publish npm packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          publish_one() {
+            local tarball="$1" package="$2"
+            echo "::group::npm publish ${package}"
+            pnpm publish "$tarball" --access public --no-git-checks
+            for i in 1 2 3 4 5; do
+              if npm view "${package}@${{ inputs.version }}" version >/dev/null 2>&1; then
+                echo "verified ${package} ${{ inputs.version }} on npm"; echo "::endgroup::"; return 0
+              fi
+              sleep 10
+            done
+            echo "verification failed for ${package}" >&2; return 1
+          }
+          publish_one "held/pkg-npm-sandbox/$(ls held/pkg-npm-sandbox | grep '\.tgz$' | head -1)" \
+            "@alibaba-group/opensandbox"
+          publish_one "held/pkg-npm-code-interpreter/$(ls held/pkg-npm-code-interpreter | grep '\.tgz$' | head -1)" \
+            "@alibaba-group/opensandbox-code-interpreter"
+
+      # ---- leg 3: NuGet ----
+
+      - name: Publish NuGet packages
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          set -euo pipefail
+          publish_one() {
+            local dir="$1" package="$2"
+            echo "::group::nuget push ${package}"
+            dotnet nuget push "${dir}/*.nupkg" \
+              --api-key "$NUGET_API_KEY" \
+              --source "https://api.nuget.org/v3/index.json" \
+              --skip-duplicate
+            for i in 1 2 3 4 5; do
+              if dotnet package search "$package" --exact-match 2>/dev/null | grep -q "${{ inputs.version }}"; then
+                echo "verified ${package} ${{ inputs.version }} on NuGet"; echo "::endgroup::"; return 0
+              fi
+              sleep 10
+            done
+            echo "verification failed for ${package}" >&2; return 1
+          }
+          publish_one held/pkg-nuget-sandbox            Alibaba.OpenSandbox
+          publish_one held/pkg-nuget-code-interpreter   Alibaba.OpenSandbox.CodeInterpreter
+
+      # ---- leg 4: Maven Central — LAST (irreversible once released) ----
+
+      - name: Publish Kotlin/JVM to Maven Central
+        working-directory: sdks/sandbox/kotlin
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.ORG_GRADLE_PROJECT_MAVENCENTRALUSERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.ORG_GRADLE_PROJECT_MAVENCENTRALPASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.ORG_GRADLE_PROJECT_SIGNINGINMEMORYKEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.ORG_GRADLE_PROJECT_SIGNINGINMEMORYKEYPASSWORD }}
+        run: |
+          ./gradlew publishAndReleaseToMavenCentral
+
+      # ---- rollback ledger summary (best-effort remediation guide) ----
+
+      - name: Rollback ledger (on failure)
+        if: failure()
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          cat <<'EOF' >&2
+          ::error::Package publish failed partway. Revocation commands for legs
+          ::error::that completed BEFORE the failing leg (in reverse order):
+          ::error::
+          ::error::  Maven Central : (published last; if this failed it was NOT released)
+          ::error::  NuGet         : dotnet nuget delete <pkg> $VERSION --source https://api.nuget.org/v3/index.json  (within 72h)
+          ::error::  npm           : npm unpublish <pkg>@$VERSION  (within 72h) else npm deprecate <pkg>@$VERSION "yanked"
+          ::error::  PyPI          : manual yank via PyPI project settings (no scriptable API)
+          ::error::
+          ::error::File a P0 release incident with this run link before remediating.
+          EOF
+          exit 1
