@@ -17,6 +17,7 @@ name: Umbrella Packages
 # tags, so hold injects it via the pretend-version env vars.
 
 on:
+  workflow_dispatch:
   workflow_call:
     inputs:
       version:
@@ -36,7 +37,6 @@ on:
 
 permissions:
   contents: read
-  artifact-metadata: write
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -209,8 +209,10 @@ jobs:
     needs: [pypi-hold, npm-hold, maven-hold, nuget-hold]
     runs-on: ubuntu-latest
     permissions:
-      # attestation of the held bytes at publish time; hold jobs need none
-      # of this — they only build and upload workflow artifacts
+      # only the publish leg attests held bytes; hold jobs need nothing
+      # privileged (some fork Actions policies reject definitions that
+      # declare privileged permissions outright, which silently swallowed
+      # the workflow_call inputs and caused startup_failure)
       contents: read
       id-token: write
       attestations: write

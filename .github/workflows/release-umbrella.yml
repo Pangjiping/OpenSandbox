@@ -269,7 +269,7 @@ jobs:
   packages:
     name: SDK / CLI / server packages (hold${{ inputs.dry_run == false && vars.UMBRELLA_PUBLISH_ENABLED == 'true' && ' + publish' || '' }})
     needs: [resolve, preflight, scan]
-    uses: ./.github/workflows/umbrella-packages.yml
+    uses: ./.github/workflows/release-packages.yml
     with:
       version: ${{ needs.resolve.outputs.version }}
       channel: ${{ needs.resolve.outputs.channel }}
