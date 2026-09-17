@@ -250,9 +250,19 @@ that is not a qualifying CVE waits for the next line birth (≤ 2 weeks).
 
 ### Bill of Materials (BOM)
 
-Every release adds a workflow-authored, Sigstore-signed
-`releases/opensandbox/X.Y.Z.yaml` on the release branch. It pins image
-digests (built at `release-X.Y.Z`), package versions (`==X.Y.Z`), Helm
+Every release adds workflow-authored, Sigstore-signed files on the
+release branch, flat under `releases/` (the umbrella is the only
+release train, so no per-product nesting):
+
+```
+releases/
+  1.1.0.yaml               # BOM — authoritative for image digests
+  1.1.0.md                 # release notes — authoritative copy
+  1.1.0.yaml.sigstore.json # BOM signature bundle
+```
+
+The BOM pins image digests (built at `release-X.Y.Z`), package
+versions (`==X.Y.Z`), Helm
 `version`/`appVersion`, spec file SHA-256s, and the build commit:
 
 ```yaml
@@ -279,6 +289,15 @@ attestation: { bomSha256: …, signatures: […] }
 The BOM is authoritative for **digests**, not versions — the version is
 the file name. It is workflow-generated, so version-string drift is
 impossible (~4 KB per release).
+
+**Release notes in-repo.** The workflow aggregates notes from per-PR
+labels (changes up to `C_build`) into `releases/X.Y.Z.md`, committed in
+the same `C_bom` commit. The in-repo copy is **authoritative**; the
+GitHub Release mirrors the same bytes. Rationale: notes must survive
+org migrations and stay reachable for users behind GitHub-blocked
+networks (ACR mirror users), and they feed generated docs
+(`docs/community/releases.md`, compatibility matrix). Legacy-era notes
+are not backfilled — `releases/` starts at `release-1.1.0-rc.1`.
 
 ### Release Workflow
 
@@ -308,15 +327,15 @@ Steps:
    release-blocking). OpenAPI fields, lockfiles, examples out of scope.
 3. **Fan-out build** — images to staging; packages held as workflow
    artifacts. Any leg failure aborts before any publish, tag, or BOM.
-4. **BOM commit (`C_bom`)** — assemble and commit the BOM on
-   `<release_branch>` on top of `C_build`; no code changes.
+4. **BOM commit (`C_bom`)** — assemble the BOM and the aggregated
+   release notes (`releases/X.Y.Z.yaml` + `releases/X.Y.Z.md`), commit
+   both on `<release_branch>` on top of `C_build`; no code changes.
 5. **Publish** — `crane tag` images to `release-X.Y.Z`; Helm first
    (largest blast radius), then language packages in parallel; each leg
    verified externally before the next starts.
 6. **Umbrella tag** — annotated `release-X.Y.Z` on `C_bom` plus the two
    Go companion tags, pushed only after the last verification; GitHub
-   Release with BOM + attestations and aggregated notes from per-PR
-   labels since the previous umbrella tag.
+   Release with BOM + attestations, mirroring the committed notes.
 
 **Failure-safe publish.** The publish step is the only place partial
 state is possible. The contract: ordered verify-then-continue; a
