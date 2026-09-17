@@ -49,11 +49,12 @@ every two weeks; only the latest line is supported.
 |---|---|---|
 | 1 | First umbrella version (GA) | **`1.1.0`** — `1.0.0` is skipped, see [floor rule](#starting-version-110-as-ga) |
 | 2 | Git tag & image tag | **`release-X.Y.Z`** — one identity string for both, e.g. `release-1.1.0` |
-| 3 | Package registries (PyPI/npm/Maven/NuGet/Helm) | bare **`X.Y.Z`** |
-| 4 | Go SDK tag | one companion tag `sdks/sandbox/go/vX.Y.Z` (toolchain-required, same commit); `poolredis` merges into the parent module pre-GA ([#1900](https://github.com/opensandbox-group/OpenSandbox/issues/1900)) |
-| 5 | Cadence / support | line every 2 weeks, **latest-only**, no LTS |
-| 6 | Legacy per-component tags | **frozen** at `release-1.1.0-rc.1` — never deleted, never extended |
-| 7 | Out of scope | sandbox template images (e.g. `opensandbox/code-interpreter`) version independently |
+| 3 | Package registries (PyPI/npm/Maven/NuGet) | bare **`X.Y.Z`** |
+| 4 | Helm charts | **not published** — charts ship in-repo at the release tag; render with `helm template` and deploy with `kubectl` or a deployment platform |
+| 5 | Go SDK tag | one companion tag `sdks/sandbox/go/vX.Y.Z` (toolchain-required, same commit); `poolredis` merges into the parent module pre-GA ([#1900](https://github.com/opensandbox-group/OpenSandbox/issues/1900)) |
+| 6 | Cadence / support | line every 2 weeks, **latest-only**, no LTS |
+| 7 | Legacy per-component tags | **frozen** at `release-1.1.0-rc.1` — never deleted, never extended |
+| 8 | Out of scope | sandbox template images (e.g. `opensandbox/code-interpreter`) version independently |
 
 ## Motivation
 
@@ -102,7 +103,7 @@ commit. Example at umbrella `1.4.0`:
 | Platform images | `opensandbox/{server,execd,ingress,egress,image-committer,controller,task-executor}:release-1.4.0`; fast-sandbox family `opensandbox/fsb-{controller,fastlet,fastlet-proxy,janitor,firecracker-runtime,sandboxtemplate-builder}:release-1.4.0` (linux/amd64, full registry mirror set) |
 | Git tag | `release-1.4.0` (plus Go companion tags, see [Naming Rules](#naming-rules)) |
 | Server PyPI / CLI | `opensandbox-server==1.4.0`, `opensandbox-cli==1.4.0` |
-| Helm chart | `opensandbox-1.4.0.tgz`, `appVersion: 1.4.0` |
+| Helm charts | in-repo at the release tag (`manifests/charts/…`), `version`/`appVersion: 1.4.0` — **not published** to any chart repository |
 | Python SDKs | `opensandbox`, `opensandbox-code-interpreter`, `opensandbox-mcp` — all `==1.4.0` |
 | JS SDKs | `@alibaba-group/opensandbox`, `@alibaba-group/opensandbox-code-interpreter` — both `@1.4.0` |
 | Kotlin/JVM | `com.alibaba.opensandbox:{sandbox-bom,sandbox,sandbox-api,sandbox-pool-redis,code-interpreter}:1.4.0` |
@@ -111,8 +112,8 @@ commit. Example at umbrella `1.4.0`:
 Package identities are the ones the repository already publishes; only
 the version string unifies.
 
-**Scope**: platform runtime images, Helm chart, CLI, and all published
-SDKs. **Excluded**: sandbox template images such as
+**Scope**: platform runtime images, Helm charts (versioned in-repo, not
+published), CLI, and all published SDKs. **Excluded**: sandbox template images such as
 `opensandbox/code-interpreter` — users select them at sandbox-creation
 time and they version independently in
 [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images).
@@ -130,7 +131,7 @@ making umbrella `X.Y.Z` a byte-exact fingerprint of the platform.
 |---|---|---|
 | Git tag (annotated, on `C_bom`) | `release-X.Y.Z` | `release-1.4.0` |
 | Container image tags | same string as the git tag | `opensandbox/execd:release-1.4.0` |
-| Package registries | bare `X.Y.Z` | `1.4.0` |
+| Package registries (PyPI/npm/Maven/NuGet) | bare `X.Y.Z` | `1.4.0` |
 | Go SDK companion tag (same commit) | `sdks/sandbox/go/vX.Y.Z` | `sdks/sandbox/go/v1.4.0` |
 
 Notes:
@@ -208,8 +209,8 @@ forever:
 
 | Artifact | Registry | Last legacy version (frozen) | First umbrella |
 |---|---|---|---|
-| `opensandbox` umbrella chart | Helm OCI | `0.2.2` | `1.1.0` |
-| `opensandbox-node-agent` chart | Helm OCI | never released | `1.1.0` |
+| `opensandbox` umbrella chart (in-repo, not published) | git tag | `0.2.2` | `1.1.0` |
+| `opensandbox-node-agent` chart (in-repo, not published) | git tag | never released | `1.1.0` |
 | `opensandbox-server` | PyPI | `0.2.3` | `1.1.0` |
 | `opensandbox-cli` | PyPI | `0.1.1` | `1.1.0` |
 
@@ -276,7 +277,7 @@ images:
   fsbController: { image: docker.io/opensandbox/fsb-controller, tag: release-1.4.0, digest: sha256:… }
   # …one entry per platform image (see table above). Sandbox template
   #   images are NOT part of the umbrella.
-helm:   { chart: opensandbox, version: "1.4.0", appVersion: "1.4.0" }
+helm:   { chart: opensandbox, version: "1.4.0", appVersion: "1.4.0" }  # in-repo at the tag; not published
 server: { pypi: opensandbox-server==1.4.0 }
 cli:    { pypi: opensandbox-cli==1.4.0 }
 sdks:
@@ -338,9 +339,11 @@ Steps:
 4. **BOM commit (`C_bom`)** — assemble the BOM and commit
    `releases/X.Y.Z.yaml` on `<release_branch>` on top of `C_build`; the
    hand-authored `releases/X.Y.Z.md` travels unchanged; no code changes.
-5. **Publish** — `crane tag` images to `release-X.Y.Z`; Helm first
-   (largest blast radius), then language packages in parallel; each leg
-   verified externally before the next starts.
+5. **Publish** — `crane tag` images to `release-X.Y.Z`; language
+   packages in verify-then-continue order (PyPI → npm → NuGet → Maven
+   Central last, which is irreversible); each leg verified externally
+   before the next starts. Charts are not published — they ship in-repo
+   at the release tag.
 6. **Umbrella tag** — annotated `release-X.Y.Z` on `C_bom` plus the two
    Go companion tags, pushed only after the last verification; GitHub
    Release with BOM + attestations, mirroring the committed notes.
@@ -349,7 +352,7 @@ Steps:
 state is possible. The contract: ordered verify-then-continue; a
 rollback ledger of per-ecosystem revocation commands (PyPI yank; npm
 unpublish→deprecate; Maven staged-repo `drop` with auto-release ordered
-last; NuGet delete→unlist; `oras rm` for Helm OCI; `crane delete` for
+last; NuGet delete→unlist; `crane delete` for
 image tags) walked in reverse on any failure, filing a P0 incident;
 idempotent retry; the umbrella tag is the commit-fence — never pushed
 on rollback, while `C_bom` remains as an auditable attempted-release
@@ -366,10 +369,11 @@ audit chain from tag → BOM → source.
 gains `--target opensandbox` (computes `release-X.Y.Z`; umbrella mode
 suppresses legacy `<target>/v<version>` tags, forces `release-<version>`
 image tags, and syncs chart `version` + `appVersion` before packaging).
-`publish-server.yml`, `publish-components.yml`, `publish-helm-chart.yml`,
-`publish-cli.yml`, and `publish-*-sdks.yml` accept umbrella-mode inputs
-and the staging → promotion contract; their per-target
-`workflow_dispatch` triggers are retired (or gated behind a
+Package legs run through the reusable `umbrella-packages.yml` workflow
+(hold-only on dry runs; ordered verify-then-continue publish when
+gates are open). `publish-helm-chart.yml` is frozen with the legacy
+flows — charts ship in-repo at the release tag. Remaining legacy
+per-target workflows are retired at Phase 3 (or gated behind a
 manual-override flag for emergencies only).
 
 **Release branches.** Cut `release-X.Y` from `main`; tag
@@ -391,13 +395,21 @@ umbrella rebuild, never a cherry-picked artifact set.
 
 ### User-facing Surface
 
-Installation is exclusively via the Helm chart (`osb` is a lifecycle
-client, not an installer). Docs: `docs/community/releases.md`
-(umbrella-first listing, legacy tag appendix),
-`docs/reference/compatibility-matrix.md` (generated from BOMs), and an
-installation quickstart pinned to `--version X.Y.Z`. CLI: `osb version`
-prints the server's umbrella version and skew status; `osb devops
-doctor` compares cluster images against the BOM bundled with the CLI.
+Charts are not published; users check out the release tag and render:
+
+```
+git clone https://github.com/opensandbox-group/OpenSandbox
+git checkout release-1.1.0
+helm template ./manifests/charts/opensandbox | kubectl apply -f -
+```
+
+GitOps platforms (Argo, Flux, internal deploy systems) point directly
+at the repo path and tag. `osb` remains a lifecycle client, not an
+installer. Docs: `docs/community/releases.md` (umbrella-first listing,
+legacy tag appendix), `docs/reference/compatibility-matrix.md`
+(generated from BOMs). CLI: `osb version` prints the server's umbrella
+version and skew status; `osb devops doctor` compares cluster images
+against the BOM bundled with the CLI.
 
 ## Test Plan
 
