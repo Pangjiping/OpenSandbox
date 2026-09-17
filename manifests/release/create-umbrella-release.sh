@@ -18,9 +18,9 @@
 #
 # One version, one commit, one tag family for the whole platform:
 #   git tag                     release-X.Y.Z        (annotated, on the BOM commit)
-#   Go companion tags (same commit):
+#   Go companion tag (same commit):
 #                               sdks/sandbox/go/vX.Y.Z
-#                               sdks/sandbox/go/poolredis/vX.Y.Z
+#   (poolredis merges into the parent module pre-GA: issue #1900)
 #   image tags (pushed by CI)   opensandbox/<comp>:release-X.Y.Z
 #   packages / chart / CLI      X.Y.Z
 #
@@ -30,7 +30,7 @@
 #   3. aggregated release notes since the previous umbrella tag
 #   4. BOM skeleton + notes committed as the BOM commit (C_bom);
 #      image digests are pinned by release-umbrella CI (sha256:PENDING until then)
-#   5. mint the umbrella tag + two Go companion tags on C_bom
+#   5. mint the umbrella tag + the Go companion tag on C_bom
 #   6. optional: push, create the GitHub Release
 #
 # The build-hold-publish fan-out lives in .github/workflows/release-umbrella.yml.
@@ -55,6 +55,10 @@ Options:
   --initial-release         Allow no previous umbrella tag (full history notes).
   --skip-remote-check       Skip reachability check against origin (offline use).
   --skip-consistency        Skip the version-consistency scan. Only allowed with --dry-run.
+  --scan-only               Run the version-consistency scan and exit (CI job).
+  --no-tags                 Do not mint/push tags; only the BOM commit lands (CI pins tags after publish gates).
+  --digests-manifest <f>    JSON object {component: "sha256:..."} replacing PENDING digests in the BOM (requires jq).
+  --allow-pending           Leave unresolved digests as sha256:PENDING instead of failing.
   --push                    Push the release branch and all three tags to origin.
   --release                 Create/update the GitHub Release (requires gh).
   --dry-run                 Print the full plan without any side effects.
@@ -138,6 +142,10 @@ FROM_TAG=""
 INITIAL_RELEASE=false
 SKIP_REMOTE_CHECK=false
 SKIP_CONSISTENCY=false
+SCAN_ONLY=false
+NO_TAGS=false
+ALLOW_PENDING=false
+DIGESTS_MANIFEST=""
 PUSH=false
 CREATE_RELEASE=false
 DRY_RUN=false
@@ -151,6 +159,10 @@ while [[ $# -gt 0 ]]; do
     --initial-release) INITIAL_RELEASE=true; shift ;;
     --skip-remote-check) SKIP_REMOTE_CHECK=true; shift ;;
     --skip-consistency) SKIP_CONSISTENCY=true; shift ;;
+    --scan-only) SCAN_ONLY=true; shift ;;
+    --no-tags) NO_TAGS=true; shift ;;
+    --digests-manifest) [[ $# -ge 2 ]] || die "--digests-manifest requires a value"; DIGESTS_MANIFEST="$2"; shift 2 ;;
+    --allow-pending) ALLOW_PENDING=true; shift ;;
     --push) PUSH=true; shift ;;
     --release) CREATE_RELEASE=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -191,7 +203,6 @@ fi
 
 UMBRELLA_TAG="release-${VERSION}"
 GO_TAG_MAIN="sdks/sandbox/go/v${VERSION}"
-GO_TAG_POOL="sdks/sandbox/go/poolredis/v${VERSION}"
 
 require_cmd git
 if [[ "$CREATE_RELEASE" == true ]]; then
@@ -349,6 +360,11 @@ if [[ "$SKIP_CONSISTENCY" != true ]]; then
   if (( SCAN_ERRORS > 0 )); then
     die "Version-consistency scan failed with ${SCAN_ERRORS} error(s). Fix the listed files on the release branch before releasing."
   fi
+fi
+
+if [[ "$SCAN_ONLY" == true ]]; then
+  log "Scan-only mode: consistency scan passed; exiting before notes/BOM/tags."
+  exit 0
 fi
 
 # ---------------------------------------------------------------------------
@@ -536,6 +552,25 @@ specs:
   - { path: specs/execd-api.yaml,        sha256: ${spec_execd_sha} }
 EOF
 
+if [[ -n "$DIGESTS_MANIFEST" ]]; then
+  require_cmd jq
+  while IFS=$'\t' read -r comp digest; do
+    [[ -n "$comp" ]] || continue
+    esc_comp="$(printf '%s' "$comp" | sed 's/[.[\*^$/]/\\&/g')"
+    esc_digest="$(printf '%s' "$digest" | sed 's/[.&/]/\\&/g')"
+    sed -i.bak "/docker.io\/opensandbox\/${esc_comp},/s|digest: sha256:PENDING|digest: ${esc_digest}|" "$BOM_FILE_TMP"
+    rm -f "${BOM_FILE_TMP}.bak"
+  done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' "$DIGESTS_MANIFEST")
+  if grep -q 'sha256:PENDING' "$BOM_FILE_TMP"; then
+    if [[ "$ALLOW_PENDING" != true ]]; then
+      die "BOM still contains sha256:PENDING entries not covered by --digests-manifest."
+    fi
+    warn "BOM contains PENDING digests (allowed by --allow-pending)."
+  else
+    log "All image digests pinned from ${DIGESTS_MANIFEST}."
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Plan output / dry-run
 # ---------------------------------------------------------------------------
@@ -545,7 +580,7 @@ log "Release branch   : ${RELEASE_BRANCH}"
 log "Build commit     : ${C_BUILD}"
 log "Previous tag     : ${PREVIOUS_TAG:-<none> (initial release)}"
 log "Range            : ${LOG_RANGE}"
-log "Tags to mint     : ${UMBRELLA_TAG}, ${GO_TAG_MAIN}, ${GO_TAG_POOL} (on the BOM commit)"
+log "Tags to mint     : ${UMBRELLA_TAG}, ${GO_TAG_MAIN} (on the BOM commit)"
 log "BOM + notes      : ${BOM_FILE}, ${NOTES_OUT_FILE}"
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -596,16 +631,22 @@ mint_tag() {
   fi
 }
 
-mint_tag "$UMBRELLA_TAG"
-mint_tag "$GO_TAG_MAIN"
-mint_tag "$GO_TAG_POOL"
+if [[ "$NO_TAGS" == true ]]; then
+  warn "--no-tags: skipping tag minting (CI pins tags after publish gates pass)."
+fi
+if [[ "$NO_TAGS" != true ]]; then
+  mint_tag "$UMBRELLA_TAG"
+  mint_tag "$GO_TAG_MAIN"
+fi
 
 if [[ "$PUSH" == true ]]; then
   git push origin "$RELEASE_BRANCH"
-  git push origin "$UMBRELLA_TAG" "$GO_TAG_MAIN" "$GO_TAG_POOL"
-  log "Pushed branch ${RELEASE_BRANCH} and tags to origin."
+  if [[ "$NO_TAGS" != true ]]; then
+    git push origin "$UMBRELLA_TAG" "$GO_TAG_MAIN"
+  fi
+  log "Pushed ${RELEASE_BRANCH}${NO_TAGS:+ (branch only, tags skipped)}."
 else
-  warn "Not pushed. Use --push to push the branch and all three tags."
+  warn "Not pushed. Use --push to push the branch${NO_TAGS:+, or drop --no-tags to also push tags}."
 fi
 
 # ---------------------------------------------------------------------------
@@ -613,6 +654,7 @@ fi
 # ---------------------------------------------------------------------------
 
 if [[ "$CREATE_RELEASE" == true ]]; then
+  [[ "$NO_TAGS" != true ]] || die "--release requires tags; drop --no-tags."
   TITLE="OpenSandbox ${VERSION}"
   if gh release view "$UMBRELLA_TAG" >/dev/null 2>&1; then
     gh release edit "$UMBRELLA_TAG" --title "$TITLE" --notes-file "$NOTES_FILE"

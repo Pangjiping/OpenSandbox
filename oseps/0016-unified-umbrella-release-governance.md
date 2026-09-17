@@ -50,7 +50,7 @@ every two weeks; only the latest line is supported.
 | 1 | First umbrella version (GA) | **`1.1.0`** — `1.0.0` is skipped, see [floor rule](#starting-version-110-as-ga) |
 | 2 | Git tag & image tag | **`release-X.Y.Z`** — one identity string for both, e.g. `release-1.1.0` |
 | 3 | Package registries (PyPI/npm/Maven/NuGet/Helm) | bare **`X.Y.Z`** |
-| 4 | Go SDK tags | companion tags `sdks/sandbox/go/vX.Y.Z`, `sdks/sandbox/go/poolredis/vX.Y.Z` (toolchain-required, same commit) |
+| 4 | Go SDK tag | one companion tag `sdks/sandbox/go/vX.Y.Z` (toolchain-required, same commit); `poolredis` merges into the parent module pre-GA ([#1900](https://github.com/opensandbox-group/OpenSandbox/issues/1900)) |
 | 5 | Cadence / support | line every 2 weeks, **latest-only**, no LTS |
 | 6 | Legacy per-component tags | **frozen** at `release-1.1.0-rc.1` — never deleted, never extended |
 | 7 | Out of scope | sandbox template images (e.g. `opensandbox/code-interpreter`) version independently |
@@ -131,8 +131,7 @@ making umbrella `X.Y.Z` a byte-exact fingerprint of the platform.
 | Git tag (annotated, on `C_bom`) | `release-X.Y.Z` | `release-1.4.0` |
 | Container image tags | same string as the git tag | `opensandbox/execd:release-1.4.0` |
 | Package registries | bare `X.Y.Z` | `1.4.0` |
-| Go SDK companion tags (same commit) | `sdks/sandbox/go/vX.Y.Z` | `sdks/sandbox/go/v1.4.0` |
-| Go poolredis companion tag (same commit) | `sdks/sandbox/go/poolredis/vX.Y.Z` | `sdks/sandbox/go/poolredis/v1.4.0` |
+| Go SDK companion tag (same commit) | `sdks/sandbox/go/vX.Y.Z` | `sdks/sandbox/go/v1.4.0` |
 
 Notes:
 
@@ -140,10 +139,12 @@ Notes:
   `image.tag` from `.Chart.AppVersion`.
 - The `release-` prefix is empty today and disjoint from every legacy
   `v` tag.
-- The Go companion tags are a toolchain requirement (subdirectory
-  modules need the path-prefixed VCS tag), not a governance exception.
+- The Go companion tag is a toolchain requirement (a subdirectory
+  module needs the path-prefixed VCS tag), not a governance exception.
   The namespace reuses legacy Go tags (`v1.0.0`–`v1.0.5` exist), so the
-  first companion tags are `v1.1.0`.
+  first companion tag is `v1.1.0`. `poolredis` is merged into the
+  parent module before GA ([#1900](https://github.com/opensandbox-group/OpenSandbox/issues/1900)):
+  its import path is unchanged and it is versioned by this single tag.
 - Historical per-component tags (`server/v*`, `docker/*/v*`,
   `helm/opensandbox/*`, …) are frozen when `release-1.1.0-rc.1` is cut.
 
@@ -157,7 +158,7 @@ Notes:
 |---|---|---|
 | Maven Central (`com.alibaba.opensandbox:*`) | `sandbox` `1.0.19`, `code-interpreter` `1.0.16` | Central versions are permanently immutable; republishing `1.0.0` fails outright. |
 | Go proxy (`sdks/sandbox/go`) | `v1.0.5` | Companion tags share the legacy namespace; the sum database forbids re-pointing, and `go get` never downgrades. |
-| Go proxy (`sdks/sandbox/go/poolredis`) | never published | No constraint. |
+| Go proxy (`sdks/sandbox/go/poolredis`) | never published | No constraint; merging into the parent module pre-GA ([#1900](https://github.com/opensandbox-group/OpenSandbox/issues/1900)). |
 
 All other surfaces are collision-free at any `1.x`, and semver makes
 `1.1.0` strictly greater than both floors (`1.0.19`, `1.0.5`): the
@@ -225,7 +226,7 @@ forever:
 | `Alibaba.OpenSandbox` | NuGet | `0.1.5` | `1.1.0` |
 | `Alibaba.OpenSandbox.CodeInterpreter` | NuGet | `0.1.0` | `1.1.0` |
 | `github.com/alibaba/OpenSandbox/sdks/sandbox/go` | Go proxy | `v1.0.5` | `v1.1.0` |
-| `github.com/alibaba/OpenSandbox/sdks/sandbox/go/poolredis` | Go proxy | never released | `v1.1.0` |
+| `github.com/alibaba/OpenSandbox/sdks/sandbox/go/poolredis` (package of the parent module after [#1900](https://github.com/opensandbox-group/OpenSandbox/issues/1900)) | Go proxy | never released | `v1.1.0` via the parent tag |
 
 **Excluded**: the `opensandbox/code-interpreter` sandbox image lives in
 [opensandbox-group/sandbox-images](https://github.com/opensandbox-group/sandbox-images)
