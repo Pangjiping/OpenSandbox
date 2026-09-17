@@ -10,10 +10,10 @@ name: Umbrella Release
 #
 # Package legs (PyPI, npm, Maven, NuGet) run through the reusable
 # umbrella-packages.yml workflow: hold-only on dry runs; ordered
-# verify-then-continue publish when publish gates are open. Helm remains
-# on its dedicated gate workflow until its Kind-gate machinery is
-# adapted (follow-up). Legacy tag-triggered publish-* workflows stay
-# untouched until Phase 3 retirement.
+# verify-then-continue publish when publish gates are open. Helm charts
+# are not published — they ship in-repo at the release tag (the legacy
+# publish-helm-chart.yml workflow is frozen). Legacy tag-triggered
+# publish-* workflows stay untouched until Phase 3 retirement.
 
 permissions:
   contents: write

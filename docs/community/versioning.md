@@ -36,7 +36,7 @@ smallest version strictly greater than all of them.
 | Git tag | `release-1.4.0` |
 | Container images | `opensandbox/{server,execd,ingress,egress,image-committer,controller,task-executor}:release-1.4.0` |
 | Go SDK (VCS tags) | `sdks/sandbox/go/v1.4.0`, `sdks/sandbox/go/poolredis/v1.4.0` — same commit as the umbrella tag |
-| Helm chart / CLI / SDKs / server on PyPI | bare `1.4.0` |
+| CLI / SDKs / server on PyPI | bare `1.4.0` |
 
 Git and image tags share the same `release-` string: `git checkout
 release-1.4.0` and the image you pull are the same release. Package
@@ -45,8 +45,18 @@ registries use the bare semver core because they reject prefixes.
 ## Scope
 
 - **Covered**: platform runtime images (server, execd, ingress, egress,
-  image-committer, controller, task-executor), Helm chart, CLI, and all
-  published SDKs (Python, JavaScript, Kotlin/JVM, .NET, Go).
+  image-committer, controller, task-executor; the fast-sandbox family
+  ships as `opensandbox/fsb-*`), CLI, and all published SDKs (Python,
+  JavaScript, Kotlin/JVM, .NET, Go).
+- **Helm charts are not published.** Charts live in-repo and are
+  versioned at the release tag; render and deploy yourself:
+
+  ```
+  git checkout release-1.1.0
+  helm template ./manifests/charts/opensandbox | kubectl apply -f -
+  ```
+
+  GitOps platforms can point directly at the repo path and tag.
 - **Not covered**: sandbox template images such as
   `opensandbox/code-interpreter`. They are chosen by the user at
   sandbox-creation time and version independently in

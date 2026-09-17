@@ -508,7 +508,7 @@ images:
   fsbFirecrackerRuntime:    { image: docker.io/opensandbox/fsb-firecracker-runtime,   tag: release-${VERSION}, digest: sha256:PENDING }
   fsbSandboxtemplateBuilder:{ image: docker.io/opensandbox/fsb-sandboxtemplate-builder, tag: release-${VERSION}, digest: sha256:PENDING }
 
-helm:   { chart: opensandbox, version: "${VERSION}", appVersion: "${VERSION}" }
+helm:   { chart: opensandbox, version: "${VERSION}", appVersion: "${VERSION}" }  # in-repo at the tag; not published
 server: { pypi: opensandbox-server==${VERSION} }
 cli:    { pypi: opensandbox-cli==${VERSION} }
 sdks:
