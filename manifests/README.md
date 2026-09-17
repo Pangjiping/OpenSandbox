@@ -3,7 +3,7 @@
 This directory contains the Helm chart sources for OpenSandbox. Charts here are
 versioned sources: they are packaged
 and published to the Helm repository by CI (see
-`.github/workflows/publish-helm-chart.yml`). If you want to change how
+the release process (see `docs/community/release-automation.md`)). If you want to change how
 OpenSandbox is deployed, this is the right place.
 
 For the full deployment guide, see [HELM-DEPLOYMENT.md](HELM-DEPLOYMENT.md).

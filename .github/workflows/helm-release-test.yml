@@ -5,7 +5,6 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/helm-release-test.yml'
-      - '.github/workflows/publish-helm-chart.yml'
       - 'manifests/charts/**'
       - 'manifests/release/*helm*.sh'
       - 'sdks/code-interpreter/python/**'

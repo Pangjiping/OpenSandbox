@@ -587,7 +587,9 @@ Create and push the protected Helm tag first, then dispatch the workflow from
 that exact tag ref. For example:
 
 ```bash
-gh workflow run publish-helm-chart.yml \
+# Helm charts are no longer published; deploy from the repo at a
+# release tag:
+# gh workflow run release-umbrella.yml \
   --repo opensandbox-group/OpenSandbox \
   --ref helm/opensandbox-controller/0.1.0 \
   -f component=opensandbox-controller \
@@ -626,7 +628,7 @@ https://github.com/opensandbox-group/OpenSandbox/releases/download/helm/opensand
 To add Helm Chart publishing support for a new component:
 
 1. Create a new chart directory under `charts/`
-2. Update `.github/workflows/publish-helm-chart.yml`:
+2. Charts are not published; version changes land via the release prep commit (`create-umbrella-release.sh --bump-only`):
    - Add the new component to `workflow_dispatch.inputs.component.options`
    - Add the component path mapping in the "Set chart path" step
 
