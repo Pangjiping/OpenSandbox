@@ -36,8 +36,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
-  attestations: write
   artifact-metadata: write
 
 jobs:
@@ -210,6 +208,12 @@ jobs:
     if: ${{ inputs.publish }}
     needs: [pypi-hold, npm-hold, maven-hold, nuget-hold]
     runs-on: ubuntu-latest
+    permissions:
+      # attestation of the held bytes at publish time; hold jobs need none
+      # of this — they only build and upload workflow artifacts
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
