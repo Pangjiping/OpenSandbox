@@ -27,7 +27,7 @@
 # Local responsibilities of this script:
 #   1. preflight (reachability of the release commit)
 #   2. version-consistency scan (jump enablers, OSEP-0016 step 2)
-#   3. verify the hand-authored release notes (releases/X.Y.Z.md) exist
+#   3. verify the hand-authored release notes (docs/releases/X.Y.Z.md) exist
 #   4. BOM skeleton + notes committed as the BOM commit (C_bom);
 #      image digests are pinned by release-umbrella CI (sha256:PENDING until then)
 #   5. mint the umbrella tag + the Go companion tag on C_bom
@@ -288,14 +288,14 @@ if [[ "$BUMP_ONLY" == true ]]; then
     git commit -m "release(opensandbox): bump platform version to ${VERSION}"
     log "Bump commit created for ${VERSION}."
   fi
-  log "Next: write releases/${VERSION}.md, commit it, then run the full release (drop --bump-only)."
+  log "Next: write docs/releases/${VERSION}.md, commit it, then run the full release (drop --bump-only)."
   exit 0
 fi
 
 C_BUILD="$(git rev-parse HEAD)"
 BUILD_DATE="$(date +%F)"
 
-NOTES_FILE="releases/${VERSION}.md"
+NOTES_FILE="docs/releases/${VERSION}.md"
 if [[ ! -f "$NOTES_FILE" ]]; then
   die "Release notes not found at ${NOTES_FILE}. Write them and commit on ${RELEASE_BRANCH} before triggering the release."
 fi
@@ -467,7 +467,7 @@ fi
 # BOM skeleton
 # ---------------------------------------------------------------------------
 
-RELEASES_DIR="releases"
+RELEASES_DIR="docs/releases"
 BOM_FILE="${RELEASES_DIR}/${VERSION}.yaml"
 NOTES_OUT_FILE="${RELEASES_DIR}/${VERSION}.md"
 spec_lifecycle_sha="$(sha256_of specs/sandbox-lifecycle.yml)"
@@ -565,7 +565,7 @@ log "Build commit     : ${C_BUILD}"
 log "Previous tag     : ${PREVIOUS_TAG:-<none> (first umbrella)}"
 log "Release notes    : ${NOTES_FILE} (hand-authored, must be pre-committed)"
 log "Tags to mint     : ${UMBRELLA_TAG}, ${GO_TAG_MAIN} (on the BOM commit)"
-log "BOM + notes      : ${BOM_FILE}, ${NOTES_OUT_FILE}"
+log "BOM + notes      : ${BOM_FILE}, ${NOTES_FILE}"
 
 if [[ "$DRY_RUN" == true ]]; then
   log "Dry run enabled. No commit, tag, push, or release will be performed."

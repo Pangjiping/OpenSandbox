@@ -35,12 +35,12 @@ git push
 
 The release driver then performs, in order: preflight (commit
 reachability, plus a check
-that the hand-authored release notes `releases/<version>.md` are
+that the hand-authored release notes `docs/releases/<version>.md` are
 committed on the release branch — a release never starts without
 them), a version consistency scan (blocks the release until every
 chart, SDK, and
 dependency range matches the umbrella version), a BOM
-commit (`releases/<version>.yaml`), and mints two tags on the same
+commit (`docs/releases/<version>.yaml`), and mints two tags on the same
 commit — `release-X.Y.Z` plus the Go companion tag
 `sdks/sandbox/go/vX.Y.Z`. Image digests in the BOM are pinned by the
 CI fan-out. All PyPI, npm, Maven Central, and NuGet packages build and
