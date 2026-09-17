@@ -298,8 +298,9 @@ the file name. It is workflow-generated, so version-string drift is
 impossible (~4 KB per release).
 
 **Release notes are hand-authored.** The release manager writes
-`docs/releases/X.Y.Z.md` and commits it on the release branch **before**
-triggering the workflow. Preflight fails if the file is missing or
+`docs/releases/X.Y.Z.md` from the template at `docs/releases/TEMPLATE.md`
+and commits it on the release branch **before** triggering the
+workflow. Preflight fails if the file is missing or
 empty — a release never starts without its notes. The workflow never
 rewrites the file; it consumes it as-is for the BOM commit and the
 GitHub Release. The in-repo copy is **authoritative**; the GitHub
@@ -374,10 +375,11 @@ suppresses legacy `<target>/v<version>` tags, forces `release-<version>`
 image tags, and syncs chart `version` + `appVersion` before packaging).
 Package legs run through the reusable `umbrella-packages.yml` workflow
 (hold-only on dry runs; ordered verify-then-continue publish when
-gates are open). `publish-helm-chart.yml` is frozen with the legacy
-flows — charts ship in-repo at the release tag. Remaining legacy
-per-target workflows are retired at Phase 3 (or gated behind a
-manual-override flag for emergencies only).
+gates are open). The legacy tag-triggered publish-* workflows and the
+per-target `create-release.sh` driver are **deleted** — the umbrella is
+the only release path, effective immediately (not deferred to Phase 3).
+Charts ship in-repo at the release tag; `publish-helm-chart.yml` is
+gone with the rest.
 
 **Release branches.** Cut `release-X.Y` from `main`; tag
 `release-X.Y.0` on it (branch and tag are separate git namespaces).
@@ -458,7 +460,7 @@ against the BOM bundled with the CLI.
 | Phase | Milestone | Notes |
 |---|---|---|
 | 1 — Provisional | BOM schema + workflow land | `dry_run: true` forced; no user-visible tag change. |
-| 2 — `release-1.1.0-rc.1` | First pre-release | Legacy tag namespaces frozen here; version-jump enablers land in the same PR. |
+| 2 — `release-1.1.0-rc.1` | First pre-release | Legacy tag namespaces frozen here; legacy publish workflows deleted; version-jump enablers land in the same PR. |
 | 3 — GA `release-1.1.0` | Workflow unconditionally enabled | Docs, Helm defaults, `osb version` switch to the umbrella. |
 | 4 — Steady state | 2-week line births | On-demand in-line and emergency-CVE snapshots. |
 

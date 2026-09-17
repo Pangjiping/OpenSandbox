@@ -288,7 +288,7 @@ if [[ "$BUMP_ONLY" == true ]]; then
     git commit -m "release(opensandbox): bump platform version to ${VERSION}"
     log "Bump commit created for ${VERSION}."
   fi
-  log "Next: write docs/releases/${VERSION}.md, commit it, then run the full release (drop --bump-only)."
+  log "Next: copy docs/releases/TEMPLATE.md to docs/releases/${VERSION}.md, fill it in, commit, then run the full release (drop --bump-only)."
   exit 0
 fi
 
