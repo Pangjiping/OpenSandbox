@@ -291,12 +291,15 @@ The BOM is authoritative for **digests**, not versions — the version is
 the file name. It is workflow-generated, so version-string drift is
 impossible (~4 KB per release).
 
-**Release notes in-repo.** The workflow aggregates notes from per-PR
-labels (changes up to `C_build`) into `releases/X.Y.Z.md`, committed in
-the same `C_bom` commit. The in-repo copy is **authoritative**; the
-GitHub Release mirrors the same bytes. Rationale: notes must survive
-org migrations and stay reachable for users behind GitHub-blocked
-networks (ACR mirror users), and they feed generated docs
+**Release notes are hand-authored.** The release manager writes
+`releases/X.Y.Z.md` and commits it on the release branch **before**
+triggering the workflow. Preflight fails if the file is missing or
+empty — a release never starts without its notes. The workflow never
+rewrites the file; it consumes it as-is for the BOM commit and the
+GitHub Release. The in-repo copy is **authoritative**; the GitHub
+Release mirrors the same bytes. Rationale: notes must survive org
+migrations and stay reachable for users behind GitHub-blocked networks
+(ACR mirror users), and they feed generated docs
 (`docs/community/releases.md`, compatibility matrix). Legacy-era notes
 are not backfilled — `releases/` starts at `release-1.1.0-rc.1`.
 
@@ -316,7 +319,9 @@ has built successfully — partial releases are structurally impossible.
 Steps:
 
 1. **Preflight** — reuse `release-preflight.yml` (approval + commit
-   reachability of the build commit `C_build`).
+   reachability of the build commit `C_build`); verify
+   `releases/X.Y.Z.md` exists and is non-empty (hand-authored notes,
+   committed before the release is triggered).
 2. **Version-consistency scan** — scoped, path-listed check
    (`scripts/release/version-consistency-paths.txt`): umbrella chart
    `version`/`appVersion` and every sub-chart image ref =
@@ -328,9 +333,9 @@ Steps:
    release-blocking). OpenAPI fields, lockfiles, examples out of scope.
 3. **Fan-out build** — images to staging; packages held as workflow
    artifacts. Any leg failure aborts before any publish, tag, or BOM.
-4. **BOM commit (`C_bom`)** — assemble the BOM and the aggregated
-   release notes (`releases/X.Y.Z.yaml` + `releases/X.Y.Z.md`), commit
-   both on `<release_branch>` on top of `C_build`; no code changes.
+4. **BOM commit (`C_bom`)** — assemble the BOM and commit
+   `releases/X.Y.Z.yaml` on `<release_branch>` on top of `C_build`; the
+   hand-authored `releases/X.Y.Z.md` travels unchanged; no code changes.
 5. **Publish** — `crane tag` images to `release-X.Y.Z`; Helm first
    (largest blast radius), then language packages in parallel; each leg
    verified externally before the next starts.

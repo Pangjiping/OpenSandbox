@@ -27,7 +27,7 @@
 # Local responsibilities of this script:
 #   1. preflight (reachability of the release commit)
 #   2. version-consistency scan (jump enablers, OSEP-0016 step 2)
-#   3. aggregated release notes since the previous umbrella tag
+#   3. verify the hand-authored release notes (releases/X.Y.Z.md) exist
 #   4. BOM skeleton + notes committed as the BOM commit (C_bom);
 #      image digests are pinned by release-umbrella CI (sha256:PENDING until then)
 #   5. mint the umbrella tag + the Go companion tag on C_bom
@@ -51,8 +51,6 @@ Required:
 Options:
   --channel <stable|rc>     Defaults to rc when the version has a suffix, else stable.
   --release-branch <name>   Branch the BOM commit lands on. Default: current branch.
-  --from-tag <tag>          Notes boundary override. Default: latest release-* tag.
-  --initial-release         Allow no previous umbrella tag (full history notes).
   --skip-remote-check       Skip reachability check against origin (offline use).
   --skip-consistency        Skip the version-consistency scan. Only allowed with --dry-run.
   --scan-only               Run the version-consistency scan and exit (CI job).
@@ -138,8 +136,6 @@ semver_gt() { [[ "$(semver_compare "$1" "$2")" == "1" ]]; }
 VERSION=""
 CHANNEL=""
 RELEASE_BRANCH=""
-FROM_TAG=""
-INITIAL_RELEASE=false
 SKIP_REMOTE_CHECK=false
 SKIP_CONSISTENCY=false
 SCAN_ONLY=false
@@ -155,8 +151,6 @@ while [[ $# -gt 0 ]]; do
     --version) [[ $# -ge 2 ]] || die "--version requires a value"; VERSION="$2"; shift 2 ;;
     --channel) [[ $# -ge 2 ]] || die "--channel requires a value"; CHANNEL="$2"; shift 2 ;;
     --release-branch) [[ $# -ge 2 ]] || die "--release-branch requires a value"; RELEASE_BRANCH="$2"; shift 2 ;;
-    --from-tag) [[ $# -ge 2 ]] || die "--from-tag requires a value"; FROM_TAG="$2"; shift 2 ;;
-    --initial-release) INITIAL_RELEASE=true; shift ;;
     --skip-remote-check) SKIP_REMOTE_CHECK=true; shift ;;
     --skip-consistency) SKIP_CONSISTENCY=true; shift ;;
     --scan-only) SCAN_ONLY=true; shift ;;
@@ -218,6 +212,14 @@ CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 
 C_BUILD="$(git rev-parse HEAD)"
 BUILD_DATE="$(date +%F)"
+
+NOTES_FILE="releases/${VERSION}.md"
+if [[ ! -f "$NOTES_FILE" ]]; then
+  die "Release notes not found at ${NOTES_FILE}. Write them and commit on ${RELEASE_BRANCH} before triggering the release."
+fi
+if [[ ! -s "$NOTES_FILE" ]]; then
+  die "Release notes at ${NOTES_FILE} are empty."
+fi
 
 # ---------------------------------------------------------------------------
 # Preflight: release commit reachable from origin/<release-branch>
@@ -368,127 +370,16 @@ if [[ "$SCAN_ONLY" == true ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Release notes (whole range, no path filter)
+# Previous umbrella tag (monotonic version check)
 # ---------------------------------------------------------------------------
 
-if [[ -n "$FROM_TAG" ]] && ! git rev-parse -q --verify "refs/tags/${FROM_TAG}" >/dev/null; then
-  die "--from-tag '${FROM_TAG}' does not exist"
-fi
-
-resolve_previous_tag() {
-  local explicit="$1"
-  if [[ -n "$explicit" ]]; then printf '%s' "$explicit"; return 0; fi
-  git for-each-ref --sort=-version:refname --format='%(refname:strip=2)' 'refs/tags/release-*' | head -n1
-}
-
-PREVIOUS_TAG="$(resolve_previous_tag "$FROM_TAG")"
-if [[ -z "$PREVIOUS_TAG" && "$INITIAL_RELEASE" != true ]]; then
-  die "No previous release-* tag found. Pass --from-tag or --initial-release."
-fi
+PREVIOUS_TAG="$(git for-each-ref --sort=-version:refname --format='%(refname:strip=2)' 'refs/tags/release-*' | head -n1)"
 if [[ -n "$PREVIOUS_TAG" ]]; then
   prev_ver="${PREVIOUS_TAG#release-}"
   if is_semver "$prev_ver" && ! semver_gt "$VERSION" "$prev_ver"; then
     die "Version '${VERSION}' is not greater than previous umbrella '${prev_ver}'"
   fi
-  LOG_RANGE="${PREVIOUS_TAG}..HEAD"
-else
-  LOG_RANGE="HEAD"
 fi
-
-FEATURES=() BUG_FIXES=() BREAKING_CHANGES=() MISC_ITEMS=() CONTRIBUTORS=()
-CONTRIBUTORS_INDEX=$'\n'
-
-normalize_handle() {
-  local author="$1" email="$2" candidate=""
-  if [[ "$email" =~ ^([0-9]+\+)?([^@]+)@users\.noreply\.github\.com$ ]]; then
-    candidate="${BASH_REMATCH[2]}"
-  else
-    candidate="${email%@*}"
-  fi
-  candidate="$(echo "$candidate" | tr -cd '[:alnum:]_.-')"
-  if [[ -n "$candidate" ]]; then printf '@%s' "$candidate"; else printf '%s' "$author"; fi
-}
-
-format_entry() {
-  local subject="$1"
-  local body="$2"
-  local text="$subject"
-  if [[ ! "$subject" =~ \(\#[0-9]+\)$ ]]; then
-    if [[ "$subject" =~ \#([0-9]+) ]]; then
-      text="${subject} (#${BASH_REMATCH[1]})"
-    elif [[ "$body" =~ \#([0-9]+) ]]; then
-      text="${subject} (#${BASH_REMATCH[1]})"
-    fi
-  fi
-  printf -- '- %s' "$text"
-}
-
-while IFS= read -r -d $'\x1e' record; do
-  [[ -n "$record" ]] || continue
-  _hash="${record%%$'\x1f'*}"; _rest="${record#*$'\x1f'}"
-  _subject="${_rest%%$'\x1f'*}"; _rest="${_rest#*$'\x1f'}"
-  _body="${_rest%%$'\x1f'*}"; _rest="${_rest#*$'\x1f'}"
-  _author="${_rest%%$'\x1f'*}"; _email="${_rest#*$'\x1f'}"
-  [[ -n "${_subject:-}" ]] || continue
-  entry="$(format_entry "$_subject" "${_body:-}")"
-  if [[ "$_body" == *"BREAKING CHANGE"* ]] || printf '%s' "$_subject" | grep -Eq '^[[:alpha:]]+(\([^)]+\))?!:'; then
-    BREAKING_CHANGES+=("$entry")
-  elif printf '%s' "$_subject" | grep -Eq '^feat(\([^)]+\))?:\s'; then
-    FEATURES+=("$entry")
-  elif printf '%s' "$_subject" | grep -Eq '^fix(\([^)]+\))?:\s'; then
-    BUG_FIXES+=("$entry")
-  else
-    MISC_ITEMS+=("$entry")
-  fi
-  handle="$(normalize_handle "${_author:-unknown}" "${_email:-unknown@unknown}")"
-  if [[ "$CONTRIBUTORS_INDEX" != *$'\n'"$handle"$'\n'* ]]; then
-    CONTRIBUTORS_INDEX+="${handle}"$'\n'
-    CONTRIBUTORS+=("$handle")
-  fi
-done < <(git log --no-merges --pretty=format:'%H%x1f%s%x1f%b%x1f%an%x1f%ae%x1e' "$LOG_RANGE")
-
-render_section() {
-  local title="$1"
-  shift
-  echo "### ${title}"
-  local item printed=0
-  for item in "${@:-}"; do
-    [[ -n "$item" ]] || continue
-    echo "$item"
-    printed=1
-  done
-  (( printed == 0 )) && echo "- None"
-  echo
-}
-
-NOTES_FILE="$(mktemp -t opensandbox-umbrella-notes.XXXXXX.md)"
-{
-  echo "# OpenSandbox ${VERSION}"
-  echo
-  echo "Unified umbrella release. Every image, chart, CLI, and SDK in this release ships at version \`${VERSION}\`."
-  echo
-  echo "## What's New"
-  echo
-  if [[ -n "$PREVIOUS_TAG" ]]; then
-    echo "Changes included since \`${PREVIOUS_TAG}\`."
-  else
-    echo "First umbrella release."
-  fi
-  echo
-  render_section "✨ Features" "${FEATURES[@]-}"
-  render_section "🐛 Bug Fixes" "${BUG_FIXES[@]-}"
-  render_section "⚠️ Breaking Changes" "${BREAKING_CHANGES[@]-}"
-  render_section "📦 Misc" "${MISC_ITEMS[@]-}"
-  echo "## 👥 Contributors"
-  echo
-  echo "Thanks to these contributors ❤️"
-  echo
-  if [[ "$CONTRIBUTORS_INDEX" == $'\n' ]]; then
-    echo "- None"
-  else
-    printf -- '- %s\n' "${CONTRIBUTORS[@]-}"
-  fi
-} >"$NOTES_FILE"
 
 # ---------------------------------------------------------------------------
 # BOM skeleton
@@ -578,15 +469,15 @@ fi
 log "Umbrella version : ${VERSION} (channel=${CHANNEL})"
 log "Release branch   : ${RELEASE_BRANCH}"
 log "Build commit     : ${C_BUILD}"
-log "Previous tag     : ${PREVIOUS_TAG:-<none> (initial release)}"
-log "Range            : ${LOG_RANGE}"
+log "Previous tag     : ${PREVIOUS_TAG:-<none> (first umbrella)}"
+log "Release notes    : ${NOTES_FILE} (hand-authored, must be pre-committed)"
 log "Tags to mint     : ${UMBRELLA_TAG}, ${GO_TAG_MAIN} (on the BOM commit)"
 log "BOM + notes      : ${BOM_FILE}, ${NOTES_OUT_FILE}"
 
 if [[ "$DRY_RUN" == true ]]; then
   log "Dry run enabled. No commit, tag, push, or release will be performed."
   echo
-  log "Generated release notes preview:"
+  log "Release notes preview (from ${NOTES_FILE}):"
   echo "------------------------------------------------------------"
   cat "$NOTES_FILE"
   echo "------------------------------------------------------------"
@@ -595,7 +486,7 @@ if [[ "$DRY_RUN" == true ]]; then
   echo "------------------------------------------------------------"
   cat "$BOM_FILE_TMP"
   echo "------------------------------------------------------------"
-  rm -f "$NOTES_FILE" "$BOM_FILE_TMP"
+  rm -f "$BOM_FILE_TMP"
   exit 0
 fi
 
@@ -605,8 +496,7 @@ fi
 
 mkdir -p "$RELEASES_DIR"
 cp "$BOM_FILE_TMP" "$BOM_FILE"
-cp "$NOTES_FILE" "$NOTES_OUT_FILE"
-git add "$BOM_FILE" "$NOTES_OUT_FILE"
+git add "$BOM_FILE" "$NOTES_FILE"
 if git diff --cached --quiet; then
   warn "BOM commit is empty; reusing HEAD as C_bom."
   C_BOM="$C_BUILD"
@@ -673,5 +563,5 @@ if [[ "$CREATE_RELEASE" == true ]]; then
   fi
 fi
 
-rm -f "$NOTES_FILE" "$BOM_FILE_TMP"
+rm -f "$BOM_FILE_TMP"
 log "Umbrella release ${VERSION} prepared. CI fan-out (release-umbrella.yml) pins image digests and publishes artifacts."
