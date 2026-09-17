@@ -5,6 +5,13 @@ description: Tag-driven release workflow for OpenSandbox SDKs, CLI, server, Dock
 
 # Release Automation
 
+::: warning Umbrella release migration
+OpenSandbox is moving to unified umbrella releases — one `release-X.Y.Z`
+tag for every image, chart, CLI, and SDK. See
+[Versioning](/community/versioning). The per-target flow below remains
+operative until the umbrella GA.
+:::
+
 This repository uses tag-driven publish workflows. The script below standardizes:
 
 - canonical tag creation for each release target
