@@ -325,6 +325,50 @@ foreach (var s in list.Items)
 }
 ```
 
+### 9. fsb Templates
+
+Manage fast-sandbox (fsb) golden-image templates and create sandboxes from them.
+The build is asynchronous: poll `GetTemplateAsync` until the phase is `Succeeded`.
+Template management requires a Kubernetes-backed runtime.
+
+```csharp
+await using var manager = SandboxManager.Create(new SandboxManagerOptions
+{
+    ConnectionConfig = config
+});
+
+var template = await manager.CreateTemplateAsync(new CreateTemplateRequest
+{
+    Image = "python:3.11",
+    Publish = "s3://bucket/publish"
+});
+
+while (template.Status.Phase != TemplatePhases.Succeeded)
+{
+    if (template.Status.Phase == TemplatePhases.Failed)
+    {
+        throw new Exception(template.Status.Message);
+    }
+    await Task.Delay(TimeSpan.FromSeconds(5));
+    template = await manager.GetTemplateAsync(template.TemplateId);
+}
+
+// Template mode fixes the workload shape on the server: only metadata,
+// network policy and extensions may be set, and the timeout is required.
+var fromTemplate = await Sandbox.CreateFromTemplateAsync(new SandboxCreateFromTemplateOptions
+{
+    TemplateId = template.TemplateId,
+    TimeoutSeconds = 600,
+    Metadata = new Dictionary<string, string> { ["team"] = "platform" }
+});
+
+Console.WriteLine(fromTemplate.Origin); // "template"
+```
+
+Template-backed sandboxes have no sandbox-side egress sidecar: egress policy
+operations route through the lifecycle control plane automatically, and
+Credential Vault is unavailable.
+
 ## Configuration
 
 ### 1. Connection Configuration

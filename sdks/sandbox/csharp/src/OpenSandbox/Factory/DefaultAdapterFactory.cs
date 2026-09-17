@@ -117,6 +117,21 @@ public sealed class DefaultAdapterFactory : IAdapterFactory
         };
     }
 
+    /// <inheritdoc />
+    public NetworkPolicyStack CreateNetworkPolicyStack(CreateNetworkPolicyStackOptions options)
+    {
+        var clientWrapper = new HttpClientWrapper(
+            options.HttpClientProvider.HttpClient,
+            options.LifecycleBaseUrl,
+            options.ConnectionConfig.Headers,
+            options.LoggerFactory.CreateLogger("OpenSandbox.HttpClientWrapper"));
+
+        return new NetworkPolicyStack
+        {
+            Egress = new NetworkPolicyAdapter(clientWrapper, options.SandboxId)
+        };
+    }
+
     internal static IReadOnlyDictionary<string, string> BuildDataPlaneHeaders(
         ConnectionConfig connectionConfig,
         IReadOnlyDictionary<string, string>? endpointHeaders)

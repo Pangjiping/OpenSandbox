@@ -238,6 +238,78 @@ public sealed class SandboxManager : IAsyncDisposable
     }
 
     /// <summary>
+    /// Creates a fsb template (golden-image build).
+    /// </summary>
+    /// <remarks>
+    /// The build is asynchronous: the response starts at phase Pending;
+    /// poll <see cref="GetTemplateAsync"/> until the phase is Succeeded.
+    /// Only Succeeded templates can back template-based sandbox creation.
+    /// Template management requires a Kubernetes-backed runtime.
+    /// </remarks>
+    /// <param name="request">The create template request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The created template.</returns>
+    /// <exception cref="InvalidArgumentException">Thrown when request values are invalid.</exception>
+    /// <exception cref="SandboxApiException">Thrown when the sandbox API returns an error.</exception>
+    public Task<TemplateInfo> CreateTemplateAsync(
+        CreateTemplateRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("Creating template for image: {Image}", request.Image);
+        return _sandboxes.CreateTemplateAsync(request, cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets a template with its latest build status by id.
+    /// </summary>
+    /// <param name="templateId">The template ID.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The template information.</returns>
+    /// <exception cref="InvalidArgumentException">Thrown when <paramref name="templateId"/> is null or empty.</exception>
+    /// <exception cref="SandboxApiException">Thrown when the sandbox API returns an error.</exception>
+    public Task<TemplateInfo> GetTemplateAsync(
+        string templateId,
+        CancellationToken cancellationToken = default)
+    {
+        _logger.LogDebug("Fetching template: {TemplateId}", templateId);
+        return _sandboxes.GetTemplateAsync(templateId, cancellationToken);
+    }
+
+    /// <summary>
+    /// Lists templates with optional metadata filtering (AND logic) and pagination.
+    /// </summary>
+    /// <param name="filter">Optional filter criteria.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The list of templates.</returns>
+    /// <exception cref="SandboxApiException">Thrown when the sandbox API returns an error.</exception>
+    public Task<ListTemplatesResponse> ListTemplatesAsync(
+        TemplateFilter? filter = null,
+        CancellationToken cancellationToken = default)
+    {
+        return _sandboxes.ListTemplatesAsync(new ListTemplatesParams
+        {
+            Metadata = filter?.Metadata,
+            Page = filter?.Page,
+            PageSize = filter?.PageSize
+        }, cancellationToken);
+    }
+
+    /// <summary>
+    /// Deletes a template by id. Running sandboxes created from it are unaffected.
+    /// </summary>
+    /// <param name="templateId">The template ID.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="InvalidArgumentException">Thrown when <paramref name="templateId"/> is null or empty.</exception>
+    /// <exception cref="SandboxApiException">Thrown when the sandbox API returns an error.</exception>
+    public Task DeleteTemplateAsync(
+        string templateId,
+        CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation("Deleting template: {TemplateId}", templateId);
+        return _sandboxes.DeleteTemplateAsync(templateId, cancellationToken);
+    }
+
+    /// <summary>
     /// Releases resources used by this manager.
     /// </summary>
     public ValueTask DisposeAsync()

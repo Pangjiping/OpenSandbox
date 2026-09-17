@@ -136,6 +136,52 @@ public interface ISandboxes
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates a fsb template (golden-image build).
+    /// </summary>
+    /// <param name="request">The create template request.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The created template; its build phase starts at Pending.</returns>
+    /// <exception cref="InvalidArgumentException">Thrown when request values are invalid.</exception>
+    /// <exception cref="SandboxException">Thrown when the sandbox service request fails.</exception>
+    Task<TemplateInfo> CreateTemplateAsync(
+        CreateTemplateRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets a template with its latest build status by id.
+    /// </summary>
+    /// <param name="templateId">The template ID.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The template information.</returns>
+    /// <exception cref="InvalidArgumentException">Thrown when <paramref name="templateId"/> is null or empty.</exception>
+    /// <exception cref="SandboxException">Thrown when the sandbox service request fails.</exception>
+    Task<TemplateInfo> GetTemplateAsync(
+        string templateId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists templates with optional metadata filtering (AND logic) and pagination.
+    /// </summary>
+    /// <param name="params">Optional filter parameters.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The list of templates.</returns>
+    /// <exception cref="SandboxException">Thrown when the sandbox service request fails.</exception>
+    Task<ListTemplatesResponse> ListTemplatesAsync(
+        ListTemplatesParams? @params = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes a template. Running sandboxes created from it are unaffected.
+    /// </summary>
+    /// <param name="templateId">The template ID.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <exception cref="InvalidArgumentException">Thrown when <paramref name="templateId"/> is null or empty.</exception>
+    /// <exception cref="SandboxException">Thrown when the sandbox service request fails.</exception>
+    Task DeleteTemplateAsync(
+        string templateId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the endpoint for a sandbox port.
     /// </summary>
     /// <param name="sandboxId">The sandbox ID.</param>

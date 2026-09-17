@@ -101,4 +101,10 @@ public static class Constants
     /// reliably.
     /// </summary>
     public const string ClientIpHeader = "OPEN-SANDBOX-CLIENT-IP";
+
+    /// <summary>
+    /// Response header name carrying the origin backing a sandbox
+    /// (see <see cref="Models.SandboxOrigin"/>).
+    /// </summary>
+    public const string SandboxOriginHeader = "OPEN-SANDBOX-ORIGIN";
 }

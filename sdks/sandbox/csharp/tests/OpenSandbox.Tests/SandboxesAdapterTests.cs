@@ -17,6 +17,7 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using OpenSandbox.Adapters;
+using OpenSandbox.Core;
 using OpenSandbox.Internal;
 using OpenSandbox.Models;
 using Xunit;
@@ -277,6 +278,198 @@ public class SandboxesAdapterTests
             "/v1/snapshots?name=toolchain%3Acsharp%40rev-1");
     }
 
+    [Fact]
+    public async Task GetSandboxEndpointAsync_ShouldCaptureOriginResponseHeader()
+    {
+        var handler = new CaptureEndpointHandler(origin: SandboxOrigin.Template);
+        var client = new HttpClient(handler);
+        var wrapper = new HttpClientWrapper(client, "http://localhost:8080/v1");
+        var adapter = new SandboxesAdapter(wrapper);
+
+        var endpoint = await adapter.GetSandboxEndpointAsync("fsb-1", 44772);
+
+        endpoint.Origin.Should().Be(SandboxOrigin.Template);
+    }
+
+    [Fact]
+    public async Task GetSandboxEndpointAsync_ShouldTreatMissingOriginHeaderAsNull()
+    {
+        var handler = new CaptureEndpointHandler(origin: null);
+        var client = new HttpClient(handler);
+        var wrapper = new HttpClientWrapper(client, "http://localhost:8080/v1");
+        var adapter = new SandboxesAdapter(wrapper);
+
+        var endpoint = await adapter.GetSandboxEndpointAsync("sbx-1", 44772);
+
+        endpoint.Origin.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task CreateSandboxAsync_ShouldSerializeTemplateId()
+    {
+        var handler = new CaptureCreateRequestHandler();
+        var client = new HttpClient(handler);
+        var wrapper = new HttpClientWrapper(client, "http://localhost:8080/v1");
+        var adapter = new SandboxesAdapter(wrapper);
+
+        _ = await adapter.CreateSandboxAsync(new CreateSandboxRequest
+        {
+            TemplateId = "tpl-123",
+            Timeout = 600,
+            Metadata = new Dictionary<string, string> { ["team"] = "platform" }
+        });
+
+        handler.RequestBody.Should().NotBeNullOrEmpty();
+        using var json = JsonDocument.Parse(handler.RequestBody!);
+        json.RootElement.GetProperty("templateId").GetString().Should().Be("tpl-123");
+        json.RootElement.GetProperty("timeout").GetInt32().Should().Be(600);
+        json.RootElement.TryGetProperty("image", out _).Should().BeFalse();
+        json.RootElement.TryGetProperty("resourceLimits", out _).Should().BeFalse();
+        json.RootElement.TryGetProperty("entrypoint", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CreateTemplateAsync_ShouldPostAndParseTemplate()
+    {
+        const string payload = """
+        {
+          "templateId": "tpl-1",
+          "image": "python:3.11",
+          "publish": "s3://bucket/publish",
+          "format": "overlaybd",
+          "status": { "phase": "Pending" },
+          "createdAt": "2026-03-14T12:00:00Z",
+          "updatedAt": "2026-03-14T12:00:00Z",
+          "resourceLimits": { "cpu": "1", "memory": "512Mi" },
+          "entrypoint": ["tail", "-f", "/dev/null"],
+          "metadata": { "team": "platform" },
+          "readiness": { "probe": "tcp://127.0.0.1:44772", "warmupSeconds": 30 }
+        }
+        """;
+        var handler = new CapturingHandler(payload);
+        var client = new HttpClient(handler);
+        var wrapper = new HttpClientWrapper(client, "http://localhost:8080/v1");
+        var adapter = new SandboxesAdapter(wrapper);
+
+        var template = await adapter.CreateTemplateAsync(new CreateTemplateRequest
+        {
+            Image = "python:3.11",
+            Publish = "s3://bucket/publish",
+            Metadata = new Dictionary<string, string> { ["team"] = "platform" }
+        });
+
+        handler.Method.Should().Be(HttpMethod.Post);
+        handler.PathAndQuery.Should().Be("/v1/templates");
+        handler.RequestBody.Should().NotBeNullOrEmpty();
+        using var json = JsonDocument.Parse(handler.RequestBody!);
+        json.RootElement.GetProperty("image").GetString().Should().Be("python:3.11");
+        json.RootElement.GetProperty("publish").GetString().Should().Be("s3://bucket/publish");
+        json.RootElement.GetProperty("metadata").GetProperty("team").GetString().Should().Be("platform");
+
+        template.TemplateId.Should().Be("tpl-1");
+        template.Image.Should().Be("python:3.11");
+        template.Publish.Should().Be("s3://bucket/publish");
+        template.Format.Should().Be("overlaybd");
+        template.Status.Phase.Should().Be(TemplatePhases.Pending);
+        template.Status.ManifestRef.Should().BeNull();
+        template.ResourceLimits.Should().ContainKey("cpu").WhoseValue.Should().Be("1");
+        template.Entrypoint.Should().Equal("tail", "-f", "/dev/null");
+        template.Metadata.Should().ContainKey("team").WhoseValue.Should().Be("platform");
+        template.Readiness.Should().NotBeNull();
+        template.Readiness!.Probe.Should().Be("tcp://127.0.0.1:44772");
+        template.Readiness.WarmupSeconds.Should().Be(30);
+    }
+
+    [Fact]
+    public async Task GetTemplateAsync_ShouldParseSucceededStatus()
+    {
+        const string payload = """
+        {
+          "templateId": "tpl-1",
+          "image": "python:3.11",
+          "publish": "s3://bucket/publish",
+          "format": "overlaybd",
+          "status": { "phase": "Succeeded", "manifestRef": "s3://bucket/publish/manifest.json" },
+          "createdAt": "2026-03-14T12:00:00Z",
+          "updatedAt": "2026-03-14T12:01:00Z"
+        }
+        """;
+        var handler = new CapturingHandler(payload);
+        var client = new HttpClient(handler);
+        var wrapper = new HttpClientWrapper(client, "http://localhost:8080/v1");
+        var adapter = new SandboxesAdapter(wrapper);
+
+        var template = await adapter.GetTemplateAsync("tpl-1");
+
+        handler.Method.Should().Be(HttpMethod.Get);
+        handler.PathAndQuery.Should().Be("/v1/templates/tpl-1");
+        template.Status.Phase.Should().Be(TemplatePhases.Succeeded);
+        template.Status.ManifestRef.Should().Be("s3://bucket/publish/manifest.json");
+        template.Readiness.Should().BeNull();
+        template.Entrypoint.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ListTemplatesAsync_ShouldEncodeMetadataFilterAndParsePage()
+    {
+        const string payload = """
+        {
+          "items": [
+            {
+              "templateId": "tpl-1",
+              "image": "python:3.11",
+              "publish": "s3://bucket/publish",
+              "format": "overlaybd",
+              "status": { "phase": "Building" },
+              "createdAt": "2026-03-14T12:00:00Z",
+              "updatedAt": "2026-03-14T12:00:00Z"
+            }
+          ],
+          "pagination": {
+            "page": 2,
+            "pageSize": 20,
+            "totalItems": 21,
+            "totalPages": 2,
+            "hasNextPage": false
+          }
+        }
+        """;
+        var handler = new CapturingHandler(payload);
+        var client = new HttpClient(handler);
+        var wrapper = new HttpClientWrapper(client, "http://localhost:8080/v1");
+        var adapter = new SandboxesAdapter(wrapper);
+
+        var response = await adapter.ListTemplatesAsync(new ListTemplatesParams
+        {
+            Metadata = new Dictionary<string, string> { ["team"] = "platform&a=1" },
+            Page = 2,
+            PageSize = 20
+        });
+
+        // Keys and values must survive the server's parse_qsl round trip,
+        // so the joined k=v string is percent-encoded once more.
+        handler.PathAndQuery.Should().Be(
+            "/v1/templates?metadata=team%3Dplatform%26a%3D1&page=2&pageSize=20");
+        response.Items.Should().ContainSingle();
+        response.Items[0].Status.Phase.Should().Be(TemplatePhases.Building);
+        response.Pagination!.TotalItems.Should().Be(21);
+        response.Pagination.HasNextPage.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task DeleteTemplateAsync_ShouldSendDeleteRequest()
+    {
+        var handler = new CapturingHandler("");
+        var client = new HttpClient(handler);
+        var wrapper = new HttpClientWrapper(client, "http://localhost:8080/v1");
+        var adapter = new SandboxesAdapter(wrapper);
+
+        await adapter.DeleteTemplateAsync("tpl-1");
+
+        handler.Method.Should().Be(HttpMethod.Delete);
+        handler.PathAndQuery.Should().Be("/v1/templates/tpl-1");
+    }
+
     private static SandboxesAdapter CreateAdapterWithJsonResponse(string payload)
     {
         var handler = new StaticJsonHandler(payload);
@@ -394,6 +587,51 @@ public class SandboxesAdapterTests
                 Content = new StringContent(payload, Encoding.UTF8, "application/json")
             };
             return Task.FromResult(response);
+        }
+    }
+
+    private sealed class CaptureEndpointHandler(string? origin) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            const string payload = "{\"endpoint\":\"example.internal:44772\",\"headers\":{}}";
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+            if (origin != null)
+            {
+                response.Headers.Add(Constants.SandboxOriginHeader, origin);
+            }
+
+            return Task.FromResult(response);
+        }
+    }
+
+    private sealed class CapturingHandler(string payload) : HttpMessageHandler
+    {
+        public HttpMethod? Method { get; private set; }
+
+        public string? PathAndQuery { get; private set; }
+
+        public string? RequestBody { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            Method = request.Method;
+            PathAndQuery = request.RequestUri?.PathAndQuery;
+            RequestBody = request.Content is null
+                ? null
+                : await request.Content.ReadAsStringAsync();
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(payload, Encoding.UTF8, "application/json")
+            };
+            return response;
         }
     }
 }

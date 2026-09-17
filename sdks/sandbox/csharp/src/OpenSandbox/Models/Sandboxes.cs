@@ -840,6 +840,15 @@ public class CreateSandboxRequest
     public string? SnapshotId { get; set; }
 
     /// <summary>
+    /// Gets or sets the fsb (fast-sandbox) template to create the sandbox from.
+    /// Mutually exclusive with <see cref="Image"/> and <see cref="SnapshotId"/>; in template
+    /// mode the workload shape is fixed by the template's golden image, so workload-shaping
+    /// fields are rejected (400), and <see cref="Timeout"/> is required.
+    /// </summary>
+    [JsonPropertyName("templateId")]
+    public string? TemplateId { get; set; }
+
+    /// <summary>
     /// Gets or sets the entrypoint command.
     /// </summary>
     [JsonPropertyName("entrypoint")]
@@ -853,9 +862,10 @@ public class CreateSandboxRequest
 
     /// <summary>
     /// Gets or sets the resource limits.
+    /// Must be omitted in template mode (the template's golden image fixes the workload shape).
     /// </summary>
     [JsonPropertyName("resourceLimits")]
-    public required IReadOnlyDictionary<string, string> ResourceLimits { get; set; }
+    public IReadOnlyDictionary<string, string>? ResourceLimits { get; set; }
 
     /// <summary>
     /// Gets or sets the resource requests (guaranteed minimums).
@@ -1231,6 +1241,14 @@ public class Endpoint
     /// </summary>
     [JsonPropertyName("headers")]
     public IReadOnlyDictionary<string, string> Headers { get; set; } = new Dictionary<string, string>();
+
+    /// <summary>
+    /// Gets or sets the origin of the sandbox taken from the server's
+    /// OPEN-SANDBOX-ORIGIN response header (see <see cref="SandboxOrigin"/>).
+    /// Null when the server does not send it.
+    /// </summary>
+    [JsonIgnore]
+    public string? Origin { get; set; }
 }
 
 /// <summary>
@@ -1277,4 +1295,34 @@ public static class SandboxStates
     /// Sandbox is in an error state.
     /// </summary>
     public const string Error = "Error";
+}
+
+/// <summary>
+/// Origin backing a sandbox.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The protocol defines a single origin value: <see cref="Template"/> (reported by
+/// the server via the OPEN-SANDBOX-ORIGIN response header, and set locally when the
+/// sandbox was explicitly created from a template). Anything else - including
+/// sandboxes created from an image or a snapshot - carries no origin value.
+/// </para>
+/// <para>
+/// The server may introduce new values in future versions; clients should handle
+/// unknown string values gracefully.
+/// </para>
+/// </remarks>
+public static class SandboxOrigin
+{
+    /// <summary>
+    /// Runs on a fsb golden-image template (no sandbox-side egress sidecar;
+    /// egress policy goes through the lifecycle control plane).
+    /// </summary>
+    public const string Template = "template";
+
+    /// <summary>
+    /// The origin could not be determined (create from an image or snapshot,
+    /// or an older server that does not send the header).
+    /// </summary>
+    public const string Unknown = "unknown";
 }
