@@ -99,7 +99,7 @@ commit. Example at umbrella `1.4.0`:
 
 | Artifact | Identity |
 |---|---|
-| Platform images | `opensandbox/{server,execd,ingress,egress,image-committer,controller,task-executor}:release-1.4.0` |
+| Platform images | `opensandbox/{server,execd,ingress,egress,image-committer,controller,task-executor}:release-1.4.0`; fast-sandbox family `opensandbox/fsb-{controller,fastlet,fastlet-proxy,janitor,firecracker-runtime,sandboxtemplate-builder}:release-1.4.0` (linux/amd64, full registry mirror set) |
 | Git tag | `release-1.4.0` (plus Go companion tags, see [Naming Rules](#naming-rules)) |
 | Server PyPI / CLI | `opensandbox-server==1.4.0`, `opensandbox-cli==1.4.0` |
 | Helm chart | `opensandbox-1.4.0.tgz`, `appVersion: 1.4.0` |
@@ -202,6 +202,7 @@ forever:
 | image-committer | `v0.1.1` | `release-1.1.0` |
 | controller | `v0.2.0` | `release-1.1.0` |
 | task-executor | `v0.2.0` | `release-1.1.0` |
+| fast-sandbox: `opensandbox/fsb-{controller,fastlet,fastlet-proxy,janitor,firecracker-runtime,sandboxtemplate-builder}` | `dev` (unversioned) | `release-1.1.0` |
 
 **Charts, CLI, server:**
 
@@ -272,6 +273,7 @@ kind: UmbrellaRelease
 metadata: { version: 1.4.0, line: "1.4", channel: stable, releaseDate: "2026-10-15", gitCommit: 6b1e… }
 images:
   execd: { image: docker.io/opensandbox/execd, tag: release-1.4.0, digest: sha256:… }
+  fsbController: { image: docker.io/opensandbox/fsb-controller, tag: release-1.4.0, digest: sha256:… }
   # …one entry per platform image (see table above). Sandbox template
   #   images are NOT part of the umbrella.
 helm:   { chart: opensandbox, version: "1.4.0", appVersion: "1.4.0" }

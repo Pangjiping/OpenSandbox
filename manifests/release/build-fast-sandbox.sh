@@ -61,7 +61,11 @@ set -euo pipefail
 OSB_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PIN_FILE="${PIN_FILE:-$OSB_ROOT/manifests/third-party/fast-sandbox.commit}"
 FSB_SRC_DIR="${FSB_SRC_DIR:-$OSB_ROOT/.fast-sandbox/src}"
-REGISTRY="${REGISTRY:-fast-sandbox}"
+# fast-sandbox images publish under the unified opensandbox/ namespace with
+# an fsb- prefix: it disambiguates fsb-controller from the k8s controller
+# image (opensandbox/controller) and inherits the components/* registry
+# mirror set (DockerHub + ACR + GHCR).
+REGISTRY="${REGISTRY:-opensandbox}"
 TAG="${TAG:-dev}"
 
 CRDS_TARGET="$OSB_ROOT/manifests/charts/base/files/fast-sandbox-crds.yaml"
@@ -142,12 +146,12 @@ FSB_COMMIT="$(sed -n 's/^commit:[[:space:]]*//p' "$PIN_FILE")"
 # sandboxtemplate-builder has no make target (direct docker build, same as
 # scripts/fast-sandbox-env).
 IMAGES=(
-	"controller:controller:CONTROLLER_IMAGE"
-	"fastlet:fastlet:FASTLET_IMAGE"
-	"fastlet-proxy:fastlet-proxy:FASTLET_PROXY_IMAGE"
-	"janitor:janitor:JANITOR_IMAGE"
-	"firecracker-runtime:firecracker-runtime:FIRECRACKER_RUNTIME_IMAGE"
-	"sandboxtemplate-builder:sandboxtemplate-builder:SANDBOXTEMPLATE_BUILDER_IMAGE"
+	"fsb-controller:controller:CONTROLLER_IMAGE"
+	"fsb-fastlet:fastlet:FASTLET_IMAGE"
+	"fsb-fastlet-proxy:fastlet-proxy:FASTLET_PROXY_IMAGE"
+	"fsb-janitor:janitor:JANITOR_IMAGE"
+	"fsb-firecracker-runtime:firecracker-runtime:FIRECRACKER_RUNTIME_IMAGE"
+	"fsb-sandboxtemplate-builder:sandboxtemplate-builder:SANDBOXTEMPLATE_BUILDER_IMAGE"
 )
 
 image_ref() { printf '%s/%s:%s' "$REGISTRY" "$1" "$TAG"; }

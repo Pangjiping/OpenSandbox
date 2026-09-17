@@ -363,7 +363,7 @@ if [[ "$SKIP_CONSISTENCY" != true ]]; then
 
   # Image references in chart values: every opensandbox/* image must carry
   # :release-${VERSION}. Empty split-field tags fall back to appVersion.
-  bad_images="$(grep -rohE --include='values*.yaml' 'opensandbox/[A-Za-z0-9._/-]+:v?[0-9][^"'"'"'[:space:]]*' manifests/charts 2>/dev/null \
+  bad_images="$(grep -rohE --include='values*.yaml' '(opensandbox|fast-sandbox)/[A-Za-z0-9._/-]+:[^"'"'"'[:space:]]+' manifests/charts 2>/dev/null \
     | grep -vE ":release-${ESC_VERSION}$" | sort -u || true)"
   if [[ -n "$bad_images" ]]; then
     while IFS= read -r ref; do
@@ -373,7 +373,7 @@ if [[ "$SKIP_CONSISTENCY" != true ]]; then
     scan_ok "chart image refs resolve to release-${VERSION}"
   fi
 
-  bad_split_tags="$(grep -rnE --include='values*.yaml' '^[[:space:]]+tag:[[:space:]]*"?v?[0-9]' manifests/charts 2>/dev/null \
+  bad_split_tags="$(grep -rnE --include='values*.yaml' '^[[:space:]]+tag:[[:space:]]*"?(v?[0-9][^"[:space:]]*|dev|latest)' manifests/charts 2>/dev/null \
     | grep -vE "release-${ESC_VERSION}" || true)"
   if [[ -n "$bad_split_tags" ]]; then
     while IFS= read -r line; do
@@ -496,6 +496,13 @@ images:
   imageCommitter: { image: docker.io/opensandbox/image-committer, tag: release-${VERSION}, digest: sha256:PENDING }
   controller:     { image: docker.io/opensandbox/controller,      tag: release-${VERSION}, digest: sha256:PENDING }
   taskExecutor:   { image: docker.io/opensandbox/task-executor,   tag: release-${VERSION}, digest: sha256:PENDING }
+  # fast-sandbox runtime family (fsb- prefix, linux/amd64; same mirror set)
+  fsbController:            { image: docker.io/opensandbox/fsb-controller,            tag: release-${VERSION}, digest: sha256:PENDING }
+  fsbFastlet:               { image: docker.io/opensandbox/fsb-fastlet,               tag: release-${VERSION}, digest: sha256:PENDING }
+  fsbFastletProxy:          { image: docker.io/opensandbox/fsb-fastlet-proxy,         tag: release-${VERSION}, digest: sha256:PENDING }
+  fsbJanitor:               { image: docker.io/opensandbox/fsb-janitor,               tag: release-${VERSION}, digest: sha256:PENDING }
+  fsbFirecrackerRuntime:    { image: docker.io/opensandbox/fsb-firecracker-runtime,   tag: release-${VERSION}, digest: sha256:PENDING }
+  fsbSandboxtemplateBuilder:{ image: docker.io/opensandbox/fsb-sandboxtemplate-builder, tag: release-${VERSION}, digest: sha256:PENDING }
 
 helm:   { chart: opensandbox, version: "${VERSION}", appVersion: "${VERSION}" }
 server: { pypi: opensandbox-server==${VERSION} }
@@ -527,7 +534,11 @@ if [[ -n "$DIGESTS_MANIFEST" ]]; then
     [[ -n "$comp" ]] || continue
     esc_comp="$(printf '%s' "$comp" | sed 's/[.[\*^$/]/\\&/g')"
     esc_digest="$(printf '%s' "$digest" | sed 's/[.&/]/\\&/g')"
-    sed -i.bak "/docker.io\/opensandbox\/${esc_comp},/s|digest: sha256:PENDING|digest: ${esc_digest}|" "$BOM_FILE_TMP"
+    if [[ "$comp" == */* ]]; then
+      sed -i.bak "/docker.io\/${esc_comp},/s|digest: sha256:PENDING|digest: ${esc_digest}|" "$BOM_FILE_TMP"
+    else
+      sed -i.bak "/docker.io\/opensandbox\/${esc_comp},/s|digest: sha256:PENDING|digest: ${esc_digest}|" "$BOM_FILE_TMP"
+    fi
     rm -f "${BOM_FILE_TMP}.bak"
   done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' "$DIGESTS_MANIFEST")
   if grep -q 'sha256:PENDING' "$BOM_FILE_TMP"; then
