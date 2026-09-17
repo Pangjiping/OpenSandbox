@@ -247,7 +247,11 @@ if [[ "$BUMP_ONLY" == true ]]; then
 
   # 3) Image references in chart values: pinned split tags and full-image strings
   while IFS= read -r -d '' f; do
-    sed -E       -e 's|(opensandbox/[A-Za-z0-9._/-]+):v[0-9][^"[:space:]]*|\1:release-'"${VERSION}"'|g'       -e 's|^([[:space:]]*tag:[[:space:]]*")v[0-9][^"]*(")|\1release-'"${VERSION}"'\2|'       -e 's|^([[:space:]]*tag:[[:space:]]*)v[0-9][^"[:space:]]*|\1release-'"${VERSION}"'|'       "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
+    sed -E \
+      -e 's,((opensandbox|fast-sandbox)/[A-Za-z0-9._/-]+):(v[0-9][^"[:space:]]*|dev|latest),\1:release-'"${VERSION}"',g' \
+      -e 's,^([[:space:]]*tag:[[:space:]]*")(v[0-9][^"]*|dev|latest)("),\1release-'"${VERSION}"'\3,' \
+      -e 's,^([[:space:]]*tag:[[:space:]]*)(v[0-9][^"[:space:]]*|dev|latest)$,\1release-'"${VERSION}"',' \
+      "$f" > "${f}.tmp" && mv "${f}.tmp" "$f"
   done < <(find manifests/charts -name 'values*.yaml' -print0)
 
   # 4) JS SDK package versions (top-level field)
