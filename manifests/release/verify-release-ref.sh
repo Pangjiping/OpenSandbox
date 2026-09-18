@@ -17,7 +17,9 @@
 set -euo pipefail
 
 remote="${RELEASE_REMOTE:-origin}"
-default_branch="${RELEASE_DEFAULT_BRANCH:-main}"
+# GITHUB_REF_NAME resolves to the caller's ref in reusable workflows —
+# avoids the (sometimes stale) reusable-workflow input registration
+default_branch="${RELEASE_DEFAULT_BRANCH:-${GITHUB_REF_NAME:-main}}"
 release_ref="${RELEASE_REF:-${GITHUB_SHA:-HEAD}}"
 remote_ref="refs/remotes/${remote}/${default_branch}"
 
