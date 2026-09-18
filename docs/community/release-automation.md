@@ -45,8 +45,8 @@ git push
 
 # 3. dispatch
 gh workflow run release-umbrella.yml \
-  -f version=1.1.0-rc.1 -f channel=rc -f release_branch=release-1.1 \
-  -f dry_run=false
+  --ref release-1.1 \
+  -f version=1.1.0-rc.1 -f dry_run=false
 ```
 
 Repeat with `-rc.2`, `-rc.3`, … as fixes land — every rc is a full

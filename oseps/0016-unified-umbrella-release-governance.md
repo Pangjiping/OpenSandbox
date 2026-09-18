@@ -338,8 +338,8 @@ are not backfilled — `docs/releases/` starts at `release-1.1.0-rc.1`.
 ### Release Workflow
 
 New `.github/workflows/release-umbrella.yml` (`workflow_dispatch`) with
-inputs `version`, `channel: stable|rc`, `release_branch`, and `dry_run`
-(default true). It uses a **build-hold-publish** model: no
+inputs `version` and `dry_run` (default true) — the channel derives from
+the version suffix and the BOM commit lands on the dispatch branch. It uses a **build-hold-publish** model: no
 user-pullable artifact carries the release identity until every target
 has built successfully — partial releases are structurally impossible.
 
