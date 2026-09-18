@@ -62,6 +62,16 @@ if [[ "${TAG}" == v* ]]; then
   fi
 fi
 
+PUSH=${PUSH:-true}
+if [ "$PUSH" == "true" ]; then
+  PLATFORM="linux/amd64,linux/arm64"
+  EXPORTER=(--push)
+else
+  # dry-run / local rehearsal: single-arch, load into the local docker
+  PLATFORM="linux/amd64"
+  EXPORTER=(--load)
+fi
+
 docker buildx build \
   "${IMAGE_TAGS[@]}" \
   "${LATEST_TAGS[@]}" \
@@ -70,7 +80,7 @@ docker buildx build \
   --build-arg VERSION="${VERSION}" \
   --build-arg GIT_COMMIT="${GIT_COMMIT}" \
   --build-arg BUILD_TIME="${BUILD_TIME}" \
-  --platform linux/amd64,linux/arm64 \
+  --platform "${PLATFORM}" \
   --metadata-file "${BUILD_METADATA_FILE}" \
-  --push \
+  "${EXPORTER[@]}" \
   .
