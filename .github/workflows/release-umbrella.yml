@@ -32,19 +32,6 @@ on:
         description: 'Umbrella version, e.g. 1.1.0 or 1.1.0-rc.1'
         required: true
         type: string
-      channel:
-        description: 'Release channel (derived from the version suffix when omitted)'
-        required: false
-        type: choice
-        default: 'stable'
-        options:
-          - stable
-          - rc
-      release_branch:
-        description: 'Branch the BOM commit lands on (defaults to the dispatch branch)'
-        required: false
-        type: string
-        default: ''
       dry_run:
         description: 'Dry run (no publish-facing side effects)'
         required: true
@@ -66,8 +53,6 @@ jobs:
         id: params
         env:
           IN_VERSION: ${{ inputs.version }}
-          IN_CHANNEL: ${{ inputs.channel }}
-          IN_BRANCH: ${{ inputs.release_branch }}
         run: |
           set -euo pipefail
           if [[ -n "$IN_VERSION" ]]; then
@@ -76,14 +61,10 @@ jobs:
             # scheduled dry-run: use the chart version carried by this ref
             version="$(sed -n 's/^version:[[:space:]]*//p' manifests/charts/opensandbox/Chart.yaml | head -1 | tr -d '"'"'"'')"
           fi
-          if [[ -n "$IN_CHANNEL" ]]; then
-            channel="$IN_CHANNEL"
-          elif [[ "$version" == *-* ]]; then
-            channel="rc"
-          else
-            channel="stable"
-          fi
-          branch="${IN_BRANCH:-${GITHUB_REF_NAME}}"
+          # channel derives from the version suffix (X.Y.Z-rc.N -> rc)
+          if [[ "$version" == *-* ]]; then channel="rc"; else channel="stable"; fi
+          # the BOM commit lands on the branch the workflow was dispatched on
+          branch="${GITHUB_REF_NAME}"
           echo "version=$version"   >> "$GITHUB_OUTPUT"
           echo "channel=$channel"   >> "$GITHUB_OUTPUT"
           echo "release_branch=$branch" >> "$GITHUB_OUTPUT"
