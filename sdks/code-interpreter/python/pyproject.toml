@@ -58,7 +58,7 @@ source = "vcs"
 [tool.hatch.version.raw-options]
 # This package is in a subdirectory; explicitly point setuptools-scm at the git root.
 root = "../../.."
-tag_regex = "^release-(?P<version>\d+\.\d+\.\d+(?:[\.\w\+\-]*)?)$"
+tag_regex = "^release-(?P<version>\\d+\\.\\d+\\.\\d+(?:[\\.\\w\\+\\-]*)?)$"
 git_describe_command = 'git describe --dirty --tags --long --match "release-*"'
 fallback_version = "0.1.3"
 
