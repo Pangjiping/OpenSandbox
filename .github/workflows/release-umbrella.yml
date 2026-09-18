@@ -241,8 +241,9 @@ jobs:
       - name: Build and push staging images
         env:
           STAGING_TAG: staging-${{ github.sha }}-${{ github.run_id }}
-          GHCR_REPO: ghcr.io/${{ github.repository_owner }}/opensandbox
         run: |
+          GHCR_REPO="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/opensandbox"
+          export GHCR_REPO
           # fast-sandbox images publish under the unified opensandbox/*
           # namespace with an fsb- prefix (fsb-controller disambiguates from
           # the k8s controller image) and get the full registry mirror set.
