@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -euo pipefail
+set -euox pipefail  # TODO(debug): remove once preflight issue is diagnosed
 
 remote="${RELEASE_REMOTE:-origin}"
 default_branch="${RELEASE_DEFAULT_BRANCH:-main}"
