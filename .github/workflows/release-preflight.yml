@@ -8,6 +8,11 @@ on:
         required: false
         default: true
         type: boolean
+      base_branch:
+        description: Branch the release commit must be reachable from
+        required: false
+        default: main
+        type: string
 
 permissions:
   contents: read
