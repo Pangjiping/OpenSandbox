@@ -174,9 +174,10 @@ jobs:
         env:
           COMPONENT: ${{ matrix.component }}
           STAGING_TAG: staging-${{ github.sha }}-${{ github.run_id }}
-          GHCR_REPO: ghcr.io/${{ github.repository_owner }}
           PUSH: ${{ inputs.dry_run == false }}
         run: |
+          GHCR_REPO="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          export GHCR_REPO
           cd "${{ matrix.dir }}"
           export TAG="$STAGING_TAG"
           chmod +x build.sh
