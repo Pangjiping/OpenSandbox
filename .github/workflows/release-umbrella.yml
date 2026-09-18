@@ -33,18 +33,18 @@ on:
         required: true
         type: string
       channel:
-        description: 'Release channel'
-        required: true
+        description: 'Release channel (derived from the version suffix when omitted)'
+        required: false
         type: choice
         default: 'stable'
         options:
           - stable
           - rc
       release_branch:
-        description: 'Branch the BOM commit lands on'
-        required: true
+        description: 'Branch the BOM commit lands on (defaults to the dispatch branch)'
+        required: false
         type: string
-        default: 'main'
+        default: ''
       dry_run:
         description: 'Dry run (no publish-facing side effects)'
         required: true
@@ -76,7 +76,13 @@ jobs:
             # scheduled dry-run: use the chart version carried by this ref
             version="$(sed -n 's/^version:[[:space:]]*//p' manifests/charts/opensandbox/Chart.yaml | head -1 | tr -d '"'"'"'')"
           fi
-          channel="${IN_CHANNEL:-stable}"
+          if [[ -n "$IN_CHANNEL" ]]; then
+            channel="$IN_CHANNEL"
+          elif [[ "$version" == *-* ]]; then
+            channel="rc"
+          else
+            channel="stable"
+          fi
           branch="${IN_BRANCH:-${GITHUB_REF_NAME}}"
           echo "version=$version"   >> "$GITHUB_OUTPUT"
           echo "channel=$channel"   >> "$GITHUB_OUTPUT"
