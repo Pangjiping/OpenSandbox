@@ -3,8 +3,8 @@ title: Unified Umbrella Release Governance
 authors:
   - "@Pangjiping"
 creation-date: 2026-07-21
-last-updated: 2026-09-17
-status: implementing
+last-updated: 2026-09-21
+status: implemented
 ---
 
 # OSEP-0016: Unified Umbrella Release Governance
