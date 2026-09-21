@@ -107,6 +107,12 @@ jobs:
           chmod +x tests/smoke-dns-upstream-probe.sh
           ./tests/smoke-dns-upstream-probe.sh
 
+      - name: Run dns upstream blackhole test
+        working-directory: components/egress
+        run: |
+          chmod +x tests/smoke-dns-upstream-blackhole.sh
+          ./tests/smoke-dns-upstream-blackhole.sh
+
   fast-sandbox-smoke:
     needs: changes
     if: needs.changes.outputs.relevant == 'true'
