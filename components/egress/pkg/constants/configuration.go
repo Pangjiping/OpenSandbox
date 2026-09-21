@@ -112,7 +112,7 @@ const (
 	DefaultCredentialProxySocket = "/run/opensandbox/credential-proxy/active.sock"
 	ResolvNameserverCap          = 10
 	DefaultMaxEgressRules        = 4096
-	DefaultDNSUpstreamTimeoutSec = 5
+	DefaultDNSUpstreamTimeoutSec = 2
 	OpenSandboxRootDir           = "/opt/opensandbox"
 )
 

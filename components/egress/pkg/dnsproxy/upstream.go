@@ -30,7 +30,7 @@ import (
 	"github.com/alibaba/opensandbox/egress/pkg/log"
 )
 
-const defaultUpstreamProbeInterval = 30 * time.Second
+const defaultUpstreamProbeInterval = 10 * time.Second
 
 func upstreamProbeIntervalFromEnv() time.Duration {
 	s := strings.TrimSpace(os.Getenv(constants.EnvDNSUpstreamProbeIntervalSec))
