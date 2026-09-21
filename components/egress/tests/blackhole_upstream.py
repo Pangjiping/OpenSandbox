@@ -18,12 +18,19 @@
 
 Answers every question with a single A record (192.0.2.1), which is enough
 for the dnsproxy health probe (default root IN NS only checks for a response)
-and for dig A queries. Usage: blackhole_upstream.py <ip> <port>.
+and for dig A queries.
+
+Pass --silent-after <seconds> to make it stop replying (while keeping the
+socket bound) after that many seconds: a bound-but-silent port never sends
+ICMP, so clients observe a full silent timeout — the same signature as a
+routed black hole. Usage:
+    blackhole_upstream.py <ip> <port> [--silent-after <seconds>]
 """
 
 import socket
 import struct
 import sys
+import time
 
 
 def build_response(query):
@@ -45,11 +52,20 @@ def build_response(query):
 
 
 def main():
-    ip, port = sys.argv[1], int(sys.argv[2])
+    args = sys.argv[1:]
+    silent_after = None
+    if "--silent-after" in args:
+        idx = args.index("--silent-after")
+        silent_after = float(args[idx + 1])
+        del args[idx:idx + 2]
+    ip, port = args[0], int(args[1])
+    start = time.time()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((ip, port))
     while True:
         data, peer = sock.recvfrom(4096)
+        if silent_after is not None and time.time() - start >= silent_after:
+            continue
         resp = build_response(data)
         if resp:
             sock.sendto(resp, peer)

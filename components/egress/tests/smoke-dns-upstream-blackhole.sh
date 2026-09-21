@@ -18,16 +18,21 @@
 # fail client queries: the proxy fails over to the next upstream after one exchange
 # timeout, and the periodic probe then drops the dead upstream from the active list.
 #
-# Hermetic: two local DNS responders (tests/blackhole_upstream.py on 127.0.0.2/127.0.0.3)
-# play the upstreams, so no public resolver is needed and behavior is identical on any
-# runner. An iptables OUTPUT DROP then black-holes the first one mid-run — a silent drop
-# that also swallows the proxy's SO_MARKed queries, exactly like a vanished IP behind a
-# routing black hole. Unlike smoke-dns-upstream-probe.sh (dead PORT = instant ICMP
-# refused), the window dig below MUST burn the full exchange timeout on the dead upstream:
-# the 1500-4000ms two-sided bound proves the ejection window was actually exercised
-# (a proxy that fails over without the burned timeout, or not at all, fails this test).
+# Hermetic: two local DNS responders (tests/blackhole_upstream.py) play the upstreams,
+# so no public resolver is needed. The black hole is a BOUND-BUT-SILENT socket: the
+# first upstream answers at startup, then stops replying mid-run (socket stays bound,
+# so no ICMP is ever sent and clients observe a full silent timeout — the same
+# signature as an IP vanishing behind a routed black hole).
 #
-# Requires Docker with --cap-add=NET_ADMIN.
+# Note on rejected alternatives: a closed port fails fast (ICMP refused), and an
+# iptables OUTPUT DROP fails fast too — the kernel reports EPERM to a connected UDP
+# socket for locally-dropped packets, which the proxy treats as an instant error and
+# fails over within milliseconds. Neither reproduces a routed black hole; only the
+# silent socket does.
+#
+# The 1500-4000ms two-sided bound on the window dig proves the dead upstream actually
+# absorbed the full exchange timeout inside the ejection window (failover without the
+# burned timeout fails the lower bound; the old 5s default fails the upper bound).
 #
 # Example:
 #   ./smoke-dns-upstream-blackhole.sh
@@ -43,7 +48,7 @@ POLICY_PORT=18080
 # Overwritten each run; inspect locally after failure.
 EGRESS_LOG_FILE="${SCRIPT_DIR}/egress-smoke-dns-upstream-blackhole.egress.log"
 
-# Local upstreams: distinct loopback IPs, whole 127/8 is local on lo.
+# Local upstreams: distinct loopback IPs (whole 127/8 is local on lo).
 UPSTREAM_A="127.0.0.2"
 UPSTREAM_A_PORT=5321
 UPSTREAM_B="127.0.0.3"
@@ -51,9 +56,13 @@ UPSTREAM_B_PORT=5322
 # Exchange timeout (sec): the window dig below must take ~this long (one burned
 # timeout on the black-holed upstream) plus one cheap local round trip.
 UPSTREAM_TIMEOUT="${UPSTREAM_TIMEOUT:-2}"
-# Probe interval (sec): 15 keeps the next probe round (and its ejection refresh)
-# clear of the window phase while keeping the ejection wait short.
+# Probe interval (sec). Rounds land at ~start+15s and ~start+30s; see the timeline
+# comments below for why both the silence switch and the ejection wait straddle them.
 PROBE_INTERVAL="${PROBE_INTERVAL:-15}"
+# Seconds after responder start when upstream A goes silent. 18 keeps it healthy for
+# the startup probe (~0s) and the second round (~15s), so the window phase still has
+# A in the active list; silence then lands before the third round ejects it.
+SILENT_AFTER="${SILENT_AFTER:-18}"
 
 info() { echo "[$(date +%H:%M:%S)] $*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -85,7 +94,7 @@ run_dig() {
 info "Building image ${IMG}"
 docker build -t "${IMG}" -f "${REPO_ROOT}/components/egress/Dockerfile" "${REPO_ROOT}"
 
-info "Starting ${containerName} (local upstreams ${UPSTREAM_A}:${UPSTREAM_A_PORT}, ${UPSTREAM_B}:${UPSTREAM_B_PORT}, timeout=${UPSTREAM_TIMEOUT}s, probe=${PROBE_INTERVAL}s)"
+info "Starting ${containerName} (local upstreams ${UPSTREAM_A}:${UPSTREAM_A_PORT}, ${UPSTREAM_B}:${UPSTREAM_B_PORT}, timeout=${UPSTREAM_TIMEOUT}s, probe=${PROBE_INTERVAL}s, A silent after ${SILENT_AFTER}s)"
 docker run -d --name "${containerName}" \
   --cap-add=NET_ADMIN \
   --sysctl net.ipv6.conf.all.disable_ipv6=1 \
@@ -99,9 +108,9 @@ docker run -d --name "${containerName}" \
   -p "${POLICY_PORT}:18080" \
   "${IMG}"
 
-info "Starting local DNS responders for both upstreams"
+info "Starting local DNS responders (A answers for ${SILENT_AFTER}s, then stays bound-but-silent; B always answers)"
 docker cp "${SCRIPT_DIR}/blackhole_upstream.py" "${containerName}:/tmp/blackhole_upstream.py"
-docker exec -d "${containerName}" python3 /tmp/blackhole_upstream.py "${UPSTREAM_A}" "${UPSTREAM_A_PORT}"
+docker exec -d "${containerName}" python3 /tmp/blackhole_upstream.py "${UPSTREAM_A}" "${UPSTREAM_A_PORT}" --silent-after "${SILENT_AFTER}"
 docker exec -d "${containerName}" python3 /tmp/blackhole_upstream.py "${UPSTREAM_B}" "${UPSTREAM_B_PORT}"
 
 info "Waiting for policy server..."
@@ -112,14 +121,31 @@ for _ in {1..50}; do
   sleep 0.5
 done
 
-# Let the startup probe round mark both responders healthy.
+# Startup probe round marks both upstreams healthy while A is still answering.
 sleep 3
 
 info "Baseline: both upstreams healthy, first one must answer directly"
 run_dig "baseline" 0 1000
 
-info "Black-holing ${UPSTREAM_A} mid-run (silent OUTPUT DROP, SO_MARKed queries included)"
-docker exec "${containerName}" iptables -I OUTPUT -d "${UPSTREAM_A}" -j DROP
+# A goes silent ~${SILENT_AFTER}s after responder start; the second probe round
+# (~15s) still sees it healthy, so it stays in the active list for the window.
+info "Waiting for upstream A to go silently black"
+sleep 15
+
+silence=""
+for _ in {1..3}; do
+  out="$(docker exec "${containerName}" dig "@${UPSTREAM_A}" -p "${UPSTREAM_A_PORT}" +tries=1 +time=2 example.com. 2>&1)" || true
+  if ! grep -q 'status: NOERROR' <<<"${out}"; then
+    silence=1
+    break
+  fi
+  info "upstream A still answering, waiting"
+  sleep 1
+done
+if [[ -z "${silence}" ]]; then
+  fail "upstream A never went silent (responder bug?)"
+fi
+pass "upstream A is silently black (bound socket, no reply, no ICMP)"
 
 info "Ejection window: dead upstream still active; failover to ${UPSTREAM_B} must burn ~${UPSTREAM_TIMEOUT}s on it"
 run_dig "window-failover" "$((UPSTREAM_TIMEOUT * 1000 - 500))" "$((UPSTREAM_TIMEOUT * 1000 + 2000))"
@@ -130,9 +156,10 @@ if ! grep -q "upstream ${UPSTREAM_A}:${UPSTREAM_A_PORT} exchange error" "${EGRES
 fi
 pass "log shows exchange error on ${UPSTREAM_A} before failover (saved in ${EGRESS_LOG_FILE})"
 
-waited=$((PROBE_INTERVAL + UPSTREAM_TIMEOUT + 3))
-info "Waiting ${waited}s for the probe to eject the black-holed upstream"
-sleep "${waited}"
+# Third probe round (~30s) probes the silent A, times out, and ejects it (~32s);
+# waiting 10s past the window dig (~22s worst case) clears that ejection.
+info "Waiting for the probe to eject the black-holed upstream"
+sleep 10
 
 info "After ejection: queries must go straight to ${UPSTREAM_B} (no burned timeout)"
 run_dig "after-ejection" 0 1000
