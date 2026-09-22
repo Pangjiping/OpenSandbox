@@ -81,6 +81,12 @@ controller:
   sandboxtemplateBuilderPodSpec: ""
   # -- Tolerations for the controller pod
   tolerations: []
+  # -- Image injected as the platform-owned Fastlet Proxy sidecar into
+  # fastlet Pods. Override for clusters that cannot pull from docker.io.
+  fastletProxyImage: fast-sandbox/fastlet-proxy:dev
+  # -- Image injected as the platform-owned BoxLite runtime sidecar into
+  # fastlet Pods. Override for clusters that cannot pull from docker.io.
+  boxliteRuntimeImage: fast-sandbox/boxlite-runtime:dev
 
 # Artifact store shared by the controller, the runtime-agent and golden-image
 # builds. Rendered into the fast-sandbox-artifact-store ConfigMap.

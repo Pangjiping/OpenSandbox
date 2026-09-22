@@ -33,6 +33,8 @@ spec:
         - --health-probe-bind-address=:5758
         - --fastpath-bind-address=:9090
         - --sandboxtemplate-builder-image={{ .Values.controller.sandboxtemplateBuilderImage }}
+        - --fastlet-proxy-image={{ .Values.controller.fastletProxyImage }}
+        - --boxlite-runtime-image={{ .Values.controller.boxliteRuntimeImage }}
         # The controller's default namespace for the platform
         # runtime-environment ConfigMap is the upstream-hardcoded
         # fast-sandbox-system; pin it to this chart's system namespace so
