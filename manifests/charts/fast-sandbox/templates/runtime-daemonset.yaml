@@ -168,6 +168,9 @@ spec:
       - key: node-role.kubernetes.io/control-plane
         operator: Exists
         effect: NoSchedule
+      {{- with .Values.runtime.tolerations }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
       {{- with .Values.runtime.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

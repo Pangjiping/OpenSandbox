@@ -204,6 +204,10 @@ runtime:
   # (registry.json key with artifact-store pull credentials); must be
   # provisioned by the operator.
   registrySecret: fast-sandbox-agent-registry
+  # -- Additional tolerations for the firecracker-runtime DaemonSet pod,
+  # appended to the built-in control-plane toleration. Needed when target
+  # nodes carry infra taints (e.g. sigma.ali resource-pool taints).
+  tolerations: []
   # -- Node hostPath holding per-node Firecracker state (rootfs,
   # snapshots). Each node needs its own directory; do not share across
   # nodes.
