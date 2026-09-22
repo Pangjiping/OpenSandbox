@@ -13,7 +13,6 @@ create->ping200 leg.
 
 Env:
   SERVER_URL    lifecycle server base URL (required)
-  GATEWAY_URL   ingress gateway base URL (default http://11.133.112.147:28888)
   API_KEY       server api_key (required)
   N             number of timed creates (default 100)
   CONCURRENCY   parallel creates (default 15)
@@ -37,7 +36,6 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 SERVER_URL = os.environ["SERVER_URL"].rstrip("/")
-GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://11.133.112.147:28888").rstrip("/")
 API_KEY = os.environ["API_KEY"]
 N = int(os.environ.get("N", "100"))
 CONCURRENCY = int(os.environ.get("CONCURRENCY", "15"))
@@ -68,8 +66,9 @@ def http(method, path, body=None):
         raise RuntimeError(f"{method} {path} -> HTTP {err.code}: {detail}") from err
 
 
-def gateway_ping(route):
-    req = urllib.request.Request(GATEWAY_URL + "/ping", headers={"OpenSandbox-Ingress-To": route})
+def gateway_ping(route, endpoint_url):
+    """GET {endpoint}/ping with the routing headers; 200 = delivered."""
+    req = urllib.request.Request(endpoint_url + "/ping", headers=route or {})
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status == 200
@@ -78,16 +77,16 @@ def gateway_ping(route):
 
 
 def wait_delivered(sandbox_id):
-    """Poll until execd /ping returns 200 via the signed gateway route."""
+    """Poll until execd /ping returns 200 via the server-issued endpoint."""
     deadline = time.monotonic() + POLL_TIMEOUT
     while time.monotonic() < deadline:
         try:
             endpoint = http("GET", f"/sandboxes/{sandbox_id}/endpoints/{EXECD_PORT}")
-            route = endpoint.get("headers", {}).get("OpenSandbox-Ingress-To")
+            url = endpoint.get("endpoint")
+            if url and gateway_ping(endpoint.get("headers"), url):
+                return True
         except RuntimeError:
-            route = None
-        if route and gateway_ping(route):
-            return True
+            pass
         time.sleep(POLL_INTERVAL)
     return False
 
@@ -151,7 +150,7 @@ def main():
             sys.exit("ERROR: warmup sandbox never delivered; check fastlet/pool state")
 
     print(f"==> measuring {N} creates at CONCURRENCY={CONCURRENCY} "
-          f"(delivery = execd /ping 200 via gateway {GATEWAY_URL})")
+          f"(delivery = execd /ping 200 via the server-issued endpoint)")
     totals, posts, failures = [], [], []
 
     def run(i):
