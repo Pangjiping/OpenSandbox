@@ -8,9 +8,7 @@
 # capacity (poolMax x maxSandboxesPerPod).
 #
 # Env:
-#   SERVER_URL    lifecycle server base URL.
-#                 Default http://127.0.0.1:8080 — pair with:
-#                   kubectl -n opensandbox-system port-forward svc/opensandbox-server 8080:80
+#   SERVER_URL    lifecycle server base URL (required, e.g. http://11.x.x.x:8080)
 #   API_KEY       server api_key (required; the one from values.yaml configToml)
 #   N             number of timed creates (default 100)
 #   TIMEOUT       sandbox TTL seconds; template mode requires >= 60 (default 300)
@@ -22,7 +20,7 @@
 #                 and would otherwise dominate p90)
 set -euo pipefail
 
-SERVER_URL="${SERVER_URL:-http://127.0.0.1:8080}"
+SERVER_URL="${SERVER_URL:?SERVER_URL env is required (lifecycle server base URL)}"
 API_KEY="${API_KEY:?API_KEY env is required (server configToml server.api_key)}"
 N="${N:-100}"
 TIMEOUT="${TIMEOUT:-300}"
