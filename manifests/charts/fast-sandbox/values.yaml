@@ -73,6 +73,12 @@ controller:
     requests:
       cpu: 100m
       memory: 128Mi
+  # -- Raw PodSpec fragment (YAML) merged into every SandboxTemplate build
+  # Pod by the controller: whitelisted scheduling fields only (tolerations
+  # appended; affinity and topologySpreadConstraints replaced). Rendered as
+  # the fast-sandbox-builder-pod-template ConfigMap; editing the live
+  # ConfigMap applies to the next build without a rollout.
+  sandboxtemplateBuilderPodSpec: ""
   # -- Tolerations for the controller pod
   tolerations: []
 

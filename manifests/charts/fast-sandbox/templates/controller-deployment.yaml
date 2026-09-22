@@ -74,6 +74,9 @@ spec:
         - name: artifact-store
           mountPath: /etc/fast-sandbox/artifact-store
           readOnly: true
+        - name: builder-pod-template
+          mountPath: /etc/fast-sandbox/builder-pod-template
+          readOnly: true
       serviceAccountName: fast-sandbox-controller
       {{- with .Values.controller.tolerations }}
       tolerations:
@@ -83,6 +86,10 @@ spec:
       - name: artifact-store
         configMap:
           name: fast-sandbox-artifact-store
+          optional: true
+      - name: builder-pod-template
+        configMap:
+          name: fast-sandbox-builder-pod-template
           optional: true
 ---
 apiVersion: policy/v1
