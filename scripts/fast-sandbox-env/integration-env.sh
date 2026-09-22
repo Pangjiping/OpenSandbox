@@ -60,6 +60,7 @@
 #   WARM_IMAGES=1        preheat pool warmImages (default: on-demand first-sandbox pull)
 #   SBX_IMAGE / EXECD    template build inputs   (default alpine:3.19 / opensandbox/execd:1.1.0)
 #   POOL_MIN / POOL_MAX  pool capacity           (default 2/2; auto 1/1 when KIND_SINGLE=1)
+#   MAX_SANDBOXES_PER_POD per-fastlet sandbox capacity (default 8)
 #   XFS_STATEROOT / XFS_SIZE  reflink StateRoot on/off and virtual size
 #   SKIP_TOOL_INSTALL / SKIP_LEFTOVER_CLEAN / INOTIFY_VALUE
 #
@@ -123,6 +124,7 @@ EXECD="${EXECD:-opensandbox/execd:1.1.0}"
 WARM_IMAGES="${WARM_IMAGES:-0}"
 
 POOL_NAME="${POOL_NAME:-firecracker-egress-pool}"
+MAX_SANDBOXES_PER_POD="${MAX_SANDBOXES_PER_POD:-8}"
 if [[ -n "${POOL_MIN:-}" && -n "${POOL_MAX:-}" ]]; then
 	:
 elif [[ "$KIND_SINGLE" == "1" ]]; then
@@ -1103,11 +1105,13 @@ render_pool() { # > $GEN_DIR/firecracker-egress-pool.yaml
 	# flavors; image tags never contain awk-special replacement chars.
 	awk -v fastlet="$IMG_FASTLET" -v egress="$IMG_EGRESS" \
 		-v pool_min="$POOL_MIN" -v pool_max="$POOL_MAX" \
+		-v max_per_pod="$MAX_SANDBOXES_PER_POD" \
 		-v warm="$WARM_IMAGES" -v image="$TEMPLATE_ID" '
 		{ gsub(/"@FASTLET_IMAGE@"/, fastlet)
 		  gsub(/"@EGRESS_IMAGE@"/, egress)
 		  gsub(/"@POOL_MIN@"/, pool_min)
-		  gsub(/"@POOL_MAX@"/, pool_max) }
+		  gsub(/"@POOL_MAX@"/, pool_max)
+		  gsub(/maxSandboxesPerPod: 5/, "maxSandboxesPerPod: " max_per_pod) }
 		/^# @WARM_IMAGES@$/ {
 			if (warm == "1") printf "  warmImages:\n  - %s\n", image
 			next }
