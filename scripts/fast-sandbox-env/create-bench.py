@@ -98,7 +98,7 @@ async def one_create(manager: SandboxManager, template_id: str, ready_timeout: i
 
 
 async def main():
-    manager = SandboxManager(CONNECTION_CONFIG)
+    manager = await SandboxManager.create(CONNECTION_CONFIG)
     template_id = await ensure_template(manager)
 
     # warmup: absorb the first artifact pull on every fastlet node (untimed)
