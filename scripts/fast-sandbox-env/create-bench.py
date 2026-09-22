@@ -44,6 +44,7 @@ PROTOCOL = os.environ.get("PROTOCOL", "http")
 API_KEY = os.environ.get("API_KEY", "fast-sandbox-env")
 N = int(os.environ.get("N", "100"))
 CONCURRENCY = int(os.environ.get("CONCURRENCY", "10"))
+BATCH_PAUSE = float(os.environ.get("BATCH_PAUSE", "5"))
 TEMPLATE_ID = os.environ.get("TEMPLATE_ID", "")
 SOURCE_IMAGE = os.environ.get("SOURCE_IMAGE", "ubuntu:22.04")
 PUBLISH = os.environ.get("PUBLISH", "s3://sandbox-images/publish")
@@ -112,23 +113,27 @@ async def main():
               f"(sdk={latency:.2f}s, id={sandbox_id}) — killing")
         await manager.kill_sandbox(sandbox_id)
 
-    print(f"==> measuring {N} creates at CONCURRENCY={CONCURRENCY}")
-    semaphore = asyncio.Semaphore(CONCURRENCY)
+    print(f"==> measuring {N} creates in batches of {CONCURRENCY}, "
+          f"pausing {BATCH_PAUSE}s between batches (slot reclamation)")
     samples, failures = [], []
 
     async def run(i):
-        async with semaphore:
-            try:
-                latency, sandbox_id = await one_create(manager, template_id, READY_TIMEOUT_WARM)
-            except Exception as err:
-                failures.append(i)
-                print(f"[{i}/{N}] FAILED: {err}", flush=True)
-                return
-            samples.append(latency)
-            await manager.kill_sandbox(sandbox_id)
-            print(f"[{i}/{N}] create={latency:.3f}s id={sandbox_id} (killed)", flush=True)
+        try:
+            latency, sandbox_id = await one_create(manager, template_id, READY_TIMEOUT_WARM)
+        except Exception as err:
+            failures.append(i)
+            print(f"[{i}/{N}] FAILED: {err}", flush=True)
+            return
+        samples.append(latency)
+        await manager.kill_sandbox(sandbox_id)
+        print(f"[{i}/{N}] create={latency:.3f}s id={sandbox_id} (killed)", flush=True)
 
-    await asyncio.gather(*(run(i) for i in range(1, N + 1)))
+    for batch_start in range(1, N + 1, CONCURRENCY):
+        batch = range(batch_start, min(batch_start + CONCURRENCY, N + 1))
+        await asyncio.gather(*(run(i) for i in batch))
+        if batch.stop < N + 1:
+            print(f"==> batch done, resting {BATCH_PAUSE}s for slot reclamation")
+            await asyncio.sleep(BATCH_PAUSE)
 
     if not samples:
         sys.exit(f"ERROR: all {len(failures)} creates failed")
