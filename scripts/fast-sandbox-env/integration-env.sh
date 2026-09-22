@@ -867,6 +867,7 @@ control_plane_up() {
 		--set controller.image.repository="$(image_repo "$IMG_CONTROLLER")" \
 		--set controller.image.tag="$(image_tag "$IMG_CONTROLLER")" \
 		--set controller.sandboxtemplateBuilderImage="$IMG_BUILDER" \
+		--set controller.fastletProxyImage="$IMG_FASTLET_PROXY" \
 		--set janitor.image.repository="$(image_repo "$IMG_JANITOR")" \
 		--set janitor.image.tag="$(image_tag "$IMG_JANITOR")" \
 		--set runtime.image.repository="$(image_repo "$IMG_RUNTIME")" \
