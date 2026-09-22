@@ -60,7 +60,7 @@ The following table lists the configurable parameters of the chart and their def
 | controller.replicaCount | int | `1` | Number of controller replicas (no leader election; keep 1) |
 | controller.resources | object | `{"limits":{"cpu":"1","memory":"512Mi"},"requests":{"cpu":"100m","memory":"128Mi"}}` | Resource requests and limits for the controller |
 | controller.sandboxtemplateBuilderImage | string | `"opensandbox/fsb-sandboxtemplate-builder:release-1.1.0"` | Image that executes SandboxTemplate golden-image builds (builder Pods are created by the controller; build it with manifests/release/build-fast-sandbox.sh) |
-| controller.sandboxtemplateBuilderPodSpec | string | `""` | Raw PodSpec fragment (YAML) merged into every SandboxTemplate build Pod: whitelisted scheduling fields only (tolerations appended; affinity and topologySpreadConstraints replaced). Rendered as the fast-sandbox-builder-pod-template ConfigMap; editing the live ConfigMap applies to the next build without a rollout. |
+| controller.sandboxtemplateBuilderPodSpec | string | `""` | Raw PodSpec fragment (YAML) merged into every SandboxTemplate build Pod by the controller: whitelisted scheduling fields only (tolerations appended; affinity and topologySpreadConstraints replaced). Rendered as the fast-sandbox-builder-pod-template ConfigMap; editing the live ConfigMap applies to the next build without a rollout. |
 | controller.tolerations | list | `[]` | Tolerations for the controller pod |
 | fullnameOverride | string | `""` | Override the full name of the chart |
 | imagePullSecrets | list | `[]` | Image pull secrets for every workload in this chart |
@@ -84,7 +84,8 @@ The following table lists the configurable parameters of the chart and their def
 | runtime.image.tag | string | `"release-1.1.0"` | Image tag |
 | runtime.nodeSelector | object | `{}` | Node selector. Empty by default: the runtime applies the firecracker scheduling labels itself, so it must run on every candidate node. Pin it with your own coarse selector only if the cluster hosts unrelated node pools. |
 | runtime.registrySecret | string | `"fast-sandbox-agent-registry"` | Secret carrying the compiled agent registry configuration (registry.json key with artifact-store pull credentials); must be provisioned by the operator. |
-| runtime.resources.agent | object | `{}` | Resources for the firecracker-runtime agent container. Set requests to leave BestEffort QoS; limits are off by default so artifact pulls and the readiness loop are not throttled. |
+| runtime.resources | object | `{"agent":{},"janitor":{}}` | Container resources for the DaemonSet. Setting requests matters more than limits here: without them the pod is BestEffort and is evicted first under node pressure, taking down the management API for every fastlet on the node. Limits stay off by default so artifact pulls and the readiness loop are not throttled or OOM-killed at their spikes. |
+| runtime.resources.agent | object | `{}` | Resources for the firecracker-runtime agent container. |
 | runtime.resources.janitor | object | `{}` | Resources for the janitor sidecar container. |
 | runtime.socketDir | string | `"/run/fast-sandbox/firecracker"` | Node hostPath sharing the agent UDS socket with fastlet Pods |
 | runtime.stateRoot | string | `"/var/lib/fast-sandbox/firecracker"` | Node hostPath holding per-node Firecracker state (rootfs, snapshots). Each node needs its own directory; do not share across nodes. |
