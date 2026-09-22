@@ -94,7 +94,8 @@ async def one_create(manager: SandboxManager, template_id: str, ready_timeout: i
         timeout=timedelta(hours=1),
         ready_timeout=timedelta(seconds=ready_timeout),
         connection_config=CONNECTION_CONFIG,
-        # SDK 默认 200ms，压测口径收紧到 10ms（对齐 verify_one_sandbox 的 10ms 轮询）
+        # Tighten the SDK's 200ms default poll to match the 10ms cadence of
+        # the shell verify flow (verify_one_sandbox).
         health_check_polling_interval=timedelta(milliseconds=PING_INTERVAL_MS),
     )
     latency = time.monotonic() - start
