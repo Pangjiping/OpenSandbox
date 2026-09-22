@@ -51,6 +51,7 @@ PUBLISH = os.environ.get("PUBLISH", "s3://sandbox-images/publish")
 WARMUP = int(os.environ.get("WARMUP", "2"))
 READY_TIMEOUT_COLD = int(os.environ.get("READY_TIMEOUT_COLD", "900"))
 READY_TIMEOUT_WARM = int(os.environ.get("READY_TIMEOUT_WARM", "300"))
+PING_INTERVAL_MS = int(os.environ.get("PING_INTERVAL_MS", "10"))
 
 CONNECTION_CONFIG = ConnectionConfig(domain=DOMAIN, protocol=PROTOCOL, api_key=API_KEY)
 
@@ -93,6 +94,8 @@ async def one_create(manager: SandboxManager, template_id: str, ready_timeout: i
         timeout=timedelta(hours=1),
         ready_timeout=timedelta(seconds=ready_timeout),
         connection_config=CONNECTION_CONFIG,
+        # SDK 默认 200ms，压测口径收紧到 10ms（对齐 verify_one_sandbox 的 10ms 轮询）
+        health_check_polling_interval=timedelta(milliseconds=PING_INTERVAL_MS),
     )
     latency = time.monotonic() - start
     return latency, sandbox.id
