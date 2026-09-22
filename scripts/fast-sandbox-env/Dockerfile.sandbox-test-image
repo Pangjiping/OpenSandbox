@@ -14,62 +14,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Dockerfile.sandbox-test-image — a dedicated, realistic sandbox image for
-# the fast-sandbox integration environment (refs #1981).
+# Realistic sandbox test image for the fast-sandbox integration environment
+# (refs #1981), meant to replace alpine:3.19 as SBX_IMAGE: layer
+# overwrites/whiteouts, symlinks/hardlinks, setuid, FIFO/socket, mixed file
+# sizes, tini + non-root user, HTTP :8080, multi-layer ENV with PATH override.
 #
-# `SBX_IMAGE` defaults to alpine:3.19, which passes everything and tests
-# almost nothing. This image is the opposite: a glibc workload shaped to
-# exercise the machinery sandboxes and golden-image builders actually rely
-# on — OCI-image to rootfs conversion (layer overwrites/deletions,
-# whiteouts, symlinks/hardlinks, special files), boot (real processes,
-# tini), readiness (HTTP on :8080), snapshot/restore, and OCI config
-# semantics (multi-layer ENV, PATH override, ENTRYPOINT+CMD).
-#
-# Determinism, honestly scoped: generated text (users, UIDs, small-file
-# inventory, config values) is fixed; the urandom blobs are random by
-# design (checksums need real bytes to chew on), and apt versions float
-# within bookworm-slim. Structure and assertions stay stable across
-# rebuilds.
-#
-# Build (from the repository root; the context is scripts/fast-sandbox-env):
 #   docker build -f scripts/fast-sandbox-env/Dockerfile.sandbox-test-image \
 #     -t sandbox-test:X.Y scripts/fast-sandbox-env
-#
-# Then point the integration environment at it:
-#   SBX_IMAGE=sandbox-test:X.Y ./scripts/fast-sandbox-env/integration-env.sh up
-#
-# Target: ~300 MB uncompressed, ~1-2 min build, small compressed pull.
 
 FROM debian:bookworm-slim
 
-# --- layer 2: system toolchain (glibc world, not busybox) --------------------
-# curl+openssl exercise TLS through the sandbox network stack; netcat gives
-# E2E an in-guest probe tool; procps gives `ps` for process assertions.
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        openssl \
-        tini \
-        netcat-openbsd \
-        procps \
-        python3 \
+        ca-certificates curl openssl tini netcat-openbsd procps python3 \
     && rm -rf /var/lib/apt/lists/* \
     && python3 --version >/etc/sandbox-test-python-version \
     && test -x /usr/bin/tini || { echo "tini not at /usr/bin/tini"; exit 1; }
 
-# --- layer 3: users and skeleton ---------------------------------------------
-# Non-root users with fixed UIDs: tests can assert identity and file
-# ownership inside the sandbox without discovering them at runtime.
+# non-root users with fixed UIDs
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m -s /bin/bash app \
     && useradd -u 1001 -M -s /usr/sbin/nologin svc \
     && mkdir -p /srv/app /srv/data /opt/sandbox-bin \
     && chown -R app:app /srv /opt/sandbox-bin
 
-# --- layer 4: overwritten and deleted content (whiteout exercise) ------------
-# Files written here are then overwritten or removed by later layers. A
-# conversion that mis-merges layers (or drops whiteouts) produces a rootfs
-# whose checksums and file inventory diverge from the assertions below.
+# whiteouts: files overwritten/deleted by the next layer
 RUN printf 'v1\n' > /srv/data/overwritten.txt \
     && printf 'v1\n' > /srv/data/deleted.txt \
     && dd if=/dev/urandom of=/srv/data/blob-v1.bin bs=1M count=8 status=none
@@ -77,9 +45,7 @@ RUN printf 'v2-final\n' > /srv/data/overwritten.txt \
     && rm /srv/data/deleted.txt /srv/data/blob-v1.bin \
     && dd if=/dev/urandom of=/srv/data/blob-final.bin bs=1M count=8 status=none
 
-# --- layer 5: symlinks, hardlinks, setuid ------------------------------------
-# Symlink chains and a hardlink family stress path resolution and inode
-# handling during unpack; the setuid copy exercises permission-bit fidelity.
+# symlinks, hardlinks, setuid
 RUN ln -s /srv/data/blob-final.bin /srv/data/blob-link \
     && ln -s link-loop-b /srv/link-loop-a && ln -s link-loop-a /srv/link-loop-b \
     && printf '#!/bin/sh\necho sandbox-test-setuid\n' > /opt/sandbox-bin/elevator \
@@ -89,17 +55,12 @@ RUN ln -s /srv/data/blob-final.bin /srv/data/blob-link \
     && ln /srv/data/hardlink-src /srv/data/hardlink-1 \
     && ln /srv/data/hardlink-src /srv/data/hardlink-2
 
-# --- layer 6: special files ---------------------------------------------------
-# FIFOs and unix sockets are filesystem objects tar must carry and an ext4
-# rootfs must preserve; runtimes that filter them break real images.
+# special files
 RUN mkfifo /srv/data/pipe \
     && python3 -c 'import socket; socket.socket(socket.AF_UNIX).bind("/srv/data/sock")' \
     && chown app:app /srv/data/pipe /srv/data/sock
 
-# --- layer 7: content profile (many small + a few large) ---------------------
-# 4000 small files pressure the inode allocator; random blobs give checksums
-# and sparse-size accounting real bytes to chew on. Small-file names are
-# content-derived and stable; blob content is intentionally random.
+# content profile: 4000 small files + large blobs
 RUN python3 - <<'EOF'
 import hashlib, os
 base = "/srv/data/small"
@@ -114,21 +75,15 @@ RUN dd if=/dev/urandom of=/srv/data/random-1.bin bs=1M count=32 status=none \
     && dd if=/dev/urandom of=/srv/data/random-2.bin bs=1M count=32 status=none \
     && dd if=/dev/zero of=/srv/data/zeros-64.bin bs=1M count=64 status=none
 
-# --- layer 8: the workload ----------------------------------------------------
-# HTTP server on :8080: tcp:// readiness probes and execd /ping get a real
-# target, /health serves healthcheck-style probes.
+# HTTP workload: /health + info endpoint on :8080
 COPY sandbox-test-image/server.py /srv/app/server.py
 COPY sandbox-test-image/entrypoint.sh /srv/app/entrypoint.sh
 RUN chmod 0755 /srv/app/entrypoint.sh /srv/app/server.py \
     && chown -R app:app /srv/app \
     && printf 'sandbox-test\n' > /etc/sandbox-test-release
 
-# --- layers 9-11: OCI config semantics ---------------------------------------
-# Multiple ENV layers so Config.Env has depth; PATH is overridden (a very
-# common real-image pattern and the exact case env-inheritance tests need);
-# ENTRYPOINT (exec form, tini as PID 1) combined with a shell-form CMD, so
-# consumers get the CMD-SHELL shape (/bin/sh -c "python3 ...") for their
-# healthcheck-fallback paths. Values are assertions, surprises are bugs.
+# OCI config semantics: multi-layer ENV with PATH override,
+# exec-form ENTRYPOINT + shell-form CMD
 ENV SANDBOX_TEST_IMAGE=1
 ENV SANDBOX_TEST_VERSION=0.1.0
 ENV SANDBOX_TEST_USER=app
@@ -139,9 +94,7 @@ EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--", "/srv/app/entrypoint.sh"]
 CMD python3 /srv/app/server.py
 
-# --- final layer: mtime normalization ----------------------------------------
-# Pin mtimes of everything we created so two builds of the same tree differ
-# only where apt/debian differs. System paths are left alone.
+# pin mtimes of created files
 USER root
 RUN find /srv /opt/sandbox-bin /etc/sandbox-test-release /etc/sandbox-test-python-version \
         -exec touch -h -d "@1767225600" {} + \
