@@ -23,7 +23,7 @@ jobs:
     name: Integration Env (self-hosted kvm)
     needs: changes
     if: needs.changes.outputs.relevant == 'true'
-    runs-on: [self-hosted, kvm]
+    runs-on: kvm
     timeout-minutes: 180
     steps:
       # actions/checkout always executes as the runner user; the script
