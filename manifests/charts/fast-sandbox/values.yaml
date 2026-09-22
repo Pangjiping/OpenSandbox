@@ -73,6 +73,8 @@ controller:
     requests:
       cpu: 100m
       memory: 128Mi
+  # -- Tolerations for the controller pod
+  tolerations: []
 
 # Artifact store shared by the controller, the runtime-agent and golden-image
 # builds. Rendered into the fast-sandbox-artifact-store ConfigMap.

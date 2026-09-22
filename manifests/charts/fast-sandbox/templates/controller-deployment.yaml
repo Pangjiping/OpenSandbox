@@ -75,6 +75,10 @@ spec:
           mountPath: /etc/fast-sandbox/artifact-store
           readOnly: true
       serviceAccountName: fast-sandbox-controller
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
       volumes:
       - name: artifact-store
         configMap:
