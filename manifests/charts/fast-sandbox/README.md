@@ -52,7 +52,6 @@ The following table lists the configurable parameters of the chart and their def
 |-----|------|---------|-------------|
 | artifactStore.endpoint | string | `""` | S3-compatible endpoint (empty = AWS default) |
 | artifactStore.store | string | `"s3://sandbox-images/publish"` | Store URI root for published artifacts (golden images, snapshots) |
-| controller.boxliteRuntimeImage | string | `"fast-sandbox/boxlite-runtime:dev"` | Image injected as the platform-owned BoxLite runtime sidecar into fastlet Pods. Override for clusters that cannot pull from docker.io. |
 | controller.enabled | bool | `true` | Whether the control plane Deployment + FastPath Service are installed |
 | controller.fastletProxyImage | string | `"fast-sandbox/fastlet-proxy:dev"` | Image injected as the platform-owned Fastlet Proxy sidecar into fastlet Pods. Override for clusters that cannot pull from docker.io. |
 | controller.image.pullPolicy | string | `"IfNotPresent"` | Image pull policy |
