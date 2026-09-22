@@ -218,6 +218,10 @@ spec:
         - name: peer
           containerPort: {{ .Values.runtime.dartPeerPort }}
           protocol: TCP
+        {{- with .Values.runtime.resources.agent }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         volumeMounts:
         - name: agent-socket
           mountPath: {{ .Values.runtime.socketDir }}
@@ -258,6 +262,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: spec.nodeName
+        {{- with .Values.runtime.resources.janitor }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         volumeMounts:
         - name: network-state
           mountPath: /run/fast-sandbox/network

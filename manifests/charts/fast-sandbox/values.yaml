@@ -190,6 +190,16 @@ runtime:
   # it with your own coarse selector only if the cluster hosts unrelated
   # node pools.
   nodeSelector: {}
+  # -- Container resources for the DaemonSet. Setting requests matters more
+  # than limits here: without them the pod is BestEffort and is evicted
+  # first under node pressure, taking down the management API for every
+  # fastlet on the node. Limits stay off by default so artifact pulls and
+  # the readiness loop are not throttled or OOM-killed at their spikes.
+  resources:
+    # -- Resources for the firecracker-runtime agent container.
+    agent: {}
+    # -- Resources for the janitor sidecar container.
+    janitor: {}
   # -- Secret carrying the compiled agent registry configuration
   # (registry.json key with artifact-store pull credentials); must be
   # provisioned by the operator.
