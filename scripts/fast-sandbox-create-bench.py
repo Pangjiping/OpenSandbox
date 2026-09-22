@@ -60,7 +60,10 @@ def http(method, path, body=None):
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
+            body = resp.read()
+            if not body:
+                return None        # e.g. DELETE 204 No Content
+            return json.loads(body)
     except urllib.error.HTTPError as err:
         detail = err.read().decode(errors="replace")[:500]
         raise RuntimeError(f"{method} {path} -> HTTP {err.code}: {detail}") from err
@@ -145,7 +148,10 @@ def main():
         ok = wait_delivered(sandbox_id)
         print(f"==> warmup {i + 1}/{WARMUP}: {'delivered' if ok else 'FAILED'} "
               f"in {time.monotonic() - t0:.2f}s — deleting")
-        http("DELETE", f"/sandboxes/{sandbox_id}")
+        try:
+            http("DELETE", f"/sandboxes/{sandbox_id}")
+        except Exception as cleanup_err:
+            print(f"WARN: delete {sandbox_id} failed: {cleanup_err}", file=sys.stderr)
         if not ok:
             sys.exit("ERROR: warmup sandbox never delivered; check fastlet/pool state")
 
