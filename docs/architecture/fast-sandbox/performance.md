@@ -53,14 +53,14 @@ Measured through the full OpenSandbox stack on the same reference host (see [Env
 
 #### Concurrent (batches of 10)
 
-10 concurrent creates across 2 Fastlet pods (20 slots), 5 s between batches for slot reclamation. 0 of 100 creates failed.
+10 concurrent creates across the 2-Fastlet pool, 5 s between batches for slot reclamation. 10-way is this environment's capacity ceiling — the figures below are at-saturation admissions; a larger fan-in queues at the pool instead of scaling out. 0 of 100 creates failed.
 
 | Metric | Measured |
 |---|---|
-| End-to-end create → Ready, 100 runs | p50 235 ms · p90 285 ms · p99 325 ms (avg 236 ms) |
-| Range | min 138 ms – max 330 ms |
+| End-to-end create → Ready, 100 runs | p50 225 ms · p90 277 ms · p99 308 ms (avg 222 ms) |
+| Range | min 138 ms – max 308 ms |
 
-Even at 10-way concurrency, p99 stays under 0.35 s with zero failures. The gap between the ~115 ms single-create figure above and the ~235 ms p50 is concurrency overhead — 10 concurrent restores sharing the Fastlet slots plus the lifecycle-server and SDK round trips — not a change in the restore path itself, which stays a ~35 ms snapshot resume.
+Even at 10-way concurrency, p99 stays ~0.3 s with zero failures. The gap between the ~115 ms single-create figure above and the ~225 ms p50 is concurrency overhead — 10 concurrent restores sharing the Fastlet slots plus the lifecycle-server and SDK round trips — not a change in the restore path itself, which stays a ~35 ms snapshot resume.
 
 #### Serial (one create at a time)
 
@@ -71,7 +71,7 @@ Even at 10-way concurrency, p99 stays under 0.35 s with zero failures. The gap b
 | End-to-end create → Ready, 100 runs | p50 97 ms · p90 116 ms · p99 136 ms (avg 100 ms) |
 | Range | min 75 ms – max 147 ms |
 
-The serial band lands right on the ~100 ms magnitude suggested by the concurrent run's untimed warmup creates (80–100 ms), at or below the ~115 ms harness-level single-create figure — confirming that the ~235 ms concurrent p50 is concurrency overhead, not a per-create tax.
+The serial band lands right on the ~100 ms magnitude suggested by the concurrent run's untimed warmup creates (80–100 ms), at or below the ~115 ms harness-level single-create figure — confirming that the ~225 ms concurrent p50 is concurrency overhead, not a per-create tax.
 
 ## Request latency
 
