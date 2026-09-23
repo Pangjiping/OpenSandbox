@@ -1,11 +1,16 @@
 ---
 title: Fast Sandbox Performance
-description: Measured performance characteristics of the fast-sandbox integration — create hot path, snapshot restore, live snapshot, pause/resume, request latency, and artifact delivery.
+description: Measured performance characteristics of the fast-sandbox integration — create hot path (serial and concurrent), snapshot restore, live snapshot, pause/resume, request latency, and artifact delivery.
 ---
 
 # Performance
 
-This page collects performance figures measured on real hardware: runtime paths come from the Firecracker integration verification harness (`integration-env.sh verify-all`), and the create hot path additionally includes a sustained concurrent-create benchmark through the full OpenSandbox stack. Figures are reported as the tools emitted them — single-run observations, not tuned benchmark medians.
+This page collects performance figures measured on real hardware, organized by measurement surface:
+
+- **Harness-level paths** — restore, snapshot, pause/resume, request latency, artifact delivery — come from the Firecracker integration verification harness (`integration-env.sh verify-all`).
+- **Full-stack creates** (Python SDK → lifecycle server → FastPath → fast-sandbox) are measured under two load shapes: **serial** (one create at a time, the floor for a single client) and **sustained concurrent** (batches of parallel creates, admission under load).
+
+Figures are reported as the tools emitted them — single-run observations, not tuned benchmark medians.
 
 Performance here is a consequence of the architecture, not an optimization pass: creates are constant-time admissions into pre-warmed capacity (see [Scheduling](/architecture/fast-sandbox/scheduling)), warm creates restore from a snapshot instead of booting a kernel (see [Firecracker](/architecture/fast-sandbox/firecracker)), and pause/resume rides the submit-and-converge mutation path (see [High Availability](/architecture/fast-sandbox/ha)).
 
@@ -13,6 +18,7 @@ Performance here is a consequence of the architecture, not an optimization pass:
 
 - **Pre-baked template path**: the figures below describe creates and restores where the template's artifacts are already in the node cache (pre-warmed Fastlets, snapshot-backed). First use of a template or snapshot on a node pays a one-time artifact delivery (~3.5 GiB through DART) and is not the subject of this page.
 - **Fastlet-side vs end-to-end**: restore-phase figures come from the runtime agent's own timing logs; end-to-end figures include the client harness, lifecycle server, and FastPath.
+- **Delivery criterion**: a full-stack create sample is delivered only when guest execd `/ping` returns 200 through the signed gateway route; each sandbox is killed right after readiness. Samples are produced by `scripts/fast-sandbox-env/create-bench.py` (see [Reproducing](#reproducing)).
 - These are functional-verification measurements. They demonstrate the order of magnitude of each path; they are not a throughput benchmark.
 
 ## Environment
@@ -28,9 +34,11 @@ All figures were measured on a single physical host running the entire integrati
 
 ## Create
 
+### Harness-level creates (`integration-env.sh verify-all`)
+
 | Scenario | End-to-end (run → first `/ping` 200) | Fastlet-side restore |
 |---|---|---|
-| Create from a pre-baked template (snapshot + artifacts in node cache) | 115 ms (run RPC 59 ms + restore 35 ms) | 35 ms |
+| Single create from a pre-baked template (snapshot + artifacts in node cache) | 115 ms (run RPC 59 ms + restore 35 ms) | 35 ms |
 | Burst: 5 concurrent creates across 2 Fastlets (10 slots) | run RPC 60–71 ms each; first 200 in 52–55 ms | ~36 ms |
 | Teardown: 7 sandboxes deleted | leases drained + jail dirs cleaned in 0.5 s | — |
 
@@ -39,17 +47,36 @@ Notes:
 - Restore phases: acquire 0.15 ms, rootfs reflink 0.7 ms, launch 20.7 ms, configure 2.8 ms, vmstate boot 0.3 ms.
 - Burst growth in total time comes from the harness's sequential probe loop (queue-to-probe up to 2.1 s), not from platform admission: every create RPC returned in 60–71 ms and every first probe hit 200 in ~53 ms.
 
-### Sustained concurrent creates (full OpenSandbox stack)
+### Full-stack creates (Python SDK → lifecycle server → FastPath)
 
-Measured through the full OpenSandbox stack — Python SDK create → lifecycle server → FastPath → fast-sandbox, on the same reference host (see [Environment](#environment) and [Reproducing](#reproducing)). Method: 100 creates issued as batches of 10 concurrent creates across 2 Fastlet pods (20 slots), 5 s between batches for slot reclamation, template artifacts already in the node cache. 0 of 100 creates failed.
+Measured through the full OpenSandbox stack on the same reference host (see [Environment](#environment)): 100 creates with template artifacts already in the node cache, 2 untimed warmup creates first, each sandbox killed right after readiness. The two load shapes below share the method and differ only in `CONCURRENCY` and the between-batch pause; see [Reproducing](#reproducing) for the exact commands.
+
+#### Concurrent (batches of 10)
+
+10 concurrent creates across 2 Fastlet pods (20 slots), 5 s between batches for slot reclamation. 0 of 100 creates failed.
 
 | Metric | Measured |
 |---|---|
 | End-to-end create → Ready, 100 runs | p50 235 ms · p90 285 ms · p99 325 ms (avg 236 ms) |
 | Range | min 138 ms – max 330 ms |
-| Reference: sequential warm create (batch warmup) | 80–100 ms |
 
 Even at 10-way concurrency, p99 stays under 0.35 s with zero failures. The gap between the ~115 ms single-create figure above and the ~235 ms p50 is concurrency overhead — 10 concurrent restores sharing the Fastlet slots plus the lifecycle-server and SDK round trips — not a change in the restore path itself, which stays a ~35 ms snapshot resume.
+
+#### Serial (one create at a time)
+
+`CONCURRENCY=1`, no between-batch pause — a single client issuing back-to-back creates; this is the floor for unbatched clients and isolates the per-create path from concurrency interference.
+
+::: warning Figures pending
+The serial run has not been measured on the reference host yet. Run the serial command under [Reproducing](#reproducing) and replace the placeholders below with the emitted percentiles.
+:::
+
+| Metric | Measured |
+|---|---|
+| End-to-end create → Ready, 100 runs | p50 TBD · p90 TBD · p99 TBD (avg TBD) |
+| Range | min TBD – max TBD |
+| Reference: untimed warmup creates of the concurrent run (same shape, single create) | 80–100 ms |
+
+The 80–100 ms warmup reference is the order of magnitude to expect for a warm serial create.
 
 ## Request latency
 
@@ -121,6 +148,20 @@ The figures come from the fast-sandbox integration harness. To reproduce:
 3. **Environment**: `./scripts/integration-env.sh up` builds the images and brings up the two-node kind cluster (KVM passthrough), the MinIO artifact store, the SandboxTemplate golden image, and the pool.
 4. **Figures**: `./scripts/integration-env.sh verify-all` runs the verification battery — base delivery (create timings), DART P2P evidence, execd API battery, live snapshot, cross-host pause/resume, egress matrix — and prints the timings shown on this page. Evidence logs land under the workspace's `logs/` directory (workspace default: `/data/fast-sandbox-env`).
 
-To measure through the OpenSandbox layers instead, this repository ships the equivalent full-stack environment — fast-sandbox at the same pinned commit plus the source-built server, ingress gateway, and egress — as `scripts/fast-sandbox-env/integration-env.sh up`. The sustained concurrent-create figures under [Create](#create) come from this environment: create 100 sandboxes through the Python SDK as batches of 10 concurrent creates with a 5 s pause between batches, and report the create → Ready latency percentiles.
+To measure through the OpenSandbox layers instead, this repository ships the equivalent full-stack environment — fast-sandbox at the same pinned commit plus the source-built server, ingress gateway, and egress — as `scripts/fast-sandbox-env/integration-env.sh up`. The full-stack create figures under [Create](#create) come from this environment via `scripts/fast-sandbox-env/create-bench.py`: it creates (or reuses) a Succeeded template, runs 2 untimed warmup creates, then times N creates and reports create → Ready (execd `/ping` 200) latency percentiles, killing each sandbox right after readiness:
+
+```bash
+cd OpenSandbox/tests/python
+
+# sustained concurrent mode: batches of 10 across 2 Fastlet pods, 5 s between batches
+N=100 CONCURRENCY=10 BATCH_PAUSE=5 \
+  uv run python ../../scripts/fast-sandbox-env/create-bench.py
+
+# serial mode: one create at a time, no between-batch pause
+N=100 CONCURRENCY=1 BATCH_PAUSE=0 \
+  uv run python ../../scripts/fast-sandbox-env/create-bench.py
+```
+
+Keep the pool shape constant between runs (same Fastlet count and slot count) so the serial and concurrent figures are comparable.
 
 When re-measuring, pin: node hardware, kernel version, Firecracker version, template digest, pool shape, and artifact-store placement — otherwise the numbers are not comparable across runs.
