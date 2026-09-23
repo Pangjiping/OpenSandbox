@@ -31,7 +31,10 @@ Env:
   CONCURRENCY   parallel creates (default 15)
   TIMEOUT       sandbox TTL seconds; template mode requires >= 60 (default 300)
   TEMPLATE_ID   reuse an existing Succeeded template and skip the build
-  SOURCE_IMAGE  source OCI image for the golden-image build (default ubuntu:22.04)
+  SOURCE_IMAGE  source OCI image for the golden-image build
+                (default opensandbox/fsb-sandbox-golden:latest; must be
+                pullable by the template builder — build it with
+                scripts/fast-sandbox-env/Dockerfile.sandbox-test-image)
   PUBLISH       S3-compatible publish target
   WARMUP        untimed create/delete count before measuring (default 2)
   POLL_INTERVAL seconds between delivery polls (default 0.05)
@@ -54,7 +57,7 @@ N = int(os.environ.get("N", "100"))
 CONCURRENCY = int(os.environ.get("CONCURRENCY", "15"))
 TIMEOUT = int(os.environ.get("TIMEOUT", "300"))
 TEMPLATE_ID = os.environ.get("TEMPLATE_ID", "")
-SOURCE_IMAGE = os.environ.get("SOURCE_IMAGE", "ubuntu:22.04")
+SOURCE_IMAGE = os.environ.get("SOURCE_IMAGE", "opensandbox/fsb-sandbox-golden:latest")
 PUBLISH = os.environ.get("PUBLISH", "s3://taskline-zjk-oss-daily/publish")
 WARMUP = int(os.environ.get("WARMUP", "2"))
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "0.05"))

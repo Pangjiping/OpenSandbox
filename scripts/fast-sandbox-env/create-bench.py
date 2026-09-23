@@ -30,7 +30,8 @@ Env:
   N=100  CONCURRENCY=10
   DOMAIN=127.0.0.1:18080  PROTOCOL=http  API_KEY=fast-sandbox-env
   TEMPLATE_ID=            reuse a Succeeded template (skip the build)
-  SOURCE_IMAGE=ubuntu:22.04  PUBLISH=s3://sandbox-images/publish
+  SOURCE_IMAGE=opensandbox/fsb-sandbox-golden:latest
+  PUBLISH=s3://sandbox-images/publish
   WARMUP=2                untimed warmup creates (first artifact pull)
   READY_TIMEOUT_COLD=900  first-create readiness budget (artifact pull)
   READY_TIMEOUT_WARM=300  readiness budget for warm creates
@@ -59,7 +60,7 @@ N = int(os.environ.get("N", "100"))
 CONCURRENCY = int(os.environ.get("CONCURRENCY", "10"))
 BATCH_PAUSE = float(os.environ.get("BATCH_PAUSE", "5"))
 TEMPLATE_ID = os.environ.get("TEMPLATE_ID", "")
-SOURCE_IMAGE = os.environ.get("SOURCE_IMAGE", "ubuntu:22.04")
+SOURCE_IMAGE = os.environ.get("SOURCE_IMAGE", "opensandbox/fsb-sandbox-golden:latest")
 PUBLISH = os.environ.get("PUBLISH", "s3://sandbox-images/publish")
 WARMUP = int(os.environ.get("WARMUP", "2"))
 READY_TIMEOUT_COLD = int(os.environ.get("READY_TIMEOUT_COLD", "900"))
