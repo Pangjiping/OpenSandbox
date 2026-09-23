@@ -113,12 +113,13 @@ data:
     stateRoot: {{ .Values.runtime.stateRoot }}
     registryConfig: /etc/fast-sandbox/agent/registry.json
     hostnameFile: /etc/hostname
-    dart:
-      addr: http://127.0.0.1:8145
-      bin: dart
-      admin: 127.0.0.1:8147
-      cacheSize: 8GiB
-      discover: {{ $dartDiscover }}
+    p2p:
+      dart:
+        addr: http://127.0.0.1:8145
+        bin: dart
+        admin: 127.0.0.1:8147
+        cacheSize: 8GiB
+        discover: {{ $dartDiscover }}
     nodeReadiness:
       enabled: true
       assetsDir: /opt/fast-sandbox/firecracker

@@ -76,7 +76,7 @@ The following table lists the configurable parameters of the chart and their def
 | routeKeys.existingSecret | string | `""` | Use an existing Secret instead of creating one (its keys must be private-key / public-key) |
 | routeKeys.privateKey | string | `"nWGxne/9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A="` | Ed25519 private key (base64) used by the controller's route signer |
 | routeKeys.publicKey | string | `"11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo="` | Ed25519 public key (base64) used by the controller's route verifier |
-| runtime.config | string | `""` | Agent config (agent.yaml). Empty = the chart default (upstream config/dev/agent-config.yaml with the dart discover URL pointing at this chart's namespace). socket/stateRoot/registryConfig/dart are startup-only; the nodeReadiness section (fcVersion, kernelURL, interval, minFree, minMemory) hot-reloads on every readiness pass. |
+| runtime.config | string | `""` | Agent config (agent.yaml). Empty = the chart default (upstream config/dev/agent-config.yaml with the dart discover URL pointing at this chart's namespace). socket/stateRoot/registryConfig/p2p are startup-only; the nodeReadiness section (fcVersion, kernelURL, interval, minFree, minMemory) hot-reloads on every readiness pass. |
 | runtime.dartPeerPort | int | `9000` | DART P2P peer listen port (also the headless dart Service port) |
 | runtime.enabled | bool | `true` | Whether the firecracker-runtime DaemonSet, its RBAC, the agent config ConfigMap and the dart headless Service are installed |
 | runtime.image.pullPolicy | string | `"IfNotPresent"` | Image pull policy |

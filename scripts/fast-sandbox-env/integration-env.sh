@@ -58,7 +58,7 @@
 #   SERVER_IMAGE / INGRESS_IMAGE  OpenSandbox server/ingress image tags
 #   SERVER_HOST_PORT / GATEWAY_HOST_PORT  host-side publishes (default 18080/18081)
 #   WARM_IMAGES=1        preheat pool warmImages (default: on-demand first-sandbox pull)
-#   SBX_IMAGE / EXECD    template build inputs   (default alpine:3.19 / opensandbox/execd:1.1.0)
+#   SBX_IMAGE / EXECD    template build inputs   (default opensandbox/fsb-sandbox-golden:latest / opensandbox/execd:latest)
 #   POOL_MIN / POOL_MAX  pool capacity           (default 2/2; auto 1/1 when KIND_SINGLE=1)
 #   MAX_SANDBOXES_PER_POD per-fastlet sandbox capacity (default 8)
 #   XFS_STATEROOT / XFS_SIZE  reflink StateRoot on/off and virtual size
@@ -116,8 +116,8 @@ MINIO_CONTAINER="${MINIO_CONTAINER:-fast-sandbox-env-minio}"
 MINIO_DATA="$WORK/minio-data"
 MINIO_ENDPOINT="${MINIO_ENDPOINT:-}"   # auto-derived from the kind network
 
-SBX_IMAGE="${SBX_IMAGE:-alpine:3.19}"
-EXECD="${EXECD:-opensandbox/execd:1.1.0}"
+SBX_IMAGE="${SBX_IMAGE:-opensandbox/fsb-sandbox-golden:latest}"
+EXECD="${EXECD:-opensandbox/execd:latest}"
 # WARM_IMAGES=1 preheats the pool instead of the default on-demand flow
 # (warmImages reference the template id: the exact per-template index key).
 # (first sandbox create on each node pulls the artifact set through DART).
@@ -924,9 +924,9 @@ runtime_up() {
 		kubectl -n "$NS" rollout status daemonset/firecracker-runtime --timeout=10s
 
 	# Every runtime pod must have its node-local DART child answering on the
-	# admin plane, and agent /v1/health must report dartUp=true (a missing
-	# dart only degrades pulls to direct S3, so this is a positive wiring
-	# assertion of the default P2P data plane, not a readiness gate).
+	# admin plane, and agent /v1/health must report p2pUp=true (a missing
+	# P2P daemon only degrades pulls to direct S3, so this is a positive
+	# wiring assertion of the default P2P data plane, not a readiness gate).
 	local pod uid node pods
 	pods="$(runtime_pods)"
 	for pod in $pods; do
@@ -935,9 +935,9 @@ runtime_up() {
 		wait_for "dart admin /healthz on $node" 30 \
 			kubectl exec -n "$NS" "$pod" -- sh -c \
 				"curl -fsS --noproxy '*' http://127.0.0.1:8147/healthz | grep -q ok"
-		wait_for "agent health dartUp on $node" 30 \
+		wait_for "agent health p2pUp on $node" 30 \
 			kubectl exec -n "$NS" "$pod" -- sh -c \
-				"curl -fsS --noproxy '*' --unix-socket /run/fast-sandbox/firecracker/runtime.sock -H 'Content-Type: application/json' -d '{\"podUid\":\"$uid\",\"namespace\":\"$NS\"}' http://firecracker-agent/v1/health | grep -q '\"dartUp\":true'"
+				"curl -fsS --noproxy '*' --unix-socket /run/fast-sandbox/firecracker/runtime.sock -H 'Content-Type: application/json' -d '{\"podUid\":\"$uid\",\"namespace\":\"$NS\"}' http://firecracker-agent/v1/health | grep -q '\"p2pUp\":true'"
 		log "dart: $node dart pid=$(kubectl exec -n "$NS" "$pod" -- sh -c 'pgrep -x dart')"
 	done
 	# P2P roster: every daemon must see every other runtime pod as a peer

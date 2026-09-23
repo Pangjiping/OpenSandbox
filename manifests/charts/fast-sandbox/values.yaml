@@ -218,7 +218,7 @@ runtime:
   dartPeerPort: 9000
   # -- Agent config (agent.yaml). Empty = the chart default (upstream
   # config/dev/agent-config.yaml with the dart discover URL pointing at
-  # this chart's namespace). socket/stateRoot/registryConfig/dart are
+  # this chart's namespace). socket/stateRoot/registryConfig/p2p are
   # startup-only; the nodeReadiness section (fcVersion, kernelURL,
   # interval, minFree, minMemory) hot-reloads on every readiness pass.
   config: ""
