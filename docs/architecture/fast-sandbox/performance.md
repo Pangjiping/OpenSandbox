@@ -64,19 +64,14 @@ Even at 10-way concurrency, p99 stays under 0.35 s with zero failures. The gap b
 
 #### Serial (one create at a time)
 
-`CONCURRENCY=1`, no between-batch pause — a single client issuing back-to-back creates; this is the floor for unbatched clients and isolates the per-create path from concurrency interference.
-
-::: warning Figures pending
-The serial run has not been measured on the reference host yet. Run the serial command under [Reproducing](#reproducing) and replace the placeholders below with the emitted percentiles.
-:::
+`CONCURRENCY=1`, no between-batch pause — a single client issuing back-to-back creates; this is the floor for unbatched clients and isolates the per-create path from concurrency interference. 0 of 100 creates failed.
 
 | Metric | Measured |
 |---|---|
-| End-to-end create → Ready, 100 runs | p50 TBD · p90 TBD · p99 TBD (avg TBD) |
-| Range | min TBD – max TBD |
-| Reference: untimed warmup creates of the concurrent run (same shape, single create) | 80–100 ms |
+| End-to-end create → Ready, 100 runs | p50 97 ms · p90 116 ms · p99 136 ms (avg 100 ms) |
+| Range | min 75 ms – max 147 ms |
 
-The 80–100 ms warmup reference is the order of magnitude to expect for a warm serial create.
+The serial band lands right on the ~100 ms magnitude suggested by the concurrent run's untimed warmup creates (80–100 ms), at or below the ~115 ms harness-level single-create figure — confirming that the ~235 ms concurrent p50 is concurrency overhead, not a per-create tax.
 
 ## Request latency
 
