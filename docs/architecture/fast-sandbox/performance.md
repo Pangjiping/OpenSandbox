@@ -30,7 +30,8 @@ All figures were measured on a single physical host running the entire integrati
 - **State root**: XFS with `reflink=1` (60 GiB loop device mounted at `/var/lib/fast-sandbox`, backed by NVMe ext4)
 - **Cluster**: kind v0.24.0 on docker 24.0.0, 2 nodes with KVM passthrough
 - **Storage**: MinIO (`minio/minio:latest`) container as the S-compatible artifact store, on the same host
-- **Workload**: `alpine:3.19` golden-image template with `execd` 1.1.0; Firecracker v1.16.1 (integration default)
+- **Pool**: 2 Fastlet pods (pool min/max 2/2), 5 sandbox slots per pod (`MAX_SANDBOXES_PER_POD=5`) — 10 slots total
+- **Workload**: `opensandbox/fsb-sandbox-golden:latest` template source with `execd` `:latest` (integration defaults at measurement time); the harness-level figures predate the golden test image and used an `alpine:3.19` source with `execd` 1.1.0; Firecracker v1.16.1 (integration default)
 
 ## Create
 
@@ -53,7 +54,7 @@ Measured through the full OpenSandbox stack on the same reference host (see [Env
 
 #### Concurrent (batches of 10)
 
-10 concurrent creates across the 2-Fastlet pool, 5 s between batches for slot reclamation. 10-way is this environment's capacity ceiling — the figures below are at-saturation admissions; a larger fan-in queues at the pool instead of scaling out. 0 of 100 creates failed.
+10 concurrent creates across the 2-Fastlet pool (2 × 5 slots), 5 s between batches for slot reclamation — the fan-in matches the pool's 10-slot capacity, so the figures below are at-saturation admissions; a larger fan-in queues at the pool instead of scaling out. 0 of 100 creates failed.
 
 | Metric | Measured |
 |---|---|
