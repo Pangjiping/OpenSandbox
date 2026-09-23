@@ -133,11 +133,11 @@ The pre-baked template path never boots a kernel: the VM resumes from `vmstate.s
 The figures come from the fast-sandbox integration harness. To reproduce:
 
 1. **Host**: bare-metal Linux with KVM passthrough (`/dev/kvm`, `/dev/net/tun`), Docker, Go ≥ 1.25, cgroup v2, and `sudo` for the XFS loop mount (the reference host is described in [Environment](#environment)).
-2. **Source**: clone [fast-sandbox](https://github.com/opensandbox-group/fast-sandbox) and check out the commit pinned by this repository in `manifests/third-party/fast-sandbox.commit` (`d51fa69` at the time of writing):
+2. **Source**: clone [fast-sandbox](https://github.com/opensandbox-group/fast-sandbox) at the commit pinned by this repository — `manifests/third-party/fast-sandbox.commit` is the source of truth, so resolve the SHA from it instead of hardcoding one here:
 
    ```bash
    git clone https://github.com/opensandbox-group/fast-sandbox.git
-   git -C fast-sandbox checkout d51fa6987366e52e87b718684ca7533bc5ecdf0e
+   git -C fast-sandbox checkout "$(sed -n 's/^commit:[[:space:]]*//p' manifests/third-party/fast-sandbox.commit)"
    ```
 
 3. **Environment**: `./scripts/integration-env.sh up` builds the images and brings up the two-node kind cluster (KVM passthrough), the MinIO artifact store, the SandboxTemplate golden image, and the pool.
