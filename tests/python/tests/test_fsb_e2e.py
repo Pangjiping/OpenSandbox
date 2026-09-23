@@ -148,16 +148,22 @@ async def _get_sandbox_info(manager: SandboxManager, sandbox_id: str):
 
 
 async def _http_reachable_on(sandbox: Sandbox, target: str) -> bool:
-    """HTTP-level enforcement probe: busybox wget performs a real HTTPS GET."""
+    """HTTP-level enforcement probe: a real HTTPS GET must succeed.
+
+    curl rather than busybox wget: the fsb-sandbox-golden test image (the
+    default template source of the integration environment) ships curl
+    but no wget, so wget probes fail with "not found" regardless of the
+    egress data plane.
+    """
     result = await sandbox.commands.run(
-        f"wget -T 8 -q -O /dev/null https://{target}"
+        f"curl -fsS -m 8 -o /dev/null https://{target}"
     )
     return result.error is None
 
 
 async def _http_blocked_on(sandbox: Sandbox, target: str) -> bool:
     result = await sandbox.commands.run(
-        f"wget -T 8 -q -O /dev/null https://{target}"
+        f"curl -fsS -m 8 -o /dev/null https://{target}"
     )
     return result.error is not None
 
