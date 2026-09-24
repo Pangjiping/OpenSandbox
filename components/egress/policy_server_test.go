@@ -23,8 +23,10 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alibaba/opensandbox/egress/pkg/constants"
+	"github.com/alibaba/opensandbox/egress/pkg/credentialvault"
 	"github.com/alibaba/opensandbox/egress/pkg/nftables"
 	"github.com/alibaba/opensandbox/egress/pkg/policy"
 	"github.com/stretchr/testify/require"
@@ -49,16 +51,177 @@ func (s *stubProxy) UpdateAlwaysRules(alwaysDeny, alwaysAllow []policy.EgressRul
 	s.allow = append([]policy.EgressRule(nil), alwaysAllow...)
 }
 
-type stubNft struct {
-	err     error
-	calls   int
-	applied *policy.NetworkPolicy
+type stagedTestAlwaysLoader struct {
+	deny, allow    []policy.EgressRule
+	candidateDeny  []policy.EgressRule
+	candidateAllow []policy.EgressRule
+	pending        bool
 }
 
-func (s *stubNft) ApplyStatic(_ context.Context, p *policy.NetworkPolicy) error {
+func (l *stagedTestAlwaysLoader) CurrentRules() (deny, allow []policy.EgressRule) {
+	return append([]policy.EgressRule(nil), l.deny...), append([]policy.EgressRule(nil), l.allow...)
+}
+
+func (l *stagedTestAlwaysLoader) SetCurrentRules(deny, allow []policy.EgressRule) {
+	l.deny = append([]policy.EgressRule(nil), deny...)
+	l.allow = append([]policy.EgressRule(nil), allow...)
+}
+
+func (l *stagedTestAlwaysLoader) RefreshIfDueWithApply(_ time.Time, apply func(deny, allow []policy.EgressRule) error) ([]policy.EgressRule, []policy.EgressRule, bool, error) {
+	if !l.pending {
+		deny, allow := l.CurrentRules()
+		return deny, allow, false, nil
+	}
+	deny := append([]policy.EgressRule(nil), l.candidateDeny...)
+	allow := append([]policy.EgressRule(nil), l.candidateAllow...)
+	if apply != nil {
+		if err := apply(append([]policy.EgressRule(nil), deny...), append([]policy.EgressRule(nil), allow...)); err != nil {
+			return nil, nil, false, err
+		}
+	}
+	l.pending = false
+	return deny, allow, true, nil
+}
+
+type stubNft struct {
+	err         error
+	calls       int
+	applied     *policy.NetworkPolicy
+	onApply     func(*policy.NetworkPolicy)
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (s *stubNft) ApplyStatic(ctx context.Context, p *policy.NetworkPolicy) error {
 	s.calls++
 	s.applied = p
+	s.deadline, s.hasDeadline = ctx.Deadline()
+	if s.onApply != nil {
+		s.onApply(p)
+	}
 	return s.err
+}
+
+func TestReloadAlwaysRules_NftFailurePreservesRulesAndRetriesBeforeProxyPublish(t *testing.T) {
+	oldDeny := []policy.EgressRule{mustRule(t, policy.ActionDeny, "1.1.1.1")}
+	oldAllow := []policy.EgressRule{mustRule(t, policy.ActionAllow, "2.2.2.2")}
+	newDeny := []policy.EgressRule{mustRule(t, policy.ActionDeny, "3.3.3.3")}
+	loader := &stagedTestAlwaysLoader{deny: oldDeny, allow: oldAllow, candidateDeny: newDeny, candidateAllow: oldAllow, pending: true}
+	proxy := &stubProxy{}
+	proxy.UpdateAlwaysRules(oldDeny, oldAllow)
+	nft := &stubNft{err: errors.New("nft apply failed")}
+	nft.onApply = func(applied *policy.NetworkPolicy) {
+		_, _, denyV4, _ := applied.StaticIPSets()
+		require.Contains(t, denyV4, "3.3.3.3", "nft must receive the staged candidate before it is published in memory")
+		deny, allow := loader.CurrentRules()
+		require.Equal(t, oldDeny, deny, "loader rules must not publish before nft accepts the candidate")
+		require.Equal(t, oldAllow, allow)
+		require.Equal(t, oldDeny, proxy.deny, "proxy rules must not publish before nft accepts the candidate")
+		require.Equal(t, oldAllow, proxy.allow)
+	}
+	srv := &policyServer{proxy: proxy, nft: nft, enforcementMode: "dns+nft", alwaysLoader: loader}
+
+	srv.reloadAlwaysRulesJob()
+	deny, allow := loader.CurrentRules()
+	require.Equal(t, oldDeny, deny, "nft failure must preserve loader rules")
+	require.Equal(t, oldAllow, allow)
+	require.Equal(t, oldDeny, proxy.deny, "nft failure must preserve proxy rules")
+	require.Equal(t, oldAllow, proxy.allow)
+
+	nft.err = nil
+	srv.reloadAlwaysRulesJob()
+	deny, allow = loader.CurrentRules()
+	require.Equal(t, newDeny, deny)
+	require.Equal(t, oldAllow, allow)
+	require.Equal(t, newDeny, proxy.deny)
+	require.Equal(t, oldAllow, proxy.allow)
+}
+
+func TestReloadAlwaysRules_UsesSameTelemetryCandidateForNftAndMemory(t *testing.T) {
+	t.Setenv("OTEL_SDK_DISABLED", "")
+	t.Setenv("OTEL_METRICS_EXPORTER", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "https://collector-a.example:4318/v1/metrics")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("HOST_IP", "")
+
+	fileAllow := []policy.EgressRule{mustRule(t, policy.ActionAllow, "file-allow.example")}
+	loader := &stagedTestAlwaysLoader{candidateAllow: fileAllow, pending: true}
+	proxy := &stubProxy{}
+	nft := &stubNft{}
+	nft.onApply = func(*policy.NetworkPolicy) {
+		t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "https://collector-b.example:4318/v1/metrics")
+	}
+	srv := &policyServer{proxy: proxy, nft: nft, enforcementMode: "dns+nft", alwaysLoader: loader}
+
+	srv.reloadAlwaysRulesJob()
+
+	require.NotNil(t, nft.applied)
+	_, _, denyV4, _ := nft.applied.StaticIPSets()
+	require.Empty(t, denyV4)
+	require.Equal(t, []policy.EgressRule{
+		mustRule(t, policy.ActionAllow, "file-allow.example"),
+		mustRule(t, policy.ActionAllow, "collector-a.example"),
+	}, proxy.allow, "memory rules must preserve the telemetry candidate applied to nft")
+	require.Equal(t, proxy.allow, nft.applied.Egress, "nft and proxy must publish the same effective allow rules")
+	deny, allow := loader.CurrentRules()
+	require.Nil(t, deny)
+	require.Equal(t, proxy.allow, allow, "loader current rules must use the same effective candidate")
+}
+
+func TestReloadAlwaysRules_NftApplyHasThirtySecondDeadline(t *testing.T) {
+	deny := []policy.EgressRule{mustRule(t, policy.ActionDeny, "blocked.example")}
+	loader := &stagedTestAlwaysLoader{candidateDeny: deny, pending: true}
+	nft := &stubNft{}
+	srv := &policyServer{proxy: &stubProxy{}, nft: nft, enforcementMode: "dns+nft", alwaysLoader: loader}
+
+	srv.reloadAlwaysRulesJob()
+
+	require.True(t, nft.hasDeadline, "periodic nft application must have a finite deadline")
+	remaining := time.Until(nft.deadline)
+	require.Greater(t, remaining, 20*time.Second, "the deadline should retain the existing 30-second policy apply budget")
+	require.LessOrEqual(t, remaining, 30*time.Second)
+}
+
+func TestReloadAlwaysRules_HoldsVaultMutationBarrierDuringNftApply(t *testing.T) {
+	t.Setenv(constants.EnvMitmproxyTransparent, "true")
+	t.Setenv(constants.EnvEgressMode, constants.PolicyDnsNft)
+	deny := []policy.EgressRule{mustRule(t, policy.ActionDeny, "code.example.com")}
+	loader := &stagedTestAlwaysLoader{candidateDeny: deny, pending: true}
+	proxy := &stubProxy{updated: testCredentialVaultPolicy(t, `{"defaultAction":"deny","egress":[{"action":"allow","target":"code.example.com"}]}`)}
+	nft := &blockingVaultPolicyNft{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	srv := &policyServer{
+		proxy:           proxy,
+		nft:             nft,
+		enforcementMode: "dns+nft",
+		alwaysLoader:    loader,
+		credentialVault: credentialvault.NewStore(nil, func() bool { return true }),
+	}
+	t.Cleanup(nft.unblock)
+
+	reloadDone := make(chan struct{})
+	go func() {
+		srv.reloadAlwaysRulesJob()
+		close(reloadDone)
+	}()
+	select {
+	case <-nft.entered:
+	case <-time.After(time.Second):
+		t.Fatal("periodic reload did not reach nft apply")
+	}
+	if srv.mu.TryLock() {
+		srv.mu.Unlock()
+		t.Fatal("policy mutex should remain held while periodic nft apply is blocked")
+	}
+	nft.unblock()
+	<-reloadDone
+
+	body := `{"credentials":[{"name":"gitlab-token","source":{"type":"inline","value":"secret-token"}}],"bindings":[{"name":"gitlab-api","match":{"hosts":["code.example.com"],"methods":["GET"],"paths":["/api/v8/*"]},"auth":{"type":"apiKey","name":"PRIVATE-TOKEN","credential":"gitlab-token"}}]}`
+	req := httptest.NewRequest(http.MethodPost, "/credential-vault", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:4321"
+	w := httptest.NewRecorder()
+	srv.handleCredentialVault(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Contains(t, w.Body.String(), "is not allowed by egress policy")
 }
 
 func (s *stubNft) AddResolvedDomain(_ context.Context, _ string, _ []nftables.ResolvedIP) error {

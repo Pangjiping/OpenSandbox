@@ -55,23 +55,40 @@ func newAlwaysRuleLoader(refreshInterval time.Duration, denyPath, allowPath stri
 
 // RefreshIfDue reloads from disk when the interval elapsed; changed is true only if file content actually differed.
 func (l *AlwaysRuleLoader) RefreshIfDue(now time.Time) (deny, allow []EgressRule, changed bool, err error) {
+	return l.RefreshIfDueWithApply(now, nil)
+}
+
+// RefreshIfDueWithApply stages both files and invokes apply with an isolated candidate before publishing it.
+// Parse or apply errors leave the active rules, file metadata, and refresh deadline unchanged so the same
+// candidate can be retried immediately.
+func (l *AlwaysRuleLoader) RefreshIfDueWithApply(
+	now time.Time,
+	apply func(deny, allow []EgressRule) error,
+) (deny, allow []EgressRule, changed bool, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if !l.lastCheck.IsZero() && now.Sub(l.lastCheck) < l.refreshInterval {
 		return cloneRules(l.denyState.rules), cloneRules(l.allowState.rules), false, nil
 	}
-	l.lastCheck = now
 
-	denyChanged, err := l.refreshOne(&l.denyState)
+	nextDenyState, denyChanged, err := refreshOneCandidate(l.denyState)
 	if err != nil {
 		return nil, nil, false, err
 	}
-	allowChanged, err := l.refreshOne(&l.allowState)
+	nextAllowState, allowChanged, err := refreshOneCandidate(l.allowState)
 	if err != nil {
 		return nil, nil, false, err
 	}
 	changed = denyChanged || allowChanged
+	if changed && apply != nil {
+		if err := apply(cloneRules(nextDenyState.rules), cloneRules(nextAllowState.rules)); err != nil {
+			return nil, nil, false, err
+		}
+	}
+	l.denyState = nextDenyState
+	l.allowState = nextAllowState
+	l.lastCheck = now
 	return cloneRules(l.denyState.rules), cloneRules(l.allowState.rules), changed, nil
 }
 
@@ -90,35 +107,37 @@ func (l *AlwaysRuleLoader) SetCurrentRules(deny, allow []EgressRule) {
 	l.allowState.rules = cloneRules(allow)
 }
 
-func (l *AlwaysRuleLoader) refreshOne(state *alwaysRuleFileState) (bool, error) {
+func refreshOneCandidate(state alwaysRuleFileState) (alwaysRuleFileState, bool, error) {
 	info, err := os.Stat(state.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			if !state.exists {
-				return false, nil
+				return state, false, nil
 			}
-			state.exists = false
-			state.modTime = time.Time{}
-			state.size = 0
-			state.rules = nil
-			return true, nil
+			next := state
+			next.exists = false
+			next.modTime = time.Time{}
+			next.size = 0
+			next.rules = nil
+			return next, true, nil
 		}
-		return false, err
+		return state, false, err
 	}
 
 	if state.exists && info.ModTime().Equal(state.modTime) && info.Size() == state.size {
-		return false, nil
+		return state, false, nil
 	}
 
 	rules, err := loadAlwaysRuleFile(state.path, state.action)
 	if err != nil {
-		return false, err
+		return state, false, err
 	}
-	state.exists = true
-	state.modTime = info.ModTime()
-	state.size = info.Size()
-	state.rules = rules
-	return true, nil
+	next := state
+	next.exists = true
+	next.modTime = info.ModTime()
+	next.size = info.Size()
+	next.rules = cloneRules(rules)
+	return next, true, nil
 }
 
 func cloneRules(in []EgressRule) []EgressRule {

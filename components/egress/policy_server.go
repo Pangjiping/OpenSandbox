@@ -46,6 +46,12 @@ type policyUpdater interface {
 	UpdateAlwaysRules(alwaysDeny, alwaysAllow []policy.EgressRule)
 }
 
+type alwaysRulesLoader interface {
+	CurrentRules() (deny, allow []policy.EgressRule)
+	SetCurrentRules(deny, allow []policy.EgressRule)
+	RefreshIfDueWithApply(time.Time, func(deny, allow []policy.EgressRule) error) (deny, allow []policy.EgressRule, changed bool, err error)
+}
+
 // nftApplier: static allow/deny sets plus dynamic DNS-learned entries; teardown on shutdown.
 type nftApplier interface {
 	ApplyStatic(context.Context, *policy.NetworkPolicy) error
@@ -175,7 +181,7 @@ type policyServer struct {
 	maxEgressRules  int        // 0 = unlimited; cap len(Egress) for POST/PATCH
 	mu              sync.Mutex // serializes /policy updates with effective-policy reads and Vault writes
 
-	alwaysLoader     *policy.AlwaysRuleLoader
+	alwaysLoader     alwaysRulesLoader
 	stopAlwaysReload chan struct{}
 
 	lastAlwaysFP              uint64
@@ -680,15 +686,7 @@ func (s *policyServer) reloadAlwaysRulesJob() {
 	if !changed {
 		return
 	}
-	current := s.proxy.CurrentPolicy()
 	alwaysDeny, alwaysAllow := s.currentAlwaysRules()
-	merged := policy.MergeAlwaysOverlay(current, alwaysDeny, alwaysAllow)
-	if s.nft != nil {
-		if applyErr := s.nft.ApplyStatic(context.Background(), merged.WithExtraAllowIPs(s.nameserverIPs)); applyErr != nil {
-			log.Warnf("policy API: apply reloaded always rules to nftables failed: %v", applyErr)
-			return
-		}
-	}
 	fp := fingerprintRules(alwaysDeny, alwaysAllow)
 	if s.lastAlwaysFPSet && fp == s.lastAlwaysFP {
 		return
@@ -721,16 +719,35 @@ func (s *policyServer) reloadAlwaysRules() (bool, error) {
 	if s.alwaysLoader == nil {
 		return false, nil
 	}
-	deny, allow, changed, err := s.alwaysLoader.RefreshIfDue(time.Now())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var stagedAllow []policy.EgressRule
+	deny, _, changed, err := s.alwaysLoader.RefreshIfDueWithApply(time.Now(), func(deny, allow []policy.EgressRule) error {
+		stagedAllow = withTelemetryAllow(allow)
+		if s.nft == nil {
+			return nil
+		}
+		current := s.proxy.CurrentPolicy()
+		if current == nil {
+			current = policy.DefaultDenyPolicy()
+		}
+		merged := policy.MergeAlwaysOverlay(current, deny, stagedAllow)
+		nftCtx, nftCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer nftCancel()
+		if err := s.nft.ApplyStatic(nftCtx, merged.WithExtraAllowIPs(s.nameserverIPs)); err != nil {
+			log.Warnf("policy API: apply reloaded always rules to nftables failed: %v", err)
+			return err
+		}
+		return nil
+	})
 	if err != nil {
 		return false, err
 	}
 	if !changed {
 		return false, nil
 	}
-	allow = withTelemetryAllow(allow)
-	s.setAlwaysRules(deny, allow)
-	s.proxy.UpdateAlwaysRules(deny, allow)
+	s.setAlwaysRules(deny, stagedAllow)
+	s.proxy.UpdateAlwaysRules(deny, stagedAllow)
 	return true, nil
 }
 

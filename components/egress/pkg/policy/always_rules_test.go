@@ -15,8 +15,10 @@
 package policy
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,4 +122,91 @@ func TestAlwaysRuleLoader_DeleteFileRemovesRules(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, changed, "file deletion should be treated as rules removed")
 	require.Nil(t, deny)
+}
+
+func TestAlwaysRuleLoader_ParseFailureDoesNotPartiallyPublishEitherFile(t *testing.T) {
+	dir := t.TempDir()
+	denyPath := filepath.Join(dir, "deny.always")
+	allowPath := filepath.Join(dir, "allow.always")
+	require.NoError(t, os.WriteFile(denyPath, []byte("1.1.1.1\n"), 0o644))
+	require.NoError(t, os.WriteFile(allowPath, []byte("2.2.2.2\n"), 0o644))
+	loader := newAlwaysRuleLoader(time.Minute, denyPath, allowPath)
+	t0 := time.Unix(3000, 0)
+	oldDeny, oldAllow, changed, err := loader.RefreshIfDue(t0)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	require.NoError(t, os.WriteFile(denyPath, []byte("3.3.3.3\n"), 0o644))
+	require.NoError(t, os.Chtimes(denyPath, t0.Add(10*time.Second), t0.Add(10*time.Second)))
+	require.NoError(t, os.WriteFile(allowPath, []byte(strings.Repeat("a", 70*1024)), 0o644))
+	require.NoError(t, os.Chtimes(allowPath, t0.Add(10*time.Second), t0.Add(10*time.Second)))
+
+	_, _, _, err = loader.RefreshIfDue(t0.Add(61 * time.Second))
+	require.Error(t, err)
+	deny, allow := loader.CurrentRules()
+	require.Equal(t, oldDeny, deny, "a failed pair parse must preserve the active deny rules")
+	require.Equal(t, oldAllow, allow, "a failed pair parse must preserve the active allow rules")
+}
+
+func TestAlwaysRuleLoader_ParseFailureCanRetryBeforeInterval(t *testing.T) {
+	dir := t.TempDir()
+	denyPath := filepath.Join(dir, "deny.always")
+	allowPath := filepath.Join(dir, "allow.always")
+	require.NoError(t, os.WriteFile(denyPath, []byte("1.1.1.1\n"), 0o644))
+	require.NoError(t, os.WriteFile(allowPath, []byte("2.2.2.2\n"), 0o644))
+	loader := newAlwaysRuleLoader(time.Minute, denyPath, allowPath)
+	t0 := time.Unix(4000, 0)
+	_, _, _, err := loader.RefreshIfDue(t0)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(denyPath, []byte("3.3.3.3\n"), 0o644))
+	require.NoError(t, os.Chtimes(denyPath, t0.Add(10*time.Second), t0.Add(10*time.Second)))
+	require.NoError(t, os.WriteFile(allowPath, []byte(strings.Repeat("a", 70*1024)), 0o644))
+	require.NoError(t, os.Chtimes(allowPath, t0.Add(10*time.Second), t0.Add(10*time.Second)))
+	_, _, _, err = loader.RefreshIfDue(t0.Add(61 * time.Second))
+	require.Error(t, err)
+
+	require.NoError(t, os.WriteFile(allowPath, []byte("4.4.4.4\n"), 0o644))
+	require.NoError(t, os.Chtimes(allowPath, t0.Add(11*time.Second), t0.Add(11*time.Second)))
+	deny, allow, changed, err := loader.RefreshIfDue(t0.Add(62 * time.Second))
+	require.NoError(t, err, "a parse failure must not suppress a retry before the next interval")
+	require.True(t, changed)
+	require.Equal(t, "3.3.3.3", deny[0].Target)
+	require.Equal(t, "4.4.4.4", allow[0].Target)
+}
+
+func TestAlwaysRuleLoader_ApplyFailurePreservesRulesAndCanRetry(t *testing.T) {
+	dir := t.TempDir()
+	denyPath := filepath.Join(dir, "deny.always")
+	allowPath := filepath.Join(dir, "allow.always")
+	require.NoError(t, os.WriteFile(denyPath, []byte("1.1.1.1\n"), 0o644))
+	require.NoError(t, os.WriteFile(allowPath, []byte("2.2.2.2\n"), 0o644))
+	loader := newAlwaysRuleLoader(time.Minute, denyPath, allowPath)
+	t0 := time.Unix(5000, 0)
+	oldDeny, oldAllow, changed, err := loader.RefreshIfDue(t0)
+	require.NoError(t, err)
+	require.True(t, changed)
+
+	require.NoError(t, os.WriteFile(denyPath, []byte("3.3.3.3\n"), 0o644))
+	require.NoError(t, os.Chtimes(denyPath, t0.Add(10*time.Second), t0.Add(10*time.Second)))
+	applyFailure := errors.New("external nft apply failed")
+	_, _, changed, err = loader.RefreshIfDueWithApply(t0.Add(61*time.Second), func(deny, _ []EgressRule) error {
+		require.Equal(t, "3.3.3.3", deny[0].Target)
+		deny[0].Target = "mutated by callback"
+		return applyFailure
+	})
+	require.ErrorIs(t, err, applyFailure)
+	require.False(t, changed)
+	deny, allow := loader.CurrentRules()
+	require.Equal(t, oldDeny, deny, "failed apply must preserve current deny rules")
+	require.Equal(t, oldAllow, allow, "failed apply must preserve current allow rules")
+
+	deny, allow, changed, err = loader.RefreshIfDueWithApply(t0.Add(62*time.Second), func(deny, _ []EgressRule) error {
+		require.Equal(t, "3.3.3.3", deny[0].Target, "retry must receive a fresh candidate")
+		return nil
+	})
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "3.3.3.3", deny[0].Target)
+	require.Equal(t, oldAllow, allow)
 }
