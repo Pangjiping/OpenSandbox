@@ -21,7 +21,7 @@
 # manifests/third-party/fast-sandbox.commit): two-node kind cluster with KVM
 # passthrough → Helm charts/base (sandbox.fast.io CRDs + component RBAC) +
 # charts/fast-sandbox (all-in-one control plane, janitor, node installer,
-# firecracker runtime readiness + DART) → MinIO artifact store → the firecracker-egress-pool
+# firecracker runtime readiness + DART) → RustFS artifact store → the firecracker-egress-pool
 # SandboxPool with the OpenSandbox egress sidecar attached through the
 # Sandbox Actions channel → the source-built OpenSandbox lifecycle server
 # (fsb runtime) and ingress gateway via charts/server and
@@ -52,7 +52,7 @@
 #   WORK                  workspace root        (default /data/fast-sandbox-env when /data exists, else $PWD/.fast-sandbox-env)
 #   KIND_CLUSTER / KIND_NODE_IMAGE / KIND_RETAIN / KIND_SINGLE
 #   DOCKER_MIRROR        comma list injected as docker.io containerd mirrors
-#   MINIO_PORT / MINIO_CONSOLE_PORT / MINIO_AK / MINIO_SK / MINIO_IMAGE / MC_IMAGE / MINIO_ENDPOINT
+#   RUSTFS_PORT / RUSTFS_CONSOLE_PORT / RUSTFS_AK / RUSTFS_SK / RUSTFS_IMAGE / RC_IMAGE / RUSTFS_ENDPOINT
 #   IMAGE_<NAME>         fast-sandbox component image tags
 #   EGRESS_IMAGE         egress image tag        (default docker.io/opensandbox/egress:latest)
 #   SERVER_IMAGE / INGRESS_IMAGE  OpenSandbox server/ingress image tags
@@ -99,22 +99,23 @@ NS="opensandbox-system"
 # builder Pods they spawn live in the dataplane namespace.
 RESOURCE_NS="opensandbox-dataplane"
 
-MINIO_IMAGE="${MINIO_IMAGE:-minio/minio:latest}"
-MC_IMAGE="${MC_IMAGE:-minio/mc:latest}"
-MINIO_PORT="${MINIO_PORT:-19000}"
+RUSTFS_IMAGE="${RUSTFS_IMAGE:-rustfs/rustfs:latest}"
+RC_IMAGE="${RC_IMAGE:-rustfs/rc:latest}"
+RUSTFS_PORT="${RUSTFS_PORT:-19000}"
 # The container always LISTENS on 9000 (guest side of the publish map and
-# the port kind-network clients use via the container IP); MINIO_PORT only
+# the port kind-network clients use via the container IP); RUSTFS_PORT only
 # moves the host-side 127.0.0.1 publish.
-MINIO_CONTAINER_PORT=9000
+RUSTFS_CONTAINER_PORT=9000
 # Console (human-only UI) listens on 9001 in-container; the host-side
 # publish defaults to 19001: 9000/9001 are common host-port collisions.
-MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-19001}"
-MINIO_AK="${MINIO_AK:-integration-env}"
-MINIO_SK="${MINIO_SK:-integration-env-secret}"
-MINIO_BUCKET="sandbox-images"
-MINIO_CONTAINER="${MINIO_CONTAINER:-fast-sandbox-env-minio}"
-MINIO_DATA="$WORK/minio-data"
-MINIO_ENDPOINT="${MINIO_ENDPOINT:-}"   # auto-derived from the kind network
+RUSTFS_CONSOLE_PORT="${RUSTFS_CONSOLE_PORT:-19001}"
+RUSTFS_AK="${RUSTFS_AK:-integration-env}"
+RUSTFS_SK="${RUSTFS_SK:-integration-env-secret}"
+RUSTFS_BUCKET="sandbox-images"
+RUSTFS_CONTAINER="${RUSTFS_CONTAINER:-fast-sandbox-env-rustfs}"
+RUSTFS_DATA="$WORK/rustfs-data"
+RUSTFS_ENDPOINT="${RUSTFS_ENDPOINT:-}"   # auto-derived from the kind network
+RC_CONFIG_DIR="$WORK/rc-config"
 
 SBX_IMAGE="${SBX_IMAGE:-opensandbox/fsb-sandbox-golden:latest}"
 EXECD="${EXECD:-opensandbox/execd:latest}"
@@ -273,7 +274,12 @@ kind_network() { # docker network of the first node container
 	docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$node" | tr ' ' '\n' | grep -v '^$' | head -1
 }
 
-mc() { docker run --rm --network host -v "$WORK/mc-config:/root/.mc" "$MC_IMAGE" "$@"; }
+rc() {
+	docker run --rm --network host --user "$(id -u):$(id -g)" -e RC_CONFIG_DIR=/config \
+		-e HTTP_PROXY= -e HTTPS_PROXY= -e ALL_PROXY= \
+		-e http_proxy= -e https_proxy= -e all_proxy= \
+		-v "$RC_CONFIG_DIR:/config" "$RC_IMAGE" "$@"
+}
 
 # --- failure dump ------------------------------------------------------------------
 
@@ -294,7 +300,7 @@ failure_dump() {
 	mkdir -p "$LOGS_DIR"
 	{
 		echo "=== fast-sandbox-env failure: $task ($(date -u +%FT%TZ)) ==="
-		env | grep -E '^(MINIO|KIND|FSB_|SBX|IMG_|EGRESS|EXECD|WORK|POOL|SERVER|INGRESS|WARM|XFS)' || true
+		env | grep -E '^(KIND_(CLUSTER|SINGLE|RETAIN|NODE_IMAGE)=|FSB_DIR=|SBX_IMAGE=|IMG_[A-Z_]+=|EGRESS_IMAGE=|EXECD=|WORK=|POOL_(NAME|MIN|MAX)=|INGRESS_IMAGE=|WARM_IMAGES=|XFS_(STATEROOT|SIZE)=|RUSTFS_(IMAGE|PORT|CONSOLE_PORT|BUCKET|CONTAINER|DATA|ENDPOINT)=|RC_IMAGE=)' || true
 		echo "--- fast-sandbox checkout ---"
 		git -C "$FSB_DIR" rev-parse HEAD 2>&1 || true
 		echo "--- kind-create.log (tail) ---"
@@ -324,8 +330,8 @@ failure_dump() {
 		kubectl logs -n "$OSB_NS" deploy/opensandbox-ingress-gateway --tail=80 2>&1 || true
 		echo "--- pool ---"
 		kubectl get sandboxpool -n "$RESOURCE_NS" -o yaml 2>&1 || true
-		echo "--- minio docker logs (tail) ---"
-		docker logs "$MINIO_CONTAINER" --tail=80 2>&1 || true
+		echo "--- rustfs docker logs (tail) ---"
+		docker logs "$RUSTFS_CONTAINER" --tail=80 2>&1 || true
 	} > "$dump" 2>&1 || true
 	log "failure dump: $dump"
 }
@@ -421,27 +427,27 @@ preflight() {
 	# Fail fast per heavy-data target instead of ENOSPC mid-run.
 	local min_free_kb=$((20 * 1024 * 1024)) avail_kb target xfs_dir
 	xfs_dir="${XFS_LOOP_FILE%/*}"
-	mkdir -p "$WORK" "$MINIO_DATA" "$xfs_dir" 2>/dev/null || true
-	local -a targets=("$WORK" "$MINIO_DATA" "$xfs_dir")
+	mkdir -p "$WORK" "$RUSTFS_DATA" "$xfs_dir" 2>/dev/null || true
+	local -a targets=("$WORK" "$RUSTFS_DATA" "$xfs_dir")
 	for target in "${targets[@]}"; do
 		avail_kb="$(df -Pk "$target" 2>/dev/null | awk 'NR==2 {print $4}')"
 		[[ "$avail_kb" =~ ^[0-9]+$ ]] || die "cannot determine free disk space on $target"
 		if (( avail_kb < min_free_kb )); then
-			die "$target has $((avail_kb / 1024 / 1024))G free; at least 20G is required (built images, XFS StateRoot, MinIO artifacts). Free space (docker system prune / old kind clusters) or point WORK / MINIO_DATA / XFS_LOOP_FILE at a bigger volume"
+			die "$target has $((avail_kb / 1024 / 1024))G free; at least 20G is required (built images, XFS StateRoot, RustFS artifacts). Free space (docker system prune / old kind clusters) or point WORK / RUSTFS_DATA / XFS_LOOP_FILE at a bigger volume"
 		fi
 		log "disk headroom: $target has $((avail_kb / 1024 / 1024 / 1024))G free"
 	done
 	# Fail fast on busy host ports instead of dying at the docker bind or
-	# kind create. MinIO culprits: a leftover MinIO container; 8080/8081 are
+	# kind create. RustFS culprits: a leftover RustFS container; 8080/8081 are
 	# published by the kind node for the server / ingress gateway.
 	local port
-	for port in "$MINIO_PORT" "$MINIO_CONSOLE_PORT" "$SERVER_HOST_PORT" "$GATEWAY_HOST_PORT"; do
+	for port in "$RUSTFS_PORT" "$RUSTFS_CONSOLE_PORT" "$SERVER_HOST_PORT" "$GATEWAY_HOST_PORT"; do
 		if host_port_busy "$port"; then
-			die "127.0.0.1:$port is already in use (check 'ss -ltnp' / 'docker ps'); free it, or set MINIO_PORT / MINIO_CONSOLE_PORT / SERVER_HOST_PORT / GATEWAY_HOST_PORT"
+			die "127.0.0.1:$port is already in use (check 'ss -ltnp' / 'docker ps'); free it, or set RUSTFS_PORT / RUSTFS_CONSOLE_PORT / SERVER_HOST_PORT / GATEWAY_HOST_PORT"
 		fi
 	done
-	ensure_image "$MINIO_IMAGE"
-	ensure_image "$MC_IMAGE"
+	ensure_image "$RUSTFS_IMAGE"
+	ensure_image "$RC_IMAGE"
 	pass "preflight"
 }
 
@@ -694,60 +700,74 @@ kind_up() {
 	pass "kind cluster ready (KVM passthrough + labels on every node)"
 }
 
-# --- stage: MinIO + credentials ------------------------------------------------------------
+# --- stage: RustFS + credentials ------------------------------------------------------------
 
-minio_up() {
-	docker rm -f "$MINIO_CONTAINER" >/dev/null 2>&1 || true
-	# The MinIO container writes its object store as root, so a previous
-	# run's data can only be purged through sudo_.
-	sudo_ rm -rf "$MINIO_DATA"
-	mkdir -p "$MINIO_DATA"
+rustfs_up() {
+	docker rm -f "$RUSTFS_CONTAINER" >/dev/null 2>&1 || true
+	# RustFS runs as UID/GID 10001 and needs ownership of the bind-mounted store.
+	sudo_ rm -rf "$RUSTFS_DATA"
+	mkdir -p "$RUSTFS_DATA"
+	sudo_ chown -R 10001:10001 "$RUSTFS_DATA"
+	mkdir -p "$RC_CONFIG_DIR"
+	chmod 700 "$RC_CONFIG_DIR"
 	local net
 	net="$(kind_network)"
 	# Joining the kind network avoids docker-proxy/hairpin reachability
 	# issues: pods and the node container talk to the container IP directly,
-	# while 127.0.0.1 publishing keeps host-side mc/curl working.
-	docker run -d --name "$MINIO_CONTAINER" --network "$net" \
-		-p 127.0.0.1:"$MINIO_PORT":"$MINIO_CONTAINER_PORT" -p 127.0.0.1:"$MINIO_CONSOLE_PORT":9001 \
-		-e MINIO_ROOT_USER="$MINIO_AK" -e MINIO_ROOT_PASSWORD="$MINIO_SK" \
-		-v "$MINIO_DATA:/data" \
-		"$MINIO_IMAGE" server /data --console-address ":9001" >/dev/null
+	# while 127.0.0.1 publishing keeps host-side rc/curl working.
+	docker run -d --name "$RUSTFS_CONTAINER" --network "$net" \
+		-p 127.0.0.1:"$RUSTFS_PORT":"$RUSTFS_CONTAINER_PORT" -p 127.0.0.1:"$RUSTFS_CONSOLE_PORT":9001 \
+		-e RUSTFS_ACCESS_KEY="$RUSTFS_AK" -e RUSTFS_SECRET_KEY="$RUSTFS_SK" \
+		-e RUSTFS_ADDRESS=":$RUSTFS_CONTAINER_PORT" \
+		-e RUSTFS_CONSOLE_ADDRESS=:9001 -e RUSTFS_CONSOLE_ENABLE=true \
+		-v "$RUSTFS_DATA:/data" \
+		"$RUSTFS_IMAGE" >/dev/null
 	local attempt
 	for attempt in $(seq 1 30); do
-		if curl -fsS "http://127.0.0.1:$MINIO_PORT/minio/health/live" >/dev/null 2>&1; then break; fi
+		if curl -fsS "http://127.0.0.1:$RUSTFS_PORT/health" >/dev/null 2>&1; then break; fi
 		sleep 1
-		[[ "$attempt" == 30 ]] && die "MinIO did not become healthy"
+		[[ "$attempt" == 30 ]] && die "RustFS did not become healthy"
 	done
+	rc alias set chain "http://127.0.0.1:$RUSTFS_PORT" "$RUSTFS_AK" "$RUSTFS_SK" >/dev/null 2>&1 \
+		|| die "could not configure the RustFS rc alias"
 	for attempt in $(seq 1 30); do
-		if mc alias set chain "http://127.0.0.1:$MINIO_PORT" "$MINIO_AK" "$MINIO_SK" >/dev/null 2>&1; then break; fi
+		if rc ls chain/ >/dev/null 2>&1; then break; fi
 		sleep 1
-		[[ "$attempt" == 30 ]] && die "MinIO S3 API not initialized (mc alias failed)"
+		[[ "$attempt" == 30 ]] && die "RustFS S3 API did not become ready for authenticated bucket listing"
 	done
-	mc mb "chain/$MINIO_BUCKET" >/dev/null
-	pass "MinIO up (bucket=$MINIO_BUCKET)"
+	rc mb "chain/$RUSTFS_BUCKET" >/dev/null
+	pass "RustFS up (bucket=$RUSTFS_BUCKET)"
 }
 
-resolve_minio_endpoint() {
-	if [[ -n "$MINIO_ENDPOINT" ]]; then
-		log "MinIO endpoint (env): $MINIO_ENDPOINT"
+resolve_rustfs_endpoint() {
+	if [[ -n "$RUSTFS_ENDPOINT" ]]; then
+		log "RustFS endpoint (env): $RUSTFS_ENDPOINT"
 	else
 		local net ips ip
 		net="$(kind_network)"
-		ips="$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}} {{end}}' "$MINIO_CONTAINER")"
+		ips="$(docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}} {{end}}' "$RUSTFS_CONTAINER")"
 		ip="$(printf '%s' "$ips" | tr ' ' '\n' | grep -A1 -x "^$net$" | tail -1)"
-		[[ -n "$ip" ]] || die "could not find the MinIO IP on network $net (inspect: $ips)"
-		# Container port, NOT the host-published MINIO_PORT: kind-network
+		[[ -n "$ip" ]] || die "could not find the RustFS IP on network $net (inspect: $ips)"
+		# Container port, NOT the host-published RUSTFS_PORT: kind-network
 		# clients reach the container directly and the S3 API listens on
 		# the fixed container port regardless of the host mapping.
-		MINIO_ENDPOINT="http://$ip:$MINIO_CONTAINER_PORT"
-		log "MinIO endpoint (kind network IP): $MINIO_ENDPOINT"
+		RUSTFS_ENDPOINT="http://$ip:$RUSTFS_CONTAINER_PORT"
+		log "RustFS endpoint (kind network IP): $RUSTFS_ENDPOINT"
 	fi
 	local net
 	net="$(kind_network)"
-	docker run --rm --network "$net" minio/mc alias set chain \
-		"$MINIO_ENDPOINT" "$MINIO_AK" "$MINIO_SK" >/dev/null 2>&1 \
-		|| die "MinIO unreachable from the kind network at $MINIO_ENDPOINT (override MINIO_ENDPOINT)"
-	pass "MinIO reachable from the kind network"
+	docker run --rm --network "$net" --user "$(id -u):$(id -g)" -e RC_CONFIG_DIR=/config \
+		-e HTTP_PROXY= -e HTTPS_PROXY= -e ALL_PROXY= \
+		-e http_proxy= -e https_proxy= -e all_proxy= \
+		-v "$RC_CONFIG_DIR:/config" "$RC_IMAGE" alias set kind-rustfs \
+		"$RUSTFS_ENDPOINT" "$RUSTFS_AK" "$RUSTFS_SK" >/dev/null 2>&1 \
+		|| die "RustFS unreachable from the kind network at $RUSTFS_ENDPOINT (override RUSTFS_ENDPOINT)"
+	docker run --rm --network "$net" --user "$(id -u):$(id -g)" -e RC_CONFIG_DIR=/config \
+		-e HTTP_PROXY= -e HTTPS_PROXY= -e ALL_PROXY= \
+		-e http_proxy= -e https_proxy= -e all_proxy= \
+		-v "$RC_CONFIG_DIR:/config" "$RC_IMAGE" ls "kind-rustfs/$RUSTFS_BUCKET" >/dev/null 2>&1 \
+		|| die "RustFS authenticated bucket access failed from the kind network at $RUSTFS_ENDPOINT"
+	pass "RustFS reachable from the kind network"
 }
 
 # gen_registry compiles the agent registry via fast-sandbox's registryconfig
@@ -798,19 +818,19 @@ credentials_up() {
 	kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	kubectl create namespace "$RESOURCE_NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	local host
-	host="${MINIO_ENDPOINT#http://}"
+	host="${RUSTFS_ENDPOINT#http://}"
 	host="${host#https://}"
 	# Publish credentials: SecretKeyRef'd by the builder Pod (template
 	# stage); builder Pods run next to their SandboxTemplate in the
 	# dataplane namespace.
 	kubectl -n "$RESOURCE_NS" create secret generic sandbox-oss-credentials \
-		--from-literal=accessKeyId="$MINIO_AK" \
-		--from-literal=secretAccessKey="$MINIO_SK" \
-		--from-literal=endpoint="$MINIO_ENDPOINT" \
+		--from-literal=accessKeyId="$RUSTFS_AK" \
+		--from-literal=secretAccessKey="$RUSTFS_SK" \
+		--from-literal=endpoint="$RUSTFS_ENDPOINT" \
 		--from-literal=region=us-east-1 \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	# Agent pull+publish credentials (the write pair covers checkpoints).
-	gen_registry "$host" "$MINIO_AK" "$MINIO_SK" "$MINIO_ENDPOINT" "$MINIO_AK" "$MINIO_SK" \
+	gen_registry "$host" "$RUSTFS_AK" "$RUSTFS_SK" "$RUSTFS_ENDPOINT" "$RUSTFS_AK" "$RUSTFS_SK" \
 		> "$WORK/agent-registry.json"
 	jq -e '.credentials[0].writeUsername' "$WORK/agent-registry.json" >/dev/null \
 		|| die "generated agent registry carries no write credential"
@@ -821,14 +841,14 @@ credentials_up() {
 	# rendered by charts/fast-sandbox at install time.
 	# Pull credentials for the fastlet (pool-compiled registry); fastlets
 	# run in the dataplane namespace.
-	kubectl -n "$RESOURCE_NS" create secret docker-registry registry-minio \
-		--docker-server="$host" --docker-username="$MINIO_AK" --docker-password="$MINIO_SK" \
+	kubectl -n "$RESOURCE_NS" create secret docker-registry registry-rustfs \
+		--docker-server="$host" --docker-username="$RUSTFS_AK" --docker-password="$RUSTFS_SK" \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	kubectl -n "$RESOURCE_NS" create configmap fast-sandbox-registry \
 		--from-literal="registries.yaml=registries:
   - host: $host
     secretRef:
-      name: registry-minio
+      name: registry-rustfs
 " \
 		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
 	pass "credentials written (publish/pull)"
@@ -872,8 +892,8 @@ control_plane_up() {
 		--set janitor.image.tag="$(image_tag "$IMG_JANITOR")" \
 		--set runtime.image.repository="$(image_repo "$IMG_RUNTIME")" \
 		--set runtime.image.tag="$(image_tag "$IMG_RUNTIME")" \
-		--set artifactStore.store="s3://$MINIO_BUCKET/publish" \
-		--set artifactStore.endpoint="$MINIO_ENDPOINT"
+		--set artifactStore.store="s3://$RUSTFS_BUCKET/publish" \
+		--set artifactStore.endpoint="$RUSTFS_ENDPOINT"
 	kubectl apply -f "$GEN_DIR/fast-sandbox.yaml" >/dev/null
 	local image
 	for image in "$IMG_CONTROLLER" "$IMG_FASTLET" "$IMG_FASTLET_PROXY" \
@@ -1011,7 +1031,7 @@ template_up() {
 		|| die "sandboxtemplate-builder image build failed"
 	kind load docker-image "$IMG_BUILDER" --name "$KIND_CLUSTER" >/dev/null
 	local body created
-	body="$(jq -n --arg image "$SBX_IMAGE" --arg publish "s3://$MINIO_BUCKET/publish" '{
+	body="$(jq -n --arg image "$SBX_IMAGE" --arg publish "s3://$RUSTFS_BUCKET/publish" '{
 		image: $image,
 		publish: $publish,
 		format: "native",
@@ -1149,15 +1169,17 @@ pool_up() {
 # traffic the second node must have been fed by the first node's peer.
 p2p_evidence() { # description
 	local description="$1"
-	local pods pod manifest_ref manifest_key build_dir expected_blocks=0
+	local pods pod manifest_ref manifest_key build_dir expected_blocks=0 stat_json
 	local origin_total=0 peer_total=0 cache_total=0 size source value active_nodes=0 node_total
 	manifest_ref="$(server_api GET "/templates/$TEMPLATE_ID" 2>/dev/null | jq -r '.status.manifestRef // empty')"
-	manifest_key="${manifest_ref#s3://$MINIO_BUCKET/}"
+	manifest_key="${manifest_ref#s3://$RUSTFS_BUCKET/}"
 	build_dir="$(dirname "$manifest_key")"
 	local object
 	for object in rootfs.ext4 vmstate.snap memory.snap; do
-		size="$(mc stat --json "chain/$MINIO_BUCKET/$build_dir/$object" 2>/dev/null | jq -r .size)"
-		[[ "$size" =~ ^[0-9]+$ ]] || die "cannot stat published $object (publish incomplete?)"
+		stat_json="$(rc stat --json "chain/$RUSTFS_BUCKET/$build_dir/$object" 2>&1)" \
+			|| die "rc stat failed for published $object (publish incomplete?): $stat_json"
+		size="$(jq -er '.size_bytes | numbers' <<<"$stat_json" 2>/dev/null)" \
+			|| die "rc stat returned no numeric size_bytes for published $object"
 		expected_blocks=$((expected_blocks + (size + 4194303) / 4194304))
 	done
 	pods="$(runtime_pods)"
@@ -1789,6 +1811,9 @@ dart_metrics_summary() {
 }
 
 status() {
+	log "status: RustFS"
+	docker ps --filter "name=$RUSTFS_CONTAINER" --format '{{.Names}} {{.Status}}' 2>/dev/null || true
+	echo
 	log "status: kind cluster / nodes"
 	if kind get clusters 2>/dev/null | grep -x "$KIND_CLUSTER" >/dev/null; then
 		kubectl get nodes -o wide
@@ -1812,9 +1837,6 @@ status() {
 	log "status: DART P2P (block_source cache/peer/origin per node)"
 	dart_metrics_summary || true
 	echo
-	log "status: MinIO"
-	docker ps --filter "name=$MINIO_CONTAINER" --format '{{.Names}} {{.Status}}' 2>/dev/null || true
-	echo
 	log "status: OpenSandbox ($OSB_NS)"
 	if kubectl get namespace "$OSB_NS" >/dev/null 2>&1; then
 		kubectl -n "$OSB_NS" get pods -o wide
@@ -1831,7 +1853,7 @@ env_summary() {
 	highlight "== environment summary =="
 	printf '  %-22s %s\n' "kind cluster" "$KIND_CLUSTER ($(kubectl get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ') nodes)"
 	printf '  %-22s %s\n' "fast-sandbox" "pinned $(git -C "$FSB_DIR" rev-parse --short HEAD 2>/dev/null || echo "$FSB_COMMIT") ($FSB_DIR)"
-	printf '  %-22s %s\n' "MinIO endpoint" "$MINIO_ENDPOINT"
+	printf '  %-22s %s\n' "RustFS endpoint" "$RUSTFS_ENDPOINT"
 	printf '  %-22s %s\n' "pool" "$POOL_NAME (runtime=firecracker, poolMin=$POOL_MIN, egress=$IMG_EGRESS)"
 	printf '  %-22s %s\n' "P2P" "DART daemons=$(printf '%s' "$(runtime_pods)" | wc -w | tr -d ' ') (on-demand pulls: cache -> peer -> origin)"
 	printf '  %-22s %s\n' "template" "${TEMPLATE_ID:-n/a} ($(if [[ -n "$TEMPLATE_ID" ]]; then _template_phase || echo unknown; else echo "not built"; fi))"
@@ -1851,16 +1873,17 @@ down() {
 	fi
 	[[ -z "$(kind get clusters 2>/dev/null | grep -x "$KIND_CLUSTER" || true)" ]] \
 		|| fail "kind cluster $KIND_CLUSTER still exists after delete"
-	docker rm -f "$MINIO_CONTAINER" >/dev/null 2>&1 || true
-	[[ -z "$(docker ps -a --filter "name=$MINIO_CONTAINER" --format '{{.Names}}' || true)" ]] \
-		|| fail "MinIO container still present"
+	docker rm -f "$RUSTFS_CONTAINER" >/dev/null 2>&1 || true
+	[[ -z "$(docker ps -a --filter "name=$RUSTFS_CONTAINER" --format '{{.Names}}' || true)" ]] \
+		|| fail "RustFS container still present"
 	# The OpenSandbox server + ingress gateway live entirely inside the kind
 	# cluster and are torn down with it; only the signing key outlives it here.
 	rm -f "$WORK/agent-registry.json" "$SIGNING_KEY_FILE"
 	rm -rf "$GEN_DIR" "$FSB_GEN_DIR"
-	# Root-owned MinIO object store (written by the container); leaving it
+	# RustFS object store (owned by UID/GID 10001); leaving it
 	# behind pollutes the host and breaks later docker build contexts.
-	sudo_ rm -rf "$MINIO_DATA"
+	sudo_ rm -rf "$RUSTFS_DATA"
+	sudo_ rm -rf "$RC_CONFIG_DIR"
 	sysctl_restore
 	stateroot_xfs_down
 	# Purge the per-node runtime caches the environment owns (each kind
@@ -1889,24 +1912,27 @@ usage() {
 usage: integration-env.sh [--auto-clean] {up|down|status|pool|sdk-e2e}
 
   up       initialize the full environment: fast-sandbox@pinned-commit images,
-           two-node kind cluster (KVM), MinIO, control plane, firecracker
+           two-node kind cluster (KVM), RustFS, control plane, firecracker
            firecracker runtime readiness + DART (P2P), SandboxTemplate golden
            image, firecracker-egress-pool (egress attached), the
            source-built OpenSandbox server + ingress gateway, and
            end-to-end verifies (create -> gateway route -> execd /ping,
            plus a pause/resume round-trip through the checkpoint).
   pool     re-apply only the SandboxPool (after editing manifests/pool/)
-  status   nodes / pods / pool / DART P2P counters / MinIO / OpenSandbox health
+  status   nodes / pods / pool / DART P2P counters / RustFS / OpenSandbox health
   sdk-e2e  run the Python SDK e2e suite (tests/python/tests/test_fsb_e2e.py)
            against the live stack; requires `up` (template id at
            $WORK/template-id) and uv on PATH. Extra pytest args go through
            PYTEST_ADDOPTS.
-  down     teardown: kind cluster + MinIO + sysctl + XFS StateRoot + caches
+  down     teardown: kind cluster + RustFS + sysctl + XFS StateRoot + caches
 
   --auto-clean  on up failure, run down automatically before dumping logs
 
+  The RustFS migration replaces MINIO_* and MC_IMAGE overrides. Before
+  upgrading an existing environment, run `down` with the previous script.
+
 Notable env overrides: WORK, FSB_DIR, KIND_CLUSTER, KIND_SINGLE,
-DOCKER_MIRROR, MINIO_*, EGRESS_IMAGE, SERVER_IMAGE, INGRESS_IMAGE,
+DOCKER_MIRROR, RUSTFS_*, RC_IMAGE, EGRESS_IMAGE, SERVER_IMAGE, INGRESS_IMAGE,
 FSB_GOPROXY (default direct; set e.g. https://mirrors.aliyun.com/goproxy/,direct
 when the host cannot reach module VCS hosts directly),
 IMAGE_<COMPONENT>, POOL_MIN/POOL_MAX, WARM_IMAGES=1, SBX_IMAGE, EXECD,
@@ -1937,14 +1963,14 @@ case "$ACTION" in
 			kubectl version --client 2>/dev/null | head -1
 			go version
 			docker --version
-			echo "cluster=$KIND_CLUSTER single=$KIND_SINGLE minio=$MINIO_IMAGE port=$MINIO_PORT bucket=$MINIO_BUCKET"
+			echo "cluster=$KIND_CLUSTER single=$KIND_SINGLE rustfs=$RUSTFS_IMAGE port=$RUSTFS_PORT bucket=$RUSTFS_BUCKET"
 			echo "sbxImage=$SBX_IMAGE execd=$EXECD warmImages=$WARM_IMAGES"
 			echo "pool=$POOL_NAME poolMin=$POOL_MIN egress=$IMG_EGRESS"
 			echo "server=$IMG_SERVER ingress=$IMG_INGRESS fastpath=$FASTPATH_ENDPOINT"
 			echo "images: controller=$IMG_CONTROLLER runtime=$IMG_RUNTIME"
 		} > "$LOGS_DIR/environment.txt" 2>&1 || true
 		if [[ -n "$(kind get clusters 2>/dev/null | grep -x "$KIND_CLUSTER" || true)" ]] \
-			|| docker ps -a --format '{{.Names}}' | grep -qx "$MINIO_CONTAINER"; then
+			|| docker ps -a --format '{{.Names}}' | grep -qx "$RUSTFS_CONTAINER"; then
 			if [[ "$SKIP_LEFTOVER_CLEAN" == 1 ]]; then
 				log "leftover resources detected; aborting (SKIP_LEFTOVER_CLEAN=1). Run 'integration-env.sh down' first"
 				exit 1
@@ -1960,8 +1986,8 @@ case "$ACTION" in
 		run_stage "XFS StateRoot (reflink)" stateroot_xfs_up
 		run_stage "render kind config" render_kind_config
 		run_stage "kind cluster (KVM passthrough + labels)" kind_up
-		run_stage "MinIO + bucket" minio_up
-		run_stage "MinIO endpoint (kind network)" resolve_minio_endpoint
+		run_stage "RustFS + bucket" rustfs_up
+		run_stage "RustFS endpoint (kind network)" resolve_rustfs_endpoint
 		run_stage "CRDs + control plane" control_plane_up
 		run_stage "credentials (publish/pull)" credentials_up
 		run_stage "firecracker runtime readiness + DART (P2P)" runtime_up

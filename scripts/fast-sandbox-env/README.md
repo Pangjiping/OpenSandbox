@@ -127,7 +127,7 @@ applied with plain `kubectl apply` — the cluster keeps no helm state:
 preflight → sysctl → fast-sandbox checkout (pinned commit) → build images
 (6 fast-sandbox images via `manifests/release/build-fast-sandbox.sh` +
 egress + server + ingress) → XFS StateRoot → kind cluster + node labels
-(host ports 18080/18081) → MinIO → charts rendered + applied: base +
+(host ports 18080/18081) → RustFS → charts rendered + applied: base +
 fast-sandbox (CRDs, RBAC, control plane, installer, agent) → credentials →
 installer/agent roster asserted → charts rendered + applied: server +
 ingress gateway → SandboxTemplate golden image
@@ -143,9 +143,12 @@ Every stage logs to `$WORK/logs/`; failures dump component logs to
 
 ## Environment variables (selection)
 
+The RustFS migration replaces the previous `MINIO_*` and `MC_IMAGE` overrides.
+Before upgrading an existing environment, run `down` with the previous script.
+
 | Variable | Default | Meaning |
 |---|---|---|
-| `WORK` | `/data/fast-sandbox-env` when `/data` exists, else `$PWD/.fast-sandbox-env` | workspace + logs + XFS loop + MinIO data (heavy: prefer a big volume) |
+| `WORK` | `/data/fast-sandbox-env` when `/data` exists, else `$PWD/.fast-sandbox-env` | workspace + logs + XFS loop + RustFS data (heavy: prefer a big volume) |
 | `FSB_DIR` | `$WORK/fast-sandbox` | fast-sandbox checkout (env-owned clone, created when missing) |
 | `KIND_CLUSTER` | `fast-sandbox-integration` | kind cluster name |
 | `KIND_SINGLE` | `0` | `1` = single node (cache-only, no peer traffic) |
@@ -159,6 +162,9 @@ Every stage logs to `$WORK/logs/`; failures dump component logs to
 | `POOL_MIN` / `POOL_MAX` | `2` / `2` | pool capacity (auto `1`/`1` when `KIND_SINGLE=1`) |
 | `WARM_IMAGES` | `0` | `1` = preheat pool instead of on-demand first-sandbox pull |
 | `SBX_IMAGE` / `EXECD` | `opensandbox/fsb-sandbox-golden:latest` / `opensandbox/execd:latest` | template build inputs |
-| `MINIO_PORT` | `9000` | host-side publish; in-cluster clients always use the container port |
-| `MINIO_CONSOLE_PORT` | `9001` | host-side MinIO console publish (human-only; override on port collision) |
+| `RUSTFS_IMAGE` / `RC_IMAGE` | `rustfs/rustfs:latest` / `rustfs/rc:latest` | RustFS server and CLI images |
+| `RUSTFS_PORT` | `19000` | host-side S3 API publish; in-cluster clients use the RustFS container IP on port `9000` |
+| `RUSTFS_CONSOLE_PORT` | `19001` | host-side RustFS console publish (human-only; override on port collision) |
+| `RUSTFS_AK` / `RUSTFS_SK` | `integration-env` / `integration-env-secret` | local S3 credentials |
+| `RUSTFS_ENDPOINT` | auto-discovered kind-network IP on port `9000` | endpoint used by the fast-sandbox and OpenSandbox components |
 | `XFS_STATEROOT` / `XFS_SIZE` | `1` / `24G` | reflink StateRoot on/off, virtual size |
