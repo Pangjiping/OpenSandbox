@@ -32,7 +32,7 @@ var (
 	// ServerAccessToken guards API entrypoints when set.
 	ServerAccessToken string
 
-	// ApiGracefulShutdownTimeout bounds the fallback wait for execution callbacks.
+	// ApiGracefulShutdownTimeout waits before tearing down SSE streams.
 	ApiGracefulShutdownTimeout time.Duration
 
 	// JupyterIdlePollInterval controls how often ExecuteCodeStream checks for
