@@ -847,10 +847,14 @@ prepare/commit transaction, and returns only after the coordinator confirms the
 exact identity. It can also reconcile an indeterminate bootstrap through
 metadata-only readback and exact commit/abort retries: a confirmed identity
 completes bootstrap, while a confirmed non-activation returns to an idle state
-that permits a new candidate. Connection teardown and the public Vault mutation
-path remain unwired. Durable recovery intent after a complete sidecar
-replacement and ProcessSession-backed atomic public-store finalization under
-the shared mutation barrier remain integration work.
+that permits a new candidate. When a candidate allocated by `Apply` has an
+indeterminate prepare/abort or commit outcome, the call returns that exact
+attempt identity with `ErrIndeterminate`; that identity is not proof of
+activation, and the caller must compare it exactly with a later reconciliation
+result before publishing. This preserves attempt identity at the coordinator
+boundary only; ProcessSession-backed public mutation and atomic public-store
+finalization, along with connection fencing, remain unwired. Durable recovery
+intent after a complete sidecar replacement remains integration work.
 
 The Go Vault store can now prepare unpublished create, patch, and delete
 candidates. A candidate freezes its rendered `ActiveSnapshot` before commit,
