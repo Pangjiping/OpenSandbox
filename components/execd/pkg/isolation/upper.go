@@ -166,7 +166,7 @@ func (m *UpperManager) AllocateN(n int) (sessionID string, pairs []UpperDirPair,
 	id := newSessionID()
 	sessionDir := filepath.Join(m.root, id)
 	pairs = make([]UpperDirPair, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		upperName, workName := "upper", "work"
 		if i > 0 {
 			upperName = fmt.Sprintf("upper-%d", i)
@@ -176,11 +176,12 @@ func (m *UpperManager) AllocateN(n int) (sessionID string, pairs []UpperDirPair,
 		workDir := filepath.Join(sessionDir, workName)
 
 		if err := os.MkdirAll(upperDir, 0o755); err != nil {
-			m.removeAll(sessionDir)
+			// Best-effort rollback of the partially allocated session dir.
+			_ = m.removeAll(sessionDir)
 			return "", nil, fmt.Errorf("upper: mkdir %s: %w", upperDir, err)
 		}
 		if err := os.MkdirAll(workDir, 0o755); err != nil {
-			m.removeAll(sessionDir)
+			_ = m.removeAll(sessionDir)
 			return "", nil, fmt.Errorf("upper: mkdir %s: %w", workDir, err)
 		}
 		pairs = append(pairs, UpperDirPair{UpperDir: upperDir, WorkDir: workDir})

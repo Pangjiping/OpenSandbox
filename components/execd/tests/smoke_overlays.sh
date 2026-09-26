@@ -40,18 +40,6 @@ set -euo pipefail
 # need a real local filesystem, not a bind mount or network share.
 SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/smoke-overlays.XXXXXX")"
 
-cleanup() {
-  echo ">> Cleaning up..."
-  rm -rf "${SMOKE_DIR}"
-}
-trap cleanup EXIT
-
-BWRAP="${BWRAP_BIN:-$(command -v bwrap 2>/dev/null || true)}"
-if [ -z "${BWRAP}" ]; then
-  echo ">> bwrap not found (set BWRAP_BIN or install bwrap v0.11+)."
-  exit 1
-fi
-
 # Namespace creation needs root (or accept a degraded unprivileged path).
 SUDO=""
 if [ "$(id -u)" != "0" ]; then
@@ -61,6 +49,20 @@ if [ "$(id -u)" != "0" ]; then
     echo ">> SKIPPED: overlay smoke needs root and passwordless sudo is unavailable."
     exit 0
   fi
+fi
+
+cleanup() {
+  echo ">> Cleaning up..."
+  # In-namespace writes run via $SUDO, so upper files may be root-owned.
+  # Never let cleanup failure mask the test result.
+  $SUDO rm -rf "${SMOKE_DIR}" || true
+}
+trap cleanup EXIT
+
+BWRAP="${BWRAP_BIN:-$(command -v bwrap 2>/dev/null || true)}"
+if [ -z "${BWRAP}" ]; then
+  echo ">> bwrap not found (set BWRAP_BIN or install bwrap v0.11+)."
+  exit 1
 fi
 
 echo ">> bwrap: $("${BWRAP}" --version 2>&1)"
