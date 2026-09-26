@@ -535,7 +535,7 @@ curl -X POST http://localhost:5758/tasks -d '{"name":"test","process":{"command"
 
 ## Telemetry
 
-The controller emits OpenTelemetry metrics for the pool allocation path and capacity gauges, with configurable OTLP export (`--otel-endpoint` / `--otel-headers` / `--otel-export-interval` or standard `OTEL_*` environment variables). See [docs/telemetry.md](./docs/telemetry.md) for the signal specification and configuration guide.
+The controller emits OpenTelemetry metrics for the pool allocation path and capacity gauges, with OTLP export configured through standard `OTEL_*` environment variables (e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`). See [docs/telemetry.md](./docs/telemetry.md) for the signal specification and configuration guide.
 
 ## Contributing
 

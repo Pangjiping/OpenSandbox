@@ -77,22 +77,28 @@ signals; the controller does not emit competing custom versions.
 ## Enabling OTLP export
 
 All controller metrics export through one process-wide global OTel meter
-provider, configured via controller flags (or standard `OTEL_*` environment
-variables):
+provider. There are no controller-specific flags: export is configured through
+the standard OpenTelemetry environment variables, parsed by the OTel SDK
+itself.
 
-| Flag | Environment fallback | Default | Description |
-|---|---|---|---|
-| `--otel-endpoint` | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, then `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty = disabled) | Absolute OTLP/HTTP URL, e.g. `http://otel-collector:4318`. A URL without a path targets the default `/v1/metrics` path. |
-| `--otel-headers` | (exporter default: `OTEL_EXPORTER_OTLP_HEADERS`) | (empty) | Comma-separated `key=value` headers attached to export requests, e.g. `authorization=Bearer abc`. |
-| `--otel-export-interval` | — | `60s` | Interval between OTLP metric exports. |
+| Environment variable | Default | Description |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | (unset) | Per-signal OTLP/HTTP endpoint, used as-is (no path appended). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | (unset) | Generic OTLP/HTTP endpoint, used as a base URL; `/v1/metrics` is appended when no path is present. Takes effect when the metrics-specific variable is unset. |
+| `OTEL_EXPORTER_OTLP_METRICS_HEADERS` / `OTEL_EXPORTER_OTLP_HEADERS` | (unset) | W3C Baggage-style `key1=value1,key2=value2` headers attached to export requests. |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `60000` (ms) | Interval between OTLP metric exports. |
+| `OTEL_SERVICE_NAME` | `opensandbox-controller` | `service.name` resource attribute. |
+| `OTEL_RESOURCE_ATTRIBUTES` | (unset) | Additional resource attributes (`key1=value1,key2=value2`). |
+| `OTEL_SDK_DISABLED` / `OTEL_METRICS_EXPORTER` | (unset) | Set `OTEL_SDK_DISABLED=true`, or set `OTEL_METRICS_EXPORTER` to a comma-separated list that does not include `otlp` (the only exporter implemented), to disable export. |
 
-Example:
+Example (Kubernetes container env):
 
-```bash
-/controller \
-  --otel-endpoint=http://otel-collector.observability:4318 \
-  --otel-headers='authorization=Bearer token' \
-  --otel-export-interval=30s
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: http://otel-collector.observability:4318
+  - name: OTEL_METRIC_EXPORT_INTERVAL
+    value: "30000"
 ```
 
 Behavior:
@@ -118,7 +124,7 @@ controller_allocator_schedule_duration_seconds{namespace="default",pool_name="po
 
 ## Testing
 
-- `internal/telemetry/telemetry_test.go` — provider/exporter wiring, flag/env
-  parsing, and an end-to-end export against a local HTTP server.
+- `internal/telemetry/telemetry_test.go` — provider/exporter wiring, env-var
+  handling, and an end-to-end export against a local HTTP server.
 - `internal/controller/metrics_test.go` — metric emission, attribute sets,
   unit, and the absence of the `sandbox_name` attribute.

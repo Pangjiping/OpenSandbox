@@ -13,6 +13,8 @@
 // limitations under the License.
 
 // Package telemetry provides OpenTelemetry setup for the sandbox controller.
+// Export is configured through standard OTEL_* environment variables; see
+// docs/telemetry.md.
 package telemetry
 
 import (
@@ -21,7 +23,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -31,59 +32,58 @@ import (
 )
 
 const (
-	// ServiceName identifies the controller in telemetry backends.
-	ServiceName = "opensandbox-controller"
+	// DefaultServiceName is used when OTEL_SERVICE_NAME is not set.
+	DefaultServiceName = "opensandbox-controller"
 
-	// MetricsEndpointEnv is the metrics-specific OTLP endpoint environment variable.
+	// MetricsEndpointEnv and EndpointEnv are the standard OTLP endpoint
+	// variables, kept exported for the startup log.
 	MetricsEndpointEnv = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
-	// EndpointEnv is the generic OTLP endpoint environment variable.
-	EndpointEnv = "OTEL_EXPORTER_OTLP_ENDPOINT"
+	EndpointEnv        = "OTEL_EXPORTER_OTLP_ENDPOINT"
 
-	// DefaultExportInterval matches the OTel periodic reader default.
-	DefaultExportInterval = 60 * time.Second
+	serviceNameEnv = "OTEL_SERVICE_NAME"
+	sdkDisabledEnv = "OTEL_SDK_DISABLED"
+	exporterEnv    = "OTEL_METRICS_EXPORTER"
 )
 
-// Config holds the OTLP export configuration for the controller.
-type Config struct {
-	// Endpoint is an absolute OTLP/HTTP URL, e.g. "http://collector:4318".
-	// The default "/v1/metrics" path is appended when the URL has no path.
-	// Empty disables export.
-	Endpoint string
-	// Headers are attached to every OTLP export request. When empty, the
-	// exporter falls back to OTEL_EXPORTER_OTLP_HEADERS / OTEL_EXPORTER_OTLP_METRICS_HEADERS.
-	Headers map[string]string
-	// Interval is the metric export interval. Defaults to DefaultExportInterval.
-	Interval time.Duration
+// Setup installs the global meter provider backed by an OTLP/HTTP exporter
+// configured through standard OTEL_* environment variables, parsed by the OTel
+// SDK. It reports whether export is enabled, and the returned shutdown flushes
+// pending data. When disabled, the no-op provider stays installed and shutdown
+// is a no-op.
+func Setup(ctx context.Context) (enabled bool, shutdown func(context.Context) error, err error) {
+	if exportDisabled() || (strings.TrimSpace(os.Getenv(MetricsEndpointEnv)) == "" &&
+		strings.TrimSpace(os.Getenv(EndpointEnv)) == "") {
+		return false, func(context.Context) error { return nil }, nil
+	}
+
+	// No exporter options: the SDK applies the standard OTEL_* env contract.
+	exporter, err := otlpmetrichttp.New(ctx)
+	if err != nil {
+		return false, noopShutdown(), fmt.Errorf("failed to create OTLP metric exporter: %w", err)
+	}
+
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewSchemaless(semconv.ServiceName(serviceName())),
+	)
+	if err != nil {
+		_ = exporter.Shutdown(ctx)
+		return false, noopShutdown(), fmt.Errorf("failed to build telemetry resource: %w", err)
+	}
+
+	provider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithResource(res),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)),
+	)
+	otel.SetMeterProvider(provider)
+	return true, provider.Shutdown, nil
 }
 
-// EndpointFromEnv returns the OTLP endpoint configured through environment
-// variables, preferring the metrics-specific variable. Returns "" if unset.
-func EndpointFromEnv() string {
-	if endpoint := strings.TrimSpace(os.Getenv(MetricsEndpointEnv)); endpoint != "" {
-		return endpoint
-	}
-	return strings.TrimSpace(os.Getenv(EndpointEnv))
+func noopShutdown() func(context.Context) error {
+	return func(context.Context) error { return nil }
 }
 
-// ParseHeaders parses a comma-separated "key=value" header string.
-func ParseHeaders(raw string) (map[string]string, error) {
-	headers := make(map[string]string)
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return headers, nil
-	}
-	for _, pair := range strings.Split(raw, ",") {
-		kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-		if len(kv) != 2 || kv[0] == "" || kv[1] == "" {
-			return nil, fmt.Errorf("invalid OTLP header %q, expected format: key=value", pair)
-		}
-		headers[kv[0]] = kv[1]
-	}
-	return headers, nil
-}
-
-// SanitizeEndpoint returns the endpoint with any userinfo, query string, or
-// fragment removed so it is safe to log.
+// SanitizeEndpoint strips userinfo, query, and fragment so an endpoint is safe to log.
 func SanitizeEndpoint(endpoint string) string {
 	parsed, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -96,79 +96,28 @@ func SanitizeEndpoint(endpoint string) string {
 	return parsed.String()
 }
 
-// Setup installs the global OpenTelemetry meter provider backed by an
-// OTLP/HTTP metric exporter. It returns a shutdown function that flushes
-// pending data; the caller must invoke it for graceful shutdown.
-//
-// When Config.Endpoint is empty, export is disabled and the returned shutdown
-// is a no-op; instruments then record into the default no-op provider.
-func Setup(ctx context.Context, cfg Config) (func(context.Context) error, error) {
-	if cfg.Endpoint == "" {
-		return func(context.Context) error { return nil }, nil
+// serviceName honors OTEL_SERVICE_NAME with a controller default.
+func serviceName() string {
+	if name := strings.TrimSpace(os.Getenv(serviceNameEnv)); name != "" {
+		return name
 	}
-	if cfg.Interval <= 0 {
-		cfg.Interval = DefaultExportInterval
-	}
-
-	exporter, err := newExporter(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewSchemaless(semconv.ServiceName(ServiceName)),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build telemetry resource: %w", err)
-	}
-
-	provider := sdkmetric.NewMeterProvider(
-		sdkmetric.WithResource(res),
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(cfg.Interval))),
-	)
-	otel.SetMeterProvider(provider)
-	return provider.Shutdown, nil
+	return DefaultServiceName
 }
 
-// newExporter builds an OTLP/HTTP exporter from the config. Endpoint-less
-// options are omitted so the exporter keeps reading standard OTEL_* environment
-// variables for those settings.
-func newExporter(ctx context.Context, cfg Config) (*otlpmetrichttp.Exporter, error) {
-	opts := []otlpmetrichttp.Option{}
-	if cfg.Endpoint != "" {
-		options, err := endpointOptions(cfg.Endpoint)
-		if err != nil {
-			return nil, err
+// exportDisabled reports whether OTEL_SDK_DISABLED=true or OTEL_METRICS_EXPORTER
+// (a comma-separated list) does not include otlp, the only exporter implemented.
+func exportDisabled() bool {
+	if strings.EqualFold(os.Getenv(sdkDisabledEnv), "true") {
+		return true
+	}
+	raw := strings.TrimSpace(os.Getenv(exporterEnv))
+	if raw == "" {
+		return false
+	}
+	for _, exporter := range strings.Split(raw, ",") {
+		if strings.EqualFold(strings.TrimSpace(exporter), "otlp") {
+			return false
 		}
-		opts = append(opts, options...)
 	}
-	if len(cfg.Headers) > 0 {
-		opts = append(opts, otlpmetrichttp.WithHeaders(cfg.Headers))
-	}
-	exporter, err := otlpmetrichttp.New(ctx, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create OTLP metric exporter: %w", err)
-	}
-	return exporter, nil
-}
-
-// endpointOptions maps an absolute OTLP/HTTP URL onto exporter options. A URL
-// without a path keeps the exporter default "/v1/metrics" path.
-func endpointOptions(endpoint string) ([]otlpmetrichttp.Option, error) {
-	parsed, err := url.Parse(strings.TrimSpace(endpoint))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, fmt.Errorf("invalid OTLP endpoint %q, expected an absolute http(s) URL", endpoint)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, fmt.Errorf("invalid OTLP endpoint scheme %q, expected http or https", parsed.Scheme)
-	}
-	if parsed.Path == "" || parsed.Path == "/" {
-		options := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpoint(parsed.Host)}
-		if parsed.Scheme != "https" {
-			options = append(options, otlpmetrichttp.WithInsecure())
-		}
-		return options, nil
-	}
-	return []otlpmetrichttp.Option{otlpmetrichttp.WithEndpointURL(parsed.String())}, nil
+	return true
 }

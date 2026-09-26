@@ -48,18 +48,6 @@ controller:
     # to serve plain HTTP for scraping without TLS/RBAC (e.g. PodMonitoring).
     secure: false
 
-  # -- OpenTelemetry OTLP export configuration for allocator metrics.
-  # See kubernetes/docs/telemetry.md for the signal specification.
-  otel:
-    # -- Absolute OTLP/HTTP endpoint URL (e.g. http://otel-collector:4318). Sets `--otel-endpoint`.
-    # Falls back to OTEL_EXPORTER_OTLP_METRICS_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT. Empty disables export.
-    endpoint: ""
-    # -- Comma-separated key=value headers attached to OTLP export requests (sets `--otel-headers`),
-    # e.g. "authorization=Bearer abc".
-    headers: ""
-    # -- Interval between OTLP metric exports (sets `--otel-export-interval`).
-    exportInterval: "60s"
-
   # -- Kubernetes client rate limiter configuration
   kubeClient:
     # -- QPS for Kubernetes client rate limiter.
