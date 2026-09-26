@@ -76,6 +76,10 @@ The following table lists the configurable parameters of the chart and their def
 | controller.metrics.port | int | `8080` | Port for the metrics endpoint |
 | controller.metrics.secure | bool | `false` | Serve metrics over HTTPS with authn/authz (`--metrics-secure`). Set to false to serve plain HTTP for scraping without TLS/RBAC (e.g. PodMonitoring). |
 | controller.nodeSelector | object | `{}` | Node labels for controller pod assignment |
+| controller.otel | object | `{"endpoint":"","exportInterval":"60s","headers":""}` | OpenTelemetry OTLP export configuration for allocator metrics. See kubernetes/docs/telemetry.md for the signal specification. |
+| controller.otel.endpoint | string | `""` | Absolute OTLP/HTTP endpoint URL (e.g. http://otel-collector:4318). Sets `--otel-endpoint`. Falls back to OTEL_EXPORTER_OTLP_METRICS_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT. Empty disables export. |
+| controller.otel.exportInterval | string | `"60s"` | Interval between OTLP metric exports (sets `--otel-export-interval`). |
+| controller.otel.headers | string | `""` | Comma-separated key=value headers attached to OTLP export requests (sets `--otel-headers`), e.g. "authorization=Bearer abc". |
 | controller.podAnnotations | object | `{}` | Additional annotations for controller pods |
 | controller.podLabels | object | `{}` | Additional labels for controller pods |
 | controller.podSecurityContext | object | `{"runAsNonRoot":true,"seccompProfile":{"type":"RuntimeDefault"}}` | Pod security context |

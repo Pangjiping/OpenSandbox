@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -44,6 +45,7 @@ import (
 	sandboxv1alpha1 "github.com/alibaba/OpenSandbox/sandbox-k8s/apis/sandbox/v1alpha1"
 	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/controller"
 	poolassign "github.com/alibaba/OpenSandbox/sandbox-k8s/internal/controller/poolassign"
+	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/telemetry"
 	cryptoutil "github.com/alibaba/OpenSandbox/sandbox-k8s/internal/utils/crypto"
 	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/utils/expectations"
 	"github.com/alibaba/OpenSandbox/sandbox-k8s/internal/utils/fieldindex"
@@ -59,6 +61,8 @@ var (
 const (
 	defaultBatchSandboxConcurrency = 32
 	defaultPoolConcurrency         = 16
+	// telemetryShutdownTimeout bounds the final OTLP flush on shutdown.
+	telemetryShutdownTimeout = 5 * time.Second
 )
 
 type ConcurrencyConfig map[string]int
@@ -231,6 +235,15 @@ func main() {
 	var resumePullSecret string
 	flag.StringVar(&resumePullSecret, "resume-pull-secret", "", "K8s Secret name for pulling snapshot images during resume.")
 
+	// OpenTelemetry export options
+	var otelEndpoint string
+	var otelHeaders string
+	var otelExportInterval time.Duration
+	flag.StringVar(&otelEndpoint, "otel-endpoint", "", "Absolute OTLP/HTTP endpoint URL for metric export (e.g. http://collector:4318). "+
+		"Falls back to OTEL_EXPORTER_OTLP_METRICS_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT. Empty disables OTel export.")
+	flag.StringVar(&otelHeaders, "otel-headers", "", "Comma-separated key=value headers attached to OTLP export requests.")
+	flag.DurationVar(&otelExportInterval, "otel-export-interval", telemetry.DefaultExportInterval, "Interval between OTLP metric exports.")
+
 	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 
@@ -252,6 +265,8 @@ func main() {
 	ctrl.SetLogger(logger)
 
 	setupLog.Info("Starting controller", "commitID", commitID, "buildDate", buildDate)
+
+	otelShutdown := setupTelemetry(otelEndpoint, otelHeaders, otelExportInterval)
 
 	imageCommitterPodTemplate, err := loadImageCommitterPodTemplate(imageCommitterPodTemplateFile)
 	if err != nil {
@@ -516,10 +531,46 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
+	startErr := mgr.Start(ctrl.SetupSignalHandler())
+	// Flush pending telemetry data before exiting; the manager only returns
+	// after its context is canceled (SIGTERM/SIGINT), so this is the last
+	// chance to export in-flight measurements.
+	flushCtx, cancel := context.WithTimeout(context.Background(), telemetryShutdownTimeout)
+	defer cancel()
+	if err := otelShutdown(flushCtx); err != nil {
+		setupLog.Error(err, "failed to flush OpenTelemetry data on shutdown")
+	}
+	if startErr != nil {
+		setupLog.Error(startErr, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// setupTelemetry initializes OpenTelemetry metric export. Failures never block
+// controller startup; telemetry degrades to the no-op provider instead.
+func setupTelemetry(endpoint, headers string, exportInterval time.Duration) func(context.Context) error {
+	if endpoint == "" {
+		endpoint = telemetry.EndpointFromEnv()
+	}
+	headerMap, err := telemetry.ParseHeaders(headers)
+	if err != nil {
+		setupLog.Error(err, "invalid OTLP headers, OpenTelemetry export disabled")
+		return func(context.Context) error { return nil }
+	}
+	shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
+		Endpoint: endpoint,
+		Headers:  headerMap,
+		Interval: exportInterval,
+	})
+	if err != nil {
+		setupLog.Error(err, "failed to initialize OpenTelemetry export, continuing without it")
+		return func(context.Context) error { return nil }
+	}
+	if endpoint != "" {
+		setupLog.Info("OpenTelemetry export enabled",
+			"endpoint", telemetry.SanitizeEndpoint(endpoint), "exportInterval", exportInterval)
+	}
+	return shutdown
 }
 
 func loadImageCommitterPodTemplate(path string) (*corev1.PodTemplateSpec, error) {
