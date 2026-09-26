@@ -439,24 +439,17 @@ export class SandboxesAdapter implements Sandboxes {
     signal?: AbortSignal,
   ): Promise<Endpoint> {
     signal?.throwIfAborted();
-    if (signal) {
-      const cached = this.endpointCache?.get(sandboxId, port, useServerProxy);
-      if (cached) return cached;
-      const endpoint = await this.fetchSandboxEndpoint(
-        sandboxId,
-        port,
-        useServerProxy,
-        signal,
-      );
-      this.endpointCache?.put(sandboxId, port, useServerProxy, endpoint);
-      return endpoint;
+    const cached = this.endpointCache?.get(sandboxId, port, useServerProxy);
+    if (cached) return cached;
+    if (!this.endpointCache) {
+      return this.fetchSandboxEndpoint(sandboxId, port, useServerProxy, signal);
     }
-    if (this.endpointCache) {
-      return this.endpointCache.getOrFetch(sandboxId, port, useServerProxy, () =>
-        this.fetchSandboxEndpoint(sandboxId, port, useServerProxy)
-      );
-    }
-    return this.fetchSandboxEndpoint(sandboxId, port, useServerProxy);
+    // Route through getOrFetch even for the signal path: concurrent callers
+    // share one in-flight fetch, and an invalidate() racing the fetch must
+    // not leave a stale endpoint re-cached (generation guard inside).
+    return this.endpointCache.getOrFetch(sandboxId, port, useServerProxy, () =>
+      this.fetchSandboxEndpoint(sandboxId, port, useServerProxy, signal)
+    );
   }
 
   private async fetchSandboxEndpoint(

@@ -283,7 +283,10 @@ public sealed class CodeInterpreter
             var execution = await Sandbox.Commands.RunAsync(
                 CodeInterpreterHealthCheck.RuntimeCheckCommand,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
-            return execution?.Error == null;
+            // A non-zero exit reported without an error stream event (e.g. the
+            // probe's /dev/tcp check failing while Jupyter is still starting)
+            // must count as a failure, not a pass.
+            return execution is { Error: null, ExitCode: null or 0 };
         }
         catch (Exception ex)
         {

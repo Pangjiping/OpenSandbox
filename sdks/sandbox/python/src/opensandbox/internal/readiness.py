@@ -117,6 +117,9 @@ class ReadinessBudget:
             if not done:
                 raise self.expired()
             result = task.result()
+            # A late completion after the deadline is deliberately rejected
+            # (pinned by test_connect_endpoint_readiness): connect() must not
+            # return a sandbox whose readiness budget already ran out.
             self.remaining()
             return result
         finally:
@@ -150,11 +153,17 @@ class ReadinessBudget:
                 if await self.run(action):
                     return
                 self.last_error = None
+            except SandboxReadyTimeoutException:
+                # The budget expired while the action was in flight; re-raise
+                # as-is so the reported cause stays the last *real* error.
+                raise
             except Exception as error:
                 if auth_fail_fast and is_readiness_auth_error(error):
                     raise
-                self.remaining()
+                # Record before the budget check so the raised timeout (if any)
+                # carries the error that just happened, not the previous one.
                 self.last_error = error
+                self.remaining()
             await asyncio.sleep(min(self.interval, self.remaining()))
 
     def run_sync(self, action: Callable[[], T]) -> T:
@@ -163,12 +172,16 @@ class ReadinessBudget:
         try:
             result = action()
         except Exception as error:
-            if self.last_error is None:
-                self.last_error = error
+            # Always record the latest error so a subsequent `expired()` on
+            # this budget reports the failure that just happened, not the
+            # first one ever seen.
+            self.last_error = error
             self.remaining()
             raise
         finally:
             _sync_budget.reset(token)
+        # Reject a late completion after the deadline (pinned by
+        # test_connect_endpoint_readiness): late results must not surface.
         self.remaining()
         return result
 
@@ -197,9 +210,15 @@ class ReadinessBudget:
                 if self.run_sync(action):
                     return
                 self.last_error = None
+            except SandboxReadyTimeoutException:
+                # The budget expired while the action was in flight; re-raise
+                # as-is so the reported cause stays the last *real* error.
+                raise
             except Exception as error:
                 if auth_fail_fast and is_readiness_auth_error(error):
                     raise
-                self.remaining()
+                # Record before the budget check so the raised timeout (if any)
+                # carries the error that just happened, not the previous one.
                 self.last_error = error
+                self.remaining()
             time.sleep(min(self.interval, self.remaining()))

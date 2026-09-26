@@ -131,9 +131,9 @@ internal sealed class EndpointCache
         lock (_lock) { genBefore = _generation; }
         var lazy = _inflight.GetOrAdd(key, _ => new Lazy<Task<Endpoint>>(() => FetchAndCache(key, fetcher, genBefore)));
 
+        var fetchTask = lazy.Value;
         try
         {
-            var fetchTask = lazy.Value;
             if (cancellationToken.CanBeCanceled)
             {
                 var tcs = new TaskCompletionSource<bool>();
@@ -149,7 +149,13 @@ internal sealed class EndpointCache
         }
         finally
         {
-            _inflight.TryRemove(key, out _);
+            // Only remove the entry we own: on caller cancellation the shared
+            // fetch may still be in flight, and dropping it would let the next
+            // caller start a duplicate concurrent fetch.
+            if (fetchTask.IsCompleted)
+            {
+                _inflight.TryRemove(key, out _);
+            }
         }
     }
 

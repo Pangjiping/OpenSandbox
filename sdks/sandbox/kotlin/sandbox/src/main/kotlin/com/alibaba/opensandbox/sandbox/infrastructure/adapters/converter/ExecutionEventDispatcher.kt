@@ -97,7 +97,10 @@ class ExecutionEventDispatcher(
         eventNode: EventNode,
         timestamp: Long,
     ) {
-        val errorData = eventNode.error!!
+        // A malformed error event (missing payload) must not throw here: the
+        // adapters catch per-event and would silently swallow the failure
+        // signal. Ignore the empty payload instead.
+        val errorData = eventNode.error ?: return
         val error =
             ExecutionError(
                 name = errorData.name ?: "",

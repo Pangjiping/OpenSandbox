@@ -33,6 +33,13 @@ namespace OpenSandbox.Internal;
 /// </summary>
 internal static class LifecycleMetricsReporter
 {
+    // Shared telemetry client: creating and disposing an HttpClient per event
+    // churns sockets for no benefit on a once-per-create fire-and-forget path.
+    private static readonly HttpClient TelemetryClient = new HttpClient
+    {
+        Timeout = TimeSpan.FromSeconds(5),
+    };
+
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -88,10 +95,6 @@ internal static class LifecycleMetricsReporter
         {
             try
             {
-                using var client = new HttpClient
-                {
-                    Timeout = TimeSpan.FromSeconds(Math.Max(1, connectionConfig.RequestTimeoutSeconds)),
-                };
                 using var content = new ByteArrayContent(body);
                 content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
@@ -113,7 +116,7 @@ internal static class LifecycleMetricsReporter
                     request.Headers.TryAddWithoutValidation(Constants.ApiKeyHeader, connectionConfig.ApiKey);
                 }
 
-                using var response = await client.SendAsync(request).ConfigureAwait(false);
+                using var response = await TelemetryClient.SendAsync(request).ConfigureAwait(false);
                 // Drain content to allow connection reuse; ignore status.
                 _ = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
             }

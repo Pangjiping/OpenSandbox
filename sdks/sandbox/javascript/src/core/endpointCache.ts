@@ -106,11 +106,19 @@ export class EndpointCache {
         if (this.generation === genBefore) {
           this.put(sandboxId, port, useServerProxy, ep);
         }
-        this.inflight.delete(key);
+        // Only clear the inflight entry we own: an invalidate() during the
+        // fetch may have already dropped it and started a newer fetch under
+        // the same key — deleting that one would let a third caller start a
+        // duplicate fetch.
+        if (this.inflight.get(key) === promise) {
+          this.inflight.delete(key);
+        }
         return this.cloneEndpoint(ep);
       })
       .catch((err) => {
-        this.inflight.delete(key);
+        if (this.inflight.get(key) === promise) {
+          this.inflight.delete(key);
+        }
         throw err;
       });
 

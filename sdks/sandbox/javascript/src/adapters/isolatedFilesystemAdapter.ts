@@ -428,10 +428,17 @@ export class IsolatedFilesystemAdapter implements SandboxFiles {
     const body = res.body as ReadableStream<Uint8Array> | null;
     if (!body) return;
     const reader = body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      if (value) yield value;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        if (value) yield value;
+      }
+    } finally {
+      // A consumer breaking out early (or an error mid-stream) must release
+      // the body lock and return the connection to the pool (#1528/#1532).
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
     }
   }
 

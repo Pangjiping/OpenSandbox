@@ -103,3 +103,14 @@ func TestNewClient_NilCustomHTTPClientFallsBackToDefaultSecureTransport(t *testi
 	require.NotNil(t, tr.TLSClientConfig)
 	require.NotNil(t, tr.TLSClientConfig.VerifyConnection)
 }
+
+func TestClientOpts_AppliesAuthHeaderOverride(t *testing.T) {
+	// Regression guard: WithAuthHeader is the documented escape hatch for
+	// proxied deployments; ensure clientOpts actually forwards it.
+	cfg := ConnectionConfig{AuthHeader: "X-API-Key"}
+	opts := cfg.clientOpts(true)
+	c := NewClient("http://localhost:8080", "key", "OPEN-SANDBOX-API-KEY", opts...)
+	if c.authHeader != "X-API-Key" {
+		assert.Fail(t, "authHeader = "+c.authHeader+", want X-API-Key")
+	}
+}
