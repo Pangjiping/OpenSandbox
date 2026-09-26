@@ -108,10 +108,7 @@ func (e *ExecdClient) InterruptCode(ctx context.Context, sessionID string) error
 }
 
 // CreateSession creates a new bash session and returns it with a session ID.
-// An optional CreateSessionRequest may be passed to select the session's
-// working directory:
-//
-//	client.CreateSession(ctx, CreateSessionRequest{Cwd: "/workspace"})
+// An optional CreateSessionRequest sets the session's working directory.
 func (e *ExecdClient) CreateSession(ctx context.Context, opts ...CreateSessionRequest) (*Session, error) {
 	req := CreateSessionRequest{}
 	for _, o := range opts {

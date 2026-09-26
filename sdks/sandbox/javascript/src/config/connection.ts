@@ -319,11 +319,7 @@ export class ConnectionConfig {
   private _closeTransport: () => Promise<void>;
   private _closePromise: Promise<void> | null = null;
   private _transportInitialized = false;
-  /**
-   * Whether this instance allocated the transport it wraps. Only owners may
-   * close it: derived configs that share an already-initialized transport
-   * must never tear it down while other holders still use it.
-   */
+  /** Whether this instance allocated the transport it wraps. */
   private _ownsTransport = false;
 
   /**
@@ -428,11 +424,8 @@ export class ConnectionConfig {
    * simply reuses the global fetch. Returns either `this` or a cloned config
    * with the transport initialized.
    *
-   * Ownership contract: when this config was never initialized, the returned
-   * clone owns its new transport and the SDK may close it on cleanup. When
-   * this config is already initialized, `this` is returned as-is and stays
-   * caller-owned — the SDK must not close a transport that other holders may
-   * still be using (compare identity at the call site).
+   * Ownership: an uninitialized input yields a clone the SDK may close; an
+   * already-initialized input is returned as-is and stays caller-owned.
    */
   withTransportIfMissing(): ConnectionConfig {
     if (this._transportInitialized) {
@@ -443,12 +436,7 @@ export class ConnectionConfig {
     return clone;
   }
 
-  /**
-   * Return a clone that always allocates a fresh transport it owns.
-   *
-   * Use this for derived lifecycles (e.g. `sandbox.resume()`) that must not
-   * share — and must be able to independently release — their transport.
-   */
+  /** Return a clone that always allocates a fresh transport it owns. */
   withFreshTransport(): ConnectionConfig {
     const fresh = this.cloneWithOptions();
     fresh.initializeTransport();

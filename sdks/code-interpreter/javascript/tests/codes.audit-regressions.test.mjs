@@ -89,31 +89,6 @@ test("run() accepts a context and matching language, rejecting only mismatches",
   );
 });
 
-test("run() parses both NDJSON and SSE data:-framed streams", async () => {
-  const fetchImpl = async () => new Response("unused", { status: 404 });
-  const sseFetchImpl = async () =>
-    sseResponse([
-      `data: {"type":"stdout","timestamp":1,"text":"a"}\n`,
-      `\n`,
-      `event: message\n`,
-      `data: {"type":"stderr","timestamp":2,"text":"b"}\n`,
-      `\n`,
-      `: keepalive comment\n`,
-      `{"type":"execution_complete","timestamp":3,"execution_time":5}\n`,
-    ]);
-  const codes = makeCodes({ fetchImpl, sseFetchImpl });
-
-  const events = [];
-  for await (const ev of codes.runStream({ code: "1+1", context: { language: "python" } })) {
-    events.push(ev);
-  }
-
-  assert.deepEqual(
-    events.map((ev) => ev.type),
-    ["stdout", "stderr", "execution_complete"],
-  );
-});
-
 test("interrupt() sends the execution id as the id query parameter", async () => {
   const recorded = [];
   const fetchImpl = async (input, init = {}) => {

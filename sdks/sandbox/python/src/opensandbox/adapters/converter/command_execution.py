@@ -14,12 +14,7 @@
 # limitations under the License.
 #
 
-"""Helpers shared by the async and sync command adapters.
-
-Kept in one place so SSE decoding, request-body building, timeout conversion,
-and foreground exit-code inference cannot drift between the two transport
-flavors.
-"""
+"""Helpers shared by the async and sync command adapters."""
 
 import json
 import logging
@@ -36,9 +31,7 @@ def resolve_run_in_session_timeout(timeout: timedelta | None) -> int | None:
     if timeout is None:
         return None
     if isinstance(timeout, timedelta):
-        # The execd API validates run-in-session timeout with `gte=0`, so zero
-        # is a legal (fire-immediately) value; only negative durations are
-        # rejected.
+        # The execd API validates this timeout with `gte=0`.
         if timeout < timedelta(0):
             raise InvalidArgumentException("timeout must not be negative")
         return int(timeout.total_seconds() * 1000)

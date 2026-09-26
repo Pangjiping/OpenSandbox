@@ -435,8 +435,7 @@ export class IsolatedFilesystemAdapter implements SandboxFiles {
         if (value) yield value;
       }
     } finally {
-      // A consumer breaking out early (or an error mid-stream) must release
-      // the body lock and return the connection to the pool (#1528/#1532).
+      // Release the body lock on early exit or error (#1528/#1532).
       await reader.cancel().catch(() => undefined);
       reader.releaseLock();
     }

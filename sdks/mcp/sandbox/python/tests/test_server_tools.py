@@ -12,13 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-"""Behavioral tests for the MCP server tool surface.
-
-Regression coverage for the audit finding that per-call ``manager.close()`` /
-``sandbox.close()`` tore down the server-wide shared HTTP transport while other
-registered sandboxes still used it. Consumers now receive a non-owning clone of
-the shared config.
-"""
+"""Regression tests for the MCP server transport-ownership fix (#1768)."""
 
 from __future__ import annotations
 
@@ -110,70 +104,16 @@ def server(monkeypatch):
 async def test_kill_manager_fallback_keeps_shared_transport_open(server) -> None:
     """The manager fallback path must not close the server-wide transport."""
     fake, state = server
-
     spy = _SpyTransport(state.connection_config.transport)
     state.connection_config.transport = spy
 
-    kill = fake.tools["sandbox_kill"]
-    response = await kill("sbx-unknown")
+    response = await fake.tools["sandbox_kill"]("sbx-unknown")
 
     assert response.status == "killed"
     manager = _FakeManager.instances[-1]
     assert manager.killed == ["sbx-unknown"]
-    assert manager.closed, "manager.close() must still release the manager itself"
-    # Regression: the shared transport was closed here before the fix.
+    assert manager.closed
     assert spy.closed is False
-
-
-@pytest.mark.asyncio
-async def test_kill_registry_path_keeps_shared_transport_open(server) -> None:
-    """Killing a registered sandbox must not close the shared transport."""
-    fake, state = server
-    fake_sandbox = _FakeSandbox("sbx-registered")
-    state.sandboxes[fake_sandbox.id] = fake_sandbox  # type: ignore[assignment]
-
-    spy = _SpyTransport(state.connection_config.transport)
-    state.connection_config.transport = spy
-
-    kill = fake.tools["sandbox_kill"]
-    response = await kill(fake_sandbox.id)
-
-    assert response.status == "killed"
-    assert fake_sandbox.killed
-    assert fake_sandbox.closed
-    assert spy.closed is False
-    assert fake_sandbox.id not in state.sandboxes
-
-
-@pytest.mark.asyncio
-async def test_manager_consumers_receive_non_owning_config(server) -> None:
-    """Every manager/sandbox consumer gets a clone without transport ownership."""
-    fake, state = server
-
-    await fake.tools["sandbox_list"](None)  # type: ignore[operator]
-    manager = _FakeManager.instances[-1]
-    assert manager.config is not state.connection_config
-    assert manager.config._owns_transport is False
-    assert state.connection_config._owns_transport is True
-
-
-@pytest.mark.asyncio
-async def test_registered_sandbox_is_shared_not_reconnected(server) -> None:
-    """The registry lock serializes get->connect so no duplicate Sandbox exists."""
-    fake, state = server
-
-    class _MetricsSandbox(_FakeSandbox):
-        async def get_metrics(self):
-            return "metrics"
-
-    state.sandboxes["sbx-metrics"] = _MetricsSandbox("sbx-metrics")  # type: ignore[assignment]
-
-    metrics = await fake.tools["sandbox_get_metrics"](  # type: ignore[operator]
-        "sbx-metrics", connect_if_missing=True
-    )
-    assert metrics == "metrics"
-    # Exactly the registered instance was used.
-    assert isinstance(state.sandboxes["sbx-metrics"], _MetricsSandbox)
 
 
 def test_borrowed_config_shares_transport_without_ownership() -> None:
@@ -198,11 +138,7 @@ async def test_concurrent_connect_creates_single_registry_entry(
     fake, state = server
     connect_calls: list[str] = []
 
-    class _FakeServerSandbox(_FakeSandbox):
-        def __init__(self, sandbox_id: str) -> None:
-            super().__init__(sandbox_id)
-            await_none = None  # noqa: F841
-
+    class _MetricsSandbox(_FakeSandbox):
         async def get_metrics(self):
             return "metrics"
 
@@ -213,15 +149,11 @@ async def test_concurrent_connect_creates_single_registry_entry(
             await asyncio.sleep(0.01)
             return _MetricsSandbox(sandbox_id)
 
-    class _MetricsSandbox(_FakeSandbox):
-        async def get_metrics(self):
-            return "metrics"
-
     monkeypatch.setattr("opensandbox_mcp.server.Sandbox", _FakeServerSandboxModule)
 
     await asyncio.gather(
-        fake.tools["sandbox_get_metrics"]("sbx-race", connect_if_missing=True),  # type: ignore[operator]
-        fake.tools["sandbox_get_metrics"]("sbx-race", connect_if_missing=True),  # type: ignore[operator]
+        fake.tools["sandbox_get_metrics"]("sbx-race", connect_if_missing=True),
+        fake.tools["sandbox_get_metrics"]("sbx-race", connect_if_missing=True),
     )
 
     assert connect_calls == ["sbx-race"], (

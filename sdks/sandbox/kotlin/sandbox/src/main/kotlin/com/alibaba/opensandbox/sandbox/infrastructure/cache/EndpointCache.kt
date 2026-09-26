@@ -128,7 +128,7 @@ class EndpointCache(
             // error instead of a bare NPE from `result!!`.
             existingInflight.error?.let { throw it }
             return existingInflight.result
-                ?: throw IllegalStateException("Endpoint fetch for $key completed without a result")
+                ?: throw IllegalStateException("Endpoint fetch for $key produced no result")
         }
 
         try {
@@ -141,8 +141,7 @@ class EndpointCache(
             myInflight!!.result = endpoint
             return endpoint
         } catch (t: Throwable) {
-            // Record every failure (including non-Exception Throwables) so
-            // waiters surface the real cause, not a synthetic NPE.
+            // Record every failure so waiters surface the real cause.
             myInflight!!.error = t
             throw t
         } finally {

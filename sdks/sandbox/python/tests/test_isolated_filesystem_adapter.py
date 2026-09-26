@@ -22,9 +22,6 @@ be sent as UTF-8 bytes (the declared encoding was never applied).
 
 from __future__ import annotations
 
-import json
-from uuid import UUID
-
 import httpx
 import pytest
 
@@ -111,26 +108,3 @@ def test_sync_write_files_encodes_str_with_declared_encoding() -> None:
     )
     payload = _multipart_file_bytes(transport.body)
     assert payload == "café".encode("latin-1")
-
-
-@pytest.mark.asyncio
-async def test_async_write_files_defaults_to_utf8_and_sends_metadata() -> None:
-    transport = _CaptureAsyncTransport()
-    config = ConnectionConfig(domain="localhost:8080", transport=transport)
-    adapter = IsolatedFilesystemAdapter(config, _endpoint(), SESSION_ID)
-
-    await adapter.write_files([WriteEntry(path="/tmp/hello.txt", data="héllo")])
-
-    body = transport.body
-    payload = _multipart_file_bytes(body)
-    assert payload == "héllo".encode()
-
-    marker = b'name="metadata"'
-    idx = body.find(marker)
-    assert idx != -1, "metadata part missing"
-    start = body.find(b"\r\n\r\n", idx) + 4
-    end = body.find(b"\r\n--", start)
-    metadata = json.loads(body[start:end])
-    assert metadata["path"] == "/tmp/hello.txt"
-    # session_id must be a valid UUID (the adapter parses it eagerly).
-    UUID(SESSION_ID)

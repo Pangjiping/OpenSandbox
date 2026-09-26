@@ -444,9 +444,7 @@ export class SandboxesAdapter implements Sandboxes {
     if (!this.endpointCache) {
       return this.fetchSandboxEndpoint(sandboxId, port, useServerProxy, signal);
     }
-    // Route through getOrFetch even for the signal path: concurrent callers
-    // share one in-flight fetch, and an invalidate() racing the fetch must
-    // not leave a stale endpoint re-cached (generation guard inside).
+    // getOrFetch gives the signal path the same dedup + generation guards.
     return this.endpointCache.getOrFetch(sandboxId, port, useServerProxy, () =>
       this.fetchSandboxEndpoint(sandboxId, port, useServerProxy, signal)
     );

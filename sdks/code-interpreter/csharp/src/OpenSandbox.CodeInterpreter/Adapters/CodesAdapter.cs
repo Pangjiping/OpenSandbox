@@ -214,8 +214,7 @@ internal sealed class CodesAdapter : ICodes, IExecdHealth
             throw new InvalidArgumentException("Code cannot be empty");
         }
 
-        // Only a *mismatch* is an error (aligned with the Python/JS SDKs); a
-        // matching pair is accepted and the context wins.
+        // Only a mismatch is an error (aligned with the Python/JS SDKs).
         if (options?.Context != null && options.Language != null && options.Context.Language != options.Language)
         {
             throw new InvalidArgumentException(
@@ -242,9 +241,7 @@ internal sealed class CodesAdapter : ICodes, IExecdHealth
             await dispatcher.DispatchAsync(ev).ConfigureAwait(false);
         }
 
-        // Foreground runs infer the exit code the same way CommandsAdapter
-        // does: the error payload carries a code on failure, completion
-        // implies success.
+        // Infer the exit code the same way CommandsAdapter does.
         if (execution.Error != null)
         {
             execution.ExitCode = int.TryParse(execution.Error.Value, out var exitCode) ? exitCode : null;

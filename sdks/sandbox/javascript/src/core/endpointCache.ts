@@ -106,10 +106,7 @@ export class EndpointCache {
         if (this.generation === genBefore) {
           this.put(sandboxId, port, useServerProxy, ep);
         }
-        // Only clear the inflight entry we own: an invalidate() during the
-        // fetch may have already dropped it and started a newer fetch under
-        // the same key — deleting that one would let a third caller start a
-        // duplicate fetch.
+        // Only clear our own entry (an invalidate() may have replaced it).
         if (this.inflight.get(key) === promise) {
           this.inflight.delete(key);
         }

@@ -347,10 +347,8 @@ public sealed class Sandbox : IAsyncDisposable
             sandboxId = created.Id;
             logger.LogInformation("Sandbox created: {SandboxId}", sandboxId);
 
-            // A freshly created sandbox may not have published its endpoints
-            // yet (404 KUBERNETES::POD_IP_NOT_AVAILABLE); resolve endpoints
-            // through a readiness budget like ConnectAsync does instead of
-            // failing the create outright.
+            // Resolve endpoints through a readiness budget like ConnectAsync
+            // (fresh sandboxes may 404 with POD_IP_NOT_AVAILABLE).
             using var budget = new ReadinessBudget(
                 readyTimeoutSeconds ?? Constants.DefaultReadyTimeoutSeconds,
                 cancellationToken);

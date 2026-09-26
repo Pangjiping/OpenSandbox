@@ -302,10 +302,7 @@ func (p *DefaultSandboxPool) Acquire(ctx context.Context, opts AcquireOptions) (
 			// Remove it, best-effort kill, then either retry (RetryNextIdle*) or fall through
 			// (single-shot policies).
 			lastIdleAttemptErr = connectErr
-			// Remove with a detached, short-lived context: the caller's ctx may already be
-			// cancelled, in which case the removal would be a no-op while the best-effort
-			// kill below still proceeds, leaving a dead ID in the store for the next
-			// Acquire to burn a retry on.
+			// Detached: the caller's ctx may be cancelled, stranding the dead ID.
 			removeCtx, removeCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = p.config.StateStore.RemoveIdle(removeCtx, p.config.PoolName, takeResult.SandboxID)
 			removeCancel()

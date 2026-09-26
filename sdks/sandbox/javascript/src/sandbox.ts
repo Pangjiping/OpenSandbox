@@ -1008,9 +1008,8 @@ export class Sandbox {
     await this.sandboxes.resumeSandbox(this.id);
     return await Sandbox.connect({
       sandboxId: this.id,
-      // Give the resumed instance its own transport: it must survive
-      // `oldSandbox.close()`, and a failed connect must not tear down the
-      // transport this (still-alive) instance is using.
+      // Own transport: survives oldSandbox.close(); failed resumes don't
+      // tear down this instance's connections.
       connectionConfig: this.connectionConfig.withFreshTransport(),
       adapterFactory: Sandbox._priv.get(this)!.adapterFactory,
       skipHealthCheck: opts.skipHealthCheck ?? false,
@@ -1031,9 +1030,7 @@ export class Sandbox {
         ? opts.connectionConfig
         : new ConnectionConfig(opts.connectionConfig);
     const adapterFactory = opts.adapterFactory ?? createDefaultAdapterFactory();
-    // Resume through a dedicated transport that is released right after the
-    // resume call; the subsequent connect then allocates (or shares) the
-    // transport it will actually live with, independently of this one.
+    // Resume through a dedicated transport released right after the call.
     const resumeOnlyConfig = baseConnectionConfig.withFreshTransport();
     const lifecycleBaseUrl = resumeOnlyConfig.getBaseUrl();
 
@@ -1062,8 +1059,7 @@ export class Sandbox {
    * Release any client-side resources (e.g. Node.js HTTP agents) owned by this Sandbox instance.
    */
   async close(): Promise<void> {
-    // A sandbox created on a caller-initialized ConnectionConfig shares that
-    // transport with its caller and any sibling instances; the owner closes it.
+    // Shared (caller-initialized) transports are closed by their owner.
     if (Sandbox._priv.get(this)!.ownsTransport) {
       await this.connectionConfig.closeTransport();
     }

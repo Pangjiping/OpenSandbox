@@ -159,11 +159,8 @@ func (s *Sandbox) IsolationAttach(ctx context.Context, sessionID string) (*Isola
 }
 
 // newIsolationSession wraps an IsolatedSessionInfo into an IsolationSession
-// handle, constructing the session-scoped files ExecdClient the same way
-// IsolationCreate does. The client inherits the sandbox's ConnectionConfig
-// (transport, request timeout, retry) so session-scoped file operations behave
-// like every other execd call, plus the endpoint headers from the parent execd
-// client (access token, routing hints).
+// handle, constructing the session-scoped files ExecdClient from the sandbox's
+// ConnectionConfig plus the parent execd client's endpoint headers.
 func (s *Sandbox) newIsolationSession(info *IsolatedSessionInfo) *IsolationSession {
 	sessionBaseURL := s.execd.client.baseURL + "/v1/isolated/session/" + info.SessionID
 	var filesClient *ExecdClient

@@ -161,9 +161,7 @@ class CodesAdapter(
                 }
             }
 
-            // Foreground code runs infer the exit code the same way the
-            // commands adapter does: the error payload carries the code on
-            // failure, a completion event implies success.
+            // Same exit-code inference as the commands adapter.
             execution.exitCode = ExecdEventSupport.inferForegroundExitCode(execution)
             return execution
         } catch (e: Exception) {

@@ -133,8 +133,7 @@ func isTransientError(err error, cfg *RetryConfig) bool {
 
 // backoff computes the delay for attempt n (0-indexed) with optional jitter.
 func (r *RetryConfig) backoff(attempt int) time.Duration {
-	// A zero-value Multiplier (field left unset) would collapse every delay to
-	// zero via math.Pow(0, n); treat it as constant backoff instead.
+	// A zero-value Multiplier would collapse every delay to zero.
 	multiplier := r.Multiplier
 	if multiplier <= 0 {
 		multiplier = 1

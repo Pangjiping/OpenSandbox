@@ -149,9 +149,7 @@ internal sealed class EndpointCache
         }
         finally
         {
-            // Only remove the entry we own: on caller cancellation the shared
-            // fetch may still be in flight, and dropping it would let the next
-            // caller start a duplicate concurrent fetch.
+            // Keep a still-running shared fetch for other waiters.
             if (fetchTask.IsCompleted)
             {
                 _inflight.TryRemove(key, out _);

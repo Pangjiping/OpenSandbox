@@ -86,14 +86,9 @@ class FileReadResponse(BaseModel):
 
 
 def _borrowed_config(state: ServerState) -> ConnectionConfig:
-    """Clone the shared connection config for a single Sandbox/Manager call.
-
-    The clone shares the server-wide HTTP transport but deliberately gives up
-    ownership of it (``_owns_transport=False``), so ``sandbox.close()`` /
-    ``manager.close()`` never tear down connections still used by other
-    registered sandboxes. The shared transport lives for the server's
-    lifetime and is owned solely by ``state.connection_config``.
-    """
+    """Clone the shared config for one Sandbox/Manager call without ownership
+    of the server-wide transport, so per-call close() never tears down
+    connections still used by other registered sandboxes."""
     config = state.connection_config.model_copy()
     config._owns_transport = False
     return config
@@ -124,9 +119,7 @@ def register_tools(
         *,
         connect_if_missing: bool,
     ) -> Sandbox:
-        # Hold the registry lock across get -> connect -> add so two
-        # concurrent calls for the same sandbox cannot both run connect and
-        # leave the loser overwritten (and never closed) in the registry.
+        # Lock held across get -> connect -> add to avoid duplicate connects.
         async with state.lock:
             sandbox = state.sandboxes.get(sandbox_id)
             if sandbox is not None:

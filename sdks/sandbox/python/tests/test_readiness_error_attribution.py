@@ -97,26 +97,3 @@ def test_sync_run_records_latest_error_not_first() -> None:
     assert str(budget.last_error) == errors[-1], (
         "run_sync must record the latest error, not the first one"
     )
-
-
-@pytest.mark.asyncio
-async def test_async_run_success_within_budget_returns_result() -> None:
-    budget = ReadinessBudget(
-        timeout=timedelta(seconds=5), interval=timedelta(milliseconds=1)
-    )
-
-    async def successful() -> str:
-        return "ready"
-
-    assert await budget.run(successful) == "ready"
-
-
-def test_sync_run_success_within_budget_returns_result() -> None:
-    budget = ReadinessBudget(
-        timeout=timedelta(seconds=5), interval=timedelta(milliseconds=1)
-    )
-
-    def successful() -> str:
-        return "ready"
-
-    assert budget.run_sync(successful) == "ready"

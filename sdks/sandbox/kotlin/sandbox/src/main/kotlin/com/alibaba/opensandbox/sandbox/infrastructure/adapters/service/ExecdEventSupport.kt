@@ -18,18 +18,13 @@ import com.alibaba.opensandbox.sandbox.domain.models.execd.executions.Execution
 import com.alibaba.opensandbox.sandbox.infrastructure.adapters.converter.jsonParser
 
 /**
- * Shared execd SSE-line decoding and foreground exit-code inference.
- *
- * Single source of truth for every execd streaming consumer (commands,
- * isolated sessions, code execution) so the SSE framing rules cannot drift
- * between adapters. Not part of the stable public API.
+ * Shared execd SSE-line decoding and foreground exit-code inference for every
+ * execd streaming consumer. Not part of the stable public API.
  */
 public object ExecdEventSupport {
     /**
      * Decode one SSE/NDJSON line into an [EventNode], skipping framing lines
-     * (`:` comments, `event:`/`id:`/`retry:` fields) and unwrapping the
-     * `data:` prefix per the SSE spec (single optional leading space).
-     * Returns null for blank, framing, or unparseable lines.
+     * and unwrapping the `data:` prefix. Returns null for non-payload lines.
      */
     public fun decodeEventLine(
         line: String,
@@ -61,11 +56,7 @@ public object ExecdEventSupport {
         }
     }
 
-    /**
-     * Foreground exit-code inference shared with every execd streaming path:
-     * the error payload carries the exit code on failure; a completion event
-     * implies success.
-     */
+    /** Error payload carries the code on failure; completion implies success. */
     public fun inferForegroundExitCode(execution: Execution): Int? {
         return if (execution.error != null) {
             execution.error?.value?.toIntOrNull()

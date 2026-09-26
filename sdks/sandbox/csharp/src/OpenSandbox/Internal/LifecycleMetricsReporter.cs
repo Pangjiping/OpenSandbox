@@ -33,8 +33,7 @@ namespace OpenSandbox.Internal;
 /// </summary>
 internal static class LifecycleMetricsReporter
 {
-    // Shared telemetry client: creating and disposing an HttpClient per event
-    // churns sockets for no benefit on a once-per-create fire-and-forget path.
+    // Shared: a per-event HttpClient churns sockets on a fire-and-forget path.
     private static readonly HttpClient TelemetryClient = new HttpClient
     {
         Timeout = TimeSpan.FromSeconds(5),

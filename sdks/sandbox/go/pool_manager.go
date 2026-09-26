@@ -104,9 +104,7 @@ func (m *SandboxPoolManager) Destroy(ctx context.Context, poolName string, optio
 			break
 		}
 		drained++
-		// Bound each kill by the remaining drain budget. Without this, one slow
-		// kill (each bounded only by the HTTP client timeout) can overshoot
-		// DrainTimeout many times over before the deadline check below fires.
+		// Bound each kill by the remaining drain budget.
 		killCtx := ctx
 		var cancelKill context.CancelFunc
 		if drainTimeout > 0 {

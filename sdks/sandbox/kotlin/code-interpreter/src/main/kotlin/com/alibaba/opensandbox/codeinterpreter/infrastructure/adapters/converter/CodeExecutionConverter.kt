@@ -25,8 +25,6 @@ object CodeExecutionConverter {
     fun RunCodeRequest.toApiRunCodeRequest(): ApiRunCodeRequest {
         return ApiRunCodeRequest(
             code = this.code,
-            // RunCodeRequest.context is non-null (defaults to a fresh Python
-            // context), so the ?. here was dead code.
             context = this.context.toApiCodeContext(),
         )
     }
