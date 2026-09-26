@@ -103,4 +103,3 @@ func TestNewClient_NilCustomHTTPClientFallsBackToDefaultSecureTransport(t *testi
 	require.NotNil(t, tr.TLSClientConfig)
 	require.NotNil(t, tr.TLSClientConfig.VerifyConnection)
 }
-
