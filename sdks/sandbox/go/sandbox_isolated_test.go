@@ -584,7 +584,7 @@ func TestNewIsolationSession_ForwardsConnectionConfig(t *testing.T) {
 	session := sandbox.newIsolationSession(&IsolatedSessionInfo{SessionID: "sess-1"})
 
 	if session.files.client.baseURL != "http://127.0.0.1:8080/v1/isolated/session/sess-1" {
-		assert.Fail(t, "unexpected files baseURL: "+session.files.client.baseURL)
+		assert.Fail(t, fmt.Sprintf("unexpected files baseURL: %s", session.files.client.baseURL))
 	}
 	if session.files.client.retry == nil || session.files.client.retry.MaxRetries != 2 {
 		assert.Fail(t, "files client lost the retry config")
