@@ -21,6 +21,7 @@ from concurrent import futures
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -43,7 +44,12 @@ from opensandbox_server.config import (
     ServerConfig,
 )
 from opensandbox_server.middleware.request_id import RequestIdMiddleware
-from opensandbox_server.services.fast_sandbox.fastpath_client import FastPathClient
+from opensandbox_server.services.constants import SandboxErrorCodes
+from opensandbox_server.services.fast_sandbox.fastpath_client import (
+    FastPathClient,
+    FastPathResourceExhausted,
+    FastPathUnavailable,
+)
 from opensandbox_server.services.composite_service import CompositeSandboxService
 from opensandbox_server.services.factory import create_sandbox_service
 from opensandbox_server.services.fast_sandbox.service import FastSandboxService
@@ -1083,6 +1089,72 @@ def test_http_create_handles_capacity_rejection_and_accepted_pending(http_fsb, p
     else:
         assert response.status_code == 429
         assert response.headers["Retry-After"] == "1"
+        detail = response.json()["detail"]
+        assert detail["message"] == "scripted rejection before persistence"
+        assert detail["cause"] == "FastPath pool capacity is temporarily unavailable."
+
+
+class _CapturingHandler(logging.Handler):
+    """Collect records directly on the target logger.
+
+    The app's dictConfig disables propagation, so pytest's caplog cannot
+    see app records; attach our own (pattern from test_renew_intent_restart).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+_SERVICE_LOGGER = "opensandbox_server.services.fast_sandbox.service"
+
+
+def test_capacity_mapping_propagates_and_logs_underlying_fastpath_error(http_fsb):
+    _, _, service = http_fsb
+    exc = FastPathResourceExhausted(
+        "RESOURCE_EXHAUSTED",
+        "all Fastlet candidates rejected admission: load Firecracker snapshot: "
+        "Error creating KVM object: No such device (os error 19)",
+    )
+
+    handler = _CapturingHandler()
+    service_logger = logging.getLogger(_SERVICE_LOGGER)
+    service_logger.addHandler(handler)
+    try:
+        error = service._fastpath_http_error(exc)
+    finally:
+        service_logger.removeHandler(handler)
+
+    assert error.status_code == 429
+    assert error.headers == {"Retry-After": "1"}
+    assert error.detail["code"] == SandboxErrorCodes.FSB_API_ERROR
+    assert error.detail["message"] == exc.message
+    assert error.detail["cause"] == "FastPath pool capacity is temporarily unavailable."
+    messages = [record.getMessage() for record in handler.records]
+    assert messages, "expected a WARNING carrying the underlying FastPath message"
+    assert "Error creating KVM object: No such device" in messages[0]
+
+
+def test_unavailable_mapping_logs_underlying_fastpath_error(http_fsb):
+    _, _, service = http_fsb
+    exc = FastPathUnavailable("UNAVAILABLE", "gRPC deadline exceeded after 30s")
+
+    handler = _CapturingHandler()
+    service_logger = logging.getLogger(_SERVICE_LOGGER)
+    service_logger.addHandler(handler)
+    try:
+        error = service._fastpath_http_error(exc)
+    finally:
+        service_logger.removeHandler(handler)
+
+    assert error.status_code == 503
+    assert error.detail["message"] == "FastPath backend unavailable."
+    messages = [record.getMessage() for record in handler.records]
+    assert messages, "expected a WARNING carrying the underlying FastPath message"
+    assert "gRPC deadline exceeded after 30s" in messages[0]
 
 
 def _gateway_config(mode="header"):

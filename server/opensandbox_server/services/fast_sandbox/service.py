@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -89,6 +90,8 @@ from opensandbox_server.services.validators import (
 )
 
 _SUPPORTED_EVENT_SCOPES = ("runtime", "all")
+
+logger = logging.getLogger(__name__)
 
 
 class FastSandboxService(SandboxService, ExtensionService):
@@ -656,12 +659,20 @@ class FastSandboxService(SandboxService, ExtensionService):
     def _fastpath_http_error(self, exc: FastPathError) -> HTTPException:
         """Map a typed FastPath error to the public HTTP contract."""
         if isinstance(exc, FastPathResourceExhausted):
+            # Upstream may classify runtime admission/create failures (e.g.
+            # Firecracker snapshot/KVM errors) as RESOURCE_EXHAUSTED; keep the
+            # underlying message visible so it is not mistaken for pool
+            # exhaustion (see opensandbox-group/OpenSandbox#2000).
+            logger.warning(
+                "FastPath resource exhausted: code=%s message=%s", exc.code, exc.message
+            )
             return HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 headers={"Retry-After": "1"},
                 detail={
                     "code": SandboxErrorCodes.FSB_API_ERROR,
-                    "message": "FastPath pool capacity is temporarily unavailable.",
+                    "message": exc.message,
+                    "cause": "FastPath pool capacity is temporarily unavailable.",
                 },
             )
         if isinstance(exc, FastPathNotFound):
@@ -697,6 +708,9 @@ class FastSandboxService(SandboxService, ExtensionService):
                 },
             )
         if isinstance(exc, FastPathUnavailable):
+            logger.warning(
+                "FastPath backend unavailable: code=%s message=%s", exc.code, exc.message
+            )
             return HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail={
