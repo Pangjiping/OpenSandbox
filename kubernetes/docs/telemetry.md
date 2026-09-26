@@ -49,10 +49,13 @@ the intended vehicle for per-sandbox latency attribution in a later phase.
 The `namespace`/`pool_name` attributes are already used by the capacity
 metrics below, keeping attribute conventions consistent across the controller.
 
-## Capacity metrics (existing)
+## Capacity metrics
 
 Gauge-style signals collected periodically from the informer cache (see
-`capacity_metrics.go`, same meter scope `opensandbox/controller`):
+`capacity_metrics.go`, same meter scope `opensandbox/controller`). They
+register on the same global OTel meter provider as the allocator metrics,
+driven by a leader-elected manager Runnable (`capacity_metrics_runner.go`)
+that unregisters on shutdown:
 
 | Name | Type | Unit | Attributes |
 |---|---|---|---|
@@ -73,8 +76,9 @@ signals; the controller does not emit competing custom versions.
 
 ## Enabling OTLP export
 
-Allocator-path metrics export through the global OTel meter provider,
-configured via controller flags (or standard `OTEL_*` environment variables):
+All controller metrics export through one process-wide global OTel meter
+provider, configured via controller flags (or standard `OTEL_*` environment
+variables):
 
 | Flag | Environment fallback | Default | Description |
 |---|---|---|---|
@@ -93,15 +97,14 @@ Example:
 
 Behavior:
 
-- With no endpoint configured, instruments record into the no-op provider and
-  nothing is exported.
+- There is a single process-wide meter provider: all controller metrics
+  (allocator histograms and capacity gauges) export through it. With no
+  endpoint configured, the provider stays a no-op and nothing is exported.
+- The capacity gauges register only on the elected leader (leader-elected
+  Runnable); allocator histograms are recorded and exported on every replica.
 - Export failures are retried by the OTLP exporter; setup/configuration errors
   never block controller startup (telemetry degrades with an error log).
 - On shutdown the provider flushes pending data with a 5-second budget.
-
-Capacity metrics use a separate push path that reads
-`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` / `OTEL_EXPORTER_OTLP_ENDPOINT`
-directly; pointing both at the same collector is safe.
 
 ## Prometheus rendering
 
