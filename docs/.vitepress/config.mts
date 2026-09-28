@@ -192,6 +192,10 @@ export default defineConfig({
               text: "Kubernetes Deployment",
               link: "/deployment/",
             },
+            {
+              text: "ACK Deployment",
+              link: "/deployment/ack",
+            },
           ],
         },
       ],

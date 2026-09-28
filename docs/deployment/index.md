@@ -24,19 +24,23 @@ packages are not published.
 Install the charts in this order:
 
 ```text
-base → opensandbox-controller → fast-sandbox* → opensandbox-server → optional components
+base → opensandbox-controller → fast-sandbox* → ingress-gateway → opensandbox-server → optional components
 ```
 
-\* `fast-sandbox` is optional, but when used it must be installed **before** the
-server.
+\* `fast-sandbox` is optional, but when used it must be installed **before**
+the ingress gateway and the server. `ingress-gateway` is required for
+Kubernetes deployments — sandbox Pods are ClusterIP-only, so client traffic
+routes through the gateway. It is installed **before the server** so the
+server announces it from the first install.
 
 | Step | Chart | Why it comes here |
 |------|-------|-------------------|
 | 1 | `base` | Owns the `sandbox.opensandbox.io` CRDs, the fast-sandbox CRDs (`sandbox.fast.io`), and their RBAC. Everything else depends on these objects existing. Install once per cluster. |
 | 2 | `opensandbox-controller` | Reconciles `BatchSandbox`, `Pool`, and `SandboxSnapshot` objects created by you and by the server. Requires the CRDs from `base`. |
 | 3 | `fast-sandbox` (optional) | Firecracker runtime (`sandbox.fast.io`). Must be installed **before the server**: the server's `[runtime]`/fsb configuration points at the FastPath gRPC endpoint (`fast-sandbox-fastpath...svc:9090`) and watches `sandbox.fast.io` objects at startup. Also consumes the ServiceAccounts from `base` — keep the namespace values in sync with it. Skip if you only use the default Kubernetes runtime. |
-| 4 | `opensandbox-server` | The lifecycle REST API that creates and deletes sandboxes. Requires the CRDs from `base`, a running controller, and — when serving sandboxes through the fsb runtime — the FastPath endpoint from the previous step. |
-| 5 | `ingress-gateway` / `opensandbox-node-agent` | Optional, order-independent. The gateway is announced by the server through `server.gateway.*`; the node agent collects sandbox data. |
+| 4 | `ingress-gateway` | Required for Kubernetes deployments: sandbox Pods are ClusterIP-only and client traffic routes through the gateway. Installed before the server so the announcement is configured from the first install. When serving sandboxes through the fsb runtime, point `gateway.fastpathEndpoint` at the FastPath service from the previous step. |
+| 5 | `opensandbox-server` | The lifecycle REST API that creates and deletes sandboxes. Requires the CRDs from `base`, a running controller, and — when serving sandboxes through the fsb runtime — the FastPath endpoint from the fast-sandbox release. Announces the ingress gateway through `server.gateway.*`. |
+| 6 | `opensandbox-node-agent` (optional) | Node-level sandbox data collection. Order-independent. |
 
 If you use the umbrella chart, this order is handled for you in a single release.
 
@@ -65,7 +69,9 @@ helm install opensandbox opensandbox \
   --create-namespace
 ```
 
-Optional components default to off; enable what you need:
+Optional components default to off. For Kubernetes deployments, enable the
+ingress gateway — sandbox Pods are ClusterIP-only and client traffic routes
+through it:
 
 ```bash
 helm install opensandbox opensandbox \
@@ -85,7 +91,11 @@ helm install opensandbox-controller manifests/charts/controller \
   --namespace opensandbox-system \
   --create-namespace
 
-# 3. Lifecycle server
+# 3. Ingress gateway (required on Kubernetes; see Deployment Order)
+helm install ingress-gateway manifests/charts/ingress-gateway \
+  --namespace opensandbox-system
+
+# 4. Lifecycle server
 helm install opensandbox-server manifests/charts/server \
   --namespace opensandbox-system \
   --create-namespace
@@ -238,15 +248,25 @@ limits = { cpu = "250m", memory = "256Mi" }
 
 You can omit either `requests` or `limits`. Treat these values as a starting point and tune them from observed usage; Credential Vault and transparent mitmproxy generally need more headroom than basic DNS/nft enforcement.
 
-### Optional: ingress gateway
+### Ingress gateway (required on Kubernetes)
 
-Deploy the gateway chart, then announce it from the server so clients receive the gateway address:
+Sandbox Pods on Kubernetes are ClusterIP-only — client traffic reaches
+sandboxes through the ingress gateway (`[ingress] mode = "gateway"`, the
+Kubernetes-oriented mode; the Docker runtime uses `direct` and does not need
+the gateway). Install the gateway **before the server**, then include the
+announcement in the server install:
 
 ```bash
 helm install ingress-gateway manifests/charts/ingress-gateway \
-  --namespace opensandbox-system
+  --namespace opensandbox-system \
+  --set gateway.fastpathEndpoint=fast-sandbox-fastpath.opensandbox-system.svc:9090
+```
 
-helm upgrade opensandbox-server manifests/charts/server \
+Install the server with the announcement enabled (or `helm upgrade` an
+existing server release with the same flags):
+
+```bash
+helm install opensandbox-server manifests/charts/server \
   --namespace opensandbox-system \
   --set server.gateway.enabled=true \
   --set server.gateway.host=gateway.example.com \
@@ -260,7 +280,7 @@ shared secure-access key ring on both charts — see [secure-access keys](https:
 ### Optional: fast-sandbox runtime
 
 The `fast-sandbox` chart adds the Firecracker (`sandbox.fast.io`) runtime.
-Install it **before the lifecycle server** (see [Deployment Order](#deployment-order)):
+Install it **before the ingress gateway and the lifecycle server** (see [Deployment Order](#deployment-order)):
 the server's `[runtime]`/fsb configuration points at the FastPath gRPC endpoint
 this chart creates. It also requires `base` first, KVM-capable nodes, and
 companion images built from a pinned upstream commit — see the [fast-sandbox runtime deployment guide](https://github.com/opensandbox-group/OpenSandbox/blob/main/manifests/HELM-DEPLOYMENT.md#fast-sandbox-runtime-firecracker).
@@ -366,7 +386,7 @@ See [Configuration](/getting-started/configuration) for the full reference.
 | CRDs + RBAC (`base`) | Cluster-scoped | `BatchSandbox`, `Pool`, `SandboxSnapshot` and `sandbox.fast.io` API types |
 | Server | Deployment | Lifecycle control plane |
 | Controller (operator) | Deployment | Manages BatchSandbox/Pool CRDs |
-| Ingress gateway | Deployment | Routes traffic to sandboxes |
+| Ingress gateway | Deployment | Routes traffic to sandboxes; required on Kubernetes deployments |
 | Egress | Sidecar | Per-sandbox egress policy enforcement |
 | Execd | Built into sandbox images | In-sandbox execution |
 | Node agent | DaemonSet | Optional node-level sandbox data collection |
