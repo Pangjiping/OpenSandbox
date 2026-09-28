@@ -27,11 +27,7 @@ Install the charts in this order:
 base → opensandbox-controller → fast-sandbox* → ingress-gateway → opensandbox-server → optional components
 ```
 
-\* `fast-sandbox` is optional, but when used it must be installed **before**
-the ingress gateway and the server. `ingress-gateway` is required for
-Kubernetes deployments — sandbox Pods are ClusterIP-only, so client traffic
-routes through the gateway. It is installed **before the server** so the
-server announces it from the first install.
+\* `fast-sandbox` is optional, but when used it must be installed **before** the ingress gateway and the server. `ingress-gateway` is required for Kubernetes deployments — sandbox Pods are ClusterIP-only, so client traffic routes through the gateway. It is installed **before the server** so the server announces it from the first install.
 
 | Step | Chart | Why it comes here |
 |------|-------|-------------------|
@@ -69,9 +65,7 @@ helm install opensandbox opensandbox \
   --create-namespace
 ```
 
-Optional components default to off. For Kubernetes deployments, enable the
-ingress gateway — sandbox Pods are ClusterIP-only and client traffic routes
-through it:
+Optional components default to off. For Kubernetes deployments, enable the ingress gateway — sandbox Pods are ClusterIP-only and client traffic routes through it:
 
 ```bash
 helm install opensandbox opensandbox \
@@ -250,11 +244,7 @@ You can omit either `requests` or `limits`. Treat these values as a starting poi
 
 ### Ingress gateway (required on Kubernetes)
 
-Sandbox Pods on Kubernetes are ClusterIP-only — client traffic reaches
-sandboxes through the ingress gateway (`[ingress] mode = "gateway"`, the
-Kubernetes-oriented mode; the Docker runtime uses `direct` and does not need
-the gateway). Install the gateway **before the server**, then include the
-announcement in the server install:
+Sandbox Pods on Kubernetes are ClusterIP-only — client traffic reaches sandboxes through the ingress gateway (`[ingress] mode = "gateway"`, the Kubernetes-oriented mode; the Docker runtime uses `direct` and does not need the gateway). Install the gateway **before the server**, then include the announcement in the server install:
 
 ```bash
 helm install ingress-gateway manifests/charts/ingress-gateway \
@@ -262,8 +252,7 @@ helm install ingress-gateway manifests/charts/ingress-gateway \
   --set gateway.fastpathEndpoint=fast-sandbox-fastpath.opensandbox-system.svc:9090
 ```
 
-Install the server with the announcement enabled (or `helm upgrade` an
-existing server release with the same flags):
+Install the server with the announcement enabled (or `helm upgrade` an existing server release with the same flags):
 
 ```bash
 helm install opensandbox-server manifests/charts/server \
