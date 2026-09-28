@@ -64,19 +64,26 @@ helm install opensandbox-controller manifests/charts/controller \
   --namespace opensandbox-system \
   --create-namespace
 
-# 3. Optional: fast-sandbox runtime — install BEFORE the server when the
-#    server will serve sandboxes through the fsb runtime (its [runtime]
-#    config points at the FastPath endpoint this chart creates)
+# 3. Optional: fast-sandbox runtime — install BEFORE the ingress gateway and
+#    the server when the server will serve sandboxes through the fsb runtime
+#    (its [runtime] config points at the FastPath endpoint this chart creates)
 helm install fast-sandbox manifests/charts/fast-sandbox
 
-# 4. Lifecycle API server (optional but typical)
+# 4. Ingress gateway — REQUIRED on Kubernetes deployments: sandbox Pods are
+#    ClusterIP-only and client traffic routes through the gateway. Install
+#    BEFORE the server so the announcement is configured from the first
+#    install. providerType/fastpathEndpoint/secureAccess are required when
+#    serving sandboxes through fast-sandbox — see the
+#    [fast-sandbox runtime](#fast-sandbox-runtime-firecracker) section.
+helm install ingress-gateway manifests/charts/ingress-gateway \
+  --namespace opensandbox-system
+
+# 5. Lifecycle API server
 helm install opensandbox-server manifests/charts/server \
   --namespace opensandbox-system \
   --create-namespace
 
-# 5. Optional: ingress gateway and node agent
-helm install ingress-gateway manifests/charts/ingress-gateway \
-  --namespace opensandbox-system
+# 6. Optional: node agent
 helm install opensandbox-node-agent manifests/charts/node-agent \
   --namespace opensandbox-system
 ```
@@ -239,6 +246,53 @@ helm install ingress-gateway manifests/charts/ingress-gateway \
   --namespace opensandbox-system \
   --set gateway.service.type=LoadBalancer
 ```
+
+## Rendered-Manifests (GitOps) Deployment
+
+Instead of `helm install` / `helm upgrade`, render each chart to plain YAML
+with `helm template` and apply it with `kubectl`. The rendered manifests and
+values files live in your own Git repository, giving reviewable, reproducible
+deployments.
+
+```bash
+git checkout release-1.1.0   # deploy a specific release
+mkdir -p out
+
+# Render each component (namespace flag matters: templates resolve
+# .Release.Namespace)
+helm template base manifests/charts/base > out/base.yaml
+helm template opensandbox-controller manifests/charts/controller \
+  -n opensandbox-system > out/controller.yaml
+helm template ingress-gateway manifests/charts/ingress-gateway \
+  -n opensandbox-system > out/ingress-gateway.yaml
+helm template opensandbox-server manifests/charts/server \
+  -n opensandbox-system -f values-server.yaml > out/server.yaml
+
+# Review, then apply (Server-Side Apply: OpenSandbox CRDs are large and can
+# exceed the client-side apply annotation limit)
+kubectl diff -f out/base.yaml
+kubectl apply --server-side -f out/base.yaml
+```
+
+Rules and caveats:
+
+- **No mixing.** Do not run `helm install` / `helm upgrade` against a cluster
+  deployed this way — the two flows overwrite each other. The
+  `app.kubernetes.io/managed-by: Helm` labels in rendered output are inert;
+  kubectl ignores them.
+- **Namespace bootstrap is your job.** `helm template` only renders; nothing
+  creates namespaces. Create `opensandbox-system` (and the sandbox workload
+  namespace) before the first apply. On chart versions that ship
+  `fastSandbox.namespaces.createSystem` (base), the system namespace is part
+  of the rendered `base` and needs no manual step.
+- **`helm.sh/resource-policy: keep` is helm-only.** kubectl does not honor it:
+  deleting the rendered `base` deletes the CRDs and cascades every
+  Sandbox/Pool custom resource. Keep CRDs across component-only rollouts by
+  not deleting `out/base.yaml`.
+- **Upgrades** are re-renders: `git checkout release-X.Y.Z`, render again,
+  `kubectl diff` to review the delta, then apply per component.
+- `kubectl diff` exits `1` when there are differences and `0` when clean —
+  do not treat a nonzero exit as a failure in scripts.
 
 ## Upgrade
 
@@ -432,7 +486,10 @@ helm upgrade opensandbox-controller manifests/charts/controller \
 The ingress gateway (`components/ingress`) proxies sandbox traffic and is
 deployed by its own chart. The lifecycle server only *announces* it: set
 `server.gateway.enabled=true` (chart `server`) so the server returns the
-gateway address to clients.
+gateway address to clients. Install the gateway **before the server** so the
+announcement is configured from the first install. It is required on
+Kubernetes deployments: sandbox Pods are ClusterIP-only and client traffic
+routes through the gateway.
 
 ```bash
 helm install ingress-gateway manifests/charts/ingress-gateway \
@@ -446,6 +503,22 @@ helm install opensandbox-server manifests/charts/server \
 
 Keep `server.gateway.gatewayRouteMode` in sync with `gateway.gatewayRouteMode`
 of the ingress-gateway chart.
+
+When serving sandboxes through the **fast-sandbox** runtime, set the
+provider, the FastPath endpoint, and the secure-access key ring (the chart
+fails at render time without the key ring — FastPath routing serves only
+authenticated route scopes):
+
+```bash
+KEY=$(openssl rand -base64 32)   # share with server.gateway.secureAccess
+
+helm install ingress-gateway manifests/charts/ingress-gateway \
+  --namespace opensandbox-system \
+  --set gateway.providerType=fast-sandbox \
+  --set gateway.fastpathEndpoint=fast-sandbox-fastpath.opensandbox-system.svc:9090 \
+  --set 'gateway.secureAccess.keys[0].key_id=a' \
+  --set "gateway.secureAccess.keys[0].key=$KEY"
+```
 
 ### Secure-Access Keys (OSEP-0011)
 
@@ -560,9 +633,10 @@ Two key systems apply (do not conflate them):
 
 Point the OpenSandbox server's
 `[runtime]`/fsb configuration and the ingress gateway's
-`--provider-type=fast-sandbox` at the deployed FastPath endpoint to
-serve sandboxes through this runtime (see
-`scripts/fast-sandbox-env` for a working reference).
+`gateway.providerType=fast-sandbox` / `gateway.fastpathEndpoint` values at
+the deployed FastPath endpoint to serve sandboxes through this runtime (see
+[Ingress Gateway](#ingress-gateway) for the complete gateway install command,
+and `scripts/fast-sandbox-env` for a working reference).
 
 ### Bumping the pinned fast-sandbox commit
 
