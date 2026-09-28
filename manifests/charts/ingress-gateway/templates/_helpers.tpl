@@ -103,10 +103,16 @@ RBAC apiVersion
 {{- end }}
 
 {{/*
-Validate secureAccess: keys and existingSecret are mutually exclusive.
+Validate secureAccess: keys and existingSecret are mutually exclusive, and
+the fast-sandbox provider requires a key ring — FastPath routing serves only
+authenticated route scopes, and the binary panics at startup without
+--secure-access-keys. Failing at render time beats a CrashLoopBackOff.
 */}}
 {{- define "opensandbox-ingress-gateway.secureAccess.validate" -}}
 {{- if and .Values.gateway.secureAccess.keys .Values.gateway.secureAccess.existingSecret }}
 {{- fail "gateway.secureAccess: set either keys or existingSecret, not both" }}
+{{- end }}
+{{- if and (eq .Values.gateway.providerType "fast-sandbox") (empty .Values.gateway.secureAccess.keys) (empty .Values.gateway.secureAccess.existingSecret) }}
+{{- fail "gateway.secureAccess: providerType=fast-sandbox requires a signing key ring (set gateway.secureAccess.keys or gateway.secureAccess.existingSecret); FastPath routing requires --secure-access-keys for authenticated route scopes" }}
 {{- end }}
 {{- end }}
