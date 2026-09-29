@@ -197,7 +197,7 @@ ECS 裸金属节点默认不加载 kvm 模块，readiness 会报 `/dev/kvm unusa
 
 模板构建、镜像准备等前置步骤见 [fast-sandbox runtime 部署指南](https://github.com/opensandbox-group/OpenSandbox/blob/main/manifests/HELM-DEPLOYMENT.md#fast-sandbox-runtime-firecracker)。
 
-### 4. 部署 ingress-gateway（必选）
+### 4. 部署 ingress-gateway
 
 Kubernetes 环境中沙箱 Pod 仅有 ClusterIP，客户端流量须经 ingress-gateway 路由。在 server 之前部署，server 首次安装即可携带公告配置。
 
