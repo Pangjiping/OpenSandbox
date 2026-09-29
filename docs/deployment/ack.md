@@ -311,8 +311,8 @@ metadata:
 spec:
   runtime: firecracker
   sandboxResources:
-    cpu: "500m"
-    memory: 512Mi
+    cpu: "1"
+    memory: 2Gi
     pids: 256
   capacity:
     poolMin: 0

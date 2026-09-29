@@ -20,8 +20,8 @@ spec:
   runtime: firecracker
   # Resource shape of every sandbox the pool produces.
   sandboxResources:
-    cpu: "500m"
-    memory: 512Mi
+    cpu: "1"
+    memory: 2Gi
     pids: 256
   # Warm-fleet sizing: poolMin/poolMax bound total fastlets, bufferMin/
   # bufferMax bound the idle (pre-warmed) ones. 0 mins scale purely on demand.
