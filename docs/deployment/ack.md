@@ -296,11 +296,7 @@ deployment "opensandbox-server" successfully rolled out
 
 ### 可选：部署共享 SandboxPool
 
-SandboxPool（`sandbox.fast.io`）是 fast-sandbox 的容量与策略单元：预热
-Fastlet 舰队规模（`capacity`）、不可变运行时 profile（`runtime`）、每个
-沙箱的资源形状（`sandboxResources`）与放置约束（`fastletTemplate`）。同一
-池内的所有沙箱共享这些设置。仓库提供了示例
-`manifests/examples/sandboxpool-fast-sandbox.yaml`：
+SandboxPool（`sandbox.fast.io`）是 fast-sandbox 的容量与策略单元：预热 Fastlet 舰队规模（`capacity`）、不可变运行时 profile（`runtime`）、每个沙箱的资源形状（`sandboxResources`）与放置约束（`fastletTemplate`）。同一池内的所有沙箱共享这些设置。仓库提供了示例 `manifests/examples/sandboxpool-fast-sandbox.yaml`：
 
 ```yaml
 apiVersion: sandbox.fast.io/v1alpha2
@@ -315,32 +311,65 @@ spec:
     memory: 2Gi
     pids: 256
   capacity:
-    poolMin: 0
+    poolMin: 5
     poolMax: 10
     bufferMin: 0
     bufferMax: 2
   maxSandboxesPerPod: 4
   fastletTemplate:
     spec:
+      containers:
+      - name: fastlet
+        image: opensandbox/fsb-fastlet:release-1.1.1-rc.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: FAST_SANDBOX_RUNTIME_AGENT_SOCKET
+          value: /run/fast-sandbox/firecracker/runtime.sock
+        volumeMounts:
+        - name: agent-socket
+          mountPath: /run/fast-sandbox/firecracker
+      volumes:
+      - name: agent-socket
+        hostPath:
+          path: /run/fast-sandbox/firecracker
+          type: DirectoryOrCreate
       nodeSelector:
-        sandbox.fast.io/kvm: "true"
+        fast-sandbox.io/firecracker-node: "true"
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: sandbox-fastlet
+              topologyKey: kubernetes.io/hostname
   warmImages: []
 ```
+
+注意：`fastletTemplate` 必须包含名为 `fastlet` 的容器（fast-sandbox companion 镜像）并挂载节点上 runtime-agent 的 UDS socket，否则 controller 会拒绝 reconcile。需要 egress 网络策略时，参考集成环境的完整示例 `scripts/fast-sandbox-env/manifests/pool/firecracker-egress-pool.yaml`（egress sidecar + `infraComponents`/`actionHandlers` 声明）。
 
 部署并验证：
 
 ```bash
 kubectl apply --server-side -f manifests/examples/sandboxpool-fast-sandbox.yaml
 
-kubectl get sandboxpool shared-pool -n opensandbox-dataplane -o jsonpath='{.status.conditions[*].type}' && echo
+kubectl get pods -n opensandbox-dataplane
+kubectl get sandboxpool shared-pool -n opensandbox-dataplane -o jsonpath='{.status.conditions[?(@.type=="RuntimeReady")].status}'
 ```
+
+`poolMin=5` 预热 5 个 Fastlet（反亲和分散到各节点），全部就绪后 `RuntimeReady` 转为 `True`：
 
 ```text
-RegistryReady InfraReady RuntimeReady
-```
+NAME                        READY   STATUS    RESTARTS   AGE
+shared-pool-fastlet-5nh85   2/2     Running   0          54s
+shared-pool-fastlet-cxrln   2/2     Running   0          54s
+shared-pool-fastlet-gzhml   2/2     Running   0          54s
+shared-pool-fastlet-wnlsx   2/2     Running   0          54s
+shared-pool-fastlet-zdrd4   2/2     Running   0          54s
 
-`RuntimeReady=False`（等待 Fastlet 心跳）属正常：示例 `poolMin=0`，收到
-沙箱创建请求后才会扩容 Fastlet。需要预热水位时调高 `poolMin` / `bufferMin`。
+True
+```
 
 ### 升级
 
