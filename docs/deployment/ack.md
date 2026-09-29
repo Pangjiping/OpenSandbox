@@ -294,6 +294,54 @@ deployment "opensandbox-server" successfully rolled out
 {"status":"healthy"}
 ```
 
+### 可选：部署共享 SandboxPool
+
+SandboxPool（`sandbox.fast.io`）是 fast-sandbox 的容量与策略单元：预热
+Fastlet 舰队规模（`capacity`）、不可变运行时 profile（`runtime`）、每个
+沙箱的资源形状（`sandboxResources`）与放置约束（`fastletTemplate`）。同一
+池内的所有沙箱共享这些设置。仓库提供了示例
+`manifests/examples/sandboxpool-fast-sandbox.yaml`：
+
+```yaml
+apiVersion: sandbox.fast.io/v1alpha2
+kind: SandboxPool
+metadata:
+  name: shared-pool
+  namespace: opensandbox-dataplane
+spec:
+  runtime: firecracker
+  sandboxResources:
+    cpu: "500m"
+    memory: 512Mi
+    pids: 256
+  capacity:
+    poolMin: 0
+    poolMax: 10
+    bufferMin: 0
+    bufferMax: 2
+  maxSandboxesPerPod: 4
+  fastletTemplate:
+    spec:
+      nodeSelector:
+        sandbox.fast.io/kvm: "true"
+  warmImages: []
+```
+
+部署并验证：
+
+```bash
+kubectl apply --server-side -f manifests/examples/sandboxpool-fast-sandbox.yaml
+
+kubectl get sandboxpool shared-pool -n opensandbox-dataplane -o jsonpath='{.status.conditions[*].type}' && echo
+```
+
+```text
+RegistryReady InfraReady RuntimeReady
+```
+
+`RuntimeReady=False`（等待 Fastlet 心跳）属正常：示例 `poolMin=0`，收到
+沙箱创建请求后才会扩容 Fastlet。需要预热水位时调高 `poolMin` / `bufferMin`。
+
 ### 升级
 
 切换到新版本标签，重新渲染全部组件，diff 审阅后逐个 apply：

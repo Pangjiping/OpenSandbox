@@ -1,0 +1,42 @@
+# Example: a shared fast-sandbox SandboxPool (sandbox.fast.io/v1alpha2).
+#
+# A SandboxPool is the unit of capacity and policy for fastlets: it sizes the
+# warm fleet (capacity), pins the immutable runtime profile and per-sandbox
+# resource shape (runtime / sandboxResources), and constrains placement via a
+# standard pod template (fastletTemplate). All sandboxes served from the pool
+# share these settings.
+#
+# Requires the fast-sandbox chart (controller + firecracker-runtime
+# DaemonSet). Namespace must match fast-sandbox chart's `resourceNamespace`
+# (default opensandbox-dataplane, created by the base chart).
+apiVersion: sandbox.fast.io/v1alpha2
+kind: SandboxPool
+metadata:
+  name: shared-pool
+  namespace: opensandbox-dataplane
+spec:
+  # Immutable runtime profile; must exist in the agents' runtime-environments
+  # config (the chart default ships the `firecracker` profile).
+  runtime: firecracker
+  # Resource shape of every sandbox the pool produces.
+  sandboxResources:
+    cpu: "500m"
+    memory: 512Mi
+    pids: 256
+  # Warm-fleet sizing: poolMin/poolMax bound total fastlets, bufferMin/
+  # bufferMax bound the idle (pre-warmed) ones. 0 mins scale purely on demand.
+  capacity:
+    poolMin: 0
+    poolMax: 10
+    bufferMin: 0
+    bufferMax: 2
+  # Sandbox density per fastlet.
+  maxSandboxesPerPod: 4
+  # Ordinary pod template for the fastlet Pods themselves. The firecracker
+  # readiness loop labels KVM-capable nodes with sandbox.fast.io/kvm=true.
+  fastletTemplate:
+    spec:
+      nodeSelector:
+        sandbox.fast.io/kvm: "true"
+  # Artifacts to pre-pull and pin in the image cache (optional).
+  warmImages: []
