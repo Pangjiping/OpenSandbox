@@ -14,8 +14,8 @@ name: Umbrella Release
 #
 # Package legs (PyPI, npm, Maven, NuGet) run through the reusable
 # release-packages.yml workflow: build-only on dry runs AND on rc
-# builds; direct build-then-publish with verify-then-continue only for
-# stable releases with publish gates open AND the BOM PR merged (all
+# builds; direct build-then-publish only for stable releases with
+# publish gates open AND the BOM PR merged (all
 # images green + code-owner approval). Helm charts are not published —
 # they ship in-repo at the release tag. The legacy tag-triggered
 # publish-* workflows have been deleted; the umbrella is the only
@@ -406,7 +406,7 @@ jobs:
       # build legs as a rehearsal without touching immutable registries
       #
       # TODO(GA): with rc builds rehearsing only, the publish legs (registry
-      # credentials, verify-then-continue, rollback ledger) execute for
+      # credentials, rollback ledger) execute for
       # real only at a line's first stable release. Before opening the
       # gates for a line's first stable release, rehearse the publish path
       # end-to-end — e.g. a staging-registry rehearsal mode, or a one-off
