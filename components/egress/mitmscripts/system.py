@@ -682,18 +682,20 @@ def _request_path(flow: http.HTTPFlow) -> str:
 _DOT_SEGMENT_RE = re.compile(r"/\.\.(/|$)")
 
 
-def _path_is_ambiguous(raw_path: str, *, allow_single_encoded_slash: bool = False) -> bool:
+def _path_is_ambiguous(raw_path: str, *, allow_encoded_slash: bool = False) -> bool:
     """Return True if the raw request path could decode to a different path
-    than the one used for binding match (dot-segments, encoded separators).
-    Legitimate clients resolve dot segments before sending, so ``..`` on the
-    wire is an attempt to confuse path-based authorization.
+    than the one used for binding match (dot-segments, backslashes, or a
+    percent-decode that never converges). Legitimate clients resolve dot
+    segments before sending, so ``..`` on the wire is an attempt to confuse
+    path-based authorization.
 
-    ``allow_single_encoded_slash`` tolerates a single-layer ``%2f`` (legit
-    for npm scoped package registry paths like ``/@scope%2fname``) on the
-    raw wire path; nested encodings, backslashes and dot-segments are always
-    rejected. The complementary
-    :func:`_path_encoded_slash_changes_binding` check rejects a ``%2f`` that
-    would cross an authorization boundary.
+    ``allow_encoded_slash`` tolerates ``%2f`` at any percent-decoding depth
+    on the client-supplied path (legit for npm scoped package registry paths
+    like ``/@scope%2fname`` and artifact-store coordinate paths like
+    ``pkg%252F1.0``). Whether an encoded slash is safe is decided by the
+    complementary :func:`_path_decoding_changes_binding` check, which rejects
+    a path whose decoding crosses an authorization boundary. Backslashes and
+    dot-segments are always rejected at every decoding depth.
     """
     path = raw_path.split("?", 1)[0]
 
@@ -701,15 +703,15 @@ def _path_is_ambiguous(raw_path: str, *, allow_single_encoded_slash: bool = Fals
     if _DOT_SEGMENT_RE.search(path):
         return True
 
-    # Iteratively decode to catch nested encodings like %252e%252e or %252f.
+    # Iteratively decode to catch nested encodings like %252e%252e. Decoding
+    # only turns ``%xx`` escapes into literal characters, so anything that
+    # appears at an intermediate depth survives to the fixpoint; checking the
+    # fixpoint covers every depth.
     decoded = path
     for _ in range(10):
         lower = decoded.lower()
-        if "%2f" in lower:
-            # Tolerate a single-layer ``%2f`` on the first pass only; a nested
-            # ``%252f`` decodes back to ``%2f`` and still trips this check.
-            if not (allow_single_encoded_slash and decoded is path):
-                return True
+        if not allow_encoded_slash and "%2f" in lower:
+            return True
         if "%5c" in lower:
             return True
         if "\\" in decoded:
@@ -718,33 +720,53 @@ def _path_is_ambiguous(raw_path: str, *, allow_single_encoded_slash: bool = Fals
         if next_decoded == decoded:
             break
         decoded = next_decoded
+    else:
+        # No fixpoint within the iteration bound: absurdly nested escapes on
+        # a client path mean we cannot establish a canonical view; fail closed.
+        return True
     if _DOT_SEGMENT_RE.search(decoded):
         return True
 
     return False
 
 
-def _path_encoded_slash_changes_binding(
+def _path_decoding_changes_binding(
     flow: http.HTTPFlow, vault: ActiveVault
 ) -> bool:
-    """Return True if decoding ``%2f`` in the raw path would change which
-    credential binding matches (i.e. the encoded slash crosses an
-    authorization boundary). Legit uses like npm scoped packages decode to a
-    path matching the same binding, so they pass; crafted paths like
-    ``/api/v8/projects/123%2f..%2f456/variables`` are rejected before
-    credential injection.
+    """Return True if percent-decoding the raw path to any depth would change
+    which credential binding matches (i.e. decoding crosses an authorization
+    boundary).
+
+    This is the credential-injection invariant: the binding selected on the
+    raw wire path must be identical for every decode depth, so the injection
+    decision does not depend on how many times any downstream processor
+    decodes the path. Legit encoded uses — npm scoped package registry paths
+    like ``/@scope%2fname`` or artifact-store coordinate paths like
+    ``pkg%252F1.0`` — decode to a path matching the same binding, so they
+    pass; crafted paths like ``/api/v8/projects/123%2f..%2f456/variables``
+    are rejected before credential injection.
     """
     raw_path = _request_path(flow)
-    if "%2f" not in raw_path.lower():
+
+    # Collect every intermediate view from the raw path down to the decode
+    # fixpoint, so the invariant holds no matter how many times an encoded
+    # slash is nested (%2f, %252f, %25252f, ...).
+    views = [raw_path]
+    decoded = raw_path
+    for _ in range(10):
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+        views.append(decoded)
+
+    if len(views) == 1:
         return False
 
-    decoded_path = unquote(raw_path)
-    if decoded_path == raw_path:
-        return False
-
-    # If the decoded form contains dot-segments, treat it as ambiguous.
-    if _DOT_SEGMENT_RE.search(decoded_path):
-        return True
+    # If any decoded form contains dot-segments, treat it as ambiguous.
+    for view in views[1:]:
+        if _DOT_SEGMENT_RE.search(view):
+            return True
 
     scheme = (flow.request.scheme or "").lower()
     host = _request_host(flow)
@@ -778,7 +800,8 @@ def _path_encoded_slash_changes_binding(
                 matched.add(idx)
         return matched
 
-    return _matches_with_path(raw_path) != _matches_with_path(decoded_path)
+    raw_matches = _matches_with_path(raw_path)
+    return any(_matches_with_path(view) != raw_matches for view in views[1:])
 
 
 def _host_matches(host: str, pattern: str) -> tuple[bool, int]:
@@ -1162,12 +1185,12 @@ def requestheaders(flow: http.HTTPFlow) -> None:
         return
 
     # Reject ambiguous paths only for requests that would receive credentials:
-    # dot-segments or encoded separators could redirect credentials to a scope
-    # the canonical path does not match. A single-layer ``%2f`` is tolerated
-    # here (npm scoped packages send ``/@scope%2fname``); the next check rejects
-    # it if it crosses a binding boundary.
+    # dot-segments or backslashes could redirect credentials to a scope the
+    # canonical path does not match. Encoded slashes (``%2f`` at any decoding
+    # depth) are tolerated here; the next check rejects them when decoding
+    # would cross a binding boundary.
     raw_path = flow.request.path or "/"
-    if _path_is_ambiguous(raw_path, allow_single_encoded_slash=True):
+    if _path_is_ambiguous(raw_path, allow_encoded_slash=True):
         _reject_request(flow, b"request path contains ambiguous segments\n")
         ctx.log.warn(
             "credential proxy: rejected request with ambiguous path: "
@@ -1175,13 +1198,13 @@ def requestheaders(flow: http.HTTPFlow) -> None:
         )
         return
 
-    # Reject a ``%2f`` only when decoding it changes the binding match, so
-    # ``/@scope%2fname`` stays working while crafted paths like
-    # ``/api/v8/projects/123%2f..%2f456/...`` are stopped.
-    if _path_encoded_slash_changes_binding(flow, vault):
+    # Encoded separators are safe only when every percent-decoding depth of
+    # the path matches the same credential binding, so the injection decision
+    # is independent of how any downstream processor decodes the path.
+    if _path_decoding_changes_binding(flow, vault):
         _reject_request(flow, b"request path contains ambiguous segments\n")
         ctx.log.warn(
-            "credential proxy: rejected request whose encoded slash crosses "
+            "credential proxy: rejected request whose percent-decoding crosses "
             "the credential binding boundary: "
             f"{flow.request.method} {_request_host(flow)}{_request_path(flow)}"
         )
