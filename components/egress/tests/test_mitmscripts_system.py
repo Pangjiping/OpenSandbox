@@ -2154,21 +2154,13 @@ class SystemAddonDoubleEncodedPathTest(unittest.TestCase):
         binding scope must be rejected before credential injection.
 
         The narrow binding's path pattern contains the literal ``%252F`` so
-        only the raw view matches it; the fully decoded view matches only the
-        broad binding. The mismatch is the ambiguity the guard exists for."""
+        only the raw view matches it, and ``_select_binding`` selects it
+        unambiguously; the fully decoded view matches only the plain-path
+        binding instead. The mismatch is exactly what the decode guard must
+        catch — with the guard removed, the narrow binding's credential
+        would be injected onto a path that belongs to another scope."""
         system = self._make_system_with_artlab_vault(
             [
-                {
-                    "name": "artlab-broad",
-                    "match": {
-                        "hosts": ["artlab.example.com"],
-                        "methods": ["GET"],
-                        "paths": ["/*"],
-                    },
-                    "headers": [
-                        {"name": "Private-Token", "value": "broad-token"}
-                    ],
-                },
                 {
                     "name": "artlab-narrow",
                     "match": {
@@ -2180,6 +2172,17 @@ class SystemAddonDoubleEncodedPathTest(unittest.TestCase):
                         {"name": "Private-Token", "value": "narrow-token"}
                     ],
                 },
+                {
+                    "name": "artlab-plain",
+                    "match": {
+                        "hosts": ["artlab.example.com"],
+                        "methods": ["GET"],
+                        "paths": ["/pkg/admin/*"],
+                    },
+                    "headers": [
+                        {"name": "Private-Token", "value": "plain-token"}
+                    ],
+                },
             ]
         )
         flow = self._artlab_flow("/pkg%252Fadmin%252Fsecrets")
@@ -2189,6 +2192,12 @@ class SystemAddonDoubleEncodedPathTest(unittest.TestCase):
         self.assertIsNotNone(flow.response)
         self.assertEqual(403, flow.response.status_code)
         self.assertNotIn("Private-Token", flow.request.headers._values)
+        # The decode guard (not the earlier binding-ambiguity check) must be
+        # what rejected this flow.
+        self.assertIn(
+            "percent-decoding crosses the credential binding boundary",
+            "\n".join(system.ctx.log.messages),
+        )
 
     def test_double_encoded_dot_segments_still_rejected(self) -> None:
         """``%252f..%252f`` hides dot-segments behind nested encodings; the

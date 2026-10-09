@@ -500,6 +500,24 @@ curl -fsS https://api.example.com/v1/projects/123/variables
 - Keep fake environment variables when a CLI refuses to start without a key; the
   vault-injected header is what authenticates the outbound request.
 
+## Path Ambiguity Guard
+
+The sidecar inspects the request path only for requests that would receive
+injected credentials. A request is rejected with `403` when its path contains
+dot-segments (`..`) or backslashes (`\`, `%5c`) at any percent-decoding depth,
+or when percent-decoding does not converge within the guard's iteration bound —
+these are traversal or path-confusion primitives that legitimate clients do not
+send.
+
+Encoded slashes (`%2f`, including nested forms like `%252f`) are allowed when
+every decoding depth of the path matches the same credential binding. This
+keeps legitimate encoded wire formats working — npm scoped registry paths
+(`/@scope%2fname`) and artifact-store download URLs whose coordinates are
+double-encoded (for example `pkg%252F1.0`, as produced by some internal pypi
+proxies) — while a path whose decoding would cross a binding boundary is still
+rejected before any credential is injected. Requests outside every binding
+scope pass through untouched.
+
 ## Migrating From `ports`
 
 The `match.ports` field is deprecated. Port is now derived from scheme (`https`→443, `http`→80). Only ports 80 and 443 are supported; non-standard values are rejected with a validation error.
