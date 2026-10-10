@@ -32,6 +32,12 @@ MOUNT_TESTS = [
     "TestAtomicPolicyReadOnlyDirectoryBindMountRejected",
     "TestAtomicPolicySymlinkRejected",
 ]
+NFT_TESTS = [
+    "TestDynamicElementRenewal",
+    "TestNftQuiescenceAfterCommittedStaticError",
+    "TestNftStartFailurePreservesKernelAndRetry",
+    "TestNftRealMissingTableFallback",
+]
 OWNER_TESTS = [
     "TestRevisionAtomicPolicyDirectoryBindMount",
     "TestRevisionAtomicPolicySingleFileBindMountRejected",
@@ -45,6 +51,8 @@ import shutil
 import signal
 import sys
 
+kind = os.getenv("FAKE_KIND", "mount")
+opt_in = "OPENSANDBOX_NFT_TEST" if kind == "nft" else "OPENSANDBOX_ATOMIC_POLICY_MOUNT_TEST"
 command = Path(sys.argv[0]).name
 args = sys.argv[1:]
 mode = os.environ["FAKE_MODE"]
@@ -52,7 +60,7 @@ tests = json.loads(os.environ["FAKE_TESTS"])
 target = tests[-1]
 with open(os.environ["FAKE_EVENTS"], "a") as stream:
     stream.write(json.dumps({"command": command, "args": args,
-                             "opt_in": os.getenv("OPENSANDBOX_ATOMIC_POLICY_MOUNT_TEST")}) + "\n")
+                             "opt_in": os.getenv(opt_in)}) + "\n")
 
 if command == "go":
     assert args[:3] == ["test", "-c", "-o"] and len(args) == 5, args
@@ -66,7 +74,12 @@ if command == "go":
     shutil.copyfile(__file__, binary)
     binary.chmod(0o755)
 elif command == "sudo":
-    assert args[:3] == ["env", "OPENSANDBOX_ATOMIC_POLICY_MOUNT_TEST=1", "unshare"], args
+    if kind == "nft":
+        assert args[:2] == ["env", "OPENSANDBOX_NFT_TEST=1"], args
+        if mode == "unshare_failure":
+            sys.exit(24)
+    else:
+        assert args[:3] == ["env", "OPENSANDBOX_ATOMIC_POLICY_MOUNT_TEST=1", "unshare"], args
     os.execvp(args[0], args)
 elif command == "unshare":
     assert args[:3] == ["--mount", "--propagation", "private"], args
@@ -86,7 +99,7 @@ elif command == "policy.test":
             sys.exit(25)
     else:
         assert args == ["-test.run", "^(" + "|".join(tests) + ")$", "-test.v", "-test.timeout=5m"], args
-        assert os.environ["OPENSANDBOX_ATOMIC_POLICY_MOUNT_TEST"] == "1"
+        assert os.environ[opt_in] == "1"
         for name in tests:
             if mode != "absent_run" or name != target:
                 print("=== RUN   " + name + ("Extra" if mode == "inexact_run" and name == target else ""))
@@ -102,6 +115,8 @@ else:
 
 
 class PrivilegedGoTestRunnerTests(unittest.TestCase):
+    script = SCRIPT
+    kind = "mount"
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="privileged-runner-test-")
         self.addCleanup(temporary.cleanup)
@@ -117,7 +132,7 @@ class PrivilegedGoTestRunnerTests(unittest.TestCase):
         # A closed PATH prevents a missing fake from invoking real sudo/unshare.
         for name in ("env", "mktemp", "rm", "grep", "tee"):
             (self.bin / name).symlink_to(shutil.which(name))
-        for name in ("go", "sudo", "unshare"):
+        for name in ("go", "sudo", "unshare", "nft"):
             fake = self.bin / name
             fake.write_text(f"#!{sys.executable}\n" + FAKE_COMMAND)
             fake.chmod(0o755)
@@ -130,11 +145,12 @@ class PrivilegedGoTestRunnerTests(unittest.TestCase):
             "PATH": str(self.bin),
             "TMPDIR": str(self.tmp),
             "FAKE_MODE": mode,
+            "FAKE_KIND": self.kind,
             "FAKE_TESTS": json.dumps(tests),
             "FAKE_EVENTS": str(self.events),
         }
         result = subprocess.run(
-            [self.bash, str(SCRIPT), package, *tests],
+            [self.bash, str(self.script), package, *tests],
             env=env,
             capture_output=True,
             text=True,
@@ -159,7 +175,7 @@ class PrivilegedGoTestRunnerTests(unittest.TestCase):
                     [["-test.list", f"^{name}$"] for name in tests],
                 )
                 self.assertEqual([event["command"] for event in events].count("sudo"), 1)
-                self.assertEqual([event["command"] for event in events].count("unshare"), 1)
+                self.assertEqual([event["command"] for event in events].count("unshare"), 0 if self.kind == "nft" else 1)
                 self.assertEqual(events[-1]["opt_in"], "1")
         self.assertNotEqual(*binary_paths)
 
@@ -178,7 +194,7 @@ class PrivilegedGoTestRunnerTests(unittest.TestCase):
     def test_unshare_failure_is_not_hidden_by_tee(self):
         result, events = self.run_script("unshare_failure")
         self.assertEqual(result.returncode, 24, result.stderr)
-        self.assertEqual(events[-1]["command"], "unshare")
+        self.assertEqual(events[-1]["command"], "sudo" if self.kind == "nft" else "unshare")
 
     def test_test_failure_is_not_hidden_by_tee(self):
         result, _ = self.run_script("test_failure")
@@ -216,6 +232,27 @@ class PrivilegedGoTestRunnerTests(unittest.TestCase):
                 result, events = self.run_script("signal_" + name)
                 self.assertEqual(result.returncode, exit_code, result.stdout + result.stderr)
                 self.assertEqual([event["command"] for event in events], ["go"])
+
+
+class NftGoTestRunnerTests(PrivilegedGoTestRunnerTests):
+    script = SCRIPT.with_name("ci-nft-go-test.sh")
+    kind = "nft"
+
+    def test_success_for_nft_and_owner_groups(self):
+        for package, tests in (("./pkg/nftables", NFT_TESTS), (".", ["TestRevisionNftEffectsRealFileAndKernel"])):
+            with self.subTest(package=package):
+                result, events = self.run_script(package=package, tests=tests)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(events[0]["args"][-1], package)
+                self.assertEqual(events[-1]["opt_in"], "1")
+                self.assertEqual([event["command"] for event in events].count("sudo"), 1)
+                self.assertNotIn("unshare", [event["command"] for event in events])
+
+    def test_missing_nft_fails_before_compilation(self):
+        (self.bin / "nft").unlink()
+        result, events = self.run_script()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(events, [])
 
 
 if __name__ == "__main__":

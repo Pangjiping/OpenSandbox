@@ -15,7 +15,9 @@
 package nftables
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -44,7 +46,7 @@ const (
 type runner func(ctx context.Context, script string) ([]byte, error)
 
 type Options struct {
-	// QuiesceOnApplyFailure freezes runtime writes on a terminal static error.
+	// QuiesceOnApplyFailure freezes runtime writes on an unknown static effect.
 	// Explicit Quiesce calls always take effect, regardless of this option.
 	QuiesceOnApplyFailure bool
 	BlockDoT              bool
@@ -102,7 +104,10 @@ func (m *Manager) ApplyStatic(ctx context.Context, p *policy.NetworkPolicy) erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.quiesced.Load() {
-		return ErrQuiesced
+		return &ApplyError{Effect: ApplyUnchanged, Err: ErrQuiesced}
+	}
+	if err := ctx.Err(); err != nil {
+		return &ApplyError{Effect: ApplyUnchanged, Err: err}
 	}
 	if p == nil {
 		p = policy.DefaultDenyPolicy()
@@ -112,10 +117,7 @@ func (m *Manager) ApplyStatic(ctx context.Context, p *policy.NetworkPolicy) erro
 		p.DefaultAction, len(allowV4), len(allowV6), len(denyV4), len(denyV6))
 	script, err := buildRuleset(p, m.opts)
 	if err != nil {
-		if m.opts.QuiesceOnApplyFailure {
-			m.quiesced.Store(true)
-		}
-		return err
+		return &ApplyError{Effect: ApplyUnchanged, Err: err}
 	}
 	if _, err := m.run(ctx, script); err != nil {
 		if isMissingTableError(err) {
@@ -128,12 +130,18 @@ func (m *Manager) ApplyStatic(ctx context.Context, p *policy.NetworkPolicy) erro
 					telemetry.SetNftablesRuleCount(telemetry.NftRuleCountFromPolicy(p))
 					telemetry.RecordNftablesUpdate()
 					return nil
+				} else {
+					effect := ApplyUnknown
+					if ApplyEffectOf(err) == ApplyUnchanged && ApplyEffectOf(retryErr) == ApplyUnchanged {
+						effect = ApplyUnchanged
+					}
+					err = &ApplyError{Effect: effect, Err: fmt.Errorf("nft missing-table fallback failed: %w", errors.Join(err, retryErr))}
 				}
 			}
 		}
 		// Keep the failure and freeze in the same critical section so queued
 		// writers cannot publish old permits before the owner receives it.
-		if m.opts.QuiesceOnApplyFailure {
+		if m.opts.QuiesceOnApplyFailure && ApplyEffectOf(err) != ApplyUnchanged {
 			m.quiesced.Store(true)
 		}
 		telemetry.RecordNftablesUpdateFailed(telemetry.NftOpStaticApply)
@@ -329,11 +337,24 @@ func writeElements(b *strings.Builder, setName string, elems []string) {
 func defaultRunner(ctx context.Context, script string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "nft", "-f", "-")
 	cmd.Stdin = strings.NewReader(script)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return output, fmt.Errorf("nft apply failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
+	return runNftCommand(ctx, cmd)
+}
+
+func runNftCommand(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, &ApplyError{Effect: ApplyUnchanged, Err: err}
 	}
-	return output, nil
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		return output.Bytes(), &ApplyError{Effect: ApplyUnchanged, Err: fmt.Errorf("nft start failed: %w (output: %s)", err, strings.TrimSpace(output.String()))}
+	}
+	// A nonzero exit or diagnostic text cannot prove that no kernel operation
+	// ran. Wait also reports cancellation, signals and I/O-copy failures.
+	if err := cmd.Wait(); err != nil {
+		return output.Bytes(), &ApplyError{Effect: ApplyUnknown, Err: fmt.Errorf("nft apply failed: %w (output: %s)", err, strings.TrimSpace(output.String()))}
+	}
+	return output.Bytes(), nil
 }
 
 func isMissingTableError(err error) bool {

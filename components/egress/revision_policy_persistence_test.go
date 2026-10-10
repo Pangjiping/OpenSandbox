@@ -31,6 +31,7 @@ import (
 type faultPolicyStore struct {
 	state                            policy.FileMutationState
 	saveErr, snapshotErr, restoreErr error
+	restoreState                     *policy.FileMutationState
 	saves, restores                  int
 	onSave, onRestore                func()
 }
@@ -47,6 +48,9 @@ func (f *faultPolicyStore) Restore(*policy.PolicyFileSnapshot) (policy.FileMutat
 	f.restores++
 	if f.onRestore != nil {
 		f.onRestore()
+	}
+	if f.restoreState != nil {
+		return *f.restoreState, f.restoreErr
 	}
 	return policy.FileCommitted, f.restoreErr
 }

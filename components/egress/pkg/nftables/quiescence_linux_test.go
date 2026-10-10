@@ -36,25 +36,8 @@ import (
 func TestNftQuiescenceAfterCommittedStaticError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	switch os.Getenv("OPENSANDBOX_NFT_TEST") {
-	case "1":
-		parentNetns, err := os.Readlink("/proc/self/ns/net")
-		require.NoError(t, err)
-		command := exec.CommandContext(ctx, "unshare", "--net", os.Args[0], "-test.run=^TestNftQuiescenceAfterCommittedStaticError$", "-test.v")
-		command.Env = append(os.Environ(), "OPENSANDBOX_NFT_TEST=netns", "OPENSANDBOX_NFT_TEST_PARENT_NETNS="+parentNetns)
-		output, err := command.CombinedOutput()
-		require.NoError(t, err, "isolated nft test failed: %s", output)
-		t.Logf("%s", output)
+	if !isolatedNftTest(t, ctx) {
 		return
-	case "netns":
-		parentNetns := os.Getenv("OPENSANDBOX_NFT_TEST_PARENT_NETNS")
-		require.NotEmpty(t, parentNetns, "run with OPENSANDBOX_NFT_TEST=1 to create an isolated network namespace")
-		currentNetns, err := os.Readlink("/proc/self/ns/net")
-		require.NoError(t, err)
-		require.NotEqual(t, parentNetns, currentNetns, "nft test must run in a separate network namespace")
-		t.Logf("isolated network namespace: %s (parent %s)", currentNetns, parentNetns)
-	default:
-		t.Skip("kernel validation not executed: set OPENSANDBOX_NFT_TEST=1 with nft and network namespace permissions")
 	}
 
 	oldPolicy, err := policy.ParsePolicy(`{"defaultAction":"deny","egress":[{"action":"allow","target":"*.example.com"},{"action":"allow","target":"198.51.100.10"}]}`)
@@ -245,4 +228,30 @@ func readQuiescenceKernelSets(t *testing.T, ctx context.Context) map[string][]st
 		require.Contains(t, sets, name, "missing nft set %s: %s", name, snapshot)
 	}
 	return sets
+}
+
+func isolatedNftTest(t *testing.T, ctx context.Context) bool {
+	t.Helper()
+	switch os.Getenv("OPENSANDBOX_NFT_TEST") {
+	case "1":
+		parentNetns, err := os.Readlink("/proc/self/ns/net")
+		require.NoError(t, err)
+		command := exec.CommandContext(ctx, "unshare", "--net", os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
+		command.Env = append(os.Environ(), "OPENSANDBOX_NFT_TEST=netns", "OPENSANDBOX_NFT_TEST_PARENT_NETNS="+parentNetns)
+		output, err := command.CombinedOutput()
+		require.NoError(t, err, "isolated nft test failed: %s", output)
+		t.Logf("%s", output)
+		return false
+	case "netns":
+		parentNetns := os.Getenv("OPENSANDBOX_NFT_TEST_PARENT_NETNS")
+		require.NotEmpty(t, parentNetns, "run with OPENSANDBOX_NFT_TEST=1 to create an isolated network namespace")
+		currentNetns, err := os.Readlink("/proc/self/ns/net")
+		require.NoError(t, err)
+		require.NotEqual(t, parentNetns, currentNetns, "nft test must run in a separate network namespace")
+		t.Logf("isolated network namespace: %s (parent %s)", currentNetns, parentNetns)
+	default:
+		t.Skip("kernel validation not executed: set OPENSANDBOX_NFT_TEST=1 with nft and network namespace permissions")
+	}
+
+	return true
 }

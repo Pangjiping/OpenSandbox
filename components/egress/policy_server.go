@@ -708,14 +708,18 @@ func (s *policyServer) commitPolicy(ctx context.Context, w http.ResponseWriter, 
 		nftCtx, nftCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer nftCancel()
 		if err := s.nft.ApplyStatic(nftCtx, merged.WithExtraAllowIPs(s.nameserverIPs)); err != nil {
-			if s.revisionRecovery != nil {
+			if s.revisionRecovery != nil && nftables.ApplyEffectOf(err) != nftables.ApplyUnchanged {
 				s.requireRevisionRecoveryLocked(revisionRecoveryExternalEffectsUnknown)
 			}
 			logEgressUpdateFailedError(fmt.Sprintf("nftables apply (%s): %v", op, err))
 			log.Errorf("policy API: nftables apply failed (%s): %v", op, err)
-			// Retain the existing best-effort disk restoration. A successful
-			// restore does not establish that the kernel remained unchanged.
+			// Known no-execution failure can remain retryable only after the
+			// exact old file (or absence) has been durably restored. Unknown
+			// kernel effects have already latched recovery before this attempt.
 			if restoreErr := restore(); restoreErr != nil {
+				if s.revisionRecovery != nil && nftables.ApplyEffectOf(err) == nftables.ApplyUnchanged {
+					s.requireRevisionRecoveryLocked(revisionRecoveryExternalEffectsUnknown)
+				}
 				log.Errorf("policy API: restore policy file after failed apply: %v", restoreErr)
 			}
 			http.Error(w, fmt.Sprintf("failed to apply nftables policy: %v", err), http.StatusInternalServerError)
@@ -814,7 +818,7 @@ func (s *policyServer) reloadAlwaysRules() (bool, error) {
 		nftCtx, nftCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer nftCancel()
 		if err := s.nft.ApplyStatic(nftCtx, merged.WithExtraAllowIPs(s.nameserverIPs)); err != nil {
-			if s.revisionRecovery != nil {
+			if s.revisionRecovery != nil && nftables.ApplyEffectOf(err) != nftables.ApplyUnchanged {
 				s.requireRevisionRecoveryLocked(revisionRecoveryExternalEffectsUnknown)
 			}
 			log.Warnf("policy API: apply reloaded always rules to nftables failed: %v", err)

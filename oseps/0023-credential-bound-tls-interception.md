@@ -1164,9 +1164,10 @@ teardown remain available. There is no reset API; the first recovery reason is
 sticky only within the same Go process incarnation.
 
 For the ordinary sidecar's experimental revision runtime, recovery also
-synchronously quiesces the same nft Manager. Its terminal static-apply error
-sets a one-way frozen state under the Manager lock before returning, including
-the first startup apply; successful missing-table fallback does not freeze it.
+synchronously quiesces the same nft Manager. A terminal static-apply error with
+an `Unknown` kernel effect sets a one-way frozen state under the Manager lock
+before returning, including the first startup apply; an `Unchanged` error or
+successful missing-table fallback does not add a freeze.
 The option is set by the existing experimental switch at Manager construction,
 before startup enforcement. The recovery owner requires `Quiesce()` on its
 internal nft interface and calls it for policy persistence, nft apply and
@@ -1175,6 +1176,26 @@ health restriction. Health probes do not acquire the policy or Manager lock,
 so they can return 503 while an admitted writer finishes. Lock order remains
 policy/Vault barrier, any already-held process-lifecycle lock, then Manager lock;
 the Manager does not call back into the owner.
+
+`ApplyStatic` retains its error interface: nil means `Committed`, and a typed
+error/helper carries `Unchanged` or `Unknown`. Ruleset construction failure,
+pre-start cancellation and process Start failure are known not to execute any
+kernel operation. The production runner separates Start from Wait and preserves
+command output. Every post-Start error, including timeout, signal, nonzero exit,
+wait or output-copy failure, is `Unknown`; unclassified runner errors also default
+to `Unknown`. Neither stderr nor nonzero exit proves an unchanged kernel.
+The existing missing-table fallback makes at most one retry. A failed pair keeps
+both errors and cannot downgrade an `Unknown` first attempt.
+
+The owner still stages file Save, then nft, then in-memory publication. With no
+policy file, `Unchanged` preserves the old base and permits retry without adding
+recovery. After Save, it permits this only if exact durable Restore of the previous
+bytes/metadata or previous absence succeeds. Any Restore failure latches recovery,
+even `FileUnchanged`, which may mean the newly saved file is still present.
+`Unknown` latches health/bootstrap/writer restrictions before best-effort Restore;
+successful Restore does not clear recovery. Failed always reload keeps old
+loader/proxy/base, and prior bootstrap invalidation, recovery and quiescence
+remain irreversible. Initial setup fails startup for every apply error.
 
 The atomic write-admission gate covers static replacement, `AddResolvedIPs`,
 `AddResolvedDomain`, late `applyDomainRefresh` results, active TCP lease renewal,
@@ -1202,8 +1223,14 @@ namespace and the real nft runner. After seeding old dynamic and upstream
 addresses, it commits a new static ruleset and injects a result error only after
 nft succeeds. All six subsequent runtime paths must leave the committed policy
 and empty dynamic/upstream sets unchanged. The privileged egress CI explicitly
-selects this test and `TestDynamicElementRenewal` with
-`OPENSANDBOX_NFT_TEST=1`. Linux, nftables, `unshare`, and namespace/nft permissions
+selects this test, `TestDynamicElementRenewal`,
+`TestNftStartFailurePreservesKernelAndRetry`, `TestNftRealMissingTableFallback`,
+and `TestRevisionNftEffectsRealFileAndKernel` with `OPENSANDBOX_NFT_TEST=1`.
+The new tests verify actual unchanged kernel readback and retry after production
+Start failure, real missing-table fallback, and real owner Save/Restore of prior
+bytes or absence coupled with both unchanged and committed-but-unknown nft
+outcomes. The dedicated nft CI runner requires exact discovery plus RUN/PASS
+for each selected test, and rejects SKIP. Linux, nftables, `unshare`, and namespace/nft permissions
 are required; missing prerequisites fail enabled runs. Ordinary Go suite runs
 skip this kernel validation when it is not enabled. Neither a skip nor a setup
 failure establishes kernel behavior, and the test does not prove a packet fence.

@@ -42,13 +42,9 @@ func TestNftOptionsRevisionQuiescence(t *testing.T) {
 			m := mgr.(*nftables.Manager)
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
-			require.Error(t, m.ApplyStatic(ctx, policy.DefaultDenyPolicy()))
-			// Empty input observes admission without running nft in legacy mode.
-			if value == "true" {
-				require.ErrorIs(t, m.AddResolvedIPs(context.Background(), nil), nftables.ErrQuiesced)
-			} else {
-				require.NoError(t, m.AddResolvedIPs(context.Background(), nil))
-			}
+			require.Equal(t, nftables.ApplyUnchanged, nftables.ApplyEffectOf(m.ApplyStatic(ctx, policy.DefaultDenyPolicy())))
+			// Pre-start cancellation never freezes a healthy Manager.
+			require.NoError(t, m.AddResolvedIPs(context.Background(), nil))
 			m.Quiesce()
 			require.ErrorIs(t, m.AddResolvedIPs(context.Background(), []nftables.ResolvedIP{
 				{Addr: netip.MustParseAddr("192.0.2.1")},

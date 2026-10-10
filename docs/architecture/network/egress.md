@@ -164,14 +164,36 @@ transaction. It provides no durable recovery journal, kernel rollback or packet
 fence. Existing open file descriptors continue to see the previous inode; readers
 must reopen the policy path to observe replacements. Default deployments with the
 experimental gate off, including DNS-only mode, retain legacy in-place persistence.
-An experimental owner without a configured policy file retains its existing
-behavior. Fast Sandbox does not use this sidecar policy-file store.
+Fast Sandbox does not use this sidecar policy-file store.
+
+Static nft applies classify their kernel effect as `Unchanged`, `Committed`, or
+`Unknown`. Local ruleset construction errors, cancellation before starting nft,
+and process-start failures are `Unchanged`: no kernel operation was executed.
+A successful command is `Committed`. After the process starts, timeout, signal,
+nonzero exit, wait or output-copy errors are `Unknown`, as are errors from a
+runner without a trusted classification. Diagnostic text and exit status cannot
+prove that the kernel stayed unchanged. The existing single missing-table
+fallback remains bounded; if both attempts fail, both diagnostics are retained
+and an `Unknown` first attempt cannot be downgraded by an `Unchanged` retry.
+
+An experimental runtime apply that is `Unchanged` preserves the previous policy
+base and DNS/TCP tracking without adding recovery or freezing a healthy Manager.
+When the policy file was already saved, this requires successful durable restore
+of its exact previous bytes, metadata, or absence. Any restore failure requires
+recovery, including a failure classified as leaving the *new* file unchanged.
+Without a configured policy file, the old base remains retryable directly.
+`Unknown` requires recovery before best-effort file restore; successful restore
+cannot clear that latch. Failed always-rule reloads keep the previous loader,
+proxy and policy base. Bootstrap invalidation and existing recovery or quiescence
+are never reversed. Initial enforcement failure still terminates startup,
+including an `Unchanged` failure.
 
 In the ordinary sidecar's experimental revision runtime, entering recovery also
 synchronously freezes runtime writes in the same nft Manager. A terminal static
-apply error freezes that Manager before releasing its lock, starting with the
-first startup apply; a successful missing-table fallback remains a success and
-does not freeze it. Uncertain policy-file persistence and session-cleanup failures freeze
+apply error with an `Unknown` effect freezes that Manager before releasing its
+lock, starting with the first startup apply; an `Unchanged` error or successful
+missing-table fallback does not add a freeze. Uncertain policy-file persistence,
+failed restoration after a saved file, and session-cleanup failures freeze
 it through the recovery owner. The owner publishes the health and bootstrap
 restrictions before waiting for an already admitted nft writer, so `/healthz`
 can return 503 while that writer drains. The write-admission boundary is the
@@ -206,8 +228,14 @@ namespace. It commits a new ruleset through the real nft runner before injecting
 an error, then checks that all six runtime paths leave the new static policy and
 empty dynamic/upstream sets unchanged. It requires `nft`, `unshare`, and
 permissions to create a network namespace and operate nftables. The privileged
-egress CI explicitly selects it alongside `TestDynamicElementRenewal` with
-`OPENSANDBOX_NFT_TEST=1`; missing prerequisites fail the enabled tests. Ordinary
+egress CI explicitly selects it alongside `TestDynamicElementRenewal`,
+`TestNftStartFailurePreservesKernelAndRetry`, `TestNftRealMissingTableFallback`,
+and the owner-level `TestRevisionNftEffectsRealFileAndKernel` with
+`OPENSANDBOX_NFT_TEST=1`. The owner test uses real atomic Save/Restore with both
+prior bytes and prior absence, alongside a real production start failure or a
+lost result after an actual kernel commit. The dedicated nft runner checks exact
+test discovery and each test's RUN/PASS evidence and rejects any SKIP;
+missing prerequisites fail enabled tests. Ordinary
 Go tests skip kernel validation when that variable is unset, so their success
 does not establish kernel behavior or packet isolation.
 

@@ -448,7 +448,7 @@ func TestManagerQuiescence_FallbackAndLegacy(t *testing.T) {
 			QuiesceOnApplyFailure: true, DoHBlocklistV4: []string{"invalid-prefix"},
 		})
 		require.Error(t, m.ApplyStatic(context.Background(), policy.DefaultDenyPolicy()))
-		require.ErrorIs(t, m.AddResolvedIPs(context.Background(), quiescenceIPs()), ErrQuiesced)
+		require.False(t, m.isQuiesced())
 		require.Zero(t, r.calls())
 	})
 }
