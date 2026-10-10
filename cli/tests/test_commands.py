@@ -139,6 +139,19 @@ class TestConfigShow:
         assert data["config_path"].endswith(".opensandbox/config.toml")
         assert "config_file_exists" in data
 
+    def test_show_masks_numeric_api_key_from_file(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("[connection]\napi_key = 1234567890\n")
+        result = runner.invoke(
+            cli, ["--config", str(cfg_path), "config", "show", "-o", "json"]
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        # A numeric-looking key is still a string, so it is masked and not dropped.
+        assert data["api_key"] == "12******90"
+
     def test_show_table_output(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["--api-key", "test-key", "config", "show"])
         assert result.exit_code == 0
