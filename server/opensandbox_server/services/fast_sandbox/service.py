@@ -116,6 +116,16 @@ class FastSandboxService(SandboxService, ExtensionService):
         self._cr_reader = SandboxCRReader(self._k8s, k8s_client)
         self._template_service = template_service
 
+    @property
+    def cr_reader(self) -> SandboxCRReader:
+        """Informer-cached Sandbox CR reader (background integrations, OSEP-0024)."""
+        return self._cr_reader
+
+    @property
+    def fastpath_client(self) -> FastPathClient:
+        """Shared FastPath gRPC client (background integrations, OSEP-0024)."""
+        return self._fastpath
+
     def close(self) -> None:
         self._cr_reader.close()
         if self._template_service is not None:

@@ -311,6 +311,61 @@ def test_renew_intent_defaults():
     assert ar.redis.consumer_concurrency == 8
 
 
+def test_idle_pause_defaults():
+    cfg = AppConfig(runtime=RuntimeConfig(type="docker", execd_image="opensandbox/execd:latest"))
+    ip = cfg.idle_pause
+    assert ip.enabled is False
+    assert ip.sweep_interval_seconds == 15
+    assert ip.activity_ttl_seconds == 1800
+    assert ip.redis.enabled is False
+    assert ip.redis.dsn is None
+    assert ip.redis.lock_ttl_seconds == 30
+
+
+def test_idle_pause_redis_requires_dsn_when_enabled():
+    from opensandbox_server.config import IdlePauseRedisConfig
+
+    with pytest.raises(ValidationError):
+        IdlePauseRedisConfig(enabled=True, dsn=None)
+    with pytest.raises(ValidationError):
+        IdlePauseRedisConfig(enabled=True, dsn="   ")
+    assert IdlePauseRedisConfig(enabled=True, dsn="redis://x").lock_ttl_seconds == 30
+
+
+def test_load_config_idle_pause_dotted_redis_keys(tmp_path, monkeypatch):
+    _reset_config(monkeypatch)
+    toml = textwrap.dedent(
+        """
+        [server]
+        host = "127.0.0.1"
+        port = 9000
+
+        [idle_pause]
+        enabled = true
+        sweep_interval_seconds = 10
+        activity_ttl_seconds = 3600
+        redis.enabled = true
+        redis.dsn = "redis://example:6379/2"
+        redis.lock_ttl_seconds = 45
+
+        [runtime]
+        type = "kubernetes"
+        execd_image = "opensandbox/execd:test"
+        """
+    )
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml)
+
+    loaded = config_module.load_config(config_path)
+    ip = loaded.idle_pause
+    assert ip.enabled is True
+    assert ip.sweep_interval_seconds == 10
+    assert ip.activity_ttl_seconds == 3600
+    assert ip.redis.enabled is True
+    assert ip.redis.dsn == "redis://example:6379/2"
+    assert ip.redis.lock_ttl_seconds == 45
+
+
 def test_renew_intent_redis_requires_dsn_when_enabled():
     with pytest.raises(ValidationError):
         RenewIntentRedisConfig(enabled=True, dsn=None)
