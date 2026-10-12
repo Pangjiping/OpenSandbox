@@ -516,7 +516,13 @@ export class ConnectionConfig {
     return fresh;
   }
 
-  private cloneWithOptions(): ConnectionConfig {
+  withCreateMetricsDisabled(): ConnectionConfig {
+    return this.cloneWithOptions({ disableMetrics: true });
+  }
+
+  private cloneWithOptions(
+    overrides: Partial<ConnectionConfigOptions> = {},
+  ): ConnectionConfig {
     return new ConnectionConfig({
       domain: this.domain,
       protocol: this.protocol,
@@ -530,6 +536,7 @@ export class ConnectionConfig {
       endpointCacheDisabled: this.endpointCacheDisabled,
       disableMetrics: this.disableMetrics,
       enableTracing: this.enableTracing,
+      ...overrides,
     });
   }
 
