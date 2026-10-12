@@ -12,13 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Per-sandbox pause admission lock (OSEP-0024, sweeper gate 5).
+"""Per-sandbox pause admission lock (``SET NX EX``).
 
-``SET NX EX`` admits exactly one replica per idle episode; losers drop the
-candidate for that sweep. Correctness never depends on the lock — FastPath
-``PauseSandbox`` is an idempotent CAS patch — so a crashed replica's lock
-simply expires by TTL. Explicit release (owner-checked, best effort) exists
-to shorten the window; TTL remains the primary release path.
+Admits one replica per idle episode. Correctness never depends on it —
+FastPath PauseSandbox is an idempotent CAS — so a crashed replica's lock just
+expires by TTL; release is a best-effort window shortener.
 """
 
 from __future__ import annotations

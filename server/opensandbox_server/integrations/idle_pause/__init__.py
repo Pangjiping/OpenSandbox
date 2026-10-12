@@ -14,14 +14,9 @@
 
 """OSEP-0024 auto-pause server tooling (fast-sandbox backend).
 
-This package encapsulates the server-side building blocks of auto-pause and
-wake-on-access: the idle policy model + reserved-metadata codec, the shared
-Redis activity registry, the pause admission lock, the pure idle-decision
-function, the candidate inventory and pause-executor abstractions, and the
-idle sweeper that wires the gates together.
-
-Wake-on-access itself lives in the ingress gateway; the server proxy path
-(activity writes + parking) is a later phase.
+Policy model + annotation codec, Redis activity registry, pause lock, pure
+idle decision, inventory/pause-executor abstractions, and the idle sweeper.
+Wake-on-access lives in the ingress; the server proxy path is a later phase.
 """
 
 from opensandbox_server.integrations.idle_pause.activity import ActivityRegistry, activity_key

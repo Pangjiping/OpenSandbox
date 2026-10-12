@@ -12,19 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Activity registry: server-side access to the shared per-sandbox activity keys.
+"""Async Redis access to the shared activity keys and unknown-state tombstones.
 
-The ingress gateway (and later the server proxy path) are the push producers;
-this registry covers the server-side reads and the lifecycle-transition
-writes — on create and on every successful resume the acting server writes an
-immediate observation so the idle clock starts from the latest lifecycle
-transition, not from nothing (OSEP-0024).
-
-All writes use monotonic-max semantics: buffered writes from different
-replicas may arrive out of order, and the key must keep the *latest*
-observation. All failures raise ``RedisError``/``OSError`` to the caller; the
-sweeper treats any Redis failure as "skip this sweep" (fail toward *not
-pausing*).
+The ingress (and later the server proxy path) are the push producers; the
+server reads here and writes on lifecycle transitions (create, resume).
+Failures raise to the caller, which fails toward *not pausing*.
 """
 
 from __future__ import annotations
@@ -40,9 +32,7 @@ from opensandbox_server.integrations.idle_pause.constants import (
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
-# Overwrite only when the new timestamp is greater than the stored one, then
-# refresh the TTL. EVAL is atomic, so a stale replica observation can never
-# regress the key.
+# Monotonic max: out-of-order writes across replicas never regress the key.
 _MONOTONIC_MAX_SCRIPT = """
 local cur = redis.call('GET', KEYS[1])
 local new = tonumber(ARGV[1])
@@ -80,17 +70,16 @@ class ActivityRegistry:
     async def record(
         self, sandbox_id: str, *, now_ms: Optional[int] = None
     ) -> None:
-        """Write one activity observation (monotonic max, EX ttl)."""
+        """Write one observation (monotonic max, EX ttl)."""
         timestamp = now_ms if now_ms is not None else _now_ms()
         await self._max_script(keys=[activity_key(sandbox_id)], args=[timestamp, self._ttl])
 
     async def read(self, sandbox_id: str) -> Optional[int]:
-        """Return the last observation in Unix ms, or ``None`` when missing."""
+        """Last observation in Unix ms, or ``None`` when missing."""
         value = await self._client.get(activity_key(sandbox_id))
         return _parse_ms(value)
 
     async def read_many(self, sandbox_ids: list[str]) -> dict[str, Optional[int]]:
-        """Batch-read activity keys (the sweeper's cheap shared read)."""
         if not sandbox_ids:
             return {}
         values = await self._client.mget([activity_key(sid) for sid in sandbox_ids])
@@ -99,12 +88,7 @@ class ActivityRegistry:
     async def ensure_tombstone(
         self, sandbox_id: str, *, now_ms: Optional[int] = None, extra_ttl_seconds: int = 0
     ) -> None:
-        """Record the first observation of unknown state (NX; never overwrites).
-
-        TTL is ``activity_ttl + extra``: the tombstone must outlive one full
-        unknown window (activity TTL plus a sweep interval per OSEP-0024) so
-        it is the reliable "unknown since" marker.
-        """
+        """Record the first observation of unknown state (NX; never overwrites)."""
         timestamp = now_ms if now_ms is not None else _now_ms()
         ttl = self._ttl + max(0, extra_ttl_seconds)
         await self._client.set(

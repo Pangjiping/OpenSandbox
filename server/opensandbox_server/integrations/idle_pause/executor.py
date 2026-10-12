@@ -14,11 +14,9 @@
 
 """Pause executor: the sweeper's single authority for issuing pauses.
 
-``FastPathPauseExecutor`` wraps the existing ``FastPathClient.pause_sandbox``
-with the OSEP-0024 pause contract: an idempotent ``idlepause-{sandbox_id}``
-request id (FastPath deduplicates replays of the same idle episode) plus the
-uid and observed-generation fence, so a state change under the sweeper comes
-back as ``FailedPrecondition`` and is simply re-evaluated on the next sweep.
+Wraps ``FastPathClient.pause_sandbox`` with the OSEP-0024 pause contract:
+idempotent ``idlepause-{sandbox_id}`` request id, uid + observed-generation
+fence. A fence rejection (``FailedPrecondition``) is re-evaluated next sweep.
 """
 
 from __future__ import annotations
@@ -42,11 +40,11 @@ logger = logging.getLogger(__name__)
 
 
 class PauseOutcome(enum.Enum):
-    ACCEPTED = "accepted"  # pause intent persisted; Pausing -> Paused converges
-    STATE_CHANGED = "state_changed"  # fence rejected: drop, next sweep re-evaluates
-    NOT_FOUND = "not_found"  # sandbox disappeared mid-sweep
-    UNAVAILABLE = "unavailable"  # FastPath unreachable: leave the sandbox Running
-    FAILED = "failed"  # any other FastPath error
+    ACCEPTED = "accepted"
+    STATE_CHANGED = "state_changed"  # fence rejected; next sweep re-evaluates
+    NOT_FOUND = "not_found"
+    UNAVAILABLE = "unavailable"
+    FAILED = "failed"
 
 
 class PauseExecutor(Protocol):
@@ -68,8 +66,6 @@ class FastPathPauseExecutor:
                 request_id=request_id,
             )
         except (FastPathFailedPrecondition, FastPathConflict) as exc:
-            # "Durable state moved under us" for the sweeper: the pause fence
-            # or an idempotency conflict. Drop; the next sweep re-evaluates.
             logger.info(
                 f"idle_pause pause fence rejected sandbox_id={candidate.sandbox_id} "
                 f"code={exc.code}"

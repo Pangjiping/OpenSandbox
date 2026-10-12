@@ -14,16 +14,10 @@
 
 """OSEP-0024 idle policy: model, validation, and annotation codec.
 
-The ``lifecycle.idlePolicy`` declaration is persisted as the reserved
-fast-sandbox Sandbox CR annotation ``sandbox.opensandbox.io/idle-policy``
-(JSON value, camelCase fields) — the same annotation the ingress wake gate
-parses (``components/ingress/pkg/idlepolicy``). The annotation is unvalidated
-storage, so the duties are split explicitly: the server validates on every
-write (:func:`validate_idle_policy`), and every consumer treats a value that
-is missing, unreadable, malformed, or out of range as *no policy*
-(:func:`idle_policy_from_annotation` returns ``None`` — never auto-paused,
-never auto-woken). The policy is desired state: a validated update takes
-effect on the next read.
+Persisted as the reserved Sandbox CR annotation ``sandbox.opensandbox.io/idle-policy``
+(JSON), the same value the ingress wake gate parses. The server validates on
+every write; consumers treat anything missing/unreadable/out-of-range as no
+policy (never an implicit opt-in). The policy is desired state.
 """
 
 from __future__ import annotations
@@ -63,11 +57,7 @@ class ActivityProbe:
 
 @dataclass(frozen=True)
 class IdlePolicy:
-    """Per-sandbox idle behavior declared at create time.
-
-    ``idle_timeout_seconds is None`` models the wake-only policy: the sandbox
-    is never auto-paused, but a (manually) paused sandbox may wake on traffic.
-    """
+    """``idle_timeout_seconds is None`` models the wake-only policy."""
 
     idle_timeout_seconds: Optional[int] = None
     on_idle: Optional[str] = None
@@ -87,13 +77,10 @@ def validate_idle_policy(
     active_probe: Optional[ActivityProbe] = None,
     activity_ttl_seconds: Optional[int] = None,
 ) -> IdlePolicy:
-    """Validate a create/update-time idle policy and return the normalized model.
+    """Validate a create/update-time policy; raises ValueError (API 400).
 
-    Raises ``ValueError`` with an API-safe message on any violation; the
-    create path translates it to a 400. ``activity_ttl_seconds`` is the
-    server's ``[idle_pause].activity_ttl_seconds``; the ``X <= ttl``
-    invariant keeps "activity key missing" always implying "idle for at
-    least X".
+    ``X <= activity_ttl_seconds`` keeps "activity key missing" always
+    implying "idle for at least X".
     """
     if idle_timeout_seconds is None:
         if on_idle is not None:
@@ -121,8 +108,7 @@ def validate_idle_policy(
             )
 
     if not isinstance(wake_on_access, bool):
-        # A non-bool would survive the write and then invalidate the whole
-        # declaration on read; reject it where it is declared instead.
+        # A non-bool would survive the write and void the whole declaration on read.
         raise ValueError("idlePolicy.wakeOnAccess must be a boolean.")
 
     if active_probe is not None:
@@ -137,12 +123,10 @@ def validate_idle_policy(
 
 
 def _probe_path_is_valid(path: object) -> bool:
-    """Shared by the create-side validator and the annotation decoder.
+    """Shared bounds for the create-side validator and the annotation decoder.
 
-    The annotation can bypass the create path (e.g. ``kubectl annotate``), so
-    the decoder must apply the same bounds: otherwise a path like
-    ``/x\\r\\nHost: evil`` would decode into a policy and, once the probe
-    executor lands, be replayed into an HTTP request line.
+    The annotation can bypass the create path (kubectl annotate); the probe
+    executor must never see a CRLF-laden path.
     """
     return (
         isinstance(path, str)
@@ -172,12 +156,7 @@ def _validate_probe(probe: ActivityProbe) -> None:
 
 
 def idle_policy_to_annotation(policy: IdlePolicy) -> str:
-    """Encode a policy as the annotation value (canonical JSON, camelCase).
-
-    The shape mirrors the ingress parser exactly: ``idleTimeoutSeconds`` and
-    ``onIdle`` ride together, ``wakeOnAccess`` is explicit, ``activeProbe``
-    only when declared.
-    """
+    """Canonical JSON (camelCase), shape-mirroring the ingress parser."""
     payload: dict[str, Any] = {}
     if policy.idle_timeout_seconds is not None:
         payload["idleTimeoutSeconds"] = policy.idle_timeout_seconds
@@ -194,20 +173,14 @@ def idle_policy_to_annotation(policy: IdlePolicy) -> str:
 
 
 def idle_policy_from_annotation(raw: Optional[str]) -> Optional[IdlePolicy]:
-    """Decode an annotation value; ``None`` when absent, unreadable, or invalid.
+    """Decode an annotation; ``None`` when absent, unreadable, or invalid.
 
-    Mirrors the ingress parser's fail-safe rules field by field: empty or
-    JSON-null values, unknown fields, trailing data, a timeout/onIdle pairing
-    violation, an unsupported action, or an out-of-range timeout all resolve
-    to *no policy* — never an implicit opt-in. ``wakeOnAccess`` defaults to
-    true when omitted.
-
-    Deliberately stricter than ingress on ``activeProbe``: the wake gate
-    treats it as opaque JSON, while the pause side must eventually execute
-    it, so a probe that cannot be fully typed invalidates the whole policy
-    here. The divergence is fail-safe on both sides — such a sandbox is
-    never auto-paused, and its wake gating still follows the annotation's
-    ``wakeOnAccess``.
+    Fail-safe rules mirror the ingress parser: unknown fields, null, trailing
+    data, pairing violations, and out-of-range timeouts all resolve to no
+    policy. Deliberately stricter than ingress on ``activeProbe``: the wake
+    gate treats it as opaque JSON, the pause side must eventually execute it,
+    so an untypable probe invalidates the whole policy here (fail-safe both
+    ways — never auto-paused, wake still follows the annotation).
     """
     if raw is None:
         return None

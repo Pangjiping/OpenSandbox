@@ -118,12 +118,12 @@ class FastSandboxService(SandboxService, ExtensionService):
 
     @property
     def cr_reader(self) -> SandboxCRReader:
-        """Informer-cached Sandbox CR reader (background integrations, OSEP-0024)."""
+        """Informer-cached Sandbox CR reader, for background integrations."""
         return self._cr_reader
 
     @property
     def fastpath_client(self) -> FastPathClient:
-        """Shared FastPath gRPC client (background integrations, OSEP-0024)."""
+        """Shared FastPath gRPC client, for background integrations."""
         return self._fastpath
 
     def close(self) -> None:

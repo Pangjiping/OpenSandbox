@@ -12,16 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pure idle-decision function for the OSEP-0024 sweeper.
+"""Pure idle decision over the activity key and its tombstone.
 
-The pause decision is a pure function of the activity key (and its
-tombstone): the probe, when it lands, only produces observations — it never
-becomes a second decision input. Timestamps are Unix milliseconds so the
-shared Redis state and the evaluating replica's clock meet in one unit.
-
-Fail-safe invariant encoded here: a missing activity key is *unknown*, never
-proof of idleness — it may delay a pause (tombstone window), never
-accelerate one.
+A missing activity key is *unknown*, never proof of idleness: it may delay
+a pause (tombstone window), never accelerate one. Timestamps are Unix ms.
 """
 
 from __future__ import annotations
@@ -31,13 +25,12 @@ from typing import NamedTuple, Optional
 
 
 class IdleVerdict(enum.Enum):
-    NOT_IDLE = "not_idle"  # observed activity younger than X
-    IDLE = "idle"  # provably idle for >= X (stale value, or tombstone aged >= X)
+    NOT_IDLE = "not_idle"  # activity younger than X
+    IDLE = "idle"  # idle >= X (stale value, or tombstone aged >= X)
     UNKNOWN = "unknown"  # missing key / fresh tombstone: skip, never pause
 
 
 def is_idle_by_value(last_active_ms: int, now_ms: int, threshold_seconds: int) -> bool:
-    """A present-but-stale activity key is idle *by value* (>= X old)."""
     return now_ms - last_active_ms >= threshold_seconds * 1000
 
 
@@ -48,8 +41,7 @@ def is_idle_by_tombstone(tombstone_ms: int, now_ms: int, threshold_seconds: int)
 
 class IdleDecision(NamedTuple):
     verdict: IdleVerdict
-    # Set when the activity key was missing and the sweep must create (or
-    # keep) the unknown-state tombstone before skipping.
+    # Activity key was missing: create the tombstone before skipping.
     create_tombstone: bool
 
 
@@ -60,15 +52,6 @@ def evaluate_idle(
     now_ms: int,
     threshold_seconds: int,
 ) -> IdleDecision:
-    """Combined gate for one candidate.
-
-    - key present: idle by value (>= X) or not idle; a reappearance also
-      implies any stale tombstone is obsolete.
-    - key missing, tombstone present: idle once the tombstone has aged >= X;
-      a fresh tombstone stays unknown.
-    - key missing, no tombstone: unknown; the caller must create the
-      tombstone and skip this sweep.
-    """
     if last_active_ms is not None:
         verdict = (
             IdleVerdict.IDLE

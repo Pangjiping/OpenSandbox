@@ -12,12 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""``opensandbox.server.idlep.*`` instruments (OSEP-0010 alignment).
+"""``opensandbox.server.idlep.*`` instruments; noop without OTEL, never raises.
 
-Instruments are resolved lazily on first use so the sweeper never depends on
-OTEL setup ordering; with ``[otel] enabled = false`` the global provider is a
-noop meter and recording is a cheap no-op. Never raises. The pause-latency
-histogram lands together with the post-pause Paused observation pipeline.
+The pause-latency histogram lands together with the Paused-observation
+pipeline.
 """
 
 from __future__ import annotations

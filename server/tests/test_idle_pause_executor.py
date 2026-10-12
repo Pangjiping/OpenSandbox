@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FastPathPauseExecutor unit tests: request shape and error mapping."""
+"""FastPathPauseExecutor tests: request shape and error mapping."""
 
 from datetime import datetime, timedelta, timezone
 

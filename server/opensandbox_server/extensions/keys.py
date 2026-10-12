@@ -31,11 +31,6 @@ ISOLATION_UPPER_MOUNT_PATH = "/var/lib/execd/isolation"
 EXTENSIONS_ANNOTATION_PREFIX = "opensandbox.extensions."
 ANNOTATION_METADATA_PREFIX = "opensandbox.io/extensions."
 
-# OSEP-0024 idle policy: the reserved Sandbox CR annotation carrying the
-# `lifecycle.idlePolicy` declaration as JSON. The key and value shape are the
-# cross-component contract — the ingress wake gate parses the same annotation
-# (components/ingress/pkg/idlepolicy.AnnotationKey), so both sides must stay
-# in sync. It is unvalidated storage: the server validates on every write,
-# and consumers treat anything unreadable/malformed/out-of-range as absent.
-# User metadata patches can never set it (opensandbox.io/ prefix is reserved).
+# OSEP-0024 idle policy: reserved Sandbox CR annotation (JSON), parsed by the
+# same key on the ingress wake gate. Reserved prefix: user patches cannot set it.
 IDLE_POLICY_ANNOTATION_KEY = "sandbox.opensandbox.io/idle-policy"

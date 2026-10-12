@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Behavioral tests for the activity registry and pause lock.
-
-The Lua scripts are emulated with equivalent Python semantics; their atomicity
-is a Redis guarantee, not something these tests exercise.
-"""
+"""Activity registry and pause lock behavior (Lua emulated in Python)."""
 
 from typing import Optional
 

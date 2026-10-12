@@ -12,12 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Structured ``idlep_*`` keys for ``logging`` ``extra`` and message suffix lines.
-
-Mirrors ``integrations/renew_intent/logutil.py``. The pause log line doubles
-as the auto-pause audit trail: it carries the threshold X, the age of the
-last activity observation, and the gate outcome for every issued pause.
-"""
+"""Structured ``idlep_*`` log keys, mirroring ``renew_intent/logutil.py``."""
 
 from __future__ import annotations
 

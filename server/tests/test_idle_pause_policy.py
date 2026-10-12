@@ -144,8 +144,7 @@ def test_annotation_absent_or_blank_returns_none():
     assert idle_policy_from_annotation(None) is None
     assert idle_policy_from_annotation("") is None
     assert idle_policy_from_annotation("   ") is None
-    # JSON null would otherwise flip gates open via the defaulting path.
-    assert idle_policy_from_annotation("null") is None
+    assert idle_policy_from_annotation("null") is None  # not an implicit opt-in
 
 
 def test_annotation_parses_ingress_shaped_values():
@@ -185,8 +184,7 @@ def test_annotation_parses_ingress_shaped_values():
         '{"activeProbe":{"port":8080,"path":"x"}}',  # relative probe path
         '{"activeProbe":{"port":8080,"path":"/x","timeoutSeconds":99}}',
         '{"activeProbe":{"nope":1}}',
-        # The annotation can bypass the create path (kubectl annotate), so the
-        # decoder must apply the same path bounds as the validator.
+        # Same path bounds as the validator: kubectl annotate bypasses create.
         '{"activeProbe":{"port":8080,"path":"/x\\r\\nHost: evil"}}',
         f'{{"activeProbe":{{"port":8080,"path":"/{ "a" * 600 }"}}}}',
     ],

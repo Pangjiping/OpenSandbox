@@ -12,19 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Candidate inventory: where the sweeper learns per-sandbox state.
+"""Candidate inventory: the enumeration source for the sweeper.
 
-OSEP-0024 invariant: the sandbox list — never a Redis key scan — is the
-enumeration source, because a sandbox whose activity key is missing is
-exactly the unknown state that needs tombstone handling and would be
-invisible to a key scan.
-
-The sweeper depends on :class:`SandboxInventory`, so the gate pipeline is
-independent of the backend read path. The fsb adapter reads the informer-
-cached Sandbox CRs (``SandboxCRReader``): unlike the FastPath v2
-``SandboxSummary``, CRs carry the reserved idle-policy metadata and
-``spec.expireTime`` the gates need, and the informer cache keeps per-sweep
-RPC load at zero.
+The sandbox list — never a Redis key scan — drives enumeration (a sandbox
+with a missing activity key is exactly the invisible case). The fsb adapter
+reads informer-cached Sandbox CRs, which carry the idle-policy annotation and
+``spec.expireTime`` that FastPath v2 summaries lack.
 """
 
 from __future__ import annotations
@@ -77,8 +70,7 @@ class FastSandboxInventory:
         try:
             crs = self._cr_reader.list(namespace)
         except Exception as exc:
-            # A CR read failure must fail toward "not pausing": log and sweep
-            # this namespace as empty instead of raising past the loop.
+            # Fail toward "not pausing": sweep this namespace as empty.
             logger.warning(f"idle_pause inventory read failed namespace={namespace} error={exc}")
             return []
         for cr in crs:
@@ -99,8 +91,8 @@ def _candidate_from_cr(cr: dict, namespace: str) -> Optional[SandboxCandidate]:
         sandbox = sandbox_from_cr(cr)
         state = sandbox.status.state
     except Exception as exc:
-        # An unmappable candidate (e.g. corrupt expireTime) is dropped: the
-        # sweeper cannot verify the expiry gate, so it must not pause.
+        # Unmappable (e.g. corrupt expireTime): the expiry gate cannot be
+        # verified, so the candidate must be dropped.
         logger.warning(f"idle_pause candidate mapping failed sandbox_id={sandbox_id} error={exc}")
         return None
 

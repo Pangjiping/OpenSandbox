@@ -29,11 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 def sanitize_dsn(dsn: str) -> str:
-    """Strip credentials: ``redis://:pass@host:port/db`` -> ``redis://host:port/db``.
-
-    Production DSNs commonly embed a password; the raw value must never reach
-    a log line. Unparsable input degrades to a placeholder.
-    """
+    """Strip credentials from a DSN for logging; unparsable -> placeholder."""
     try:
         parts = urlsplit(dsn.strip())
         port = f":{parts.port}" if parts.port else ""
@@ -45,12 +41,10 @@ def sanitize_dsn(dsn: str) -> str:
 async def connect_idle_pause_redis_from_config(
     app_config: AppConfig,
 ) -> Optional[Redis]:
-    """Connect (with ``PING``) or ``None`` when idle-pause Redis is disabled.
+    """Connect (with PING) or ``None`` when disabled; closes on failed PING.
 
-    Raises ``RedisError``/``OSError``/``ValueError`` on connect, ping, or DSN
-    parse failures — the caller treats all of them as "sweeper not started".
-    The client is closed before a failed connect returns so a PING or
-    auth failure never leaks a connection pool.
+    Raises RedisError/OSError/ValueError — the caller degrades to
+    "sweeper not started".
     """
     ip = app_config.idle_pause
     if not ip.enabled or not ip.redis.enabled:

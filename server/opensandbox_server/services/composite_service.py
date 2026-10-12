@@ -45,7 +45,7 @@ class CompositeSandboxService(SandboxService, ExtensionService):
 
     @property
     def fsb_service(self) -> FastSandboxService:
-        """The fsb backend (background integrations, OSEP-0024)."""
+        """The fsb backend, for background integrations."""
         return self._fsb
 
     def _backend(self, sandbox_id: str) -> KubernetesSandboxService | FastSandboxService:

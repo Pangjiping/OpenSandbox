@@ -12,41 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OSEP-0024 idle-pause constants.
+"""OSEP-0024 idle-pause constants (shared with the ingress, not a config knob)."""
 
-Redis key prefixes are a code-level convention fixed identically on the
-ingress producer and the server consumer — deliberately not exposed as a
-config knob: a prefix mismatch could only delay pauses (via tombstones),
-never corrupt decisions (see OSEP-0024, Activity Tracking).
-"""
-
-# Activity observation: value = Unix milliseconds of the last observation,
-# written with monotonic-max semantics and EX activity_ttl_seconds.
+# Value is Unix millis of the last observation (monotonic max, EX activity_ttl).
 ACTIVITY_KEY_PREFIX = "opensandbox:activity"
 
-# Unknown-activity tombstone: first sweeper observation of a missing activity
-# key records the wall-clock time here; the sandbox becomes idle-eligible only
-# once the tombstone itself has existed for >= X.
+# First observation of a missing activity key records the time here.
 UNKNOWN_TOMBSTONE_PREFIX = "opensandbox:idlep:unknown"
 
-# Per-sandbox pause admission lock (SET NX EX); TTL is the primary release.
 LOCK_PREFIX = "opensandbox:idlep:lock"
 
-# Validation bounds for idlePolicy.idleTimeoutSeconds (X), enforced where the
-# create field is accepted; X <= activity_ttl_seconds is checked against the
-# server config at the same place.
+# idlePolicy.idleTimeoutSeconds (X) bounds, enforced at create time.
 IDLE_TIMEOUT_MIN_SECONDS = 30
 IDLE_TIMEOUT_MAX_SECONDS = 86400
 
-# Validation bounds for idlePolicy.activeProbe.timeoutSeconds.
+# idlePolicy.activeProbe.timeoutSeconds bounds.
 PROBE_TIMEOUT_MIN_SECONDS = 1
 PROBE_TIMEOUT_MAX_SECONDS = 10
 DEFAULT_PROBE_TIMEOUT_SECONDS = 2
 
-# The only idle action in this revision; the enum value exists so a future
-# action (e.g. terminate) stays additive.
+# Only action in this revision; the field exists so future actions stay additive.
 ON_IDLE_ACTION_PAUSE = "pause"
 
-# Idempotent PauseSandbox request_id for sweeper-issued pauses: replays of the
-# same idle episode are deduplicated FastPath-side.
+# Idempotent PauseSandbox request id prefix; FastPath deduplicates replays.
 IDLE_PAUSE_REQUEST_ID_PREFIX = "idlepause-"

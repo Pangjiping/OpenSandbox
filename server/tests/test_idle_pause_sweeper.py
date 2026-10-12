@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Sweeper gate-order tests with in-memory collaborators.
-
-FastPath / CR semantics are covered by the adapters' own units; here the
-gates, the fail-safe directions, and the pause contract are under test.
-"""
+"""Sweeper gate-order tests with in-memory collaborators."""
 
 from datetime import datetime, timedelta, timezone
 import logging
@@ -232,7 +228,7 @@ async def test_activity_landing_between_read_and_lock_drops_candidate():
 
 
 class FakeSlippingRegistry:
-    """Activity registry whose re-verify read observes a newer write."""
+    """Re-verify read observes a newer write (a request landed meanwhile)."""
 
     def __init__(self, redis: FakeAsyncRedis, slip_at_read: bool):
         self._inner = ActivityRegistry(redis, activity_ttl_seconds=1800)  # type: ignore[arg-type]
@@ -344,7 +340,7 @@ async def test_pause_issued_audit_line_carries_threshold_and_age():
 
 
 class FailingAcquireLocks:
-    """Lock manager whose acquire raises (Redis died mid-sweep)."""
+    """try_acquire raises, as when Redis dies mid-sweep."""
 
     def __init__(self, redis_client: FakeAsyncRedis):
         self._inner = PauseLockManager(redis_client, lock_ttl_seconds=30)  # type: ignore[arg-type]
@@ -357,7 +353,7 @@ class FailingAcquireLocks:
 
 
 class FailingReleaseLocks:
-    """Lock manager whose release raises inside the sweeper's finally."""
+    """release raises inside the sweeper's finally block."""
 
     async def try_acquire(self, sandbox_id: str, owner: str) -> bool:
         return True
