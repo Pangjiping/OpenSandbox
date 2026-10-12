@@ -19,59 +19,19 @@ import (
 	"time"
 )
 
-func TestParseCgroupEntries(t *testing.T) {
-	tests := []struct {
-		name        string
-		data        string
-		wantV2      string
-		wantV1CPU   string
-		wantV1Mem   string
-		noV2Because bool
-	}{
-		{
-			name:   "pure cgroup v2",
-			data:   "0::/system.slice/docker/abc\n",
-			wantV2: "/system.slice/docker/abc",
-		},
-		{
-			name:      "pure cgroup v1",
-			data:      "10:cpuset:/\n12:memory:/sandbox\n3:cpu,cpuacct:/sandbox\n",
-			wantV1CPU: "/sandbox",
-			wantV1Mem: "/sandbox",
-		},
-		{
-			name:        "hybrid host refuses v2",
-			data:        "10:cpuset:/a\n0::/\n12:memory:/x\n",
-			wantV1Mem:   "/x",
-			noV2Because: true,
-		},
-		{
-			name: "empty",
-			data: "",
-		},
-		{
-			name:   "malformed lines skipped",
-			data:   "garbage\n0::\n0::/ok\n",
-			wantV2: "/ok",
-		},
+func TestParseMemoryStatField(t *testing.T) {
+	data := []byte("anon 1000\nfile 2000\ninactive_file 1500\ntotal_inactive_file 3000\n")
+	if got, ok := parseMemoryStatField(data, "inactive_file"); !ok || got != 1500 {
+		t.Fatalf("inactive_file = (%d, %v), want (1500, true)", got, ok)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			entries := parseCgroupEntries([]byte(tt.data))
-			if got := cgroupV2RelPath(entries); tt.noV2Because {
-				if got != "" {
-					t.Fatalf("cgroupV2RelPath = %q, want empty", got)
-				}
-			} else if got != tt.wantV2 {
-				t.Fatalf("cgroupV2RelPath = %q, want %q", got, tt.wantV2)
-			}
-			if got := cgroupV1RelPath(entries, "cpu", "cpuacct"); got != tt.wantV1CPU {
-				t.Fatalf("cgroupV1RelPath(cpu) = %q, want %q", got, tt.wantV1CPU)
-			}
-			if got := cgroupV1RelPath(entries, "memory"); got != tt.wantV1Mem {
-				t.Fatalf("cgroupV1RelPath(memory) = %q, want %q", got, tt.wantV1Mem)
-			}
-		})
+	if got, ok := parseMemoryStatField(data, "total_inactive_file"); !ok || got != 3000 {
+		t.Fatalf("total_inactive_file = (%d, %v), want (3000, true)", got, ok)
+	}
+	if _, ok := parseMemoryStatField(data, "missing"); ok {
+		t.Fatal("missing field should fail")
+	}
+	if _, ok := parseMemoryStatField([]byte("inactive_file abc\n"), "inactive_file"); ok {
+		t.Fatal("malformed value should fail")
 	}
 }
 

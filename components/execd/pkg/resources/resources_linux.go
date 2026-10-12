@@ -22,15 +22,16 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/alibaba/opensandbox/execd/pkg/cgroupfs"
+	"github.com/alibaba/opensandbox/execd/pkg/log"
 )
 
 // Test-overridable input paths.
 var (
 	procSelfCgroupFile = "/proc/self/cgroup"
-	procMountsFile     = "/proc/self/mounts"
 	cgroupV2Dir        = "/sys/fs/cgroup"
 	cgroupV1MemoryDir  = "/sys/fs/cgroup/memory"
 	cgroupV1CPUDirs    = []string{"/sys/fs/cgroup/cpu,cpuacct", "/sys/fs/cgroup/cpu", "/sys/fs/cgroup/cpuacct"}
@@ -42,11 +43,15 @@ var errNoLimitedCgroup = errors.New("no sandbox cgroup with configured resource 
 
 // newBackend prefers the sandbox cgroup and falls back to the host view:
 // without a configured limit the cgroup does not represent the sandbox
-// boundary, and in a microVM guest the host view is the sandbox.
+// boundary, and in a microVM guest the host view is the sandbox. The
+// fallback is logged: a wrongly selected host view reports host-wide
+// numbers, which is exactly what this package exists to avoid.
 func newBackend() backend {
-	if b, err := newCgroupBackend(); err == nil {
+	b, err := newCgroupBackend()
+	if err == nil {
 		return b
 	}
+	log.Warn("resources: sandbox cgroup unavailable, using host /proc stats: %v", err)
 	return hostBackend{}
 }
 
@@ -55,28 +60,32 @@ func newCgroupBackend() (backend, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries := parseCgroupEntries(data)
-	if rel := cgroupV2RelPath(entries); rel != "" {
+	entries := cgroupfs.ParseEntries(data)
+	if rel := cgroupfs.V2RelPath(entries); rel != "" {
 		if b, err := newCgroupV2Backend(rel); err == nil {
+			log.Info("resources: reading sandbox stats from cgroup v2 %s", rel)
 			return b, nil
 		}
 	}
-	if b, err := newCgroupV1Backend(
-		cgroupV1RelPath(entries, "memory"),
-		cgroupV1RelPath(entries, "cpu", "cpuacct"),
-	); err == nil {
+	memRel := cgroupfs.V1RelPath(entries, "memory")
+	cpuRel := cgroupfs.V1RelPath(entries, "cpu", "cpuacct")
+	if b, err := newCgroupV1Backend(memRel, cpuRel); err == nil {
+		log.Info("resources: reading sandbox stats from cgroup v1 (memory=%q cpu=%q)", memRel, cpuRel)
 		return b, nil
 	}
 	return nil, errNoLimitedCgroup
 }
 
 // cgroupBackend reads the sandbox's own cgroup interface files: the sandbox
-// subtree's real CPU time, CPU quota, and memory usage/limit.
+// subtree's real CPU time, CPU quota, and memory usage/limit. CPU and
+// memory degrade independently: whichever resource has no readable cgroup
+// view falls back to the host numbers (see cpuPercent/memoryStats).
 type cgroupBackend struct {
 	usagePath    string  // cumulative CPU time file; empty when unavailable
 	usageNS      bool    // usagePath counts nanoseconds (cgroup v1)
 	quotaCores   float64 // >0 when a CPU quota is configured
 	memUsedPath  string  // empty when unavailable
+	memStatPath  string  // memory.stat, for the working-set computation
 	memLimitPath string  // empty when no limit file is available
 	memV1        bool    // memLimitPath uses the v1 huge-value encoding
 
@@ -92,41 +101,35 @@ func newCgroupV2Backend(relPath string) (backend, error) {
 		return nil, err
 	}
 	dir := filepath.Join(mount, filepath.FromSlash(relPath))
+	b := &cgroupBackend{}
+
+	// CPU side: cpu.stat is the usage source, cpu.max carries the quota.
 	usagePath := filepath.Join(dir, "cpu.stat")
-	memUsedPath := filepath.Join(dir, "memory.current")
-	memLimitPath := filepath.Join(dir, "memory.max")
-	for _, path := range []string{usagePath, memUsedPath, memLimitPath} {
-		if _, err := os.Stat(path); err != nil {
-			return nil, err
+	if fileExists(usagePath) {
+		if quotaData, err := os.ReadFile(filepath.Join(dir, "cpu.max")); err == nil {
+			if quota, period, limited, ok := parseCPUMax(quotaData); ok {
+				b.usagePath = usagePath
+				if limited {
+					b.quotaCores = quotaCores(quota, period)
+				}
+			}
 		}
 	}
-	quotaData, err := os.ReadFile(filepath.Join(dir, "cpu.max"))
-	if err != nil {
+
+	// Memory side: memory.stat backs the working-set computation.
+	memUsedPath := filepath.Join(dir, "memory.current")
+	memLimitPath := filepath.Join(dir, "memory.max")
+	if fileExists(memUsedPath) && fileExists(memLimitPath) {
+		b.memUsedPath, b.memLimitPath = memUsedPath, memLimitPath
+		if statPath := filepath.Join(dir, "memory.stat"); fileExists(statPath) {
+			b.memStatPath = statPath
+		}
+	}
+
+	if err := b.validate(); err != nil {
 		return nil, err
 	}
-	quota, period, cpuLimited, ok := parseCPUMax(quotaData)
-	if !ok {
-		return nil, fmt.Errorf("unparseable cpu.max under %s", dir)
-	}
-	memLimitData, err := os.ReadFile(memLimitPath)
-	if err != nil {
-		return nil, err
-	}
-	_, memLimited, ok := parseMemoryMax(memLimitData)
-	if !ok {
-		return nil, fmt.Errorf("unparseable memory.max under %s", dir)
-	}
-	if !cpuLimited && !memLimited {
-		return nil, errNoLimitedCgroup
-	}
-	b := &cgroupBackend{
-		usagePath:    usagePath,
-		memUsedPath:  memUsedPath,
-		memLimitPath: memLimitPath,
-	}
-	if cpuLimited {
-		b.quotaCores = quotaCores(quota, period)
-	}
+	b.seedCPU()
 	return b, nil
 }
 
@@ -140,6 +143,9 @@ func newCgroupV1Backend(memRel, cpuRel string) (backend, error) {
 			limitPath := filepath.Join(memDir, "memory.limit_in_bytes")
 			if fileExists(usedPath) && fileExists(limitPath) {
 				b.memUsedPath, b.memLimitPath, b.memV1 = usedPath, limitPath, true
+				if statPath := filepath.Join(memDir, "memory.stat"); fileExists(statPath) {
+					b.memStatPath = statPath
+				}
 			}
 		}
 	}
@@ -155,18 +161,29 @@ func newCgroupV1Backend(memRel, cpuRel string) (backend, error) {
 		}
 	}
 
-	if b.usagePath == "" && b.memUsedPath == "" {
-		return nil, errNoLimitedCgroup
+	if err := b.validate(); err != nil {
+		return nil, err
 	}
-	if !b.hasAnyLimit() {
-		return nil, errNoLimitedCgroup
-	}
+	b.seedCPU()
 	return b, nil
 }
 
+// validate requires at least one readable resource side and at least one
+// real limit. Without any limit the cgroup does not bound the sandbox: it
+// cannot distinguish a constrained container from an unconstrained VM
+// guest, so the caller should use the host view instead.
+func (b *cgroupBackend) validate() error {
+	if b.usagePath == "" && b.memUsedPath == "" {
+		return errNoLimitedCgroup
+	}
+	if !b.hasAnyLimit() {
+		return errNoLimitedCgroup
+	}
+	return nil
+}
+
 // hasAnyLimit reports whether a real CPU quota or memory limit is
-// configured. Without any limit the cgroup does not bound the sandbox: it
-// cannot distinguish a constrained container from an unconstrained VM guest.
+// configured.
 func (b *cgroupBackend) hasAnyLimit() bool {
 	if b.quotaCores > 0 {
 		return true
@@ -186,28 +203,56 @@ func (b *cgroupBackend) hasAnyLimit() bool {
 	return limited
 }
 
+// seedCPU primes the since-last-call baseline so the first non-blocking
+// sample reports the interval since construction instead of 0.
+func (b *cgroupBackend) seedCPU() {
+	if b.usagePath == "" {
+		return
+	}
+	uSec, err := b.cpuUSec()
+	if err != nil {
+		return
+	}
+	b.lastMu.Lock()
+	defer b.lastMu.Unlock()
+	b.lastUSec, b.lastWall, b.haveLast = uSec, time.Now(), true
+}
+
 func (b *cgroupBackend) cpuPercent(interval time.Duration) (float64, error) {
 	if b.usagePath == "" {
-		return 0, errors.New("no cgroup CPU usage file available")
+		// Per-resource degradation: this backend is memory-only (e.g. a v1
+		// host with a memory limit but no visible cpu/cpuacct hierarchy).
+		return hostBackend{}.cpuPercent(interval)
 	}
 	capacity := b.cpuCount()
 	if interval > 0 {
+		// Measure the real window: time.Sleep only guarantees a lower
+		// bound, and a saturated machine (exactly what these metrics
+		// observe) can delay the wake-up. A nominal denominator would
+		// inflate percentages past 100%.
+		start := time.Now()
 		prev, err := b.cpuUSec()
 		if err != nil {
-			return 0, err
+			return hostBackend{}.cpuPercent(interval)
 		}
 		time.Sleep(interval)
 		cur, err := b.cpuUSec()
 		if err != nil {
-			return 0, err
+			// The window is already spent; take a cheap degraded sample
+			// instead of sleeping again.
+			return hostBackend{}.cpuPercent(0)
 		}
-		return cpuDeltaPercent(prev, cur, interval, capacity), nil
+		return cpuDeltaPercent(prev, cur, time.Since(start), capacity), nil
 	}
 	b.lastMu.Lock()
 	defer b.lastMu.Unlock()
 	cur, err := b.cpuUSec()
 	if err != nil {
-		return 0, err
+		// Degrade to the host view (e.g. cgroup files gone during sandbox
+		// teardown) and drop the stale baseline so a recovered cgroup view
+		// starts a fresh interval.
+		b.haveLast = false
+		return hostBackend{}.cpuPercent(0)
 	}
 	now := time.Now()
 	if !b.haveLast {
@@ -232,15 +277,15 @@ func (b *cgroupBackend) memoryStats() (MemoryUsage, error) {
 	}
 	data, err := os.ReadFile(b.memUsedPath)
 	if err != nil {
-		return MemoryUsage{}, err
+		// Degrade to the host view instead of erroring: the cgroup view can
+		// disappear while the sandbox is being torn down.
+		return hostBackend{}.memoryStats()
 	}
 	used, ok := parseSingleInt(data)
-	if !ok {
-		return MemoryUsage{}, fmt.Errorf("unparseable memory usage file %s", b.memUsedPath)
+	if !ok || used < 0 {
+		return hostBackend{}.memoryStats()
 	}
-	if used < 0 {
-		used = 0
-	}
+	used = b.workingSet(used)
 	if b.memLimitPath != "" {
 		if limitData, err := os.ReadFile(b.memLimitPath); err == nil {
 			var limit int64
@@ -261,6 +306,32 @@ func (b *cgroupBackend) memoryStats() (MemoryUsage, error) {
 		return MemoryUsage{}, err
 	}
 	return MemoryUsage{UsedBytes: used, TotalBytes: host.TotalBytes}, nil
+}
+
+// workingSet subtracts reclaimable file cache from raw cgroup usage:
+// memory.current charges page cache that the kernel reclaims before OOM, so
+// an I/O-heavy sandbox (package installs, builds, clones) would otherwise
+// read as memory pressure. v2 exposes inactive_file, v1 the hierarchical
+// total_inactive_file — the same approximation kubelet uses for
+// working-set. When the stat file is unreadable the raw usage is kept
+// (conservative).
+func (b *cgroupBackend) workingSet(used int64) int64 {
+	if b.memStatPath == "" {
+		return used
+	}
+	data, err := os.ReadFile(b.memStatPath)
+	if err != nil {
+		return used
+	}
+	field := "inactive_file"
+	if b.memV1 {
+		field = "total_inactive_file"
+	}
+	cache, ok := parseMemoryStatField(data, field)
+	if !ok || cache <= 0 {
+		return used
+	}
+	return max(used-cache, 0)
 }
 
 // cpuUSec reads the cumulative sandbox CPU time in microseconds.
@@ -311,7 +382,7 @@ func cgroupV2Mount() (string, error) {
 	if fileExists(filepath.Join(cgroupV2Dir, "cgroup.controllers")) {
 		return cgroupV2Dir, nil
 	}
-	return scanMounts(func(_ string, fstype string, _ []string) bool {
+	return cgroupfs.ScanMounts(func(_ string, fstype string, _ []string) bool {
 		return fstype == "cgroup2"
 	})
 }
@@ -324,40 +395,17 @@ func cgroupV1MountDir(defaultDirs []string, controllers ...string) (string, erro
 			return dir, nil
 		}
 	}
-	return scanMounts(func(_ string, fstype string, options []string) bool {
+	return cgroupfs.ScanMounts(func(_ string, fstype string, options []string) bool {
 		if fstype != "cgroup" {
 			return false
 		}
 		for _, controller := range controllers {
-			// /proc/self/mounts packs options into one comma-separated
-			// field, e.g. "rw,nosuid,nodev,cpu,cpuacct".
-			for _, field := range options {
-				for _, opt := range strings.Split(field, ",") {
-					if opt == controller {
-						return true
-					}
-				}
+			if cgroupfs.OptionsHave(options, controller) {
+				return true
 			}
 		}
 		return false
 	})
-}
-
-func scanMounts(match func(mountPoint, fstype string, options []string) bool) (string, error) {
-	data, err := os.ReadFile(procMountsFile)
-	if err != nil {
-		return "", err
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		if match(fields[1], fields[2], fields[3:]) {
-			return fields[1], nil
-		}
-	}
-	return "", errors.New("no matching cgroup mount in " + procMountsFile)
 }
 
 func fileExists(path string) bool {

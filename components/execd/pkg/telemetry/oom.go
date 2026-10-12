@@ -98,27 +98,6 @@ type oomExited struct {
 	Proc oomProc
 }
 
-// parseCgroupEntries extracts the unified (v2) path and the v1 memory
-// hierarchy path from /proc/self/cgroup content.
-func parseCgroupEntries(data []byte) (v2Path, v1MemoryPath string) {
-	for _, line := range strings.Split(string(data), "\n") {
-		if path, ok := strings.CutPrefix(line, "0::"); ok && path != "" {
-			v2Path = path
-			continue
-		}
-		parts := strings.SplitN(line, ":", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		for _, controller := range strings.Split(parts[1], ",") {
-			if controller == "memory" && parts[2] != "" {
-				v1MemoryPath = parts[2]
-			}
-		}
-	}
-	return v2Path, v1MemoryPath
-}
-
 // diffOOMSample computes the delta between two counter samples. A shrinking
 // counter is treated as a reset and counted from zero.
 func diffOOMSample(prev, cur oomSample) oomDelta {
@@ -237,19 +216,6 @@ func killCgroupNames(prev, cur map[string]int64) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-// mountOptionsHaveController reports whether the comma-separated mount
-// options mention the controller, e.g. "rw,nosuid,memory".
-func mountOptionsHaveController(options []string, controller string) bool {
-	for _, field := range options {
-		for _, name := range strings.Split(field, ",") {
-			if name == controller {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // limitExited keeps the most recent entries up to the limit: freshly exited

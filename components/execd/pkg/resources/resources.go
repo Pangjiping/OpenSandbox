@@ -32,7 +32,7 @@ import (
 	"github.com/shirou/gopsutil/mem"
 )
 
-// MemoryStats is a sandbox memory snapshot.
+// MemoryUsage is a sandbox memory snapshot.
 type MemoryUsage struct {
 	// UsedBytes is the memory currently charged to the sandbox.
 	UsedBytes int64

@@ -27,17 +27,16 @@ import (
 // restores the originals after the test.
 func overridePaths(t *testing.T, selfCgroup string, v2Dir, v1MemoryDir string, v1CPUDirs []string) {
 	t.Helper()
-	origCgroup, origMounts := procSelfCgroupFile, procMountsFile
+	origCgroup := procSelfCgroupFile
 	origV2, origV1Mem, origV1CPU := cgroupV2Dir, cgroupV1MemoryDir, cgroupV1CPUDirs
 	cgroupFile := filepath.Join(t.TempDir(), "self-cgroup")
 	if err := os.WriteFile(cgroupFile, []byte(selfCgroup), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	procSelfCgroupFile = cgroupFile
-	procMountsFile = filepath.Join(t.TempDir(), "mounts") // missing: default dirs must resolve
 	cgroupV2Dir, cgroupV1MemoryDir, cgroupV1CPUDirs = v2Dir, v1MemoryDir, v1CPUDirs
 	t.Cleanup(func() {
-		procSelfCgroupFile, procMountsFile = origCgroup, origMounts
+		procSelfCgroupFile = origCgroup
 		cgroupV2Dir, cgroupV1MemoryDir, cgroupV1CPUDirs = origV2, origV1Mem, origV1CPU
 	})
 }
@@ -60,6 +59,7 @@ func TestNewCgroupBackendV2(t *testing.T) {
 	writeFile(t, filepath.Join(sandbox, "cpu.max"), "100000 100000\n")
 	writeFile(t, filepath.Join(sandbox, "memory.current"), "52428800\n")
 	writeFile(t, filepath.Join(sandbox, "memory.max"), "209715200\n")
+	writeFile(t, filepath.Join(sandbox, "memory.stat"), "anon 8388608\nfile 44040192\ninactive_file 4194304\n")
 	overridePaths(t, "0::/sandbox\n", root, "", nil)
 
 	backend, err := newCgroupBackend()
@@ -73,12 +73,13 @@ func TestNewCgroupBackendV2(t *testing.T) {
 	if got := cg.cpuCount(); got != 1 {
 		t.Fatalf("cpuCount = %v, want 1 (quota 100000/100000)", got)
 	}
+	// Working set: raw usage minus reclaimable file cache (kubelet-style).
 	stats, err := backend.memoryStats()
 	if err != nil {
 		t.Fatalf("memoryStats: %v", err)
 	}
-	if stats.UsedBytes != 52428800 || stats.TotalBytes != 209715200 {
-		t.Fatalf("memoryStats = %+v, want used=52428800 total=209715200", stats)
+	if want := int64(52428800 - 4194304); stats.UsedBytes != want || stats.TotalBytes != 209715200 {
+		t.Fatalf("memoryStats = %+v, want used=%d total=209715200", stats, want)
 	}
 
 	// Advance the cumulative CPU time by 0.05 core-seconds in the middle of
@@ -171,6 +172,98 @@ func TestNewCgroupBackendV1UnlimitedFallsBackToHost(t *testing.T) {
 	}
 	if _, ok := newBackend().(hostBackend); !ok {
 		t.Fatal("newBackend = cgroup backend, want hostBackend")
+	}
+}
+
+func TestNewCgroupBackendV2WithoutMemoryStatKeepsRawUsage(t *testing.T) {
+	root := t.TempDir()
+	sandbox := filepath.Join(root, "sandbox")
+	writeFile(t, filepath.Join(root, "cgroup.controllers"), "")
+	writeFile(t, filepath.Join(sandbox, "cpu.stat"), "usage_usec 1000000\n")
+	writeFile(t, filepath.Join(sandbox, "cpu.max"), "max 100000\n")
+	writeFile(t, filepath.Join(sandbox, "memory.current"), "52428800\n")
+	writeFile(t, filepath.Join(sandbox, "memory.max"), "209715200\n")
+	overridePaths(t, "0::/sandbox\n", root, "", nil)
+
+	backend, err := newCgroupBackend()
+	if err != nil {
+		t.Fatalf("newCgroupBackend: %v", err)
+	}
+	stats, err := backend.memoryStats()
+	if err != nil {
+		t.Fatalf("memoryStats: %v", err)
+	}
+	if stats.UsedBytes != 52428800 {
+		t.Fatalf("memoryStats.UsedBytes = %d, want raw 52428800", stats.UsedBytes)
+	}
+}
+
+func TestV1MemoryOnlyBackendDegradesCPUToHost(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "memory", "sandbox", "memory.usage_in_bytes"), "104857600\n")
+	writeFile(t, filepath.Join(root, "memory", "sandbox", "memory.stat"), "total_inactive_file 1048576\n")
+	writeFile(t, filepath.Join(root, "memory", "sandbox", "memory.limit_in_bytes"), "2147483648\n")
+	// The cpu/cpuacct hierarchy is not visible: the backend becomes
+	// memory-only instead of failing construction.
+	missing := filepath.Join(root, "missing-cpu")
+	overridePaths(t, "12:memory:/sandbox\n",
+		"", filepath.Join(root, "memory"), []string{missing})
+
+	backend, err := newCgroupBackend()
+	if err != nil {
+		t.Fatalf("newCgroupBackend: %v", err)
+	}
+	stats, err := backend.memoryStats()
+	if err != nil {
+		t.Fatalf("memoryStats: %v", err)
+	}
+	if want := int64(104857600 - 1048576); stats.UsedBytes != want {
+		t.Fatalf("memoryStats.UsedBytes = %d, want working set %d", stats.UsedBytes, want)
+	}
+	percent, err := backend.cpuPercent(0)
+	if err != nil {
+		t.Fatalf("cpuPercent(0) should degrade to the host view, got error: %v", err)
+	}
+	if percent < 0 {
+		t.Fatalf("cpuPercent(0) = %v, want >= 0", percent)
+	}
+	if _, err := backend.cpuPercent(10 * time.Millisecond); err != nil {
+		t.Fatalf("cpuPercent(interval) should degrade to the host view, got error: %v", err)
+	}
+}
+
+func TestCgroupTeardownDegradesToHost(t *testing.T) {
+	root := t.TempDir()
+	sandbox := filepath.Join(root, "sandbox")
+	writeFile(t, filepath.Join(root, "cgroup.controllers"), "")
+	writeFile(t, filepath.Join(sandbox, "cpu.stat"), "usage_usec 1000000\n")
+	writeFile(t, filepath.Join(sandbox, "cpu.max"), "100000 100000\n")
+	writeFile(t, filepath.Join(sandbox, "memory.current"), "52428800\n")
+	writeFile(t, filepath.Join(sandbox, "memory.max"), "209715200\n")
+	overridePaths(t, "0::/sandbox\n", root, "", nil)
+
+	backend, err := newCgroupBackend()
+	if err != nil {
+		t.Fatalf("newCgroupBackend: %v", err)
+	}
+
+	// Sandbox teardown removes the cgroup mid-run; the metrics endpoints
+	// must keep answering with the host view instead of erroring forever.
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("remove cgroup tree: %v", err)
+	}
+	percent, err := backend.cpuPercent(0)
+	if err != nil {
+		t.Fatalf("cpuPercent(0) after teardown = %v, want host fallback", err)
+	}
+	if percent < 0 {
+		t.Fatalf("cpuPercent(0) = %v, want >= 0", percent)
+	}
+	if _, err := backend.cpuPercent(10 * time.Millisecond); err != nil {
+		t.Fatalf("cpuPercent(interval) after teardown = %v, want host fallback", err)
+	}
+	if _, err := backend.memoryStats(); err != nil {
+		t.Fatalf("memoryStats after teardown = %v, want host fallback", err)
 	}
 }
 

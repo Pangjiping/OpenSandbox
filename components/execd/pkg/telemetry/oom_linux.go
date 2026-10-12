@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alibaba/opensandbox/execd/pkg/cgroupfs"
 	"github.com/alibaba/opensandbox/execd/pkg/log"
 )
 
@@ -432,11 +433,11 @@ func cgroupV2RelPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	v2Path, v1MemoryPath := parseCgroupEntries(data)
-	if v2Path == "" {
-		return "", errors.New("no cgroup v2 entry in /proc/self/cgroup")
+	entries := cgroupfs.ParseEntries(data)
+	if v2Path := cgroupfs.V2RelPath(entries); v2Path != "" {
+		return v2Path, nil
 	}
-	if v1MemoryPath != "" {
+	if cgroupfs.V1RelPath(entries, "memory") != "" {
 		// Hybrid host (v1 controllers + unified hierarchy): the "0::" entry
 		// is degenerate — its root is not this process's memory cgroup, and
 		// reading counters there would silently attribute unrelated host
@@ -444,7 +445,7 @@ func cgroupV2RelPath() (string, error) {
 		// refuse v2 and let the v1 fallback take over.
 		return "", errors.New("hybrid cgroup host: memory is on the v1 hierarchy")
 	}
-	return v2Path, nil
+	return "", errors.New("no cgroup v2 entry in /proc/self/cgroup")
 }
 
 // cgroupV2Mount locates the cgroup v2 filesystem mount.
@@ -452,7 +453,7 @@ func cgroupV2Mount() (string, error) {
 	if _, err := os.Stat(filepath.Join(cgroupV2DefaultDir, "cgroup.controllers")); err == nil {
 		return cgroupV2DefaultDir, nil
 	}
-	return scanMounts(func(mountPoint, fstype string, options []string) bool {
+	return cgroupfs.ScanMounts(func(mountPoint, fstype string, options []string) bool {
 		return fstype == "cgroup2"
 	})
 }
@@ -464,7 +465,7 @@ func cgroupV1MemoryRelPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, v1MemoryPath := parseCgroupEntries(data); v1MemoryPath != "" {
+	if v1MemoryPath := cgroupfs.V1RelPath(cgroupfs.ParseEntries(data), "memory"); v1MemoryPath != "" {
 		return v1MemoryPath, nil
 	}
 	return "", errors.New("no memory hierarchy entry in /proc/self/cgroup")
@@ -475,28 +476,9 @@ func cgroupV1MemoryMount() (string, error) {
 	if _, err := os.Stat(cgroupV1MemoryDir); err == nil {
 		return cgroupV1MemoryDir, nil
 	}
-	return scanMounts(func(mountPoint, fstype string, options []string) bool {
-		// /proc/self/mounts packs options into one comma-separated field,
-		// e.g. "rw,nosuid,nodev,memory".
-		return fstype == "cgroup" && mountOptionsHaveController(options, "memory")
+	return cgroupfs.ScanMounts(func(mountPoint, fstype string, options []string) bool {
+		return fstype == "cgroup" && cgroupfs.OptionsHave(options, "memory")
 	})
-}
-
-func scanMounts(match func(mountPoint, fstype string, options []string) bool) (string, error) {
-	data, err := os.ReadFile("/proc/self/mounts")
-	if err != nil {
-		return "", err
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		if match(fields[1], fields[2], fields[3:]) {
-			return fields[1], nil
-		}
-	}
-	return "", errors.New("no matching mount in /proc/self/mounts")
 }
 
 // procTracker observes /proc incrementally: every tick costs one directory

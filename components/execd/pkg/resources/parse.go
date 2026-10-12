@@ -16,71 +16,23 @@ package resources
 
 import (
 	"math"
-	"slices"
 	"strconv"
 	"strings"
 )
 
-// procCgroupEntry is one line of /proc/self/cgroup.
-type procCgroupEntry struct {
-	controllers []string // v1 controller names; empty for the "0::" v2 line
-	path        string
-}
-
-// parseCgroupEntries parses /proc/self/cgroup lines of the form
-// "hierarchy:controllers:path".
-func parseCgroupEntries(data []byte) []procCgroupEntry {
-	var entries []procCgroupEntry
+// parseMemoryStatField extracts one "<field> <value>" line from a cgroup
+// memory.stat file (v2 and v1 share the format).
+func parseMemoryStatField(data []byte, field string) (int64, bool) {
 	for _, line := range strings.Split(string(data), "\n") {
-		parts := strings.SplitN(strings.TrimSpace(line), ":", 3)
-		if len(parts) != 3 || parts[2] == "" {
-			continue
-		}
-		entry := procCgroupEntry{path: parts[2]}
-		if parts[1] != "" {
-			for _, name := range strings.Split(parts[1], ",") {
-				if name != "" {
-					entry.controllers = append(entry.controllers, name)
-				}
+		if fields := strings.Fields(line); len(fields) == 2 && fields[0] == field {
+			value, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil {
+				return 0, false
 			}
-		}
-		entries = append(entries, entry)
-	}
-	return entries
-}
-
-// cgroupV2RelPath returns the sandbox's unified-hierarchy path. Hybrid hosts
-// (v1 controllers alongside a unified hierarchy) return "": there the "0::"
-// entry is degenerate — memory accounting lives on the v1 hierarchy, and
-// reading the unified path would attribute the wrong scope.
-func cgroupV2RelPath(entries []procCgroupEntry) string {
-	for _, entry := range entries {
-		if slices.Contains(entry.controllers, "memory") {
-			return ""
+			return value, true
 		}
 	}
-	for _, entry := range entries {
-		if len(entry.controllers) == 0 {
-			return entry.path
-		}
-	}
-	return ""
-}
-
-// cgroupV1RelPath returns the v1 hierarchy path of the first entry whose
-// controller list contains any of the given names.
-func cgroupV1RelPath(entries []procCgroupEntry, names ...string) string {
-	for _, entry := range entries {
-		if len(entry.controllers) == 0 {
-			continue
-		}
-		for _, name := range names {
-			if slices.Contains(entry.controllers, name) {
-				return entry.path
-			}
-		}
-	}
-	return ""
+	return 0, false
 }
 
 // parseCPUStatUsageUSec extracts usage_usec from a cgroup v2 cpu.stat.

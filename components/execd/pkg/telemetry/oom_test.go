@@ -31,49 +31,6 @@ func sampleCounters(values ...int64) map[string]int64 {
 	return counters
 }
 
-func TestParseCgroupEntries(t *testing.T) {
-	tests := []struct {
-		name         string
-		data         string
-		wantV2       string
-		wantV1Memory string
-	}{
-		{
-			name:   "pure cgroup v2",
-			data:   "0::/system.slice/docker/abc\n",
-			wantV2: "/system.slice/docker/abc",
-		},
-		{
-			name:         "pure cgroup v1",
-			data:         "10:cpuset:/\n12:memory:/sandbox\n",
-			wantV1Memory: "/sandbox",
-		},
-		{
-			name:         "hybrid host",
-			data:         "10:cpuset:/a\n0::/\n12:memory:/x\n",
-			wantV2:       "/",
-			wantV1Memory: "/x",
-		},
-		{
-			name: "empty",
-			data: "",
-		},
-		{
-			name:         "combined controllers line",
-			data:         "3:cpu,memory:/sandbox\n",
-			wantV1Memory: "/sandbox",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			v2, v1Memory := parseCgroupEntries([]byte(tt.data))
-			if v2 != tt.wantV2 || v1Memory != tt.wantV1Memory {
-				t.Fatalf("got (%q, %q), want (%q, %q)", v2, v1Memory, tt.wantV2, tt.wantV1Memory)
-			}
-		})
-	}
-}
-
 func TestParseOOMEvents(t *testing.T) {
 	got := parseOOMEvents([]byte("low 0\nhigh 1\nmax 2\noom 3\noom_kill 4\noom_group_kill 5\nnot-a-counter\nbroken x\n"))
 	want := map[string]int64{"low": 0, "high": 1, "max": 2, "oom": 3, "oom_kill": 4, "oom_group_kill": 5}
@@ -225,25 +182,6 @@ func TestKillCgroupNames(t *testing.T) {
 				t.Fatalf("names = %+v, want %+v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestMountOptionsHaveController(t *testing.T) {
-	if !mountOptionsHaveController([]string{"rw,nosuid,nodev,memory"}, "memory") {
-		t.Fatal("comma-separated single field should match")
-	}
-	if !mountOptionsHaveController([]string{"rw", "relatime", "memory"}, "memory") {
-		t.Fatal("split fields should match")
-	}
-	if mountOptionsHaveController([]string{"rw,nosuid,nodev"}, "memory") {
-		t.Fatal("absent controller should not match")
-	}
-	if mountOptionsHaveController(nil, "memory") {
-		t.Fatal("no options should not match")
-	}
-	// Prefix collisions must not match: "memory-full" is not "memory".
-	if mountOptionsHaveController([]string{"memory-full"}, "memory") {
-		t.Fatal("prefix collision should not match")
 	}
 }
 
