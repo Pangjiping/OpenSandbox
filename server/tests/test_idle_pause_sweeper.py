@@ -241,8 +241,8 @@ class FakeSlippingRegistry:
     async def ping(self):
         await self._inner.ping()
 
-    async def read_many(self, ids):
-        return await self._inner.read_many(ids)
+    async def read_many_with_tombstones(self, ids):
+        return await self._inner.read_many_with_tombstones(ids)
 
     async def read(self, sandbox_id: str):
         value = await self._inner.read(sandbox_id)
@@ -250,9 +250,6 @@ class FakeSlippingRegistry:
             self._slipped = True
             return (value or 0) + 1  # a request landed meanwhile
         return value
-
-    async def read_tombstone(self, sandbox_id: str):
-        return await self._inner.read_tombstone(sandbox_id)
 
     async def ensure_tombstone(self, *args, **kwargs):
         await self._inner.ensure_tombstone(*args, **kwargs)
@@ -533,3 +530,73 @@ def _fsb_service():
     return FastSandboxService(
         AppConfig(runtime=RuntimeConfig(type="kubernetes", execd_image="x"))
     )
+
+
+class NoClearRegistry(FakeSlippingRegistry):
+    """clear_tombstone raises (Redis hiccup confined to the clear path)."""
+
+    async def clear_tombstone(self, sandbox_id: str):
+        raise RedisError("read-only replica")
+
+
+@pytest.mark.asyncio
+async def test_activity_reappearance_clears_leftover_tombstone():
+    """Missing-key period tombstoned, traffic recreated the key: the tombstone
+    must not outlive the fresh observation (its age would fake idleness after
+    a later eviction)."""
+    redis = FakeAsyncRedis()
+    candidate = _candidate(policy=_policy())
+    executor = FakeExecutor()
+    sweeper = _sweeper([candidate], redis, executor)
+    registry = ActivityRegistry(redis, activity_ttl_seconds=1800)  # type: ignore[arg-type]
+    # Tombstone from an older missing-key window, aged >= X.
+    await redis.set(unknown_tombstone_key(candidate.sandbox_id), NOW_MS - (X + 10) * 1000, ex=3600)
+    # Fresh traffic recreated the activity key.
+    await registry.record(candidate.sandbox_id, now_ms=NOW_MS - 1000)
+
+    stats = await sweeper.sweep_once()
+
+    assert unknown_tombstone_key(candidate.sandbox_id) not in redis.store
+    assert executor.calls == []  # fresh activity: not idle
+    assert stats.tombstoned == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_activity_clears_tombstone_and_pauses():
+    redis = FakeAsyncRedis()
+    candidate = _candidate(policy=_policy())
+    executor = FakeExecutor()
+    sweeper = _sweeper([candidate], redis, executor)
+    registry = ActivityRegistry(redis, activity_ttl_seconds=1800)  # type: ignore[arg-type]
+    await redis.set(unknown_tombstone_key(candidate.sandbox_id), NOW_MS - (X + 10) * 1000, ex=3600)
+    await registry.record(candidate.sandbox_id, now_ms=NOW_MS - (X + 10) * 1000)
+
+    stats = await sweeper.sweep_once()
+
+    assert unknown_tombstone_key(candidate.sandbox_id) not in redis.store
+    assert len(executor.calls) == 1
+    assert stats.paused == 1
+
+
+@pytest.mark.asyncio
+async def test_tombstone_clear_failure_is_fail_safe():
+    redis = FakeAsyncRedis()
+    candidate = _candidate(policy=_policy())
+    executor = FakeExecutor()
+    sweeper = IdlePauseSweeper(
+        namespace_resolver=lambda: ["ns"],
+        inventory=FakeInventory([candidate]),
+        activity=NoClearRegistry(redis, slip_at_read=False),  # type: ignore[arg-type]
+        locks=PauseLockManager(redis, lock_ttl_seconds=30),  # type: ignore[arg-type]
+        executor=executor,  # type: ignore[arg-type]
+        sweep_interval_seconds=15,
+        clock=lambda: NOW_MS,
+    )
+    registry = ActivityRegistry(redis, activity_ttl_seconds=1800)  # type: ignore[arg-type]
+    await redis.set(unknown_tombstone_key(candidate.sandbox_id), NOW_MS - (X + 10) * 1000, ex=3600)
+    await registry.record(candidate.sandbox_id, now_ms=NOW_MS - (X + 10) * 1000)
+
+    stats = await sweeper.sweep_once()  # must not raise
+
+    assert len(executor.calls) == 1  # value-based decision unaffected
+    assert stats.paused == 1

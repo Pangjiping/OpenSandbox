@@ -87,8 +87,42 @@ def test_pause_sends_idempotent_request_id_and_fences():
             "sandbox_name": "fsb_x",
             "expected_uid": "uid-1",
             "expected_generation": 7,
-            "request_id": "idlepause-fsb_x",
+            "request_id": "idlepause-fsb_x-7",
         }
+    ]
+
+
+def test_request_id_tracks_generation_across_episodes():
+    """A pause/resume cycle bumps the generation: the new episode's request id
+    must differ so FastPath-side dedup cannot replay the earlier outcome."""
+    candidate = _candidate()
+    client = StubFastPathClient()
+    executor = FastPathPauseExecutor(client)  # type: ignore[arg-type]
+    executor.pause(candidate)
+    older = SandboxCandidate(
+        sandbox_id=candidate.sandbox_id,
+        namespace=candidate.namespace,
+        uid=candidate.uid,
+        generation=candidate.generation,
+        state=candidate.state,
+        expires_at=candidate.expires_at,
+        policy=candidate.policy,
+    )
+    newer = SandboxCandidate(
+        sandbox_id=candidate.sandbox_id,
+        namespace=candidate.namespace,
+        uid=candidate.uid,
+        generation=candidate.generation + 1,
+        state=candidate.state,
+        expires_at=candidate.expires_at,
+        policy=candidate.policy,
+    )
+    executor.pause(newer)
+    executor.pause(older)  # retry of the first intent: same id
+    assert [c["request_id"] for c in client.calls] == [
+        "idlepause-fsb_x-7",
+        "idlepause-fsb_x-8",
+        "idlepause-fsb_x-7",
     ]
 
 

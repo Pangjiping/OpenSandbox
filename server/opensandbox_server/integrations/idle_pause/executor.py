@@ -15,8 +15,11 @@
 """Pause executor: the sweeper's single authority for issuing pauses.
 
 Wraps ``FastPathClient.pause_sandbox`` with the OSEP-0024 pause contract:
-idempotent ``idlepause-{sandbox_id}`` request id, uid + observed-generation
-fence. A fence rejection (``FailedPrecondition``) is re-evaluated next sweep.
+idempotent ``idlepause-{sandbox_id}-{generation}`` request id (stable across
+retries of one intent, distinct per idle episode so FastPath-side dedup can
+never replay an earlier episode's outcome), plus the uid and
+observed-generation fence. A fence rejection (``FailedPrecondition``) is
+re-evaluated next sweep.
 """
 
 from __future__ import annotations
@@ -56,7 +59,10 @@ class FastPathPauseExecutor:
         self._client = client
 
     def pause(self, candidate: SandboxCandidate) -> PauseOutcome:
-        request_id = f"{IDLE_PAUSE_REQUEST_ID_PREFIX}{candidate.sandbox_id}"
+        # Unique per checkpoint intent: retries of one episode share the id
+        # (idempotent replay), later episodes differ (dedup cannot replay a
+        # rejected earlier attempt).
+        request_id = f"{IDLE_PAUSE_REQUEST_ID_PREFIX}{candidate.sandbox_id}-{candidate.generation}"
         try:
             self._client.pause_sandbox(
                 candidate.namespace,

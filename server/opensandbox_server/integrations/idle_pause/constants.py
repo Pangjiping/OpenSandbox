@@ -34,5 +34,6 @@ DEFAULT_PROBE_TIMEOUT_SECONDS = 2
 # Only action in this revision; the field exists so future actions stay additive.
 ON_IDLE_ACTION_PAUSE = "pause"
 
-# Idempotent PauseSandbox request id prefix; FastPath deduplicates replays.
+# Idempotent PauseSandbox request id prefix ({sandbox_id}-{generation});
+# FastPath deduplicates replays, so the id must differ across episodes.
 IDLE_PAUSE_REQUEST_ID_PREFIX = "idlepause-"

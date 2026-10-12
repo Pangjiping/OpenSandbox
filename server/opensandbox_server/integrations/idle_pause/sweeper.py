@@ -37,7 +37,10 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from opensandbox_server.config import AppConfig
-from opensandbox_server.integrations.idle_pause.activity import ActivityRegistry
+from opensandbox_server.integrations.idle_pause.activity import (
+    ActivityRegistry,
+    ThreadSafeActivityRecorder,
+)
 from opensandbox_server.integrations.idle_pause.decision import IdleVerdict, evaluate_idle
 from opensandbox_server.integrations.idle_pause.executor import (
     FastPathPauseExecutor,
@@ -204,7 +207,9 @@ class IdlePauseSweeper:
             return
 
         try:
-            activity = await self._activity.read_many([c.sandbox_id for c in eligible])
+            activity, tombstones = await self._activity.read_many_with_tombstones(
+                [c.sandbox_id for c in eligible]
+            )
         except (RedisError, OSError) as exc:
             line, ex = idlep_bundle(
                 event=IDLEP_EVENT_SWEEP_SKIPPED,
@@ -217,7 +222,12 @@ class IdlePauseSweeper:
             return
 
         for candidate in eligible:
-            await self._evaluate_candidate(candidate, activity.get(candidate.sandbox_id), stats)
+            await self._evaluate_candidate(
+                candidate,
+                activity.get(candidate.sandbox_id),
+                tombstones.get(candidate.sandbox_id),
+                stats,
+            )
 
     def _passes_static_gates(
         self, candidate: SandboxCandidate, now_ms: int, stats: SweepStats
@@ -238,6 +248,7 @@ class IdlePauseSweeper:
         self,
         candidate: SandboxCandidate,
         last_active_ms: Optional[int],
+        tombstone_ms: Optional[int],
         stats: SweepStats,
     ) -> None:
         assert candidate.policy is not None and candidate.policy.idle_timeout_seconds is not None
@@ -245,7 +256,9 @@ class IdlePauseSweeper:
         now_ms = self._clock()
 
         # Idle gate: pure function of the activity key and its tombstone.
-        if not await self._decide(candidate, last_active_ms, now_ms, threshold, stats):
+        if not await self._decide(
+            candidate, last_active_ms, tombstone_ms, now_ms, threshold, stats
+        ):
             return
 
         # A declared probe must veto busy sandboxes; until the probe pipeline
@@ -314,27 +327,41 @@ class IdlePauseSweeper:
         self,
         candidate: SandboxCandidate,
         last_active_ms: Optional[int],
+        tombstone_ms: Optional[int],
         now_ms: int,
         threshold: int,
         stats: SweepStats,
     ) -> bool:
-        tombstone_ms: Optional[int] = None
-        if last_active_ms is None:
-            try:
-                tombstone_ms = await self._activity.read_tombstone(candidate.sandbox_id)
-            except (RedisError, OSError) as exc:
-                # Never pause from unknown state — but say so, or a Redis
-                # fault confined here would silently stop tombstone pauses.
-                line, ex = idlep_bundle(
-                    event=IDLEP_EVENT_SWEEP_SKIPPED,
-                    source=IDLEP_SOURCE_SWEEPER,
-                    sandbox_id=candidate.sandbox_id,
-                    namespace=candidate.namespace,
-                    skip_reason="tombstone_read_failed",
-                    error_type=type(exc).__name__,
-                )
-                logger.warning(f"idle_pause {line} error={exc!s}", extra=ex)
-                return False
+        if last_active_ms is not None:
+            # The activity key reappeared: a leftover tombstone must not
+            # outlive fresh traffic, or its age would later fake idleness
+            # after the key is evicted (OSEP-0024 tombstone semantics).
+            if tombstone_ms is not None:
+                try:
+                    await self._activity.clear_tombstone(candidate.sandbox_id)
+                except (RedisError, OSError) as exc:
+                    line, ex = idlep_bundle(
+                        event=IDLEP_EVENT_SWEEP_SKIPPED,
+                        source=IDLEP_SOURCE_SWEEPER,
+                        sandbox_id=candidate.sandbox_id,
+                        namespace=candidate.namespace,
+                        skip_reason="tombstone_clear_failed",
+                        error_type=type(exc).__name__,
+                    )
+                    logger.warning(f"idle_pause {line} error={exc!s}", extra=ex)
+            decision = evaluate_idle(
+                last_active_ms=last_active_ms,
+                tombstone_ms=None,
+                now_ms=now_ms,
+                threshold_seconds=threshold,
+            )
+        else:
+            decision = evaluate_idle(
+                last_active_ms=None,
+                tombstone_ms=tombstone_ms,
+                now_ms=now_ms,
+                threshold_seconds=threshold,
+            )
         decision = evaluate_idle(
             last_active_ms=last_active_ms,
             tombstone_ms=tombstone_ms,
@@ -453,10 +480,16 @@ async def start_idle_pause_sweeper(
             return None
 
     ip = app_config.idle_pause
+    registry = ActivityRegistry(redis_client, activity_ttl_seconds=ip.activity_ttl_seconds)
+    # OSEP-0024: the server actor records an activity observation on create
+    # and resume so the idle clock restarts from the lifecycle transition.
+    fsb.set_activity_recorder(
+        ThreadSafeActivityRecorder(registry, asyncio.get_running_loop())
+    )
     sweeper = IdlePauseSweeper(
         namespace_resolver=namespace_resolver,
         inventory=FastSandboxInventory(fsb.cr_reader),
-        activity=ActivityRegistry(redis_client, activity_ttl_seconds=ip.activity_ttl_seconds),
+        activity=registry,
         locks=PauseLockManager(redis_client, lock_ttl_seconds=ip.redis.lock_ttl_seconds),
         executor=FastPathPauseExecutor(fsb.fastpath_client),
         sweep_interval_seconds=ip.sweep_interval_seconds,

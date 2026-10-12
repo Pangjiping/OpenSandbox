@@ -48,6 +48,7 @@ from opensandbox_server.api.schema import (
 )
 from opensandbox_server.config import AppConfig, KubernetesRuntimeConfig
 from opensandbox_server.middleware.request_id import get_request_id
+from opensandbox_server.services.activity_recorder import ActivityRecorder
 from opensandbox_server.services.constants import SandboxErrorCodes
 from opensandbox_server.services.diagnostics import (
     DiagnosticResult,
@@ -115,6 +116,7 @@ class FastSandboxService(SandboxService, ExtensionService):
         self._tenant_provider = None  # type: ignore[assignment]
         self._cr_reader = SandboxCRReader(self._k8s, k8s_client)
         self._template_service = template_service
+        self._activity_recorder: Optional[ActivityRecorder] = None
 
     @property
     def cr_reader(self) -> SandboxCRReader:
@@ -125,6 +127,15 @@ class FastSandboxService(SandboxService, ExtensionService):
     def fastpath_client(self) -> FastPathClient:
         """Shared FastPath gRPC client, for background integrations."""
         return self._fastpath
+
+    def set_activity_recorder(self, recorder: Optional[ActivityRecorder]) -> None:
+        """Inject the OSEP-0024 activity recorder (None disables the writes)."""
+        self._activity_recorder = recorder
+
+    def _record_activity(self, sandbox_id: str) -> None:
+        """Restart the idle clock after a lifecycle transition (fire-and-forget)."""
+        if self._activity_recorder is not None:
+            self._activity_recorder.record(sandbox_id)
 
     def close(self) -> None:
         self._cr_reader.close()
@@ -320,6 +331,10 @@ class FastSandboxService(SandboxService, ExtensionService):
         finally:
             self._cr_reader.invalidate(namespace)
 
+        # Durable intent exists (accepted or recovery-confirmed): restart the
+        # idle clock from this transition (OSEP-0024).
+        self._record_activity(sandbox_id)
+
         return self._build_create_response(
             request,
             info,
@@ -429,6 +444,10 @@ class FastSandboxService(SandboxService, ExtensionService):
             )
         except FastPathError as exc:
             raise self._fastpath_http_error(exc) from exc
+        else:
+            # The idle clock restarts from the resume transition (OSEP-0024):
+            # a stale key or aged tombstone must not cause an immediate pause.
+            self._record_activity(sandbox_id)
         finally:
             self._cr_reader.invalidate(namespace)
 

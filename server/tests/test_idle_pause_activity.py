@@ -123,21 +123,23 @@ async def test_record_writes_monotonic_max_with_ttl(registry: ActivityRegistry, 
 
 
 @pytest.mark.asyncio
-async def test_read_many_and_missing(registry: ActivityRegistry):
+async def test_read_many_with_tombstones(registry: ActivityRegistry):
     await registry.record("sb_a", now_ms=NOW_MS)
-    result = await registry.read_many(["sb_a", "sb_b"])
-    assert result == {"sb_a": NOW_MS, "sb_b": None}
-    assert await registry.read_many([]) == {}
+    await registry.ensure_tombstone("sb_b", now_ms=NOW_MS - 1000)
+    activity, tombstones = await registry.read_many_with_tombstones(["sb_a", "sb_b", "sb_c"])
+    assert activity == {"sb_a": NOW_MS, "sb_b": None, "sb_c": None}
+    assert tombstones == {"sb_a": None, "sb_b": NOW_MS - 1000, "sb_c": None}
+    assert await registry.read_many_with_tombstones([]) == ({}, {})
 
 
 @pytest.mark.asyncio
 async def test_tombstone_nx_never_overwrites(registry: ActivityRegistry, redis_client: FakeAsyncRedis):
     await registry.ensure_tombstone("sb_1", now_ms=NOW_MS, extra_ttl_seconds=15)
     await registry.ensure_tombstone("sb_1", now_ms=NOW_MS + 999999, extra_ttl_seconds=15)
-    assert await registry.read_tombstone("sb_1") == NOW_MS
+    assert redis_client.store[unknown_tombstone_key("sb_1")] == str(NOW_MS)
     assert redis_client.ttls[unknown_tombstone_key("sb_1")] == 1800 + 15
     await registry.clear_tombstone("sb_1")
-    assert await registry.read_tombstone("sb_1") is None
+    assert unknown_tombstone_key("sb_1") not in redis_client.store
 
 
 @pytest.mark.asyncio

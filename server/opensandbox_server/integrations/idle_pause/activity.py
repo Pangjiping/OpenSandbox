@@ -21,8 +21,10 @@ Failures raise to the caller, which fails toward *not pausing*.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from opensandbox_server.integrations.idle_pause.constants import (
     ACTIVITY_KEY_PREFIX,
@@ -31,6 +33,8 @@ from opensandbox_server.integrations.idle_pause.constants import (
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis
+
+logger = logging.getLogger(__name__)
 
 # Monotonic max: out-of-order writes across replicas never regress the key.
 _MONOTONIC_MAX_SCRIPT = """
@@ -79,11 +83,19 @@ class ActivityRegistry:
         value = await self._client.get(activity_key(sandbox_id))
         return _parse_ms(value)
 
-    async def read_many(self, sandbox_ids: list[str]) -> dict[str, Optional[int]]:
+    async def read_many_with_tombstones(
+        self, sandbox_ids: list[str]
+    ) -> tuple[dict[str, Optional[int]], dict[str, Optional[int]]]:
+        """Batch-read activity keys and their tombstones in one MGET."""
         if not sandbox_ids:
-            return {}
-        values = await self._client.mget([activity_key(sid) for sid in sandbox_ids])
-        return {sid: _parse_ms(value) for sid, value in zip(sandbox_ids, values)}
+            return {}, {}
+        n = len(sandbox_ids)
+        keys = [activity_key(sid) for sid in sandbox_ids]
+        keys += [unknown_tombstone_key(sid) for sid in sandbox_ids]
+        values = await self._client.mget(keys)
+        activity = {sid: _parse_ms(v) for sid, v in zip(sandbox_ids, values[:n])}
+        tombstones = {sid: _parse_ms(v) for sid, v in zip(sandbox_ids, values[n:])}
+        return activity, tombstones
 
     async def ensure_tombstone(
         self, sandbox_id: str, *, now_ms: Optional[int] = None, extra_ttl_seconds: int = 0
@@ -98,13 +110,39 @@ class ActivityRegistry:
             ex=ttl,
         )
 
-    async def read_tombstone(self, sandbox_id: str) -> Optional[int]:
-        value = await self._client.get(unknown_tombstone_key(sandbox_id))
-        return _parse_ms(value)
-
     async def clear_tombstone(self, sandbox_id: str) -> None:
         """Drop the tombstone once the activity key reappeared."""
         await self._client.delete(unknown_tombstone_key(sandbox_id))
+
+
+class ThreadSafeActivityRecorder:
+    """Schedules the async registry write on the captured loop.
+
+    For sync lifecycle code running in worker threads; never raises and never
+    blocks the caller — recording must not add latency or failure modes.
+    """
+
+    def __init__(self, registry: ActivityRegistry, loop: asyncio.AbstractEventLoop) -> None:
+        self._registry = registry
+        self._loop = loop
+
+    def record(self, sandbox_id: str) -> None:
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._registry.record(sandbox_id), self._loop
+            )
+            future.add_done_callback(_swallow_future_error)
+        except Exception as exc:  # noqa: BLE001 - never break the caller
+            logger.debug(f"idle_pause activity record dropped error={exc!s}")
+
+
+def _swallow_future_error(future: Any) -> None:
+    try:
+        exc = future.exception()
+    except Exception:  # noqa: BLE001 - shutdown races
+        return
+    if exc is not None:
+        logger.debug(f"idle_pause activity record failed error={exc!s}")
 
 
 def _parse_ms(value: object) -> Optional[int]:
