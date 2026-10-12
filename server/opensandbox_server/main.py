@@ -208,13 +208,13 @@ async def lifespan(app: FastAPI):
     )
 
     if app_config.idle_pause.enabled:
-        # OSEP-0024: the sweeper enumerates per tenant namespace; background
-        # work has no request tenant, so namespaces are resolved up front.
-        idle_namespaces = _idle_pause_namespaces()
+        # OSEP-0024: the sweeper enumerates per tenant namespace. Re-resolved
+        # every sweep — tenants hot-reload and HTTP providers may enumerate
+        # late, so a startup snapshot would strand later-added tenants.
         app.state.idle_pause_sweeper = await start_idle_pause_sweeper(
             app_config,
             sandbox_service,
-            namespaces=idle_namespaces,
+            namespace_resolver=_idle_pause_namespaces,
         )
     else:
         app.state.idle_pause_sweeper = None

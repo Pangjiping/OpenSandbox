@@ -25,11 +25,9 @@ from typing import Any
 
 IDLEP_SOURCE_SWEEPER = "sweeper"
 
-IDLEP_EVENT_SWEEP_STARTED = "sweep_started"
 IDLEP_EVENT_SWEEP_SKIPPED = "sweep_skipped"
 IDLEP_EVENT_SWEEP_COMPLETED = "sweep_completed"
 IDLEP_EVENT_PAUSE_ISSUED = "pause_issued"
-IDLEP_EVENT_PAUSE_REJECTED = "pause_rejected"
 IDLEP_EVENT_TOMBSTONED = "unknown_tombstoned"
 
 

@@ -122,9 +122,6 @@ class ActivityRegistry:
         """Drop the tombstone once the activity key reappeared."""
         await self._client.delete(unknown_tombstone_key(sandbox_id))
 
-    async def close(self) -> None:
-        await self._client.aclose()
-
 
 def _parse_ms(value: object) -> Optional[int]:
     if value is None:

@@ -184,6 +184,13 @@ def idle_policy_from_annotation(raw: Optional[str]) -> Optional[IdlePolicy]:
     violation, an unsupported action, or an out-of-range timeout all resolve
     to *no policy* — never an implicit opt-in. ``wakeOnAccess`` defaults to
     true when omitted.
+
+    Deliberately stricter than ingress on ``activeProbe``: the wake gate
+    treats it as opaque JSON, while the pause side must eventually execute
+    it, so a probe that cannot be fully typed invalidates the whole policy
+    here. The divergence is fail-safe on both sides — such a sandbox is
+    never auto-paused, and its wake gating still follows the annotation's
+    ``wakeOnAccess``.
     """
     if raw is None:
         return None

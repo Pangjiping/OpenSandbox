@@ -21,9 +21,9 @@ timer and deduplication happens at the point of effect — the per-sandbox
 lost race converges to a single pause anyway.
 
 Gate order (first failure drops the candidate silently for this sweep):
-opt-in -> Running -> expiry -> idle (value / tombstone / unknown) -> lock ->
-re-verify under lock -> probe (declared probes gate the pause until the
-probe pipeline lands) -> PauseSandbox.
+opt-in -> Running -> expiry -> idle (value / tombstone / unknown) -> probe
+(a declared probe keeps the sandbox pause-exempt until the probe pipeline
+lands) -> lock -> re-verify under lock -> PauseSandbox.
 
 Fail-safe direction: any Redis failure skips the sweep entirely; every other
 failure leaves the sandbox Running. The worst case of this subsystem is a
@@ -44,8 +44,16 @@ from redis.exceptions import RedisError
 from opensandbox_server.config import AppConfig
 from opensandbox_server.integrations.idle_pause.activity import ActivityRegistry
 from opensandbox_server.integrations.idle_pause.decision import IdleVerdict, evaluate_idle
-from opensandbox_server.integrations.idle_pause.executor import PauseExecutor, PauseOutcome
-from opensandbox_server.integrations.idle_pause.inventory import SandboxCandidate, SandboxInventory
+from opensandbox_server.integrations.idle_pause.executor import (
+    FastPathPauseExecutor,
+    PauseExecutor,
+    PauseOutcome,
+)
+from opensandbox_server.integrations.idle_pause.inventory import (
+    FastSandboxInventory,
+    SandboxCandidate,
+    SandboxInventory,
+)
 from opensandbox_server.integrations.idle_pause.locking import PauseLockManager
 from opensandbox_server.integrations.idle_pause.logutil import (
     IDLEP_EVENT_PAUSE_ISSUED,
@@ -57,6 +65,7 @@ from opensandbox_server.integrations.idle_pause.logutil import (
 )
 from opensandbox_server.integrations.idle_pause.metrics import record_pause_request
 from opensandbox_server.integrations.idle_pause.redis_client import (
+    close_idle_pause_redis_client,
     connect_idle_pause_redis_from_config,
 )
 from opensandbox_server.services.composite_service import CompositeSandboxService
@@ -86,25 +95,31 @@ class IdlePauseSweeper:
     def __init__(
         self,
         *,
-        namespaces: Sequence[str],
+        namespace_resolver: Callable[[], Sequence[str]],
         inventory: SandboxInventory,
         activity: ActivityRegistry,
         locks: PauseLockManager,
         executor: PauseExecutor,
         sweep_interval_seconds: float = 15.0,
-        lock_ttl_seconds: int = 30,
         lock_owner: Optional[str] = None,
         clock: Callable[[], int] = _default_clock,
+        owned_redis: Optional[Redis] = None,
     ) -> None:
-        self._namespaces = list(dict.fromkeys(namespaces))
+        # Re-resolved every sweep: tenants hot-reload (file provider) and HTTP
+        # providers may enumerate late, so a startup snapshot would strand
+        # later-added tenants' sandboxes un-swept.
+        self._namespace_resolver = namespace_resolver
         self._inventory = inventory
         self._activity = activity
         self._locks = locks
         self._executor = executor
         self._interval = float(sweep_interval_seconds)
         self._lock_owner = lock_owner or f"sweeper-{id(self):x}"
-        self._lock_ttl = int(lock_ttl_seconds)
         self._clock = clock
+        # Client lifecycle ownership: set only when this sweeper created the
+        # client (see start_idle_pause_sweeper); a caller-supplied client
+        # stays the caller's to close.
+        self._owned_redis = owned_redis
         self._task: Optional[asyncio.Task[None]] = None
         self._stopping = asyncio.Event()
 
@@ -122,6 +137,9 @@ class IdlePauseSweeper:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
+        if self._owned_redis is not None:
+            await close_idle_pause_redis_client(self._owned_redis)
+            self._owned_redis = None
 
     async def _run_loop(self) -> None:
         while not self._stopping.is_set():
@@ -157,7 +175,8 @@ class IdlePauseSweeper:
             logger.warning(f"idle_pause {line} error={exc!s}", extra=ex)
             return stats
 
-        for namespace in self._namespaces:
+        namespaces = list(dict.fromkeys(self._namespace_resolver()))
+        for namespace in namespaces:
             candidates = await asyncio.to_thread(self._inventory.snapshot, namespace)
             await self._sweep_namespace(namespace, candidates, stats)
 
@@ -245,7 +264,25 @@ class IdlePauseSweeper:
             return
 
         # Gate 5: per-sandbox admission lock.
-        if not await self._locks.try_acquire(candidate.sandbox_id, self._lock_owner):
+        try:
+            acquired = await self._locks.try_acquire(candidate.sandbox_id, self._lock_owner)
+        except (RedisError, OSError) as exc:
+            # Redis died between the batch read and the lock: drop this
+            # candidate (fail toward "not pausing"), never raise past the
+            # sweep — remaining candidates and namespaces keep their shot.
+            line, ex = idlep_bundle(
+                event=IDLEP_EVENT_SWEEP_SKIPPED,
+                source=IDLEP_SOURCE_SWEEPER,
+                sandbox_id=candidate.sandbox_id,
+                namespace=candidate.namespace,
+                skip_reason="lock_acquire_failed",
+                error_type=type(exc).__name__,
+            )
+            logger.warning(f"idle_pause {line} error={exc!s}", extra=ex)
+            record_pause_request(outcome="gated")
+            stats.gated += 1
+            return
+        if not acquired:
             record_pause_request(outcome="gated")
             stats.gated += 1
             stats.details.append(f"{candidate.sandbox_id}:lock_contended")
@@ -277,7 +314,12 @@ class IdlePauseSweeper:
 
             await self._issue_pause(candidate, threshold, now_ms, last_active_ms, stats)
         finally:
-            await self._locks.release(candidate.sandbox_id, self._lock_owner)
+            # Best-effort early release: the TTL is the primary release path,
+            # so a Redis failure here must never mask the sweep's outcome.
+            try:
+                await self._locks.release(candidate.sandbox_id, self._lock_owner)
+            except (RedisError, OSError) as exc:
+                logger.debug(f"idle_pause lock release deferred to TTL error={exc!s}")
 
     async def _decide(
         self,
@@ -364,7 +406,7 @@ async def start_idle_pause_sweeper(
     app_config: AppConfig,
     sandbox_service: object,
     *,
-    namespaces: Sequence[str],
+    namespace_resolver: Callable[[], Sequence[str]],
     redis_client: Optional[Redis] = None,
 ) -> Optional[IdlePauseSweeper]:
     """Build and start the sweeper, or return ``None`` when it must not run.
@@ -372,13 +414,13 @@ async def start_idle_pause_sweeper(
     Guards: ``[idle_pause].enabled`` and the fsb (kubernetes) runtime must be
     on, and Redis must connect — activity tracking is load-bearing for pause
     decisions, so without it the sweeper never issues pauses (fail toward
-    "not pausing").
-    """
-    from opensandbox_server.integrations.idle_pause.activity import ActivityRegistry
-    from opensandbox_server.integrations.idle_pause.executor import FastPathPauseExecutor
-    from opensandbox_server.integrations.idle_pause.inventory import FastSandboxInventory
-    from opensandbox_server.integrations.idle_pause.locking import PauseLockManager
+    "not pausing"). A malformed DSN (``ValueError`` from the client builder)
+    degrades the same way instead of crashing startup.
 
+    When this factory creates the Redis client it also owns it: the
+    sweeper's ``stop()`` closes it. A caller-supplied client stays the
+    caller's responsibility.
+    """
     if not app_config.idle_pause.enabled:
         return None
     if app_config.runtime.type != "kubernetes":
@@ -394,29 +436,31 @@ async def start_idle_pause_sweeper(
         logger.warning("idle_pause enabled but no fsb backend is registered; sweeper not started")
         return None
 
+    owned_redis = False
     if redis_client is None:
         try:
             redis_client = await connect_idle_pause_redis_from_config(app_config)
-        except (RedisError, OSError) as exc:
+        except (RedisError, OSError, ValueError) as exc:
             logger.warning(f"idle_pause redis connect failed error={exc!s}; sweeper not started")
             return None
+        owned_redis = redis_client is not None
     if redis_client is None:
         logger.info("idle_pause redis disabled; sweeper not started")
         return None
 
     ip = app_config.idle_pause
     sweeper = IdlePauseSweeper(
-        namespaces=namespaces,
+        namespace_resolver=namespace_resolver,
         inventory=FastSandboxInventory(fsb.cr_reader),
         activity=ActivityRegistry(redis_client, activity_ttl_seconds=ip.activity_ttl_seconds),
         locks=PauseLockManager(redis_client, lock_ttl_seconds=ip.redis.lock_ttl_seconds),
         executor=FastPathPauseExecutor(fsb.fastpath_client),
         sweep_interval_seconds=ip.sweep_interval_seconds,
-        lock_ttl_seconds=ip.redis.lock_ttl_seconds,
+        owned_redis=redis_client if owned_redis else None,
     )
     sweeper.start()
     logger.info(
-        f"idle_pause sweeper started namespaces={list(sweeper._namespaces)} "
+        f"idle_pause sweeper started namespaces={list(dict.fromkeys(namespace_resolver()))} "
         f"sweep_interval={ip.sweep_interval_seconds} "
         f"activity_ttl={ip.activity_ttl_seconds}"
     )

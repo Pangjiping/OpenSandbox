@@ -23,6 +23,7 @@ import logging
 from typing import Optional
 
 import pytest
+from redis.exceptions import RedisError
 
 from opensandbox_server.integrations.idle_pause.activity import (
     ActivityRegistry,
@@ -92,9 +93,10 @@ def _sweeper(
     executor: FakeExecutor,
     *,
     clock_now: int = NOW_MS,
+    namespaces: Optional[list[str]] = None,
 ) -> IdlePauseSweeper:
     return IdlePauseSweeper(
-        namespaces=["ns"],
+        namespace_resolver=lambda: namespaces or ["ns"],
         inventory=FakeInventory(candidates),
         activity=ActivityRegistry(redis_client, activity_ttl_seconds=1800),  # type: ignore[arg-type]
         locks=PauseLockManager(redis_client, lock_ttl_seconds=30),  # type: ignore[arg-type]
@@ -215,7 +217,7 @@ async def test_activity_landing_between_read_and_lock_drops_candidate():
     executor = FakeExecutor()
     registry = FakeSlippingRegistry(redis, slip_at_read=True)
     sweeper = IdlePauseSweeper(
-        namespaces=["ns"],
+        namespace_resolver=lambda: ["ns"],
         inventory=FakeInventory([candidate]),
         activity=registry,  # type: ignore[arg-type]
         locks=PauseLockManager(redis, lock_ttl_seconds=30),  # type: ignore[arg-type]
@@ -339,3 +341,199 @@ async def test_pause_issued_audit_line_carries_threshold_and_age():
     assert record.idlep_threshold_seconds == X  # type: ignore[attr-defined]
     assert record.idlep_last_observation_age == "310.0s"  # type: ignore[attr-defined]
     assert record.idlep_tombstoned is False  # type: ignore[attr-defined]
+
+
+class FailingAcquireLocks:
+    """Lock manager whose acquire raises (Redis died mid-sweep)."""
+
+    def __init__(self, redis_client: FakeAsyncRedis):
+        self._inner = PauseLockManager(redis_client, lock_ttl_seconds=30)  # type: ignore[arg-type]
+
+    async def try_acquire(self, sandbox_id: str, owner: str) -> bool:
+        raise RedisError("connection reset")
+
+    async def release(self, sandbox_id: str, owner: str) -> None:
+        await self._inner.release(sandbox_id, owner)
+
+
+class FailingReleaseLocks:
+    """Lock manager whose release raises inside the sweeper's finally."""
+
+    async def try_acquire(self, sandbox_id: str, owner: str) -> bool:
+        return True
+
+    async def release(self, sandbox_id: str, owner: str) -> None:
+        raise RedisError("connection reset")
+
+
+@pytest.mark.asyncio
+async def test_lock_acquire_redis_error_drops_candidate_without_breaking_sweep():
+    redis = FakeAsyncRedis()
+    first = _candidate("fsb_a", policy=_policy())
+    second = _candidate("fsb_b", policy=_policy())
+    executor = FakeExecutor()
+    sweeper = IdlePauseSweeper(
+        namespace_resolver=lambda: ["ns1", "ns2"],
+        inventory=FakeInventory([first, second]),
+        activity=ActivityRegistry(redis, activity_ttl_seconds=1800),  # type: ignore[arg-type]
+        locks=FailingAcquireLocks(redis),  # type: ignore[arg-type]
+        executor=executor,  # type: ignore[arg-type]
+        sweep_interval_seconds=15,
+        clock=lambda: NOW_MS,
+    )
+    for c in (first, second):
+        await ActivityRegistry(redis, activity_ttl_seconds=1800).record(  # type: ignore[arg-type]
+            c.sandbox_id, now_ms=NOW_MS - (X + 10) * 1000
+        )
+    stats = await sweeper.sweep_once()  # must not raise
+    assert executor.calls == []
+    assert stats.gated == 4  # both candidates, both namespaces
+
+
+@pytest.mark.asyncio
+async def test_lock_release_redis_error_does_not_mask_pause_outcome():
+    redis = FakeAsyncRedis()
+    candidate = _candidate(policy=_policy())
+    executor = FakeExecutor()
+    sweeper = IdlePauseSweeper(
+        namespace_resolver=lambda: ["ns"],
+        inventory=FakeInventory([candidate]),
+        activity=ActivityRegistry(redis, activity_ttl_seconds=1800),  # type: ignore[arg-type]
+        locks=FailingReleaseLocks(),  # type: ignore[arg-type]
+        executor=executor,  # type: ignore[arg-type]
+        sweep_interval_seconds=15,
+        clock=lambda: NOW_MS,
+    )
+    await ActivityRegistry(redis, activity_ttl_seconds=1800).record(  # type: ignore[arg-type]
+        candidate.sandbox_id, now_ms=NOW_MS - (X + 10) * 1000
+    )
+    stats = await sweeper.sweep_once()
+    assert stats.paused == 1
+
+
+@pytest.mark.asyncio
+async def test_namespace_resolver_is_reconsulted_every_sweep():
+    redis = FakeAsyncRedis()
+    tenant_b = _candidate("fsb_b", policy=_policy())
+    tenant_b_ns = SandboxCandidate(
+        sandbox_id=tenant_b.sandbox_id,
+        namespace="ns_b",
+        uid=tenant_b.uid,
+        generation=tenant_b.generation,
+        state=tenant_b.state,
+        expires_at=tenant_b.expires_at,
+        policy=tenant_b.policy,
+    )
+
+    class NamespaceFilteredInventory:
+        def snapshot(self, namespace: str) -> list[SandboxCandidate]:
+            return [tenant_b_ns] if namespace == "ns_b" else []
+
+    executor = FakeExecutor()
+    namespaces: list[list[str]] = [["ns_a"]]
+    sweeper = IdlePauseSweeper(
+        namespace_resolver=lambda: namespaces[0],
+        inventory=NamespaceFilteredInventory(),
+        activity=ActivityRegistry(redis, activity_ttl_seconds=1800),  # type: ignore[arg-type]
+        locks=PauseLockManager(redis, lock_ttl_seconds=30),  # type: ignore[arg-type]
+        executor=executor,  # type: ignore[arg-type]
+        sweep_interval_seconds=15,
+        clock=lambda: NOW_MS,
+    )
+    await ActivityRegistry(redis, activity_ttl_seconds=1800).record(  # type: ignore[arg-type]
+        tenant_b.sandbox_id, now_ms=NOW_MS - (X + 10) * 1000
+    )
+    stats_first = await sweeper.sweep_once()
+    assert stats_first.candidates == 0  # tenant B not yet known
+    namespaces[0] = ["ns_a", "ns_b"]  # tenant added at runtime
+    stats_second = await sweeper.sweep_once()
+    assert len(executor.calls) == 1
+    assert stats_second.paused == 1
+
+
+class OwnedClientRedis(FakeAsyncRedis):
+    def __init__(self):
+        super().__init__()
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_start_owns_and_stops_client_it_created(monkeypatch):
+    import opensandbox_server.integrations.idle_pause.sweeper as sweeper_module
+
+    fake = OwnedClientRedis()
+    monkeypatch.setattr(
+        sweeper_module, "connect_idle_pause_redis_from_config", _async_returning(fake)
+    )
+    sweeper = await sweeper_module.start_idle_pause_sweeper(
+        _idle_pause_config(), _fsb_service(), namespace_resolver=lambda: ["ns"]
+    )
+    assert sweeper is not None
+    await sweeper.stop()
+    assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_close_caller_supplied_client():
+    import opensandbox_server.integrations.idle_pause.sweeper as sweeper_module
+
+    fake = OwnedClientRedis()
+    sweeper = await sweeper_module.start_idle_pause_sweeper(
+        _idle_pause_config(),
+        _fsb_service(),
+        namespace_resolver=lambda: ["ns"],
+        redis_client=fake,  # type: ignore[arg-type]
+    )
+    assert sweeper is not None
+    await sweeper.stop()
+    assert fake.closed is False
+
+
+@pytest.mark.asyncio
+async def test_start_degrades_on_malformed_dsn(monkeypatch):
+    import opensandbox_server.integrations.idle_pause.sweeper as sweeper_module
+
+    async def _raise(*args, **kwargs):
+        raise ValueError("Redis URL must specify one of the supported schemes")
+
+    monkeypatch.setattr(sweeper_module, "connect_idle_pause_redis_from_config", _raise)
+    sweeper = await sweeper_module.start_idle_pause_sweeper(
+        _idle_pause_config(), _fsb_service(), namespace_resolver=lambda: ["ns"]
+    )
+    assert sweeper is None
+
+
+def _async_returning(value):
+    async def _inner(*args, **kwargs):
+        return value
+
+    return _inner
+
+
+def _idle_pause_config():
+    from opensandbox_server.config import (
+        AppConfig,
+        IdlePauseConfig,
+        IdlePauseRedisConfig,
+        RuntimeConfig,
+    )
+
+    return AppConfig(
+        runtime=RuntimeConfig(type="kubernetes", execd_image="x"),
+        idle_pause=IdlePauseConfig(
+            enabled=True,
+            redis=IdlePauseRedisConfig(enabled=True, dsn="redis://127.0.0.1:6379/5"),
+        ),
+    )
+
+
+def _fsb_service():
+    from opensandbox_server.config import AppConfig, RuntimeConfig
+    from opensandbox_server.services.fast_sandbox.service import FastSandboxService
+
+    return FastSandboxService(
+        AppConfig(runtime=RuntimeConfig(type="kubernetes", execd_image="x"))
+    )

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from typing import Optional
+from urllib.parse import urlsplit
 
 import redis.asyncio as redis_async
 from redis.asyncio import Redis
@@ -27,10 +28,30 @@ from opensandbox_server.config import AppConfig
 logger = logging.getLogger(__name__)
 
 
+def sanitize_dsn(dsn: str) -> str:
+    """Strip credentials: ``redis://:pass@host:port/db`` -> ``redis://host:port/db``.
+
+    Production DSNs commonly embed a password; the raw value must never reach
+    a log line. Unparsable input degrades to a placeholder.
+    """
+    try:
+        parts = urlsplit(dsn.strip())
+        port = f":{parts.port}" if parts.port else ""
+        return f"{parts.scheme}://{parts.hostname}{port}{parts.path or ''}"
+    except ValueError:
+        return "<unparsable-redis-dsn>"
+
+
 async def connect_idle_pause_redis_from_config(
     app_config: AppConfig,
 ) -> Optional[Redis]:
-    """Connect (with ``PING``) or ``None`` when idle-pause Redis is disabled."""
+    """Connect (with ``PING``) or ``None`` when idle-pause Redis is disabled.
+
+    Raises ``RedisError``/``OSError``/``ValueError`` on connect, ping, or DSN
+    parse failures — the caller treats all of them as "sweeper not started".
+    The client is closed before a failed connect returns so a PING or
+    auth failure never leaks a connection pool.
+    """
     ip = app_config.idle_pause
     if not ip.enabled or not ip.redis.enabled:
         return None
@@ -40,9 +61,13 @@ async def connect_idle_pause_redis_from_config(
         return None
 
     client = redis_async.from_url(str(dsn).strip(), decode_responses=True)
-    await client.ping()
+    try:
+        await client.ping()
+    except BaseException:
+        await client.aclose()
+        raise
     logger.info(
-        f"idle_pause redis connected dsn={str(dsn).strip()} "
+        f"idle_pause redis connected dsn={sanitize_dsn(str(dsn))} "
         f"lock_ttl={ip.redis.lock_ttl_seconds}"
     )
     return client
