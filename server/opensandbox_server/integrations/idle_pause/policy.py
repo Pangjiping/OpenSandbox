@@ -120,6 +120,11 @@ def validate_idle_policy(
                 "idleTimeoutSeconds is set."
             )
 
+    if not isinstance(wake_on_access, bool):
+        # A non-bool would survive the write and then invalidate the whole
+        # declaration on read; reject it where it is declared instead.
+        raise ValueError("idlePolicy.wakeOnAccess must be a boolean.")
+
     if active_probe is not None:
         _validate_probe(active_probe)
 
@@ -131,19 +136,31 @@ def validate_idle_policy(
     )
 
 
+def _probe_path_is_valid(path: object) -> bool:
+    """Shared by the create-side validator and the annotation decoder.
+
+    The annotation can bypass the create path (e.g. ``kubectl annotate``), so
+    the decoder must apply the same bounds: otherwise a path like
+    ``/x\\r\\nHost: evil`` would decode into a policy and, once the probe
+    executor lands, be replayed into an HTTP request line.
+    """
+    return (
+        isinstance(path, str)
+        and path.startswith("/")
+        and len(path) <= 512
+        and not any(ord(c) < 0x20 or c == "\x7f" or c.isspace() for c in path)
+    )
+
+
 def _validate_probe(probe: ActivityProbe) -> None:
     if not isinstance(probe.port, int) or isinstance(probe.port, bool) or not (
         1 <= probe.port <= 65535
     ):
         raise ValueError("idlePolicy.activeProbe.port must be an integer between 1 and 65535.")
-    path = probe.path
-    if not isinstance(path, str) or not path.startswith("/") or len(path) > 512:
+    if not _probe_path_is_valid(probe.path):
         raise ValueError(
-            "idlePolicy.activeProbe.path must be an absolute HTTP path (max 512 chars)."
-        )
-    if any(ord(c) < 0x20 or c == "\x7f" or c.isspace() for c in path):
-        raise ValueError(
-            "idlePolicy.activeProbe.path must not contain whitespace or control characters."
+            "idlePolicy.activeProbe.path must be an absolute HTTP path (max 512 chars, "
+            "no whitespace or control characters)."
         )
     if not isinstance(probe.timeout_seconds, int) or isinstance(probe.timeout_seconds, bool) or not (
         PROBE_TIMEOUT_MIN_SECONDS <= probe.timeout_seconds <= PROBE_TIMEOUT_MAX_SECONDS
@@ -251,7 +268,7 @@ def _parse_probe(raw: Any) -> Optional[ActivityProbe]:
     timeout = raw.get("timeoutSeconds", DEFAULT_PROBE_TIMEOUT_SECONDS)
     if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
         return None
-    if not isinstance(path, str) or not path.startswith("/"):
+    if not isinstance(path, str) or not _probe_path_is_valid(path):
         return None
     if (
         not isinstance(timeout, int)

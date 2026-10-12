@@ -17,8 +17,8 @@
 ``FastPathPauseExecutor`` wraps the existing ``FastPathClient.pause_sandbox``
 with the OSEP-0024 pause contract: an idempotent ``idlepause-{sandbox_id}``
 request id (FastPath deduplicates replays of the same idle episode) plus the
-observed uid/generation fence, so a state change under the sweeper comes back
-as ``FailedPrecondition`` and is simply re-evaluated on the next sweep.
+uid and observed-generation fence, so a state change under the sweeper comes
+back as ``FailedPrecondition`` and is simply re-evaluated on the next sweep.
 """
 
 from __future__ import annotations
@@ -64,6 +64,7 @@ class FastPathPauseExecutor:
                 candidate.namespace,
                 candidate.sandbox_id,
                 expected_uid=candidate.uid,
+                expected_generation=candidate.generation,
                 request_id=request_id,
             )
         except (FastPathFailedPrecondition, FastPathConflict) as exc:

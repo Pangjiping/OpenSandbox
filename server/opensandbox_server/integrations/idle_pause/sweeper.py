@@ -138,8 +138,11 @@ class IdlePauseSweeper:
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
         if self._owned_redis is not None:
-            await close_idle_pause_redis_client(self._owned_redis)
-            self._owned_redis = None
+            client, self._owned_redis = self._owned_redis, None
+            try:
+                await close_idle_pause_redis_client(client)
+            except Exception as exc:  # noqa: BLE001 - shutdown must proceed
+                logger.debug(f"idle_pause redis close deferred error={exc!s}")
 
     async def _run_loop(self) -> None:
         while not self._stopping.is_set():
@@ -333,8 +336,20 @@ class IdlePauseSweeper:
         if last_active_ms is None:
             try:
                 tombstone_ms = await self._activity.read_tombstone(candidate.sandbox_id)
-            except (RedisError, OSError):
-                return False  # Redis hiccup: drop this candidate, never pause
+            except (RedisError, OSError) as exc:
+                # Redis hiccup: drop this candidate, never pause from unknown
+                # state — but say so, or a Redis fault confined to this path
+                # would silently stop tombstone-driven pauses.
+                line, ex = idlep_bundle(
+                    event=IDLEP_EVENT_SWEEP_SKIPPED,
+                    source=IDLEP_SOURCE_SWEEPER,
+                    sandbox_id=candidate.sandbox_id,
+                    namespace=candidate.namespace,
+                    skip_reason="tombstone_read_failed",
+                    error_type=type(exc).__name__,
+                )
+                logger.warning(f"idle_pause {line} error={exc!s}", extra=ex)
+                return False
         decision = evaluate_idle(
             last_active_ms=last_active_ms,
             tombstone_ms=tombstone_ms,
@@ -350,7 +365,16 @@ class IdlePauseSweeper:
                     now_ms=now_ms,
                     extra_ttl_seconds=max(0, int(self._interval)),
                 )
-            except (RedisError, OSError):
+            except (RedisError, OSError) as exc:
+                line, ex = idlep_bundle(
+                    event=IDLEP_EVENT_SWEEP_SKIPPED,
+                    source=IDLEP_SOURCE_SWEEPER,
+                    sandbox_id=candidate.sandbox_id,
+                    namespace=candidate.namespace,
+                    skip_reason="tombstone_write_failed",
+                    error_type=type(exc).__name__,
+                )
+                logger.warning(f"idle_pause {line} error={exc!s}", extra=ex)
                 return False
             stats.tombstoned += 1
             line, ex = idlep_bundle(

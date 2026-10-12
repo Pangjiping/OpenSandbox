@@ -69,6 +69,16 @@ def test_on_idle_only_pause_accepted():
         validate_idle_policy(idle_timeout_seconds=60, on_idle=None)
 
 
+def test_wake_on_access_must_be_boolean():
+    """A non-bool would survive the write and void the whole declaration on read."""
+    for bad in ("true", 1, None):
+        with pytest.raises(ValueError, match="wakeOnAccess must be a boolean"):
+            validate_idle_policy(
+                idle_timeout_seconds=60, on_idle="pause", wake_on_access=bad  # type: ignore[arg-type]
+            )
+    assert validate_idle_policy(idle_timeout_seconds=60, on_idle="pause", wake_on_access=False)
+
+
 def test_probe_validation():
     probe = ActivityProbe(port=8080, path="/active", timeout_seconds=2)
     policy = validate_idle_policy(idle_timeout_seconds=300, on_idle="pause", active_probe=probe)
@@ -170,10 +180,15 @@ def test_annotation_parses_ingress_shaped_values():
         '{"idleTimeoutSeconds":86401,"onIdle":"pause"}',
         '{"idleTimeoutSeconds":"300","onIdle":"pause"}',  # wrong type
         '{"wakeOnAccess":"yes"}',  # wrong type
+        '{"wakeOnAccess":1}',  # int masquerading as bool
         '{"activeProbe":{"port":0,"path":"/x"}}',  # invalid probe port
         '{"activeProbe":{"port":8080,"path":"x"}}',  # relative probe path
         '{"activeProbe":{"port":8080,"path":"/x","timeoutSeconds":99}}',
         '{"activeProbe":{"nope":1}}',
+        # The annotation can bypass the create path (kubectl annotate), so the
+        # decoder must apply the same path bounds as the validator.
+        '{"activeProbe":{"port":8080,"path":"/x\\r\\nHost: evil"}}',
+        f'{{"activeProbe":{{"port":8080,"path":"/{ "a" * 600 }"}}}}',
     ],
 )
 def test_annotation_invalid_fails_safe(raw):
