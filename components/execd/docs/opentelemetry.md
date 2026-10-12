@@ -14,8 +14,8 @@ This page lists the OpenTelemetry metrics currently implemented in execd.
 | `execd.execution.duration` | Histogram | `ms` | `operation`, `result` | Code/command execution duration. |
 | `execd.filesystem.operations.duration` | Histogram | `ms` | `operation`, `result` | Filesystem operation duration. |
 | `execd.system.process.count` | Observable Gauge | - | - | Current process count. |
-| `execd.system.cpu.usage` | Observable Gauge | `%` | - | System CPU usage percent (gopsutil). |
-| `execd.system.memory.usage_bytes` | Observable Gauge | `By` | - | System memory used bytes (gopsutil). |
+| `execd.system.cpu.usage` | Observable Gauge | `%` | - | Sandbox CPU usage percent: sandbox cgroup when resource limits are configured, host `/proc` otherwise (e.g. microVM guests). |
+| `execd.system.memory.usage_bytes` | Observable Gauge | `By` | - | Sandbox memory used bytes: sandbox cgroup when resource limits are configured, host `/proc` otherwise (e.g. microVM guests). |
 | `execd.system.network.io.bytes` | Observable Counter | `By` | `direction` (`in`/`out`) | Cumulative network I/O bytes. |
 | `execd.system.network.connections.active` | Observable Gauge | - | `protocol` (`tcp`/`udp`) | Current active network connections. |
 | `execd.system.oom.kills` | Counter | `{kill}` | `level` (`local`/`descendant`, cgroup v2 only) | OOM kills detected in the sandbox cgroup (see below). |
