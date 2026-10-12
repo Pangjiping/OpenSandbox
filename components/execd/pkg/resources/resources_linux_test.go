@@ -25,19 +25,23 @@ import (
 
 // overridePaths points the discovery inputs at a fake cgroup tree and
 // restores the originals after the test.
-func overridePaths(t *testing.T, selfCgroup string, v2Dir, v1MemoryDir string, v1CPUDirs []string) {
+func overridePaths(t *testing.T, selfCgroup string, v2Dir, v1MemoryDir string, v1CPUAcctDirs, v1QuotaDirs []string) {
 	t.Helper()
 	origCgroup := procSelfCgroupFile
-	origV2, origV1Mem, origV1CPU := cgroupV2Dir, cgroupV1MemoryDir, cgroupV1CPUDirs
+	origV2 := cgroupV2Dir
+	origV1Mem := cgroupV1MemoryDir
+	origV1Acct, origV1Quota := cgroupV1CPUAcctDirs, cgroupV1QuotaDirs
 	cgroupFile := filepath.Join(t.TempDir(), "self-cgroup")
 	if err := os.WriteFile(cgroupFile, []byte(selfCgroup), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	procSelfCgroupFile = cgroupFile
-	cgroupV2Dir, cgroupV1MemoryDir, cgroupV1CPUDirs = v2Dir, v1MemoryDir, v1CPUDirs
+	cgroupV2Dir, cgroupV1MemoryDir = v2Dir, v1MemoryDir
+	cgroupV1CPUAcctDirs, cgroupV1QuotaDirs = v1CPUAcctDirs, v1QuotaDirs
 	t.Cleanup(func() {
 		procSelfCgroupFile = origCgroup
-		cgroupV2Dir, cgroupV1MemoryDir, cgroupV1CPUDirs = origV2, origV1Mem, origV1CPU
+		cgroupV2Dir, cgroupV1MemoryDir = origV2, origV1Mem
+		cgroupV1CPUAcctDirs, cgroupV1QuotaDirs = origV1Acct, origV1Quota
 	})
 }
 
@@ -60,7 +64,7 @@ func TestNewCgroupBackendV2(t *testing.T) {
 	writeFile(t, filepath.Join(sandbox, "memory.current"), "52428800\n")
 	writeFile(t, filepath.Join(sandbox, "memory.max"), "209715200\n")
 	writeFile(t, filepath.Join(sandbox, "memory.stat"), "anon 8388608\nfile 44040192\ninactive_file 4194304\n")
-	overridePaths(t, "0::/sandbox\n", root, "", nil)
+	overridePaths(t, "0::/sandbox\n", root, "", nil, nil)
 
 	backend, err := newCgroupBackend()
 	if err != nil {
@@ -109,7 +113,7 @@ func TestNewCgroupBackendV2UnlimitedFallsBackToHost(t *testing.T) {
 	writeFile(t, filepath.Join(sandbox, "cpu.max"), "max 100000\n")
 	writeFile(t, filepath.Join(sandbox, "memory.current"), "52428800\n")
 	writeFile(t, filepath.Join(sandbox, "memory.max"), "max\n")
-	overridePaths(t, "0::/sandbox\n", root, "", nil)
+	overridePaths(t, "0::/sandbox\n", root, "", nil, nil)
 
 	if _, err := newCgroupBackend(); err != errNoLimitedCgroup {
 		t.Fatalf("newCgroupBackend err = %v, want %v", err, errNoLimitedCgroup)
@@ -128,7 +132,8 @@ func TestNewCgroupBackendV1(t *testing.T) {
 	writeFile(t, filepath.Join(root, "cpu,cpuacct", "sandbox", "cpu.cfs_quota_us"), "200000\n")
 	writeFile(t, filepath.Join(root, "cpu,cpuacct", "sandbox", "cpu.cfs_period_us"), "100000\n")
 	overridePaths(t, "12:memory:/sandbox\n3:cpu,cpuacct:/sandbox\n",
-		"", filepath.Join(root, "memory"), []string{filepath.Join(root, "cpu,cpuacct")})
+		"", filepath.Join(root, "memory"),
+		[]string{filepath.Join(root, "cpu,cpuacct")}, []string{filepath.Join(root, "cpu,cpuacct")})
 
 	backend, err := newCgroupBackend()
 	if err != nil {
@@ -157,6 +162,39 @@ func TestNewCgroupBackendV1(t *testing.T) {
 	}
 }
 
+func TestNewCgroupBackendV1SplitCPUMounts(t *testing.T) {
+	// Some v1 hosts mount cpu and cpuacct as separate hierarchies; the
+	// accounting file and the quota files must be discovered independently.
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "cpu", "sandbox", "cpu.cfs_quota_us"), "200000\n")
+	writeFile(t, filepath.Join(root, "cpu", "sandbox", "cpu.cfs_period_us"), "100000\n")
+	writeFile(t, filepath.Join(root, "cpuacct", "sandbox", "cpuacct.usage"), "50000000\n")
+	writeFile(t, filepath.Join(root, "memory", "sandbox", "memory.usage_in_bytes"), "104857600\n")
+	writeFile(t, filepath.Join(root, "memory", "sandbox", "memory.limit_in_bytes"), "2147483648\n")
+	overridePaths(t, "3:cpu:/sandbox\n4:cpuacct:/sandbox\n12:memory:/sandbox\n",
+		"", filepath.Join(root, "memory"),
+		[]string{filepath.Join(root, "cpuacct")}, []string{filepath.Join(root, "cpu")})
+
+	backend, err := newCgroupBackend()
+	if err != nil {
+		t.Fatalf("newCgroupBackend: %v", err)
+	}
+	if got := backend.cpuCount(); got != 2 {
+		t.Fatalf("cpuCount = %v, want 2 (quota read from the cpu mount)", got)
+	}
+	cg, ok := backend.(*cgroupBackend)
+	if !ok {
+		t.Fatalf("backend = %T, want *cgroupBackend", backend)
+	}
+	uSec, err := cg.cpuUSec()
+	if err != nil {
+		t.Fatalf("cpuUSec: %v", err)
+	}
+	if uSec != 50000 { // 50000000 ns -> 50000 µs, read from the cpuacct mount
+		t.Fatalf("cpuUSec = %d, want 50000", uSec)
+	}
+}
+
 func TestNewCgroupBackendV1UnlimitedFallsBackToHost(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "memory", "sandbox", "memory.usage_in_bytes"), "104857600\n")
@@ -165,7 +203,8 @@ func TestNewCgroupBackendV1UnlimitedFallsBackToHost(t *testing.T) {
 	writeFile(t, filepath.Join(root, "cpu,cpuacct", "sandbox", "cpu.cfs_quota_us"), "-1\n")
 	writeFile(t, filepath.Join(root, "cpu,cpuacct", "sandbox", "cpu.cfs_period_us"), "100000\n")
 	overridePaths(t, "12:memory:/sandbox\n3:cpu,cpuacct:/sandbox\n",
-		"", filepath.Join(root, "memory"), []string{filepath.Join(root, "cpu,cpuacct")})
+		"", filepath.Join(root, "memory"),
+		[]string{filepath.Join(root, "cpu,cpuacct")}, []string{filepath.Join(root, "cpu,cpuacct")})
 
 	if _, err := newCgroupBackend(); err != errNoLimitedCgroup {
 		t.Fatalf("newCgroupBackend err = %v, want %v", err, errNoLimitedCgroup)
@@ -183,7 +222,7 @@ func TestNewCgroupBackendV2WithoutMemoryStatKeepsRawUsage(t *testing.T) {
 	writeFile(t, filepath.Join(sandbox, "cpu.max"), "max 100000\n")
 	writeFile(t, filepath.Join(sandbox, "memory.current"), "52428800\n")
 	writeFile(t, filepath.Join(sandbox, "memory.max"), "209715200\n")
-	overridePaths(t, "0::/sandbox\n", root, "", nil)
+	overridePaths(t, "0::/sandbox\n", root, "", nil, nil)
 
 	backend, err := newCgroupBackend()
 	if err != nil {
@@ -207,7 +246,7 @@ func TestV1MemoryOnlyBackendDegradesCPUToHost(t *testing.T) {
 	// memory-only instead of failing construction.
 	missing := filepath.Join(root, "missing-cpu")
 	overridePaths(t, "12:memory:/sandbox\n",
-		"", filepath.Join(root, "memory"), []string{missing})
+		"", filepath.Join(root, "memory"), []string{missing}, []string{missing})
 
 	backend, err := newCgroupBackend()
 	if err != nil {
@@ -240,7 +279,7 @@ func TestCgroupTeardownDegradesToHost(t *testing.T) {
 	writeFile(t, filepath.Join(sandbox, "cpu.max"), "100000 100000\n")
 	writeFile(t, filepath.Join(sandbox, "memory.current"), "52428800\n")
 	writeFile(t, filepath.Join(sandbox, "memory.max"), "209715200\n")
-	overridePaths(t, "0::/sandbox\n", root, "", nil)
+	overridePaths(t, "0::/sandbox\n", root, "", nil, nil)
 
 	backend, err := newCgroupBackend()
 	if err != nil {
@@ -275,7 +314,7 @@ func TestCPUUSecSinceLastInterval(t *testing.T) {
 	writeFile(t, filepath.Join(sandbox, "cpu.max"), "100000 100000\n")
 	writeFile(t, filepath.Join(sandbox, "memory.current"), "1\n")
 	writeFile(t, filepath.Join(sandbox, "memory.max"), "4096\n")
-	overridePaths(t, "0::/sandbox\n", root, "", nil)
+	overridePaths(t, "0::/sandbox\n", root, "", nil, nil)
 
 	backend, err := newCgroupBackend()
 	if err != nil {

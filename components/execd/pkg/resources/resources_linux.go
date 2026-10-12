@@ -31,10 +31,11 @@ import (
 
 // Test-overridable input paths.
 var (
-	procSelfCgroupFile = "/proc/self/cgroup"
-	cgroupV2Dir        = "/sys/fs/cgroup"
-	cgroupV1MemoryDir  = "/sys/fs/cgroup/memory"
-	cgroupV1CPUDirs    = []string{"/sys/fs/cgroup/cpu,cpuacct", "/sys/fs/cgroup/cpu", "/sys/fs/cgroup/cpuacct"}
+	procSelfCgroupFile  = "/proc/self/cgroup"
+	cgroupV2Dir         = "/sys/fs/cgroup"
+	cgroupV1MemoryDir   = "/sys/fs/cgroup/memory"
+	cgroupV1CPUAcctDirs = []string{"/sys/fs/cgroup/cpu,cpuacct", "/sys/fs/cgroup/cpuacct"}
+	cgroupV1QuotaDirs   = []string{"/sys/fs/cgroup/cpu,cpuacct", "/sys/fs/cgroup/cpu"}
 )
 
 // errNoLimitedCgroup: no visible cgroup carries a configured resource limit,
@@ -68,9 +69,11 @@ func newCgroupBackend() (backend, error) {
 		}
 	}
 	memRel := cgroupfs.V1RelPath(entries, "memory")
-	cpuRel := cgroupfs.V1RelPath(entries, "cpu", "cpuacct")
-	if b, err := newCgroupV1Backend(memRel, cpuRel); err == nil {
-		log.Info("resources: reading sandbox stats from cgroup v1 (memory=%q cpu=%q)", memRel, cpuRel)
+	cpuRel := cgroupfs.V1RelPath(entries, "cpu")
+	cpuacctRel := cgroupfs.V1RelPath(entries, "cpuacct")
+	if b, err := newCgroupV1Backend(memRel, cpuRel, cpuacctRel); err == nil {
+		log.Info("resources: reading sandbox stats from cgroup v1 (memory=%q cpu=%q cpuacct=%q)",
+			memRel, cpuRel, cpuacctRel)
 		return b, nil
 	}
 	return nil, errNoLimitedCgroup
@@ -133,7 +136,7 @@ func newCgroupV2Backend(relPath string) (backend, error) {
 	return b, nil
 }
 
-func newCgroupV1Backend(memRel, cpuRel string) (backend, error) {
+func newCgroupV1Backend(memRel, cpuRel, cpuacctRel string) (backend, error) {
 	b := &cgroupBackend{}
 
 	if memRel != "" {
@@ -150,13 +153,20 @@ func newCgroupV1Backend(memRel, cpuRel string) (backend, error) {
 		}
 	}
 
-	if cpuRel != "" {
-		if dir, err := cgroupV1MountDir(cgroupV1CPUDirs, "cpu", "cpuacct"); err == nil {
-			cpuDir := filepath.Join(dir, filepath.FromSlash(cpuRel))
-			usagePath := filepath.Join(cpuDir, "cpuacct.usage")
+	if cpuacctRel != "" {
+		// cgroup v1 may mount cpuacct separately from cpu; discover the
+		// accounting and quota files independently so a split-mount host
+		// still reports cgroup-scoped CPU (same approach as the egress
+		// sidecar's cgroup reader).
+		if dir, err := cgroupV1MountDir(cgroupV1CPUAcctDirs, "cpuacct"); err == nil {
+			usagePath := filepath.Join(dir, filepath.FromSlash(cpuacctRel), "cpuacct.usage")
 			if fileExists(usagePath) {
 				b.usagePath, b.usageNS = usagePath, true
-				b.quotaCores = v1QuotaCores(cpuDir)
+				if cpuRel != "" {
+					if quotaDir, err := cgroupV1MountDir(cgroupV1QuotaDirs, "cpu"); err == nil {
+						b.quotaCores = v1QuotaCores(filepath.Join(quotaDir, filepath.FromSlash(cpuRel)))
+					}
+				}
 			}
 		}
 	}
