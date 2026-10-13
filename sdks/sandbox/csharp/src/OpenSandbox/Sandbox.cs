@@ -193,6 +193,11 @@ public sealed class Sandbox : IAsyncDisposable
         ValidateHostPaths(options.Volumes);
         var startupSource = options.Image ?? options.SnapshotId;
 
+        if (options.NetworkPolicy?.Egress is { Count: > 0 })
+        {
+            NetworkPolicyCodec.ValidateRules(options.NetworkPolicy.Egress, nameof(options.NetworkPolicy.Egress));
+        }
+
         var request = new CreateSandboxRequest
         {
             Image = string.IsNullOrWhiteSpace(options.Image)
@@ -214,11 +219,6 @@ public sealed class Sandbox : IAsyncDisposable
             Metadata = options.Metadata,
             Lifecycle = options.Lifecycle,
             Platform = options.Platform,
-        if (options.NetworkPolicy?.Egress is { Count: > 0 })
-        {
-            NetworkPolicyCodec.ValidateRules(options.NetworkPolicy.Egress, nameof(options.NetworkPolicy.Egress));
-        }
-
             NetworkPolicy = options.NetworkPolicy != null
                 ? new NetworkPolicy
                 {
@@ -273,16 +273,16 @@ public sealed class Sandbox : IAsyncDisposable
         }
 
         var connectionConfig = options.ConnectionConfig ?? new ConnectionConfig();
-        var request = new CreateSandboxRequest
-        {
-            TemplateId = options.TemplateId,
-            Timeout = options.TimeoutSeconds,
-            Metadata = options.Metadata,
         if (options.NetworkPolicy?.Egress is { Count: > 0 })
         {
             NetworkPolicyCodec.ValidateRules(options.NetworkPolicy.Egress, nameof(options.NetworkPolicy.Egress));
         }
 
+        var request = new CreateSandboxRequest
+        {
+            TemplateId = options.TemplateId,
+            Timeout = options.TimeoutSeconds,
+            Metadata = options.Metadata,
             NetworkPolicy = options.NetworkPolicy != null
                 ? new NetworkPolicy
                 {
