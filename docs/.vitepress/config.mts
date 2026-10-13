@@ -150,10 +150,6 @@ export default defineConfig({
               text: "Single-Host Network (Docker)",
               link: "/architecture/network/single-host-network",
             },
-            {
-              text: "Network Isolation",
-              link: "/architecture/network/network-isolation",
-            },
           ],
         },
         {
@@ -214,6 +210,10 @@ export default defineConfig({
             },
             { text: "Secure Access", link: "/guides/secure-access" },
             { text: "Secure Container", link: "/guides/secure-container" },
+            {
+              text: "Network Isolation on Kubernetes",
+              link: "/guides/network-isolation",
+            },
             { text: "Multi-Tenancy", link: "/guides/multi-tenancy" },
             { text: "Isolation Sessions", link: "/guides/isolation-sessions" },
             { text: "Pause & Resume", link: "/guides/pause-resume" },
