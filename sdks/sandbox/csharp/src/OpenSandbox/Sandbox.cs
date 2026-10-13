@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using OpenSandbox.Adapters;
 using OpenSandbox.Config;
 using OpenSandbox.Core;
 using OpenSandbox.Factory;
@@ -213,6 +214,11 @@ public sealed class Sandbox : IAsyncDisposable
             Metadata = options.Metadata,
             Lifecycle = options.Lifecycle,
             Platform = options.Platform,
+        if (options.NetworkPolicy?.Egress is { Count: > 0 })
+        {
+            NetworkPolicyCodec.ValidateRules(options.NetworkPolicy.Egress, nameof(options.NetworkPolicy.Egress));
+        }
+
             NetworkPolicy = options.NetworkPolicy != null
                 ? new NetworkPolicy
                 {
@@ -272,6 +278,11 @@ public sealed class Sandbox : IAsyncDisposable
             TemplateId = options.TemplateId,
             Timeout = options.TimeoutSeconds,
             Metadata = options.Metadata,
+        if (options.NetworkPolicy?.Egress is { Count: > 0 })
+        {
+            NetworkPolicyCodec.ValidateRules(options.NetworkPolicy.Egress, nameof(options.NetworkPolicy.Egress));
+        }
+
             NetworkPolicy = options.NetworkPolicy != null
                 ? new NetworkPolicy
                 {

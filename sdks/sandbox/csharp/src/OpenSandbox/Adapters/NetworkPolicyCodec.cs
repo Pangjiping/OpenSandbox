@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+using System.Net;
 using System.Text.Json;
+using System.Linq;
 using OpenSandbox.Core;
 using OpenSandbox.Models;
 
@@ -49,60 +51,156 @@ internal static class NetworkPolicyCodec
         var payload = new List<Dictionary<string, object?>>(rules.Count);
         for (var i = 0; i < rules.Count; i++)
         {
-            payload.Add(ToRulesPayloadEntry(rules[i], i));
+            payload.Add(ToRulesPayloadEntry(rules[i], i, nameof(rules)));
         }
         return payload;
     }
 
-    private static Dictionary<string, object?> ToRulesPayloadEntry(NetworkRule r, int index)
+    /// <summary>
+    /// Validates a rule the way the server would, so the most common mistakes
+    /// — no target/ports, an empty or out-of-range ports list, duplicates,
+    /// more than 256 ports, a domain target combined with ports — surface at
+    /// the call site with the offending rule index instead of as a remote
+    /// 422. Every wire path that serializes rules validates through this.
+    /// </summary>
+    public static void ValidateRules(IReadOnlyList<NetworkRule> rules, string? paramName = null)
     {
-        // Fail fast at the call site on a rule the server would 422, pointing
-        // at the exact entry: a rule must name a target or scope ports, and
-        // ports mirror the server-side constraints (1-65535, at most 256 per
-        // rule, no duplicates).
-        var hasTarget = !string.IsNullOrWhiteSpace(r.Target);
-        var hasPorts = r.Ports is { Count: > 0 };
+        for (var i = 0; i < rules.Count; i++)
+        {
+            ValidateRule(rules[i], i, paramName);
+        }
+    }
+
+    private static void ValidateRule(NetworkRule rule, int index, string? paramName)
+    {
+        // An explicitly empty ports list is contract-invalid (minItems: 1).
+        // Silently treating it as "no ports" would widen a targeted rule to
+        // every port — the server 422s it, so do the same here.
+        if (rule.Ports != null && rule.Ports.Count == 0)
+        {
+            throw new ArgumentException(
+                $"NetworkRule[{index}] has empty ports; omit the field for a non-port-scoped rule.",
+                paramName);
+        }
+
+        var hasTarget = !string.IsNullOrWhiteSpace(rule.Target);
+        var hasPorts = rule.Ports is { Count: > 0 };
         if (!hasTarget && !hasPorts)
         {
-            throw new ArgumentException($"NetworkRule[{index}] requires target, ports, or both.");
+            throw new ArgumentException(
+                $"NetworkRule[{index}] requires target, ports, or both.", paramName);
         }
         if (hasPorts)
         {
+            // Count before values: the server checks the cap first too.
+            if (rule.Ports!.Count > MaxPortsPerRule)
+            {
+                throw new ArgumentException(
+                    $"NetworkRule[{index}] has {rule.Ports.Count} ports; at most {MaxPortsPerRule} per rule.",
+                    paramName);
+            }
             var seen = new HashSet<int>();
-            foreach (var port in r.Ports!)
+            foreach (var port in rule.Ports)
             {
                 if (port < 1 || port > 65535)
                 {
-                    throw new ArgumentException($"NetworkRule[{index}] port {port} out of range 1-65535.");
+                    throw new ArgumentException(
+                        $"NetworkRule[{index}] port {port} out of range 1-65535.", paramName);
                 }
                 if (!seen.Add(port))
                 {
-                    throw new ArgumentException($"NetworkRule[{index}] has duplicate port {port}.");
+                    throw new ArgumentException(
+                        $"NetworkRule[{index}] has duplicate port {port}.", paramName);
                 }
             }
-            if (r.Ports.Count > 256)
-            {
-                throw new ArgumentException($"NetworkRule[{index}] has {r.Ports.Count} ports; at most 256 per rule.");
-            }
         }
+        if (hasPorts && hasTarget && !IsIpOrCidr(rule.Target!))
+        {
+            throw new ArgumentException(
+                $"NetworkRule[{index}] ports are not supported for domain target '{rule.Target}' " +
+                "(domain rules are evaluated at the DNS layer, which has no port dimension).",
+                paramName);
+        }
+    }
+
+    private static Dictionary<string, object?> ToRulesPayloadEntry(NetworkRule r, int index, string? paramName)
+    {
+        ValidateRule(r, index, paramName);
 
         // target/ports are omitted (never null) when unset: a port-only rule
         // must reach the sidecar as {"action":"deny","ports":[25]}. A blank
         // target is omitted too — the server normalizes it to "omitted", so
         // the rule degrades to a port-only rule exactly as it would there.
+        // The ports list is copied so a caller mutating it after validation
+        // cannot change what goes on the wire.
         var entry = new Dictionary<string, object?>
         {
             ["action"] = r.Action == NetworkRuleAction.Allow ? "allow" : "deny",
         };
-        if (hasTarget)
+        if (!string.IsNullOrWhiteSpace(r.Target))
         {
             entry["target"] = r.Target;
         }
-        if (hasPorts)
+        if (r.Ports is { Count: > 0 })
         {
-            entry["ports"] = r.Ports;
+            var ports = new List<int>(r.Ports.Count);
+            foreach (var port in r.Ports)
+            {
+                ports.Add(port);
+            }
+            entry["ports"] = ports;
         }
         return entry;
+    }
+
+    private const int MaxPortsPerRule = 256;
+
+    /// <summary>
+    /// Mirrors the sidecar's netip.ParseAddr/ParsePrefix classification for
+    /// the domain+ports rejection, on the trimmed target: dotted-quad IPv4
+    /// (no leading zeros), a well-formed IPv6 literal (zones allowed without
+    /// a prefix), or a prefix whose decimal length is in range. Netmask-style
+    /// prefixes, scoped prefixes, and anything else count as domains.
+    /// </summary>
+    private static bool IsIpOrCidr(string target)
+    {
+        var t = target.Trim();
+        if (t.Count(c => c == '/') > 1)
+        {
+            return false;
+        }
+        var slash = t.IndexOf('/');
+        var addr = slash < 0 ? t : t[..slash];
+        var prefix = slash < 0 ? null : t[(slash + 1)..];
+        if (prefix != null)
+        {
+            if (t.Contains('%') || prefix.Any(c => c is < '0' or > '9'))
+            {
+                return false;
+            }
+            var limit = addr.Contains(':') ? 128 : 32;
+            if (int.Parse(prefix) > limit)
+            {
+                return false;
+            }
+        }
+        var host = addr.Contains('%') ? addr[..addr.IndexOf('%')] : addr;
+        if (host.Length == 0)
+        {
+            return false;
+        }
+        if (addr.Contains(':'))
+        {
+            return IPAddress.TryParse(host, out _);
+        }
+        // IPv4: IPAddress.TryParse accepts shorthand ("1" → 0.0.0.1) and
+        // leading zeros, so require the dotted-quad form explicitly.
+        var octets = host.Split('.');
+        return octets.Length == 4 && octets.All(octet =>
+            octet.Length is >= 1 and <= 3 &&
+            octet.All(c => c is >= '0' and <= '9') &&
+            (octet.Length == 1 || octet[0] != '0') &&
+            int.Parse(octet) <= 255);
     }
 
     public static NetworkRule ParseNetworkRule(JsonElement element)
@@ -111,15 +209,24 @@ internal static class NetworkPolicyCodec
 
         // The sidecar marshals target without omitempty, so a port-only rule
         // arrives as "target": "" rather than an absent key — treat blank
-        // the same as absent so reads stay symmetric with writes.
+        // the same as absent so reads stay symmetric with writes. A
+        // non-string target (other than null) is contract-invalid, symmetric
+        // with the ports parsing above.
         string? target = null;
-        if (element.TryGetProperty("target", out var targetElement) &&
-            targetElement.ValueKind == JsonValueKind.String)
+        if (element.TryGetProperty("target", out var targetElement))
         {
-            target = targetElement.GetString();
-            if (string.IsNullOrWhiteSpace(target))
+            if (targetElement.ValueKind == JsonValueKind.String)
             {
-                target = null;
+                target = targetElement.GetString();
+                if (string.IsNullOrWhiteSpace(target))
+                {
+                    target = null;
+                }
+            }
+            else if (targetElement.ValueKind != JsonValueKind.Null)
+            {
+                throw new SandboxApiException(
+                    $"Invalid target in network rule: {targetElement.GetRawText()}");
             }
         }
 

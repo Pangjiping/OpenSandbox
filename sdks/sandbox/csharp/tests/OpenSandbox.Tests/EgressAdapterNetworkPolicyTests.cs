@@ -14,6 +14,7 @@
 
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using OpenSandbox.Adapters;
 using OpenSandbox.Core;
 using OpenSandbox.Internal;
@@ -25,11 +26,14 @@ namespace OpenSandbox.Tests;
 /// <summary>
 /// Port-scoped egress rule coverage for the codec: the sidecar marshals
 /// target without omitempty, so a port-only rule always arrives as
-/// "target": "" (never an absent key), and PATCH payloads must omit unset
-/// fields rather than sending nulls.
+/// "target": "" (never an absent key); PATCH payloads omit unset fields
+/// rather than sending nulls; reads are lenient on port ranges while writes
+/// validate them, and that asymmetry is pinned here on purpose.
 /// </summary>
 public class EgressAdapterNetworkPolicyTests
 {
+    private const string OkResponse = """{ "status": "ok" }""";
+
     private const string OkPolicyWithPortOnlyRule = """
         {
           "status": "ok",
@@ -66,18 +70,6 @@ public class EgressAdapterNetworkPolicyTests
         }
         """;
 
-    private const string OkPolicyWithEmptyPorts = """
-        {
-          "status": "ok",
-          "policy": {
-            "defaultAction": "deny",
-            "egress": [
-              { "action": "deny", "ports": [] }
-            ]
-          }
-        }
-        """;
-
     private const string OkPolicyWithNullPorts = """
         {
           "status": "ok",
@@ -102,12 +94,46 @@ public class EgressAdapterNetworkPolicyTests
         }
         """;
 
-    private const string OkResponse = """{ "status": "ok" }""";
+    private const string OkPolicyWithEmptyPorts = """
+        {
+          "status": "ok",
+          "policy": {
+            "defaultAction": "deny",
+            "egress": [
+              { "action": "deny", "ports": [] }
+            ]
+          }
+        }
+        """;
+
+    private const string OkPolicyWithNonArrayPorts = """
+        {
+          "status": "ok",
+          "policy": {
+            "defaultAction": "deny",
+            "egress": [
+              { "action": "allow", "ports": 443 }
+            ]
+          }
+        }
+        """;
+
+    private const string OkPolicyWithOutOfRangePort = """
+        {
+          "status": "ok",
+          "policy": {
+            "defaultAction": "deny",
+            "egress": [
+              { "action": "allow", "target": "example.com", "ports": [70000] }
+            ]
+          }
+        }
+        """;
 
     [Fact]
     public async Task GetPolicyAsync_ParsesPortOnlyRule_WithSidecarWireShape()
     {
-        var (adapter, handler) = CreateAdapter(OkPolicyWithPortOnlyRule);
+        var (adapter, _) = CreateAdapter(OkPolicyWithPortOnlyRule);
 
         var policy = await adapter.GetPolicyAsync();
 
@@ -119,7 +145,7 @@ public class EgressAdapterNetworkPolicyTests
     [Fact]
     public async Task GetPolicyAsync_ParsesTargetWithPortsRule()
     {
-        var (adapter, handler) = CreateAdapter(OkPolicyWithTargetAndPorts);
+        var (adapter, _) = CreateAdapter(OkPolicyWithTargetAndPorts);
 
         var policy = await adapter.GetPolicyAsync();
 
@@ -129,9 +155,9 @@ public class EgressAdapterNetworkPolicyTests
     }
 
     [Fact]
-    public async Task GetPolicyAsync_ParsesBoundaryPorts_AndEmptyList()
+    public async Task GetPolicyAsync_ParsesBoundaryPorts()
     {
-        var (adapter, handler) = CreateAdapter(OkPolicyWithBoundaryPorts);
+        var (adapter, _) = CreateAdapter(OkPolicyWithBoundaryPorts);
 
         var policy = await adapter.GetPolicyAsync();
 
@@ -139,21 +165,9 @@ public class EgressAdapterNetworkPolicyTests
     }
 
     [Fact]
-    public async Task GetPolicyAsync_EmptyPortsList_ThrowsContractError()
+    public async Task GetPolicyAsync_NullPorts_ParsesAsNotPortScoped_AndRoundTrips()
     {
-        // The spec declares minItems: 1; accepting "ports": [] on read would
-        // let a GET→PATCH round-trip silently rewrite the rule to "no ports"
-        // and trip the write-side checks.
-        var (adapter, _) = CreateAdapter(OkPolicyWithEmptyPorts);
-
-        var ex = await Assert.ThrowsAsync<SandboxApiException>(() => adapter.GetPolicyAsync());
-        Assert.Contains("ports must not be empty", ex.Message);
-    }
-
-    [Fact]
-    public async Task GetPolicyAsync_NullPorts_ParsesAsNotPortScoped()
-    {
-        var (adapter, _) = CreateAdapter(OkPolicyWithNullPorts);
+        var (adapter, handler) = CreateAdapter(OkPolicyWithNullPorts);
 
         var policy = await adapter.GetPolicyAsync();
 
@@ -161,32 +175,75 @@ public class EgressAdapterNetworkPolicyTests
         Assert.Null(rule.Ports);
         Assert.Equal("example.com", rule.Target);
 
-        // The parsed rule must survive a GET→PATCH round-trip unchanged.
-        var payload = NetworkPolicyCodec.ToRulesPayload(policy.Egress!);
-        Assert.Equal("example.com", Assert.Single(payload)["target"]);
-        Assert.DoesNotContain(payload, entry => entry.ContainsKey("ports"));
+        await adapter.PatchRulesAsync(policy.Egress!);
+        var patch = Assert.Single(handler.Requests, r => r.Method == HttpMethod.Patch);
+        using var body = JsonDocument.Parse(patch.Body!);
+        var parsed = Assert.Single(body.RootElement.EnumerateArray());
+        Assert.Equal("example.com", parsed.GetProperty("target").GetString());
+        Assert.False(parsed.TryGetProperty("ports", out _));
     }
 
     [Fact]
-    public async Task GetPolicyAsync_PortOnlyRule_RoundTripsThroughPatch()
+    public async Task GetPolicyAsync_PortOnlyRule_RoundTripsThroughPatchRules()
     {
-        var (adapter, _) = CreateAdapter(OkPolicyWithPortOnlyRule);
+        // The real GET→PATCH round trip: the parsed port-only rule must
+        // re-PATCH without a target key (never as null or "").
+        var (adapter, handler) = CreateAdapter(OkPolicyWithPortOnlyRule);
 
         var policy = await adapter.GetPolicyAsync();
-        var payload = Assert.Single(NetworkPolicyCodec.ToRulesPayload(policy.Egress!));
+        await adapter.PatchRulesAsync(policy.Egress!);
 
-        Assert.Equal("deny", payload["action"]);
-        Assert.Equal(new List<int> { 25 }, payload["ports"]);
-        Assert.DoesNotContain("target", (Dictionary<string, object?>)payload);
+        var patch = Assert.Single(handler.Requests, r => r.Method == HttpMethod.Patch);
+        using var body = JsonDocument.Parse(patch.Body!);
+        var rule = Assert.Single(body.RootElement.EnumerateArray());
+        Assert.Equal("deny", rule.GetProperty("action").GetString());
+        Assert.Equal(25, rule.GetProperty("ports")[0].GetInt32());
+        Assert.False(rule.TryGetProperty("target", out _));
     }
 
     [Fact]
-    public async Task GetPolicyAsync_MalformedPortElement_ThrowsSandboxApiException()
+    public async Task GetPolicyAsync_EmptyPortsList_ThrowsContractError()
     {
-        var (adapter, handler) = CreateAdapter(OkPolicyWithMalformedPort);
+        // The spec declares minItems: 1; accepting "ports": [] on read would
+        // let a GET→PATCH round-trip silently rewrite the rule to "no ports".
+        var (adapter, _) = CreateAdapter(OkPolicyWithEmptyPorts);
 
         var ex = await Assert.ThrowsAsync<SandboxApiException>(() => adapter.GetPolicyAsync());
-        Assert.Contains("Invalid port element", ex.Message);
+        Assert.Contains("ports must not be empty", ex.Message);
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_NonArrayPorts_ThrowsContractError()
+    {
+        var (adapter, _) = CreateAdapter(OkPolicyWithNonArrayPorts);
+
+        var ex = await Assert.ThrowsAsync<SandboxApiException>(() => adapter.GetPolicyAsync());
+        Assert.Contains("Invalid ports in network rule", ex.Message);
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_ReadsAreLenientOnPortRanges_WritesAreNot()
+    {
+        // Read side accepts an out-of-range port (range validation is a
+        // write-side concern); re-PATCHing the parsed rule throws — the
+        // asymmetry is pinned here on purpose.
+        var (adapter, _) = CreateAdapter(OkPolicyWithOutOfRangePort);
+
+        var policy = await adapter.GetPolicyAsync();
+        Assert.Equal(new List<int> { 70000 }, policy.Egress![0].Ports);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => NetworkPolicyCodec.ToRulesPayload(policy.Egress!));
+        Assert.Contains("NetworkRule[0] port 70000 out of range", ex.Message);
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_ServerError_ThrowsSandboxApiException()
+    {
+        var (adapter, _) = CreateAdapter("{}", "500");
+
+        var ex = await Assert.ThrowsAsync<SandboxApiException>(() => adapter.GetPolicyAsync());
+        Assert.Equal(500, ex.StatusCode);
     }
 
     [Fact]
@@ -196,9 +253,14 @@ public class EgressAdapterNetworkPolicyTests
 
         await adapter.PatchRulesAsync(new[] { new NetworkRule { Action = NetworkRuleAction.Deny, Ports = new List<int> { 25 } } });
 
-        var body = Assert.Single(handler.Bodies);
-        Assert.DoesNotContain("\"target\"", body);
-        Assert.Contains("\"ports\":[25]", body);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Patch, request.Method);
+        Assert.Equal("/policy", request.Path);
+        using var body = JsonDocument.Parse(request.Body!);
+        var rule = Assert.Single(body.RootElement.EnumerateArray());
+        Assert.Equal("deny", rule.GetProperty("action").GetString());
+        Assert.Equal(25, rule.GetProperty("ports")[0].GetInt32());
+        Assert.False(rule.TryGetProperty("target", out _));
     }
 
     [Fact]
@@ -211,9 +273,13 @@ public class EgressAdapterNetworkPolicyTests
             new NetworkRule { Action = NetworkRuleAction.Allow, Target = "  ", Ports = new List<int> { 22 } },
         });
 
-        var body = Assert.Single(handler.Bodies);
-        Assert.DoesNotContain("\"target\"", body);
-        Assert.Contains("\"ports\":[22]", body);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Patch, request.Method);
+        Assert.Equal("/policy", request.Path);
+        using var body = JsonDocument.Parse(request.Body!);
+        var rule = Assert.Single(body.RootElement.EnumerateArray());
+        Assert.False(rule.TryGetProperty("target", out _));
+        Assert.Equal(22, rule.GetProperty("ports")[0].GetInt32());
     }
 
     [Fact]
@@ -223,9 +289,13 @@ public class EgressAdapterNetworkPolicyTests
 
         await adapter.PatchRulesAsync(new[] { new NetworkRule { Action = NetworkRuleAction.Allow, Target = "example.com" } });
 
-        var body = Assert.Single(handler.Bodies);
-        Assert.Contains("\"target\":\"example.com\"", body);
-        Assert.DoesNotContain("\"ports\"", body);
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Patch, request.Method);
+        Assert.Equal("/policy", request.Path);
+        using var body = JsonDocument.Parse(request.Body!);
+        var rule = Assert.Single(body.RootElement.EnumerateArray());
+        Assert.Equal("example.com", rule.GetProperty("target").GetString());
+        Assert.False(rule.TryGetProperty("ports", out _));
     }
 
     [Fact]
@@ -238,19 +308,34 @@ public class EgressAdapterNetworkPolicyTests
             new NetworkRule { Action = NetworkRuleAction.Allow, Target = "10.0.0.5", Ports = new List<int> { 22, 80 } },
         });
 
-        var body = Assert.Single(handler.Bodies);
-        Assert.Contains("\"target\":\"10.0.0.5\"", body);
-        Assert.Contains("\"ports\":[22,80]", body);
+        var request = Assert.Single(handler.Requests);
+        using var body = JsonDocument.Parse(request.Body!);
+        var rule = Assert.Single(body.RootElement.EnumerateArray());
+        Assert.Equal("10.0.0.5", rule.GetProperty("target").GetString());
+        Assert.Equal(22, rule.GetProperty("ports")[0].GetInt32());
+        Assert.Equal(80, rule.GetProperty("ports")[1].GetInt32());
     }
 
     [Fact]
     public async Task PatchRulesAsync_NeitherTargetNorPorts_FailsFast()
     {
-        var (adapter, handler) = CreateAdapter(OkResponse);
+        var (adapter, _) = CreateAdapter(OkResponse);
 
         var ex = await Assert.ThrowsAsync<ArgumentException>(
             () => adapter.PatchRulesAsync(new[] { new NetworkRule { Action = NetworkRuleAction.Allow } }));
         Assert.Contains("NetworkRule[0] requires target, ports, or both", ex.Message);
+    }
+
+    [Fact]
+    public async Task PatchRulesAsync_EmptyPortsList_FailsLikeTheServer()
+    {
+        var (adapter, _) = CreateAdapter(OkResponse);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => adapter.PatchRulesAsync(new[]
+        {
+            new NetworkRule { Action = NetworkRuleAction.Allow, Target = "example.com", Ports = new List<int>() },
+        }));
+        Assert.Contains("NetworkRule[0] has empty ports", ex.Message);
     }
 
     [Fact]
@@ -272,38 +357,100 @@ public class EgressAdapterNetworkPolicyTests
         Assert.Contains("NetworkRule[0] has duplicate port 443", ex2.Message);
     }
 
-    private static (EgressAdapter Adapter, CaptureHandler Handler) CreateAdapter(string responseBody)
+    [Fact]
+    public async Task PatchRulesAsync_OutOfRangeBoundary_AndCapOverflow_FailFast()
     {
-        var handler = new CaptureHandler(responseBody);
+        var (adapter, _) = CreateAdapter(OkResponse);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => adapter.PatchRulesAsync(new[]
+        {
+            new NetworkRule { Action = NetworkRuleAction.Deny, Ports = new List<int> { 65536 } },
+        }));
+        Assert.Contains("NetworkRule[0] port 65536 out of range", ex.Message);
+
+        var ex2 = await Assert.ThrowsAsync<ArgumentException>(() => adapter.PatchRulesAsync(new[]
+        {
+            new NetworkRule { Action = NetworkRuleAction.Allow, Ports = Enumerable.Range(1, 257).ToList() },
+        }));
+        Assert.Contains("NetworkRule[0] has 257 ports", ex2.Message);
+    }
+
+    [Fact]
+    public async Task PatchRulesAsync_DomainTargetWithPorts_FailsLocally()
+    {
+        var (adapter, _) = CreateAdapter(OkResponse);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => adapter.PatchRulesAsync(new[]
+        {
+            new NetworkRule { Action = NetworkRuleAction.Allow, Target = "example.com", Ports = new List<int> { 443 } },
+        }));
+        Assert.Contains("ports are not supported for domain target", ex.Message);
+    }
+
+    [Fact]
+    public async Task PatchRulesAsync_CapAndIps_Accepted()
+    {
+        var (adapter, handler) = CreateAdapter(OkResponse);
+
+        await adapter.PatchRulesAsync(new[]
+        {
+            new NetworkRule { Action = NetworkRuleAction.Allow, Ports = Enumerable.Range(1, 256).ToList() },
+            new NetworkRule { Action = NetworkRuleAction.Allow, Target = "10.0.0.0/8", Ports = new List<int> { 22 } },
+            new NetworkRule { Action = NetworkRuleAction.Allow, Target = "2001:db8::1", Ports = new List<int> { 443 } },
+        });
+
+        var request = Assert.Single(handler.Requests);
+        using var body = JsonDocument.Parse(request.Body!);
+        Assert.Equal(3, body.RootElement.EnumerateArray().Count());
+    }
+
+    private static EgressAdapter CreateAdapter(string responseBody)
+    {
+        return CreateAdapter(responseBody, "ok");
+    }
+
+    private static EgressAdapter CreateAdapter(string responseBody, string getStatus)
+    {
         var wrapper = new HttpClientWrapper(
-            new HttpClient(handler),
+            new HttpClient(new CaptureHandler(responseBody, getStatus)),
             "http://egress.local",
             new Dictionary<string, string>());
-        return (new EgressAdapter(wrapper), handler);
+        return new EgressAdapter(wrapper);
     }
 
     private sealed class CaptureHandler : HttpMessageHandler
     {
-        private readonly string _responseBody;
+        private readonly string _getBody;
+        private readonly HttpStatusCode _getStatus;
 
         public CaptureHandler(string responseBody)
+            : this(responseBody, "ok")
         {
-            _responseBody = responseBody;
         }
 
-        public List<string> Bodies { get; } = new();
+        public CaptureHandler(string getBody, string getStatus)
+        {
+            _getBody = getBody;
+            _getStatus = getStatus == "500" ? HttpStatusCode.InternalServerError : HttpStatusCode.OK;
+        }
+
+        public List<(HttpMethod Method, string? Path, string? Body)> Requests { get; } = new();
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
+            string? body = null;
             if (request.Content != null)
             {
-                Bodies.Add(await request.Content.ReadAsStringAsync().ConfigureAwait(false));
+                body = await request.Content.ReadAsStringAsync().ConfigureAwait(false);
             }
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            Requests.Add((request.Method, request.RequestUri?.PathAndQuery, body));
+
+            var isGet = request.Method == HttpMethod.Get;
+            return new HttpResponseMessage(isGet ? _getStatus : HttpStatusCode.OK)
             {
-                Content = new StringContent(_responseBody, Encoding.UTF8, "application/json"),
+                Content = new StringContent(isGet ? _getBody : OkResponse, Encoding.UTF8, "application/json"),
             };
         }
     }
