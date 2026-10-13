@@ -31,7 +31,7 @@ type alwaysRuleFileState struct {
 }
 
 // AlwaysRuleLoader polls the standard always-deny/allow file paths (plus the
-// reachable.ports.always floor) at most once per refreshInterval.
+// reachable.ports.cap floor) at most once per refreshInterval.
 type AlwaysRuleLoader struct {
 	mu              sync.RWMutex
 	refreshInterval time.Duration

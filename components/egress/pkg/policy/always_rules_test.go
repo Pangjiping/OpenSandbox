@@ -269,7 +269,7 @@ func TestLoadPortFloorRules(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, got, "an empty whitelist must not deny every port by accident")
 
-	floor := filepath.Join(dir, "reachable.ports.always")
+	floor := filepath.Join(dir, "reachable.ports.cap")
 	require.NoError(t, os.WriteFile(floor, []byte("80\n443\n"), 0o644))
 	got, err = loadPortFloorRules(floor)
 	require.NoError(t, err)
@@ -282,7 +282,7 @@ func TestLoadPortFloorRules(t *testing.T) {
 func TestAlwaysRuleLoader_PortsFloorHotReload(t *testing.T) {
 	dir := t.TempDir()
 	denyPath := filepath.Join(dir, "deny.always")
-	portsPath := filepath.Join(dir, "reachable.ports.always")
+	portsPath := filepath.Join(dir, "reachable.ports.cap")
 	require.NoError(t, os.WriteFile(denyPath, []byte("1.1.1.1\n"), 0o644))
 	require.NoError(t, os.WriteFile(portsPath, []byte("443\n"), 0o644))
 
@@ -324,7 +324,7 @@ func reachablePortsFilePath_unusedForTest(dir string) string {
 
 func TestAlwaysRuleLoader_SetCurrentRulesDoesNotDuplicateFloor(t *testing.T) {
 	dir := t.TempDir()
-	portsPath := filepath.Join(dir, "reachable.ports.always")
+	portsPath := filepath.Join(dir, "reachable.ports.cap")
 	require.NoError(t, os.WriteFile(portsPath, []byte("443\n"), 0o644))
 	loader := newAlwaysRuleLoader(time.Minute,
 		filepath.Join(dir, "deny.always"),
@@ -347,4 +347,32 @@ func TestAlwaysRuleLoader_SetCurrentRulesDoesNotDuplicateFloor(t *testing.T) {
 	require.False(t, changed, "nothing changed on disk")
 	require.Len(t, fresh, 1)
 	require.Equal(t, []PortRange{{Lo: 1, Hi: 442}, {Lo: 444, Hi: 65535}}, fresh[0].PortRanges)
+}
+
+func TestWarnPortAllowRulesBlockedByCap(t *testing.T) {
+	// floor for cap {80, 443}: everything except 80/443 is dropped.
+	floor := []EgressRule{NewPortFloorDenyRule([]PortRange{{Lo: 1, Hi: 79}, {Lo: 81, Hi: 442}, {Lo: 444, Hi: 65535}})}
+
+	fullyBlocked := []EgressRule{{Action: ActionAllow, Ports: []int{22}}}
+	partiallyBlocked := []EgressRule{{Action: ActionAllow, Ports: []int{80, 9090}}}
+	inside := []EgressRule{{Action: ActionAllow, Ports: []int{80}}}
+	denies := []EgressRule{{Action: ActionDeny, Ports: []int{22}}}
+
+	// The pure predicate drives the warning; assert its truth table.
+	require.True(t, portAllowRuleFullyBlocked(fullyBlocked[0], portFloorDenyRangesForTest(floor)))
+	require.False(t, portAllowRuleFullyBlocked(partiallyBlocked[0], portFloorDenyRangesForTest(floor)))
+	require.False(t, portAllowRuleFullyBlocked(inside[0], portFloorDenyRangesForTest(floor)))
+	require.False(t, portAllowRuleFullyBlocked(denies[0], portFloorDenyRangesForTest(floor)))
+	require.False(t, portAllowRuleFullyBlocked(EgressRule{Action: ActionAllow}, portFloorDenyRangesForTest(floor)))
+
+	// MergeAlwaysOverlay must not mutate the user policy and must tolerate a
+	// cap-less overlay (no floor rule -> no check).
+	merged := MergeAlwaysOverlay(&NetworkPolicy{DefaultAction: ActionDeny, Egress: fullyBlocked}, floor, nil)
+	require.Len(t, merged.Egress, 2)
+	merged = MergeAlwaysOverlay(&NetworkPolicy{DefaultAction: ActionDeny, Egress: fullyBlocked}, nil, nil)
+	require.Len(t, merged.Egress, 1)
+}
+
+func portFloorDenyRangesForTest(floor []EgressRule) []PortRange {
+	return floor[0].PortRanges
 }

@@ -33,11 +33,11 @@ const (
 	// each line is a port or inclusive range that may be reachable; the
 	// complement is enforced as always-deny so the floor holds no matter what
 	// the sandbox policy (defaultAction included) says.
-	reachablePortsFilePath = "/var/egress/rules/reachable.ports.always"
+	reachablePortsFilePath = "/var/egress/rules/reachable.ports.cap"
 )
 
 // LoadAlwaysRuleFiles loads optional /var/egress/rules/deny|allow.always (ignore if missing); errors on unreadable.
-// The optional reachable.ports.always floor is loaded too and returned inside the
+// The optional reachable.ports.cap floor is loaded too and returned inside the
 // deny slice as port-range rules, so every consumer of the always overlay
 // (classic sidecar, fast-sandbox, revision runtime) enforces it uniformly.
 func LoadAlwaysRuleFiles() (deny, allow []EgressRule, err error) {
@@ -65,12 +65,12 @@ func loadAlwaysRuleFileWithAction(action string) func(path string) ([]EgressRule
 	}
 }
 
-// LoadReachablePortsAlways reads reachable.ports.always (whitelist lines: "80",
+// LoadReachablePortsCap reads reachable.ports.cap (whitelist lines: "80",
 // "443", "8000-9000") and returns the merged allowed ranges. A missing file
 // yields nil. Exported for the fast-sandbox profile, which enforces the
 // floor profile-wide via DenyRangesForAllowedPorts instead of through the
 // per-subject always overlay.
-func LoadReachablePortsAlways() ([]PortRange, error) {
+func LoadReachablePortsCap() ([]PortRange, error) {
 	data, err := os.ReadFile(reachablePortsFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -81,7 +81,7 @@ func LoadReachablePortsAlways() ([]PortRange, error) {
 	return parseAllowedPortRanges(data, reachablePortsFilePath)
 }
 
-// loadPortFloorRules reads reachable.ports.always and returns its complement as
+// loadPortFloorRules reads reachable.ports.cap and returns its complement as
 // a single port-range always-deny rule. A missing file — or one that
 // declares no ports — yields nil: an empty whitelist would otherwise
 // silently deny every TCP connection in existing deployments the moment the
@@ -121,7 +121,7 @@ func loadPortFloorRules(path string) ([]EgressRule, error) {
 // given deny ranges. Exported for the fast-sandbox profile, which enforces
 // the floor as a profile-wide master-chain rule instead of through the
 // merged per-subject policy; the classic sidecar derives it from
-// reachable.ports.always via LoadAlwaysRuleFiles instead.
+// reachable.ports.cap via LoadAlwaysRuleFiles instead.
 func NewPortFloorDenyRule(denyRanges []PortRange) EgressRule {
 	return EgressRule{
 		Action:     ActionDeny,
@@ -281,5 +281,53 @@ func MergeAlwaysOverlay(user *NetworkPolicy, alwaysDeny, alwaysAllow []EgressRul
 	merged = append(merged, alwaysAllow...)
 	merged = append(merged, out.Egress...)
 	out.Egress = merged
+	warnPortAllowRulesBlockedByCap(user.Egress, alwaysDeny)
 	return ensureDefaults(&out)
+}
+
+// warnPortAllowRulesBlockedByCap logs a warning for every user port-allow
+// rule whose ports are entirely covered by the reachable-ports cap: the rule
+// is accepted and stored, but the cap's complement drop evaluates ahead of
+// every allow, so no connection it opens can pass. Behavior is unchanged;
+// the log only tells operators a blocked allow apart from a misconfigured
+// destination. Partially blocked rules (some ports inside the cap) are not
+// logged — they behave exactly as written for the ports that matter.
+func warnPortAllowRulesBlockedByCap(user []EgressRule, alwaysDeny []EgressRule) {
+	var capDenyRanges []PortRange
+	for _, r := range alwaysDeny {
+		if len(r.PortRanges) > 0 {
+			capDenyRanges = append(capDenyRanges, r.PortRanges...)
+		}
+	}
+	if len(capDenyRanges) == 0 {
+		return
+	}
+	for _, r := range user {
+		if !portAllowRuleFullyBlocked(r, capDenyRanges) {
+			continue
+		}
+		log.Warnf("port allow rule is fully blocked by the reachable-ports cap: target=%q ports=%v — every port it opens is dropped by the platform cap; remove the rule or ask the operator to extend reachable.ports.cap",
+			r.Target, r.Ports)
+	}
+}
+
+// portAllowRuleFullyBlocked reports whether r is an allow rule whose ports
+// are all covered by the cap's deny ranges.
+func portAllowRuleFullyBlocked(r EgressRule, capDenyRanges []PortRange) bool {
+	if r.Action != ActionAllow || len(r.Ports) == 0 {
+		return false
+	}
+	for _, port := range r.Ports {
+		blocked := false
+		for _, rg := range capDenyRanges {
+			if rg.Contains(port) {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			return false
+		}
+	}
+	return true
 }
