@@ -13,7 +13,7 @@ Egress is how a sandbox gets a network policy instead of open internet access. I
 
 | Capability | What you get |
 |---|---|
-| FQDN rules | Allow or deny by domain, wildcard (`*.pypi.org`), IP, or CIDR |
+| FQDN rules | Allow or deny by domain, wildcard (`*.pypi.org`), IP, or CIDR — optionally scoped to TCP destination ports |
 | DNS filtering (default) | Denied domains fail resolution; allowed ones resolve normally |
 | Network enforcement (`dns+nft`) | Strict default-deny at the packet layer, fed by DNS-resolved addresses with bounded leases |
 | Platform overlays | Operator-set `deny.always` / `allow.always` floors that user policy cannot override |
@@ -28,6 +28,12 @@ Egress is how a sandbox gets a network policy instead of open internet access. I
 **Layer 2 — Network (`dns+nft` mode).** nftables drops everything not explicitly allowed. Allowed traffic passes by static rule or by DNS-learned address sets: a resolved IP receives a bounded lease (with a grace window for active TCP connections), so "allowed" never silently becomes "allowed forever". UDP and QUIC flows rely on DNS lease timing alone.
 
 **Precedence.** First matching rule wins, in this order: platform `deny.always`, platform `allow.always`, then your policy — so the platform's deny always beats your allow. The overlays live in files inside the sidecar image and hot-reload every minute. A reload publishes the parsed pair only after the corresponding nftables static policy is accepted; the experimental revision runtime additionally requires exact receiver confirmation. Parse or apply failures keep the last accepted in-memory rules. Failures remain eligible for retry unless the experimental revision runtime requires recovery, as described below. Your policy is set per sandbox and can be mutated at runtime (add, replace, remove by target) through the API the SDKs expose.
+
+### Port-scoped rules
+
+A rule's `target` may be omitted when `ports` is set, so a rule can scope by TCP destination port alone — `{"action": "deny", "ports": [25]}` blocks outbound SMTP regardless of destination. `target` and `ports` can also combine to scope an IP or CIDR rule to specific ports. Ports are enforced at the network layer (`dns+nft` mode) as `tcp dport` matches, and a deny rule — port-scoped or not — always wins over an allow rule.
+
+Current limits: TCP only (no UDP); at most 256 ports per rule; domain targets cannot combine with `ports` (domain rules are evaluated at the DNS layer, which has no port dimension) and are rejected at validation; `DELETE /policy` removes rules by `target`, so port-only rules are replaced via a full `POST`/`PUT` instead. The Fast Sandbox profile rejects `ports` with a 400 until its enforcement path supports them.
 
 ## Design decisions
 

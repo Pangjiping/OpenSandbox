@@ -19,10 +19,11 @@ This module defines data models based on the OpenAPI specification
 for request/response validation and serialization.
 """
 
+import ipaddress
 from datetime import datetime
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, PrivateAttr, RootModel, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, RootModel, field_validator, model_validator
 
 from opensandbox_server.constants import (
     IDLE_TIMEOUT_MAX_SECONDS,
@@ -31,6 +32,30 @@ from opensandbox_server.constants import (
     PROBE_TIMEOUT_MIN_SECONDS,
 )
 from opensandbox_server.constants import OPENSANDBOX_LIFECYCLE
+
+
+def _is_ip_or_cidr(value: str) -> bool:
+    """
+    Mirror policy.go's target-kind detection (netip.ParseAddr/ParsePrefix): a
+    target is IP/CIDR if it parses as either; anything else (including
+    domains) is not.
+    """
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        pass
+    # netip.ParsePrefix only accepts a decimal prefix length after the slash;
+    # netmask notation (e.g. "10.0.0.0/255.0.0.0") must not classify as CIDR,
+    # or the sidecar would reject the rule as a domain target at provisioning
+    # time instead of this validator rejecting it here.
+    if "/" in value and not value.partition("/")[2].isdigit():
+        return False
+    try:
+        ipaddress.ip_network(value, strict=False)
+        return True
+    except ValueError:
+        return False
 
 # ============================================================================
 # Image Specification
@@ -94,15 +119,64 @@ class ResourceLimits(RootModel[Dict[str, str]]):
 
 class NetworkRule(BaseModel):
     """
-    Egress rule: allow/deny a specific domain or wildcard.
+    Egress rule: allow/deny a domain, wildcard, IP/CIDR, and/or a set of TCP ports.
     """
 
     action: str = Field(..., description="Whether to allow or deny matching targets (allow | deny).")
-    target: str = Field(
-        ...,
-        description="FQDN or wildcard domain (e.g., 'example.com', '*.example.com').",
+    target: Optional[str] = Field(
+        None,
+        description=(
+            "FQDN, wildcard domain (e.g., 'example.com', '*.example.com'), IP address, or CIDR. "
+            "May be omitted when `ports` is set; otherwise required."
+        ),
         min_length=1,
     )
+    ports: Optional[List[int]] = Field(
+        None,
+        min_length=1,
+        max_length=256,
+        description=(
+            "Restricts this rule to specific TCP destination ports (1-65535). Omitted target with "
+            "ports set applies to all destinations; a domain target with ports is rejected. TCP "
+            "only, max 256 ports per rule."
+        ),
+    )
+
+    @field_validator("target")
+    @classmethod
+    def normalize_target(cls, target: Optional[str]) -> Optional[str]:
+        # policy.go trims the target before classifying; mirror that so both
+        # layers agree at the boundary: a whitespace-only target counts as
+        # omitted, and " 10.0.0.5" classifies as an IP, not a domain.
+        if target is None:
+            return None
+        target = target.strip()
+        return target or None
+
+    @field_validator("ports")
+    @classmethod
+    def validate_ports(cls, ports: Optional[List[int]]) -> Optional[List[int]]:
+        # Mirrors policy.go's normalizePorts: range + duplicate checks, so an
+        # invalid list is rejected here instead of surfacing as an egress
+        # sidecar startup failure during Docker/Kubernetes provisioning.
+        if ports is None:
+            return ports
+        seen: set[int] = set()
+        for port in ports:
+            if port < 1 or port > 65535:
+                raise ValueError(f"NetworkRule port {port} out of range 1-65535.")
+            if port in seen:
+                raise ValueError(f"NetworkRule has duplicate port {port}.")
+            seen.add(port)
+        return ports
+
+    @model_validator(mode="after")
+    def validate_target_or_ports(self) -> "NetworkRule":
+        if self.target is None and self.ports is None:
+            raise ValueError("NetworkRule requires target, ports, or both.")
+        if self.ports is not None and self.target is not None and not _is_ip_or_cidr(self.target):
+            raise ValueError("NetworkRule ports are not supported for domain targets yet.")
+        return self
 
     class Config:
         populate_by_name = True

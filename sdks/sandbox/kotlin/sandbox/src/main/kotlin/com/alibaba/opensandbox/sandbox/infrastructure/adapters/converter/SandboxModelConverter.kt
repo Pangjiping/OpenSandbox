@@ -116,6 +116,9 @@ internal object SandboxModelConverter {
                             NetworkRule.Action.DENY -> ApiNetworkRule.Action.deny
                         },
                     target = rule.target,
+                    // The generated model maps the spec's uniqueItems array to Set;
+                    // the domain model keeps List so declaration order survives.
+                    ports = rule.ports?.toSet(),
                 )
             }
         return ApiNetworkPolicy(
@@ -130,7 +133,7 @@ internal object SandboxModelConverter {
                 NetworkRule.Action.ALLOW -> ApiNetworkRule.Action.allow
                 NetworkRule.Action.DENY -> ApiNetworkRule.Action.deny
             }
-        return ApiNetworkRule(action = action, target = this.target)
+        return ApiNetworkRule(action = action, target = this.target, ports = this.ports?.toSet())
     }
 
     fun NetworkRule.toApiEgressNetworkRule(): ApiEgressNetworkRule {
@@ -139,7 +142,7 @@ internal object SandboxModelConverter {
                 NetworkRule.Action.ALLOW -> ApiEgressNetworkRule.Action.allow
                 NetworkRule.Action.DENY -> ApiEgressNetworkRule.Action.deny
             }
-        return ApiEgressNetworkRule(action = action, target = this.target)
+        return ApiEgressNetworkRule(action = action, target = this.target, ports = this.ports?.toSet())
     }
 
     fun ApiNetworkRule.toDomainNetworkRule(): NetworkRule {
@@ -148,11 +151,14 @@ internal object SandboxModelConverter {
                 ApiNetworkRule.Action.allow -> NetworkRule.Action.ALLOW
                 ApiNetworkRule.Action.deny -> NetworkRule.Action.DENY
             }
-        return NetworkRule
-            .builder()
-            .action(action)
-            .target(this.target)
-            .build()
+        val builder = NetworkRule.builder().action(action)
+        // Read-back must not be stricter than the server: the sidecar emits
+        // "target": "" for a port-only rule (Go marshals the field without
+        // omitempty), and an empty ports list is contract-invalid, so both are
+        // treated as absent instead of tripping the builder's validation.
+        this.target?.takeIf { it.isNotBlank() }?.let { builder.target(it) }
+        this.ports?.takeIf { it.isNotEmpty() }?.let { builder.ports(it.toList()) }
+        return builder.build()
     }
 
     fun ApiNetworkPolicy.toDomainNetworkPolicy(): NetworkPolicy {
@@ -174,11 +180,10 @@ internal object SandboxModelConverter {
                 ApiEgressNetworkRule.Action.allow -> NetworkRule.Action.ALLOW
                 ApiEgressNetworkRule.Action.deny -> NetworkRule.Action.DENY
             }
-        return NetworkRule
-            .builder()
-            .action(action)
-            .target(this.target)
-            .build()
+        val builder = NetworkRule.builder().action(action)
+        this.target?.takeIf { it.isNotBlank() }?.let { builder.target(it) }
+        this.ports?.takeIf { it.isNotEmpty() }?.let { builder.ports(it.toList()) }
+        return builder.build()
     }
 
     fun ApiEgressNetworkPolicy.toDomainEgressNetworkPolicy(): NetworkPolicy {
