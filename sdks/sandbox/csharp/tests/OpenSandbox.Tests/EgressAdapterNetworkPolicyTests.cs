@@ -404,18 +404,19 @@ public class EgressAdapterNetworkPolicyTests
         Assert.Equal(3, body.RootElement.EnumerateArray().Count());
     }
 
-    private static EgressAdapter CreateAdapter(string responseBody)
+    private static (EgressAdapter Adapter, CaptureHandler Handler) CreateAdapter(string responseBody)
     {
         return CreateAdapter(responseBody, "ok");
     }
 
-    private static EgressAdapter CreateAdapter(string responseBody, string getStatus)
+    private static (EgressAdapter Adapter, CaptureHandler Handler) CreateAdapter(string responseBody, string getStatus)
     {
+        var handler = new CaptureHandler(responseBody, getStatus);
         var wrapper = new HttpClientWrapper(
-            new HttpClient(new CaptureHandler(responseBody, getStatus)),
+            new HttpClient(handler),
             "http://egress.local",
             new Dictionary<string, string>());
-        return new EgressAdapter(wrapper);
+        return (new EgressAdapter(wrapper), handler);
     }
 
     private sealed class CaptureHandler : HttpMessageHandler
