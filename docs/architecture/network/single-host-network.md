@@ -9,7 +9,7 @@ This page describes the **Docker runtime** on a single host. Its counterpart on 
 
 The Docker runtime exposes every sandbox port through one host port per sandbox: `execd` bundles a reverse proxy, and the runtime maps only that proxy port to the host.
 
-![Single-host sandbox routing](../../public/images/single_host_network.png)
+![Single-host sandbox routing](../../public/images/single-host-network.svg)
 
 ## Single-host routing model
 - Every sandbox container starts `execd` listening on container port `44772`. `execd` bundles a lightweight reverse proxy that intercepts requests with the `/proxy/{port}` prefix and forwards them to `127.0.0.1:{port}` inside the same container.
