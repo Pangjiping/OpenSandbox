@@ -23,7 +23,7 @@ def normalized_policy(policy: NetworkPolicy) -> dict:
         if rule.ports:
             # The Fastlet nft path does not enforce port-scoped rules yet;
             # accepting them would silently drop deny rules (fail-open), so
-            # reject until fast-sandbox enforcement lands.
+            # reject until fast-sandbox enforcement lands (#2213).
             raise HTTPException(400, detail="networkPolicy ports are not supported for Fast Sandbox policy yet.")
         if not target:
             raise HTTPException(400, detail="networkPolicy rule target cannot be empty.")
@@ -55,8 +55,8 @@ def merge_policy_rules(policy: dict, rules: list[NetworkRule]) -> dict:
     for rule in rules:
         if rule.ports:
             # Mirrors normalized_policy: fast-sandbox enforcement does not
-            # cover port-scoped rules yet, so fail closed instead of letting a
-            # deny rule go unenforced.
+            # cover port-scoped rules yet (#2213), so fail closed instead of
+            # letting a deny rule go unenforced.
             raise HTTPException(400, detail="networkPolicy ports are not supported for Fast Sandbox policy yet.")
         target = (rule.target or "").strip()
         if target and target not in incoming:
