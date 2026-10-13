@@ -60,8 +60,31 @@ public class EgressAdapterNetworkPolicyTests
           "policy": {
             "defaultAction": "deny",
             "egress": [
-              { "action": "allow", "ports": [1, 65535] },
+              { "action": "allow", "ports": [1, 65535] }
+            ]
+          }
+        }
+        """;
+
+    private const string OkPolicyWithEmptyPorts = """
+        {
+          "status": "ok",
+          "policy": {
+            "defaultAction": "deny",
+            "egress": [
               { "action": "deny", "ports": [] }
+            ]
+          }
+        }
+        """;
+
+    private const string OkPolicyWithNullPorts = """
+        {
+          "status": "ok",
+          "policy": {
+            "defaultAction": "deny",
+            "egress": [
+              { "action": "allow", "target": "example.com", "ports": null }
             ]
           }
         }
@@ -113,7 +136,48 @@ public class EgressAdapterNetworkPolicyTests
         var policy = await adapter.GetPolicyAsync();
 
         Assert.Equal(new List<int> { 1, 65535 }, policy.Egress![0].Ports);
-        Assert.Empty(policy.Egress[1].Ports!);
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_EmptyPortsList_ThrowsContractError()
+    {
+        // The spec declares minItems: 1; accepting "ports": [] on read would
+        // let a GET→PATCH round-trip silently rewrite the rule to "no ports"
+        // and trip the write-side checks.
+        var (adapter, _) = CreateAdapter(OkPolicyWithEmptyPorts);
+
+        var ex = await Assert.ThrowsAsync<SandboxApiException>(() => adapter.GetPolicyAsync());
+        Assert.Contains("ports must not be empty", ex.Message);
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_NullPorts_ParsesAsNotPortScoped()
+    {
+        var (adapter, _) = CreateAdapter(OkPolicyWithNullPorts);
+
+        var policy = await adapter.GetPolicyAsync();
+
+        var rule = Assert.Single(policy.Egress!);
+        Assert.Null(rule.Ports);
+        Assert.Equal("example.com", rule.Target);
+
+        // The parsed rule must survive a GET→PATCH round-trip unchanged.
+        var payload = NetworkPolicyCodec.ToRulesPayload(policy.Egress!);
+        Assert.Equal("example.com", Assert.Single(payload)["target"]);
+        Assert.DoesNotContain(payload, entry => entry.ContainsKey("ports"));
+    }
+
+    [Fact]
+    public async Task GetPolicyAsync_PortOnlyRule_RoundTripsThroughPatch()
+    {
+        var (adapter, _) = CreateAdapter(OkPolicyWithPortOnlyRule);
+
+        var policy = await adapter.GetPolicyAsync();
+        var payload = Assert.Single(NetworkPolicyCodec.ToRulesPayload(policy.Egress!));
+
+        Assert.Equal("deny", payload["action"]);
+        Assert.Equal(new List<int> { 25 }, payload["ports"]);
+        Assert.DoesNotContain("target", (Dictionary<string, object?>)payload);
     }
 
     [Fact]
@@ -186,7 +250,26 @@ public class EgressAdapterNetworkPolicyTests
 
         var ex = await Assert.ThrowsAsync<ArgumentException>(
             () => adapter.PatchRulesAsync(new[] { new NetworkRule { Action = NetworkRuleAction.Allow } }));
-        Assert.Contains("requires target, ports, or both", ex.Message);
+        Assert.Contains("NetworkRule[0] requires target, ports, or both", ex.Message);
+    }
+
+    [Fact]
+    public async Task PatchRulesAsync_InvalidPortValues_FailFastWithIndex()
+    {
+        var (adapter, _) = CreateAdapter(OkResponse);
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => adapter.PatchRulesAsync(new[]
+        {
+            new NetworkRule { Action = NetworkRuleAction.Allow, Target = "example.com" },
+            new NetworkRule { Action = NetworkRuleAction.Deny, Ports = new List<int> { 0, 443 } },
+        }));
+        Assert.Contains("NetworkRule[1] port 0 out of range", ex.Message);
+
+        var ex2 = await Assert.ThrowsAsync<ArgumentException>(() => adapter.PatchRulesAsync(new[]
+        {
+            new NetworkRule { Action = NetworkRuleAction.Deny, Ports = new List<int> { 443, 443 } },
+        }));
+        Assert.Contains("NetworkRule[0] has duplicate port 443", ex2.Message);
     }
 
     private static (EgressAdapter Adapter, CaptureHandler Handler) CreateAdapter(string responseBody)

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 using System.Text.Json;
-using System.Linq;
 using OpenSandbox.Core;
 using OpenSandbox.Models;
 
@@ -47,32 +46,63 @@ internal static class NetworkPolicyCodec
 
     public static List<Dictionary<string, object?>> ToRulesPayload(IReadOnlyList<NetworkRule> rules)
     {
-        return rules.Select(r =>
+        var payload = new List<Dictionary<string, object?>>(rules.Count);
+        for (var i = 0; i < rules.Count; i++)
         {
-            // Fail fast at the call site on a rule that neither names a
-            // target nor scopes ports — the server would reject it with a
-            // 422, but surfacing it here points at the exact rule.
-            if (string.IsNullOrWhiteSpace(r.Target) && r.Ports is not { Count: > 0 })
-            {
-                throw new ArgumentException("NetworkRule requires target, ports, or both.", nameof(rules));
-            }
+            payload.Add(ToRulesPayloadEntry(rules[i], i));
+        }
+        return payload;
+    }
 
-            // target/ports are omitted (never null) when unset: a port-only
-            // rule must reach the sidecar as {"action":"deny","ports":[25]}.
-            var payload = new Dictionary<string, object?>
+    private static Dictionary<string, object?> ToRulesPayloadEntry(NetworkRule r, int index)
+    {
+        // Fail fast at the call site on a rule the server would 422, pointing
+        // at the exact entry: a rule must name a target or scope ports, and
+        // ports mirror the server-side constraints (1-65535, at most 256 per
+        // rule, no duplicates).
+        var hasTarget = !string.IsNullOrWhiteSpace(r.Target);
+        var hasPorts = r.Ports is { Count: > 0 };
+        if (!hasTarget && !hasPorts)
+        {
+            throw new ArgumentException($"NetworkRule[{index}] requires target, ports, or both.");
+        }
+        if (hasPorts)
+        {
+            var seen = new HashSet<int>();
+            foreach (var port in r.Ports!)
             {
-                ["action"] = r.Action == NetworkRuleAction.Allow ? "allow" : "deny",
-            };
-            if (!string.IsNullOrWhiteSpace(r.Target))
-            {
-                payload["target"] = r.Target;
+                if (port < 1 || port > 65535)
+                {
+                    throw new ArgumentException($"NetworkRule[{index}] port {port} out of range 1-65535.");
+                }
+                if (!seen.Add(port))
+                {
+                    throw new ArgumentException($"NetworkRule[{index}] has duplicate port {port}.");
+                }
             }
-            if (r.Ports is { Count: > 0 })
+            if (r.Ports.Count > 256)
             {
-                payload["ports"] = r.Ports;
+                throw new ArgumentException($"NetworkRule[{index}] has {r.Ports.Count} ports; at most 256 per rule.");
             }
-            return payload;
-        }).ToList();
+        }
+
+        // target/ports are omitted (never null) when unset: a port-only rule
+        // must reach the sidecar as {"action":"deny","ports":[25]}. A blank
+        // target is omitted too — the server normalizes it to "omitted", so
+        // the rule degrades to a port-only rule exactly as it would there.
+        var entry = new Dictionary<string, object?>
+        {
+            ["action"] = r.Action == NetworkRuleAction.Allow ? "allow" : "deny",
+        };
+        if (hasTarget)
+        {
+            entry["target"] = r.Target;
+        }
+        if (hasPorts)
+        {
+            entry["ports"] = r.Ports;
+        }
+        return entry;
     }
 
     public static NetworkRule ParseNetworkRule(JsonElement element)
@@ -94,19 +124,36 @@ internal static class NetworkPolicyCodec
         }
 
         List<int>? ports = null;
-        if (element.TryGetProperty("ports", out var portsElement) &&
-            portsElement.ValueKind == JsonValueKind.Array)
+        if (element.TryGetProperty("ports", out var portsElement))
         {
-            ports = new List<int>();
-            foreach (var portElement in portsElement.EnumerateArray())
+            if (portsElement.ValueKind == JsonValueKind.Array)
             {
-                if (portElement.ValueKind != JsonValueKind.Number || !portElement.TryGetInt32(out var port))
+                ports = new List<int>();
+                foreach (var portElement in portsElement.EnumerateArray())
                 {
-                    throw new SandboxApiException(
-                        $"Invalid port element in network rule: {portElement.GetRawText()}");
+                    if (portElement.ValueKind != JsonValueKind.Number || !portElement.TryGetInt32(out var port))
+                    {
+                        throw new SandboxApiException(
+                            $"Invalid port element in network rule: {portElement.GetRawText()}");
+                    }
+                    ports.Add(port);
                 }
-                ports.Add(port);
+
+                if (ports.Count == 0)
+                {
+                    // The contract declares minItems: 1; accepting an empty
+                    // list here would let a GET→PATCH round-trip turn the
+                    // rule into "no ports" and trip the write-side checks.
+                    throw new SandboxApiException("Invalid network rule: ports must not be empty");
+                }
             }
+            else if (portsElement.ValueKind != JsonValueKind.Null)
+            {
+                throw new SandboxApiException(
+                    $"Invalid ports in network rule: {portsElement.GetRawText()}");
+            }
+            // Null ports means "not port-scoped": parsed as absent so a
+            // read-back re-PATCHes without a ports key.
         }
 
         return new NetworkRule

@@ -110,7 +110,8 @@ public class NetworkRule
     /// Gets or sets the FQDN, wildcard domain (e.g., "example.com", "*.example.com"), IP,
     /// or CIDR. May be null when <see cref="Ports"/> is set; otherwise required. A domain
     /// target combined with ports is rejected by the server/sidecar (domain rules are
-    /// evaluated at the DNS layer, which has no port dimension).
+    /// evaluated at the DNS layer, which has no port dimension). A blank target is treated
+    /// as null: the rule degrades to a port-only rule, exactly as the server normalizes it.
     /// </summary>
     [JsonPropertyName("target")]
     public string? Target { get; set; }
