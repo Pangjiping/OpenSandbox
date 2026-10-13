@@ -47,21 +47,73 @@ internal static class NetworkPolicyCodec
 
     public static List<Dictionary<string, object?>> ToRulesPayload(IReadOnlyList<NetworkRule> rules)
     {
-        return rules.Select(r => new Dictionary<string, object?>
+        return rules.Select(r =>
         {
-            ["action"] = r.Action == NetworkRuleAction.Allow ? "allow" : "deny",
-            ["target"] = r.Target
+            // Fail fast at the call site on a rule that neither names a
+            // target nor scopes ports — the server would reject it with a
+            // 422, but surfacing it here points at the exact rule.
+            if (string.IsNullOrWhiteSpace(r.Target) && r.Ports is not { Count: > 0 })
+            {
+                throw new ArgumentException("NetworkRule requires target, ports, or both.", nameof(rules));
+            }
+
+            // target/ports are omitted (never null) when unset: a port-only
+            // rule must reach the sidecar as {"action":"deny","ports":[25]}.
+            var payload = new Dictionary<string, object?>
+            {
+                ["action"] = r.Action == NetworkRuleAction.Allow ? "allow" : "deny",
+            };
+            if (!string.IsNullOrWhiteSpace(r.Target))
+            {
+                payload["target"] = r.Target;
+            }
+            if (r.Ports is { Count: > 0 })
+            {
+                payload["ports"] = r.Ports;
+            }
+            return payload;
         }).ToList();
     }
 
     public static NetworkRule ParseNetworkRule(JsonElement element)
     {
         var actionText = element.GetProperty("action").GetString();
-        var target = element.GetProperty("target").GetString();
+
+        // The sidecar marshals target without omitempty, so a port-only rule
+        // arrives as "target": "" rather than an absent key — treat blank
+        // the same as absent so reads stay symmetric with writes.
+        string? target = null;
+        if (element.TryGetProperty("target", out var targetElement) &&
+            targetElement.ValueKind == JsonValueKind.String)
+        {
+            target = targetElement.GetString();
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                target = null;
+            }
+        }
+
+        List<int>? ports = null;
+        if (element.TryGetProperty("ports", out var portsElement) &&
+            portsElement.ValueKind == JsonValueKind.Array)
+        {
+            ports = new List<int>();
+            foreach (var portElement in portsElement.EnumerateArray())
+            {
+                if (portElement.ValueKind != JsonValueKind.Number || !portElement.TryGetInt32(out var port))
+                {
+                    throw new SandboxApiException(
+                        $"Invalid port element in network rule: {portElement.GetRawText()}");
+                }
+                ports.Add(port);
+            }
+        }
+
         return new NetworkRule
         {
             Action = ParseNetworkRuleAction(actionText),
-            Target = target ?? throw new SandboxApiException("Missing target in network rule")
+            Target = target,
+            Ports = ports
         };
     }
 

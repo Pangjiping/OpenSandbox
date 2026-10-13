@@ -50,17 +50,22 @@ export type ResourceLimits = Record<string, string>;
 
 export type NetworkRuleAction = "allow" | "deny";
 
-export interface NetworkRule extends Record<string, unknown> {
-  /**
-   * Whether to allow or deny matching targets.
-   */
-  action: NetworkRuleAction;
-  /**
-   * FQDN or wildcard domain (e.g., "example.com", "*.example.com").
-   * IP/CIDR is not supported in the egress MVP.
-   */
-  target: string;
-}
+/**
+ * A port-scoped or target-scoped egress rule. The union encodes the API
+ * invariant at compile time: a rule must carry `target`, `ports`, or both.
+ *
+ * - `target` is a FQDN, wildcard domain ("*.example.com"), IP, or CIDR.
+ * - `ports` restricts the rule to TCP destination ports (each 1-65535, at
+ *   most 256 per rule, no duplicates — enforced server-side). Omitted
+ *   target with ports set applies across all IPv4/IPv6 destinations.
+ * - A domain target combined with ports is rejected by the server/sidecar
+ *   (domain rules are evaluated at the DNS layer, which has no port
+ *   dimension).
+ */
+export type NetworkRule = (
+  | { action: NetworkRuleAction; target: string; ports?: number[] }
+  | { action: NetworkRuleAction; target?: string; ports: number[] }
+) & Record<string, unknown>;
 
 export interface NetworkPolicy extends Record<string, unknown> {
   /**

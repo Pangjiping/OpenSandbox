@@ -120,7 +120,9 @@ export interface paths {
          *     This endpoint uses merge semantics:
          *     - Existing rules remain unless overridden by incoming rules.
          *     - Incoming rules are applied with higher priority than existing rules.
-         *     - If multiple incoming rules refer to the same `target`, the first one wins.
+         *     - If multiple incoming rules resolve to the same match scope (same
+         *       `target` and the same set of `ports`), the first one wins; rules
+         *       that differ in `target` or in `ports` coexist.
          */
         patch: {
             parameters: {
@@ -488,6 +490,7 @@ export interface components {
             /** @description List of egress rules evaluated in order. */
             egress?: components["schemas"]["NetworkRule"][];
         };
+        /** @description Egress rule. At least one of `target` or `ports` must be provided; when both are present the rule applies to `ports` on `target` only. Enforced by the server and the egress sidecar. */
         NetworkRule: {
             /**
              * @description Whether to allow or deny matching targets.
@@ -495,10 +498,25 @@ export interface components {
              */
             action: "allow" | "deny";
             /**
-             * @description FQDN or wildcard domain (e.g., "example.com", "*.example.com").
-             *     IP/CIDR not yet supported in the egress MVP.
+             * @description FQDN, wildcard domain (e.g., "example.com", "*.example.com"), IP
+             *     address, or CIDR. May be omitted when `ports` is set (see below);
+             *     otherwise required.
              */
-            target: string;
+            target?: string;
+            /**
+             * @description Restricts this rule to specific TCP destination ports.
+             *
+             *     - `target` omitted, `ports` set: the rule applies to these ports
+             *       across all IPv4/IPv6 destinations.
+             *     - `target` is an IP or CIDR, `ports` set: the rule applies to that
+             *       destination only on these ports.
+             *     - `target` is a domain: `ports` is rejected with a validation
+             *       error. Domain rules are evaluated at the DNS layer, which has no
+             *       port dimension; combining them is not supported yet.
+             *
+             *     TCP only for now; UDP port scoping is not supported.
+             */
+            ports?: number[];
         };
         CredentialVaultCreateRequest: {
             credentials: components["schemas"]["Credential"][];
