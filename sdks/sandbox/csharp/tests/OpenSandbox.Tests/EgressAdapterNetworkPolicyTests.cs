@@ -232,7 +232,7 @@ public class EgressAdapterNetworkPolicyTests
         var policy = await adapter.GetPolicyAsync();
         Assert.Equal(new List<int> { 70000 }, policy.Egress![0].Ports);
 
-        var ex = await Assert.ThrowsAsync<ArgumentException>(
+        var ex = Assert.Throws<ArgumentException>(
             () => NetworkPolicyCodec.ToRulesPayload(policy.Egress!));
         Assert.Contains("NetworkRule[0] port 70000 out of range", ex.Message);
     }
