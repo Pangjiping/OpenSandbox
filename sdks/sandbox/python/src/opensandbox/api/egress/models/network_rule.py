@@ -48,6 +48,11 @@ class NetworkRule:
                   port dimension; combining them is not supported yet.
 
                 TCP only for now; UDP port scoping is not supported.
+
+                Under `defaultAction: deny`, the DNS proxy still denies hostname
+                lookups for targetless allow rules (it matches domain rules
+                only), so this shape serves direct-IP clients; hostname access
+                requires explicit domain rules or stable IPs.
     """
 
     action: NetworkRuleAction
