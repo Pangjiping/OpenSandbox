@@ -41,7 +41,7 @@ const (
 
 // PortRange is an inclusive TCP port interval; Lo and Hi are both 1-65535
 // and Lo must not exceed Hi. Used by the platform port floor
-// (allow.ports.always); the user-facing ports field stays a plain int list.
+// (reachable.ports.always); the user-facing ports field stays a plain int list.
 type PortRange struct {
 	Lo int
 	Hi int
@@ -79,7 +79,7 @@ type EgressRule struct {
 	// combination. See PortScopedRules for nftables enforcement.
 	Ports []int `json:"ports,omitempty"`
 	// PortRanges is the range form of Ports, used exclusively by the
-	// platform port floor (allow.ports.always): its complement is expressed
+	// platform port floor (reachable.ports.always): its complement is expressed
 	// as intervals because enumerating ~65k individual ports is neither
 	// practical nor bounded. Internal only — never serialized (the PATCH
 	// merge re-marshals user rules, which never carry ranges; the always

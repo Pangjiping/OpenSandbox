@@ -154,7 +154,7 @@ type Options struct {
 	// profile's uid-scoped upstream rules.
 	UpstreamProxy *UpstreamProxyEndpoint
 	// PortFloorDenyRanges carries the platform port floor (from
-	// allow.ports.always) as the 1-65535 intervals that must stay closed
+	// reachable.ports.always) as the 1-65535 intervals that must stay closed
 	// for every subject, regardless of policy — the fast-path equivalent of
 	// the sidecar's always-deny port-range rule. The fast path enforces the
 	// floor profile-wide (one rule in the master dispatch/input chains)
@@ -532,7 +532,7 @@ func (a *Applier) writeTableHeader(b *strings.Builder) error {
 	return nil
 }
 
-// writePortFloorFragment emits the platform port floor (allow.ports.always
+// writePortFloorFragment emits the platform port floor (reachable.ports.always
 // complement) as one drop rule per master chain: forward for direct
 // traffic, input for MITM-DNATed traffic (whose conntrack ORIGINAL port the
 // input chain already recovers for policy evaluation). Position is with the

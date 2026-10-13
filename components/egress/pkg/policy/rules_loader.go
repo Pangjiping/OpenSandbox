@@ -31,7 +31,7 @@ type alwaysRuleFileState struct {
 }
 
 // AlwaysRuleLoader polls the standard always-deny/allow file paths (plus the
-// allow.ports.always floor) at most once per refreshInterval.
+// reachable.ports.always floor) at most once per refreshInterval.
 type AlwaysRuleLoader struct {
 	mu              sync.RWMutex
 	refreshInterval time.Duration
@@ -46,7 +46,7 @@ type AlwaysRuleLoader struct {
 }
 
 func NewAlwaysRuleLoader(refreshInterval time.Duration) *AlwaysRuleLoader {
-	return newAlwaysRuleLoader(refreshInterval, alwaysDenyFilePath, alwaysAllowFilePath, allowPortsFilePath)
+	return newAlwaysRuleLoader(refreshInterval, alwaysDenyFilePath, alwaysAllowFilePath, reachablePortsFilePath)
 }
 
 func newAlwaysRuleLoader(refreshInterval time.Duration, denyPath, allowPath, portsPath string) *AlwaysRuleLoader {

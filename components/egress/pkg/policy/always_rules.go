@@ -29,15 +29,15 @@ import (
 const (
 	alwaysDenyFilePath  = "/var/egress/rules/deny.always"
 	alwaysAllowFilePath = "/var/egress/rules/allow.always"
-	// allowPortsFilePath is the platform TCP port floor, whitelist-direction:
+	// reachablePortsFilePath is the platform TCP port floor, whitelist-direction:
 	// each line is a port or inclusive range that may be reachable; the
 	// complement is enforced as always-deny so the floor holds no matter what
 	// the sandbox policy (defaultAction included) says.
-	allowPortsFilePath = "/var/egress/rules/allow.ports.always"
+	reachablePortsFilePath = "/var/egress/rules/reachable.ports.always"
 )
 
 // LoadAlwaysRuleFiles loads optional /var/egress/rules/deny|allow.always (ignore if missing); errors on unreadable.
-// The optional allow.ports.always floor is loaded too and returned inside the
+// The optional reachable.ports.always floor is loaded too and returned inside the
 // deny slice as port-range rules, so every consumer of the always overlay
 // (classic sidecar, fast-sandbox, revision runtime) enforces it uniformly.
 func LoadAlwaysRuleFiles() (deny, allow []EgressRule, err error) {
@@ -49,7 +49,7 @@ func LoadAlwaysRuleFiles() (deny, allow []EgressRule, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	portFloor, err := loadPortFloorRules(allowPortsFilePath)
+	portFloor, err := loadPortFloorRules(reachablePortsFilePath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -65,23 +65,23 @@ func loadAlwaysRuleFileWithAction(action string) func(path string) ([]EgressRule
 	}
 }
 
-// LoadAllowedPortsAlways reads allow.ports.always (whitelist lines: "80",
+// LoadReachablePortsAlways reads reachable.ports.always (whitelist lines: "80",
 // "443", "8000-9000") and returns the merged allowed ranges. A missing file
 // yields nil. Exported for the fast-sandbox profile, which enforces the
 // floor profile-wide via DenyRangesForAllowedPorts instead of through the
 // per-subject always overlay.
-func LoadAllowedPortsAlways() ([]PortRange, error) {
-	data, err := os.ReadFile(allowPortsFilePath)
+func LoadReachablePortsAlways() ([]PortRange, error) {
+	data, err := os.ReadFile(reachablePortsFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return parseAllowedPortRanges(data, allowPortsFilePath)
+	return parseAllowedPortRanges(data, reachablePortsFilePath)
 }
 
-// loadPortFloorRules reads allow.ports.always and returns its complement as
+// loadPortFloorRules reads reachable.ports.always and returns its complement as
 // a single port-range always-deny rule. A missing file — or one that
 // declares no ports — yields nil: an empty whitelist would otherwise
 // silently deny every TCP connection in existing deployments the moment the
@@ -121,7 +121,7 @@ func loadPortFloorRules(path string) ([]EgressRule, error) {
 // given deny ranges. Exported for the fast-sandbox profile, which enforces
 // the floor as a profile-wide master-chain rule instead of through the
 // merged per-subject policy; the classic sidecar derives it from
-// allow.ports.always via LoadAlwaysRuleFiles instead.
+// reachable.ports.always via LoadAlwaysRuleFiles instead.
 func NewPortFloorDenyRule(denyRanges []PortRange) EgressRule {
 	return EgressRule{
 		Action:     ActionDeny,

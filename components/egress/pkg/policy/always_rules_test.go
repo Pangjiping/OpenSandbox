@@ -269,7 +269,7 @@ func TestLoadPortFloorRules(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, got, "an empty whitelist must not deny every port by accident")
 
-	floor := filepath.Join(dir, "allow.ports.always")
+	floor := filepath.Join(dir, "reachable.ports.always")
 	require.NoError(t, os.WriteFile(floor, []byte("80\n443\n"), 0o644))
 	got, err = loadPortFloorRules(floor)
 	require.NoError(t, err)
@@ -282,11 +282,11 @@ func TestLoadPortFloorRules(t *testing.T) {
 func TestAlwaysRuleLoader_PortsFloorHotReload(t *testing.T) {
 	dir := t.TempDir()
 	denyPath := filepath.Join(dir, "deny.always")
-	portsPath := filepath.Join(dir, "allow.ports.always")
+	portsPath := filepath.Join(dir, "reachable.ports.always")
 	require.NoError(t, os.WriteFile(denyPath, []byte("1.1.1.1\n"), 0o644))
 	require.NoError(t, os.WriteFile(portsPath, []byte("443\n"), 0o644))
 
-	loader := newAlwaysRuleLoader(time.Minute, denyPath, allowPortsFilePath_unusedForTest(dir), portsPath)
+	loader := newAlwaysRuleLoader(time.Minute, denyPath, reachablePortsFilePath_unusedForTest(dir), portsPath)
 	t0 := time.Unix(1000, 0)
 	deny, _, changed, err := loader.RefreshIfDue(t0)
 	require.NoError(t, err)
@@ -316,15 +316,15 @@ func TestAlwaysRuleLoader_PortsFloorHotReload(t *testing.T) {
 	require.Equal(t, "1.1.1.1", deny[0].Target)
 }
 
-// allowPortsFilePath_unusedForTest keeps the deny/allow pair positional in
+// reachablePortsFilePath_unusedForTest keeps the deny/allow pair positional in
 // test setup without touching the real /var/egress paths.
-func allowPortsFilePath_unusedForTest(dir string) string {
+func reachablePortsFilePath_unusedForTest(dir string) string {
 	return filepath.Join(dir, "allow.always")
 }
 
 func TestAlwaysRuleLoader_SetCurrentRulesDoesNotDuplicateFloor(t *testing.T) {
 	dir := t.TempDir()
-	portsPath := filepath.Join(dir, "allow.ports.always")
+	portsPath := filepath.Join(dir, "reachable.ports.always")
 	require.NoError(t, os.WriteFile(portsPath, []byte("443\n"), 0o644))
 	loader := newAlwaysRuleLoader(time.Minute,
 		filepath.Join(dir, "deny.always"),

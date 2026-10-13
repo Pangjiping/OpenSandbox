@@ -259,14 +259,14 @@ func fastSandboxNftOptions(upstreamSpec *mitmproxy.UpstreamProxySpec) fastsandbo
 	return opts
 }
 
-// fastSandboxPortFloor reads allow.ports.always and returns its complement
+// fastSandboxPortFloor reads reachable.ports.always and returns its complement
 // as the profile-wide drop intervals. Load errors fail closed (the floor is
 // a platform control, not an optimization); a missing or empty file means
 // no floor.
 func fastSandboxPortFloor() []policy.PortRange {
-	allowed, err := policy.LoadAllowedPortsAlways()
+	allowed, err := policy.LoadReachablePortsAlways()
 	if err != nil {
-		log.Fatalf("failed to load %s: %v", "allow.ports.always", err)
+		log.Fatalf("failed to load %s: %v", "reachable.ports.always", err)
 	}
 	if len(allowed) == 0 {
 		return nil
