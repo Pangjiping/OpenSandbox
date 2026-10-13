@@ -84,7 +84,7 @@ public class EgressAdapterNetworkPolicyTests
     [Fact]
     public async Task GetPolicyAsync_ParsesPortOnlyRule_WithSidecarWireShape()
     {
-        var adapter = CreateAdapter(OkPolicyWithPortOnlyRule);
+        var (adapter, handler) = CreateAdapter(OkPolicyWithPortOnlyRule);
 
         var policy = await adapter.GetPolicyAsync();
 
@@ -96,7 +96,7 @@ public class EgressAdapterNetworkPolicyTests
     [Fact]
     public async Task GetPolicyAsync_ParsesTargetWithPortsRule()
     {
-        var adapter = CreateAdapter(OkPolicyWithTargetAndPorts);
+        var (adapter, handler) = CreateAdapter(OkPolicyWithTargetAndPorts);
 
         var policy = await adapter.GetPolicyAsync();
 
@@ -108,7 +108,7 @@ public class EgressAdapterNetworkPolicyTests
     [Fact]
     public async Task GetPolicyAsync_ParsesBoundaryPorts_AndEmptyList()
     {
-        var adapter = CreateAdapter(OkPolicyWithBoundaryPorts);
+        var (adapter, handler) = CreateAdapter(OkPolicyWithBoundaryPorts);
 
         var policy = await adapter.GetPolicyAsync();
 
@@ -119,7 +119,7 @@ public class EgressAdapterNetworkPolicyTests
     [Fact]
     public async Task GetPolicyAsync_MalformedPortElement_ThrowsSandboxApiException()
     {
-        var adapter = CreateAdapter(OkPolicyWithMalformedPort);
+        var (adapter, handler) = CreateAdapter(OkPolicyWithMalformedPort);
 
         var ex = await Assert.ThrowsAsync<SandboxApiException>(() => adapter.GetPolicyAsync());
         Assert.Contains("Invalid port element", ex.Message);
@@ -128,8 +128,7 @@ public class EgressAdapterNetworkPolicyTests
     [Fact]
     public async Task PatchRulesAsync_OmitsTargetKey_ForPortOnlyRule()
     {
-        var handler = new CaptureHandler(OkResponse);
-        var adapter = CreateAdapter(handler);
+        var (adapter, handler) = CreateAdapter(OkResponse);
 
         await adapter.PatchRulesAsync(new[] { new NetworkRule { Action = NetworkRuleAction.Deny, Ports = new List<int> { 25 } } });
 
@@ -141,8 +140,7 @@ public class EgressAdapterNetworkPolicyTests
     [Fact]
     public async Task PatchRulesAsync_BlankTargetWithPorts_IsPortOnly()
     {
-        var handler = new CaptureHandler(OkResponse);
-        var adapter = CreateAdapter(handler);
+        var (adapter, handler) = CreateAdapter(OkResponse);
 
         await adapter.PatchRulesAsync(new[]
         {
@@ -157,8 +155,7 @@ public class EgressAdapterNetworkPolicyTests
     [Fact]
     public async Task PatchRulesAsync_PlainTargetRule_Unchanged()
     {
-        var handler = new CaptureHandler(OkResponse);
-        var adapter = CreateAdapter(handler);
+        var (adapter, handler) = CreateAdapter(OkResponse);
 
         await adapter.PatchRulesAsync(new[] { new NetworkRule { Action = NetworkRuleAction.Allow, Target = "example.com" } });
 
@@ -170,8 +167,7 @@ public class EgressAdapterNetworkPolicyTests
     [Fact]
     public async Task PatchRulesAsync_TargetWithPorts_SendsBoth()
     {
-        var handler = new CaptureHandler(OkResponse);
-        var adapter = CreateAdapter(handler);
+        var (adapter, handler) = CreateAdapter(OkResponse);
 
         await adapter.PatchRulesAsync(new[]
         {
@@ -186,21 +182,21 @@ public class EgressAdapterNetworkPolicyTests
     [Fact]
     public async Task PatchRulesAsync_NeitherTargetNorPorts_FailsFast()
     {
-        var handler = new CaptureHandler(OkResponse);
-        var adapter = CreateAdapter(handler);
+        var (adapter, handler) = CreateAdapter(OkResponse);
 
         var ex = await Assert.ThrowsAsync<ArgumentException>(
             () => adapter.PatchRulesAsync(new[] { new NetworkRule { Action = NetworkRuleAction.Allow } }));
         Assert.Contains("requires target, ports, or both", ex.Message);
     }
 
-    private static EgressAdapter CreateAdapter(string responseBody)
+    private static (EgressAdapter Adapter, CaptureHandler Handler) CreateAdapter(string responseBody)
     {
+        var handler = new CaptureHandler(responseBody);
         var wrapper = new HttpClientWrapper(
-            new HttpClient(new CaptureHandler(responseBody)),
+            new HttpClient(handler),
             "http://egress.local",
             new Dictionary<string, string>());
-        return new EgressAdapter(wrapper);
+        return (new EgressAdapter(wrapper), handler);
     }
 
     private sealed class CaptureHandler : HttpMessageHandler
