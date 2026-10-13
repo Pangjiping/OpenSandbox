@@ -814,9 +814,9 @@ func TestPortFloorDropsInDispatchAndInputChains(t *testing.T) {
 
 	script := runner.last()
 	floorDispatch := "add rule inet opensandbox-fast-sandbox dispatch tcp dport { 1-79, 81-442, 444-65535 } drop"
-	floorInput := "add rule inet opensandbox-fast-sandbox input ct status dnat ct original proto-dst { 1-79, 81-442, 444-65535 } drop"
+	floorInput := "add rule inet opensandbox-fast-sandbox input ct status dnat tcp dport 18081 ct original proto-dst { 1-79, 81-442, 444-65535 } drop"
 	require.Contains(t, script, floorDispatch, "the floor must gate the forward path profile-wide")
-	require.Contains(t, script, floorInput, "the floor must gate MITM-DNATed traffic by its ORIGINAL port too")
+	require.Contains(t, script, floorInput, "the floor must gate MITM-redirected traffic by its ORIGINAL port only, leaving fsb DNS (REDIRECT to :15353) and pod-inbound flows alone")
 	// Both drops precede the fail-closed tail.
 	require.Less(t, strings.Index(script, floorDispatch), strings.Index(script, "meta mark &"))
 
@@ -850,4 +850,33 @@ func TestApplyPolicy_PortScopedRuleFailsClosed(t *testing.T) {
 	for _, script := range runner.scripts {
 		require.NotContains(t, script, "10.0.0.0/8")
 	}
+}
+
+func TestApplyPolicy_PlatformFloorExemptFromPortScopedGuard(t *testing.T) {
+	// The floor rides the always overlay into every subject policy via the
+	// registry; ApplyPolicy must still succeed (the floor is enforced
+	// profile-wide in the master chains), while a user Ports rule in the
+	// same policy keeps the fail-closed guard.
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{
+		PortFloorDenyRanges: []policy.PortRange{{Lo: 1, Hi: 79}, {Lo: 81, Hi: 442}, {Lo: 444, Hi: 65535}},
+	})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+
+	user, err := policy.ParsePolicy(`{"defaultAction":"deny","egress":[
+		{"action":"allow","target":"pypi.org"}
+	]}`)
+	require.NoError(t, err)
+	effective := policy.MergeAlwaysOverlay(user,
+		[]policy.EgressRule{policy.NewPortFloorDenyRule([]policy.PortRange{{Lo: 1, Hi: 79}, {Lo: 81, Hi: 442}, {Lo: 444, Hi: 65535}})},
+		nil)
+	require.NoError(t, a.ApplyPolicy(ctx, s, effective), "the floor alone must not trip the port-scoped guard")
+
+	// Adding a user Ports rule on top trips it again.
+	effective.Egress = append(effective.Egress, policy.EgressRule{Action: policy.ActionAllow, Ports: []int{22}})
+	err = a.ApplyPolicy(ctx, s, effective)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "port-scoped")
 }

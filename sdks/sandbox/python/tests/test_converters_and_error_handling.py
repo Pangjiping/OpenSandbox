@@ -986,3 +986,13 @@ def test_network_rule_trims_target_before_classification() -> None:
     assert rule.target == "10.0.0.5"
     with pytest.raises(ValidationError):
         NetworkRule(action="allow", target="  example.com  ", ports=[443])
+
+
+def test_network_rule_scoped_ipv6_prefix_with_ports_rejected() -> None:
+    """netip.ParsePrefix rejects scoped prefixes while Python's ipaddress
+    accepts them; the SDK must mirror the sidecar or a valid-looking rule
+    dies remotely as a domain+ports 400."""
+    with pytest.raises(ValidationError):
+        NetworkRule(action="allow", target="fe80::1%eth0/64", ports=[22])
+    rule = NetworkRule(action="allow", target="fe80::1%eth0", ports=[22])
+    assert rule.target == "fe80::1%eth0"

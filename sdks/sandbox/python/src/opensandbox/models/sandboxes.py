@@ -42,6 +42,10 @@ def _is_ip_or_cidr(value: str) -> bool:
         pass
     if "/" in value and not value.partition("/")[2].isdigit():
         return False
+    # netip.ParsePrefix rejects scoped prefixes ("fe80::1%eth0/64") even
+    # though Python's ipaddress accepts them; classify those as domains too.
+    if "/" in value and "%" in value:
+        return False
     try:
         ipaddress.ip_network(value, strict=False)
         return True

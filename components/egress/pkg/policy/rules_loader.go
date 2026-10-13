@@ -125,6 +125,10 @@ func (l *AlwaysRuleLoader) SetCurrentRules(deny, allow []EgressRule) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// Seed the ports state with the floor rules the input carries: stripping
+	// them from the deny state without seeding would momentarily publish a
+	// policy without the platform floor (until the next refresh).
+	l.portsState.rules = cloneRulesKeepingPortRanges(deny)
 	l.denyState.rules = cloneRulesWithoutPortRanges(deny)
 	l.allowState.rules = cloneRules(allow)
 }
@@ -182,4 +186,16 @@ func cloneRulesWithoutPortRanges(in []EgressRule) []EgressRule {
 		}
 	}
 	return kept
+}
+
+// cloneRulesKeepingPortRanges keeps only the port-range (floor) rules — the
+// complement of cloneRulesWithoutPortRanges, used to seed the ports state.
+func cloneRulesKeepingPortRanges(in []EgressRule) []EgressRule {
+	var out []EgressRule
+	for _, r := range cloneRules(in) {
+		if len(r.PortRanges) > 0 {
+			out = append(out, r)
+		}
+	}
+	return out
 }

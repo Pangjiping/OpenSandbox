@@ -376,3 +376,25 @@ func TestWarnPortAllowRulesBlockedByCap(t *testing.T) {
 func portFloorDenyRangesForTest(floor []EgressRule) []PortRange {
 	return floor[0].PortRanges
 }
+
+func TestAlwaysRuleLoader_FloorSurvivesPolicyApplyRace(t *testing.T) {
+	// SET_BINDING replay / PATCH racing startup: SetCurrentRules re-seeds the
+	// ports state with the floor it strips from the deny input, so the
+	// published view never drops the platform floor.
+	dir := t.TempDir()
+	portsPath := filepath.Join(dir, "reachable.ports.cap")
+	require.NoError(t, os.WriteFile(portsPath, []byte("443\n"), 0o644))
+	loader := newAlwaysRuleLoader(time.Minute,
+		filepath.Join(dir, "deny.always"),
+		filepath.Join(dir, "allow.always"),
+		portsPath)
+	t0 := time.Unix(1000, 0)
+	deny, _, _, err := loader.RefreshIfDue(t0)
+	require.NoError(t, err)
+	require.Len(t, deny, 1)
+
+	loader.SetCurrentRules(deny, nil)
+	current, _ := loader.CurrentRules()
+	require.Len(t, current, 1, "floor must stay published immediately after a reseed")
+	require.Equal(t, []PortRange{{Lo: 1, Hi: 442}, {Lo: 444, Hi: 65535}}, current[0].PortRanges)
+}

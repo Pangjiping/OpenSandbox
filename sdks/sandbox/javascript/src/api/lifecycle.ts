@@ -1314,12 +1314,12 @@ export interface components {
             onIdle?: "pause";
             /**
              * @description Whether incoming traffic may wake the sandbox from `Paused`.
+             *     Defaults to `true` when omitted.
              *     `false` keeps today's paused behavior (permanent 503 through the
              *     gateway) and only `POST /sandboxes/{sandboxId}/resume` restores
              *     the sandbox.
-             * @default true
              */
-            wakeOnAccess: boolean;
+            wakeOnAccess?: boolean;
             /**
              * @description Application-declared activity probe. When the sandbox is
              *     otherwise idle, the server issues `GET {path}` on `{port}`;
@@ -1341,11 +1341,8 @@ export interface components {
              *     whitespace or control characters.
              */
             path: string;
-            /**
-             * @description Probe request budget in seconds. The server defaults to 2 when omitted.
-             * @default 2
-             */
-            timeoutSeconds: number;
+            /** @description Probe request budget in seconds. The server defaults to 2 when omitted. */
+            timeoutSeconds?: number;
         };
         /**
          * @description JSON Merge Patch (RFC 7396) request body for updating sandbox metadata.
@@ -1701,6 +1698,11 @@ export interface components {
              *       port dimension; combining them is not supported yet.
              *
              *     TCP only for now; UDP port scoping is not supported.
+             *
+             *     Under `defaultAction: deny`, the DNS proxy still denies hostname
+             *     lookups for targetless allow rules (it matches domain rules
+             *     only), so this shape serves direct-IP clients; hostname access
+             *     requires explicit domain rules or stable IPs.
              */
             ports?: number[];
         };

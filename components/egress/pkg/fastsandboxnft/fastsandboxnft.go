@@ -343,14 +343,22 @@ func (a *Applier) ApplyPolicy(ctx context.Context, s subject.Subject, pol *polic
 		pol = policy.DefaultDenyPolicy()
 	}
 	// The fast path enforces only static IP/CIDR sets per subject. A
-	// port-scoped rule in a subject policy would be silently dropped here —
-	// a deny rule that stops denying is fail-open — so refuse the apply and
-	// leave the subject deny-first. The server rejects ports on fast-sandbox
-	// routes (#2213); this guards older servers and direct Fastlet callers.
-	// The profile-wide platform floor (PortFloorDenyRanges) is enforced in
-	// the master chains and is unaffected.
-	if deny, allow := pol.PortScopedRules(); len(deny) > 0 || len(allow) > 0 {
-		return fmt.Errorf("fastsandboxnft: subject policy carries %d port-scoped rule(s), which the fast path cannot enforce", len(deny)+len(allow))
+	// port-scoped USER rule (Ports list) in a subject policy would be
+	// silently dropped here — a deny rule that stops denying is fail-open —
+	// so refuse the apply and leave the subject deny-first. The server
+	// rejects ports on fast-sandbox routes (#2213); this guards older
+	// servers and direct Fastlet callers. Rules carrying only PortRanges
+	// are the derived platform floor (reachable.ports.cap) riding the
+	// always overlay; they are enforced profile-wide via
+	// Options.PortFloorDenyRanges in the master chains and are exempt here.
+	blocked := 0
+	for _, r := range pol.Egress {
+		if len(r.Ports) > 0 {
+			blocked++
+		}
+	}
+	if blocked > 0 {
+		return fmt.Errorf("fastsandboxnft: subject policy carries %d port-scoped rule(s), which the fast path cannot enforce", blocked)
 	}
 	var b strings.Builder
 	if err := writeSubjectPolicySwapFragment(&b, s, pol, a.opts.MitmRedirectPort); err != nil {
@@ -544,13 +552,16 @@ func (a *Applier) writeTableHeader(b *strings.Builder) error {
 
 // writePortFloorFragment emits the platform port floor (reachable.ports.cap
 // complement) as one drop rule per master chain: forward for direct
-// traffic, input for MITM-DNATed traffic. The input rule mirrors
-// writeDoHBlockFragment: gated on `ct status dnat` so pod-inbound traffic
-// (SET_BINDING on 18080, the mitm listener on 18081, loopback probes) is
-// never touched, and matching `ct original proto-dst` because DNATed
-// packets carry the redirect port, not the port the sandbox dialed.
-// Position is with the other profile-wide drops, ahead of the fail-closed
-// tail; order relative to the DoH drops is irrelevant — both drop.
+// traffic, input for MITM-redirected traffic. The input rule is scoped
+// twice, on purpose: `tcp dport <MitmRedirectPort>` selects only flows the
+// MITM redirect DNATed (fsb DNS arrives via the same prerouting as a
+// REDIRECT to :15353 and would otherwise be dropped by the cap complement —
+// it is not), and `ct original proto-dst` evaluates the port the sandbox
+// actually dialed, since the post-DNAT packet carries the redirect port.
+// Without the dport gate the rule would also sit on every DNATed pod-inbound
+// flow. Position is with the other profile-wide drops, ahead of the
+// fail-closed tail; order relative to the DoH drops is irrelevant — both
+// drop.
 func (a *Applier) writePortFloorFragment(b *strings.Builder) {
 	if len(a.opts.PortFloorDenyRanges) == 0 {
 		return
@@ -561,8 +572,9 @@ func (a *Applier) writePortFloorFragment(b *strings.Builder) {
 	}
 	fmt.Fprintf(b, "add rule inet %s %s tcp dport { %s } drop\n", TableName, dispatchChain, strings.Join(members, ", "))
 	if a.opts.MitmRedirectPort > 0 {
-		fmt.Fprintf(b, "add rule inet %s %s ct status dnat ct original proto-dst { %s } drop\n",
-			TableName, inputChain, strings.Join(members, ", "))
+		fmt.Fprintf(b,
+			"add rule inet %s %s ct status dnat tcp dport %d ct original proto-dst { %s } drop\n",
+			TableName, inputChain, a.opts.MitmRedirectPort, strings.Join(members, ", "))
 	}
 }
 

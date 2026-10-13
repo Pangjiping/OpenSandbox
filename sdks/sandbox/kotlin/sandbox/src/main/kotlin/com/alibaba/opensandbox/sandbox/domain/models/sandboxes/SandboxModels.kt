@@ -284,6 +284,20 @@ class NetworkRule private constructor(
 
         @JvmStatic
         fun builder(): Builder = Builder()
+
+        /**
+         * Lenient wire-shape factory for READ-BACK paths only (policy
+         * GET/EffectiveOf results): it skips the write-path validation so
+         * contract drift on the server can never turn a policy read into an
+         * uncaught [IllegalArgumentException]. Callers normalize wire
+         * artifacts first (blank target, empty ports list) — see the
+         * model converters.
+         */
+        internal fun fromWire(
+            action: Action,
+            target: String?,
+            ports: List<Int>?,
+        ): NetworkRule = NetworkRule(action = action, target = target, ports = ports)
     }
 
     class Builder {
@@ -336,21 +350,56 @@ class NetworkRule private constructor(
 
         /**
          * Mirrors the sidecar's netip.ParseAddr/ParsePrefix classification
-         * closely enough for the domain+ports rejection: a target is
-         * IP/CIDR when it is a dotted-quad IPv4 literal, an IPv6 literal
-         * (colons; zones allowed without a prefix), or a prefix whose
-         * length is decimal digits. Netmask-style prefixes and scoped
-         * prefixes count as domains, matching the server validator.
+         * for the domain+ports rejection, on the trimmed target: a target
+         * is IP/CIDR when it is a dotted-quad IPv4 literal (no leading
+         * zeros), a well-formed IPv6 literal (zones allowed without a
+         * prefix), or a prefix whose decimal length is in range (0-32 /
+         * 0-128). Netmask-style prefixes, scoped prefixes, and anything
+         * else count as domains, matching the server validator.
          */
         private fun isIpOrCidr(target: String): Boolean {
-            if (target.count { it == '/' } > 1) return false
-            val prefix = target.substringAfter('/', missingDelimiterValue = "")
-            if (prefix.isNotEmpty() && (target.contains('%') || !prefix.all(Char::isDigit))) return false
-            val addr = target.substringBefore('/')
-            if (addr.contains(':')) return true
+            val t = target.trim()
+            if (t.count { it == '/' } > 1) return false
+            val addr = t.substringBefore('/')
+            val prefix = t.substringAfter('/', missingDelimiterValue = "")
+            if (prefix.isNotEmpty()) {
+                if (t.contains('%')) return false // scoped prefixes: netip rejects
+                if (prefix.any { it !in '0'..'9' }) return false
+                val limit = if (addr.contains(':')) 128 else 32
+                if (prefix.toInt() > limit) return false
+            }
+            return if (addr.contains(':')) isIpv6Literal(addr) else isIpv4Literal(addr)
+        }
+
+        private fun isIpv4Literal(addr: String): Boolean {
             val octets = addr.split('.')
             return octets.size == 4 &&
-                octets.all { it.isNotEmpty() && it.length <= 3 && it.all(Char::isDigit) && it.toInt() <= 255 }
+                octets.all { octet ->
+                    // Leading zeros are rejected: netip parses them as decimal
+                    // while servers/clients disagree on the octal reading, and
+                    // Python's ipaddress rejects them outright.
+                    octet.length in 1..3 && octet.all { it in '0'..'9' } &&
+                        (octet.length == 1 || octet[0] != '0') && octet.toInt() <= 255
+                }
+        }
+
+        private fun isIpv6Literal(addr: String): Boolean {
+            val host = addr.substringBefore('%')
+            if (host.isEmpty() || host.contains(":::")) return false
+            val halves = host.split("::")
+            if (halves.size > 2) return false
+            var groups = halves.flatMap { half -> half.split(':').filter(String::isNotEmpty) }
+            if (groups.lastOrNull()?.contains('.') == true) {
+                // Embedded IPv4 tail counts as two groups.
+                if (!isIpv4Literal(groups.last())) return false
+                groups = groups.dropLast(1) + listOf("0", "0")
+            }
+            if (groups.any { group -> group.length > 4 || group.any { ch -> ch !in '0'..'9' && ch !in 'a'..'f' && ch !in 'A'..'F' } }) {
+                return false
+            }
+            // "::" compresses one or more all-zero groups; without it the
+            // address must carry exactly eight groups.
+            return if (halves.size == 2) groups.size <= 7 else groups.size == 8
         }
     }
 }

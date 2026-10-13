@@ -151,10 +151,7 @@ internal object SandboxModelConverter {
                 ApiNetworkRule.Action.allow -> NetworkRule.Action.ALLOW
                 ApiNetworkRule.Action.deny -> NetworkRule.Action.DENY
             }
-        return NetworkRule.builder()
-            .action(action)
-            .applyReadBackFields(this.target, this.ports)
-            .build()
+        return toDomainRule(action, this.target, this.ports)
     }
 
     fun ApiNetworkPolicy.toDomainNetworkPolicy(): NetworkPolicy {
@@ -176,10 +173,7 @@ internal object SandboxModelConverter {
                 ApiEgressNetworkRule.Action.allow -> NetworkRule.Action.ALLOW
                 ApiEgressNetworkRule.Action.deny -> NetworkRule.Action.DENY
             }
-        return NetworkRule.builder()
-            .action(action)
-            .applyReadBackFields(this.target, this.ports)
-            .build()
+        return toDomainRule(action, this.target, this.ports)
     }
 
     /**
@@ -187,16 +181,21 @@ internal object SandboxModelConverter {
      * the two converters cannot drift apart: read-back must not be stricter
      * than the server. The sidecar emits "target": "" for a port-only rule
      * (Go marshals the field without omitempty), and an empty ports list is
-     * contract-invalid, so both are treated as absent instead of tripping
-     * the builder's validation.
+     * contract-invalid, so both are treated as absent. The rule is then built
+     * through the lenient wire factory — write-path validation here would
+     * turn any future contract drift into an uncaught error on every policy
+     * read.
      */
-    private fun NetworkRule.Builder.applyReadBackFields(
+    private fun toDomainRule(
+        action: NetworkRule.Action,
         target: String?,
         ports: Set<Int>?,
-    ): NetworkRule.Builder {
-        target?.takeIf { it.isNotBlank() }?.let { target(it) }
-        ports?.takeIf { it.isNotEmpty() }?.let { ports(it.toList()) }
-        return this
+    ): NetworkRule {
+        return NetworkRule.fromWire(
+            action,
+            target?.takeIf { it.isNotBlank() },
+            ports?.takeIf { it.isNotEmpty() }?.toList(),
+        )
     }
 
     fun ApiEgressNetworkPolicy.toDomainEgressNetworkPolicy(): NetworkPolicy {

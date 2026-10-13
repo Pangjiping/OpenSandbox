@@ -149,7 +149,18 @@ class NetworkRuleModelTest {
 
     @Test
     fun `builder rejects domain targets combined with ports`() {
-        for (target in listOf("example.com", "*.example.com", "10.0.0.0/255.0.0.0", "fe80::1%eth0/64")) {
+        // Leading zeros, unbounded prefixes, and malformed IPv6 literals are
+        // all classified as domains (or invalid), matching the server.
+        for (target in listOf(
+            "example.com",
+            "*.example.com",
+            "10.0.0.0/255.0.0.0",
+            "fe80::1%eth0/64",
+            "192.168.001.1",
+            "10.0.0.0/33",
+            "2001:db8::/129",
+            "1:2",
+        )) {
             assertThrows(IllegalArgumentException::class.java) {
                 NetworkRule
                     .builder()
@@ -162,8 +173,29 @@ class NetworkRuleModelTest {
     }
 
     @Test
+    fun `builder trims the target before classification`() {
+        val rule =
+            NetworkRule
+                .builder()
+                .action(NetworkRule.Action.ALLOW)
+                .target(" 10.0.0.5 ")
+                .ports(listOf(22))
+                .build()
+
+        assertEquals(" 10.0.0.5 ", rule.target)
+    }
+
+    @Test
     fun `builder accepts ip and cidr targets combined with ports`() {
-        for (target in listOf("10.0.0.5", "10.0.0.0/8", "2001:db8::1", "fe80::1%eth0")) {
+        for (target in listOf(
+            "10.0.0.5",
+            "10.0.0.0/8",
+            "0.0.0.0/0",
+            "2001:db8::1",
+            "::",
+            "::ffff:192.168.0.1",
+            "fe80::1%eth0",
+        )) {
             val rule =
                 NetworkRule
                     .builder()
@@ -172,6 +204,19 @@ class NetworkRuleModelTest {
                     .ports(listOf(443))
                     .build()
             assertEquals(target, rule.target)
+        }
+    }
+
+    @Test
+    fun `blank targets fail fast`() {
+        for (target in listOf("", "   ")) {
+            assertThrows(IllegalArgumentException::class.java) {
+                NetworkRule
+                    .builder()
+                    .action(NetworkRule.Action.ALLOW)
+                    .target(target)
+                    .build()
+            }
         }
     }
 

@@ -56,11 +56,20 @@ export type NetworkRuleAction = "allow" | "deny";
  *
  * - `target` is a FQDN, wildcard domain ("*.example.com"), IP, or CIDR.
  * - `ports` restricts the rule to TCP destination ports (each 1-65535, at
- *   most 256 per rule, no duplicates — enforced server-side). Omitted
- *   target with ports set applies across all IPv4/IPv6 destinations.
+ *   most 256 per rule, at least one — enforced server-side). Omitted target
+ *   with ports set applies across all IPv4/IPv6 destinations. Under
+ *   `defaultAction: deny`, the DNS proxy still denies hostname lookups for
+ *   targetless allow rules (it matches domain rules only), so this shape
+ *   serves direct-IP clients; hostname access requires explicit domain rules
+ *   or stable IPs.
  * - A domain target combined with ports is rejected by the server/sidecar
  *   (domain rules are evaluated at the DNS layer, which has no port
  *   dimension).
+ *
+ * Migration note: `target` used to be required. Rules that always set
+ * `target` keep compiling; only code that constructs a rule with neither
+ * field (or that reads `rule.target` without handling `undefined`) needs
+ * updating.
  */
 export type NetworkRule = (
   | { action: NetworkRuleAction; target: string; ports?: number[] }
@@ -502,6 +511,31 @@ export interface SandboxLifecycle extends Record<string, unknown> {
    * never overlap; a scheduled run is skipped while its previous run is active.
    */
   periodic?: PeriodicLifecycleHook[];
+  /**
+   * Idle behavior declared by the sandbox (OSEP-0024). Desired state: the server
+   * validates it and persists it as the reserved `sandbox.opensandbox.io/idle-policy`
+   * Sandbox CR annotation. Supported only by the fast-sandbox backend; other
+   * backends reject the field. Omitting `idlePolicy` preserves non-automated
+   * behavior exactly.
+   */
+  idlePolicy?: {
+    /**
+     * Idle threshold in seconds: the sandbox is auto-paused after this many
+     * continuously idle seconds. Absent together with `onIdle` means a wake-only
+     * policy. Must not exceed the server's configured activity TTL (default 1800).
+     */
+    idleTimeoutSeconds?: number;
+    /**
+     * Action taken at the idle threshold. Required with, and only valid with,
+     * `idleTimeoutSeconds`. Only "pause" exists today.
+     */
+    onIdle?: "pause";
+    /**
+     * Whether incoming traffic may wake the sandbox from "Paused". Defaults to
+     * true when omitted.
+     */
+    wakeOnAccess?: boolean;
+  };
 }
 
 export interface CreateSandboxRequest extends Record<string, unknown> {

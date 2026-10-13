@@ -58,9 +58,14 @@ export interface paths {
          * Delete egress rules
          * @description Remove specific egress rules from the currently enforced policy by target.
          *
-         *     - Accepts a list of target strings (FQDNs or wildcard domains).
+         *     - Accepts a list of target strings (FQDNs, wildcard domains, IPs, or
+         *       CIDRs).
          *     - Matching rules are removed; targets not found in the current policy
          *       are silently ignored (idempotent).
+         *     - An explicit empty string ("") addresses port-only rules (rules with
+         *       `ports` and no `target`): listing it removes every port-only rule.
+         *       Port-only rules cannot be addressed individually by target since
+         *       they have none.
          */
         delete: {
             parameters: {
@@ -515,6 +520,11 @@ export interface components {
              *       port dimension; combining them is not supported yet.
              *
              *     TCP only for now; UDP port scoping is not supported.
+             *
+             *     Under `defaultAction: deny`, the DNS proxy still denies hostname
+             *     lookups for targetless allow rules (it matches domain rules
+             *     only), so this shape serves direct-IP clients; hostname access
+             *     requires explicit domain rules or stable IPs.
              */
             ports?: number[];
         };
