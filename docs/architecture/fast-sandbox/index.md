@@ -5,7 +5,7 @@ description: OpenSandbox integration with the fast-sandbox platform — template
 
 # Fast Sandbox Integration
 
-Fast Sandbox is a runtime backend that connects OpenSandbox to the external [fast-sandbox](https://github.com/opensandbox-group/fast-sandbox) platform. It provisions template-backed sandboxes — containers, gVisor, Kata, or Firecracker microVMs — inside pre-warmed **Fastlet** pods, removing the per-sandbox Kubernetes scheduler, watch propagation, and kubelet path from the creation hot path.
+Fast Sandbox is a runtime backend that connects OpenSandbox to the external [fast-sandbox](https://github.com/opensandbox-group/fast-sandbox) platform. It provisions template-backed **Firecracker microVM** sandboxes inside pre-warmed **Fastlet** pods, removing the per-sandbox Kubernetes scheduler, watch propagation, and kubelet path from the creation hot path.
 
 The adapter and endpoint integration live in this repository. FastPath, the Fastlet runtime, and the `sandbox.fast.io` CRDs are owned by the fast-sandbox platform and consumed as-is.
 
@@ -39,7 +39,7 @@ The adapter and endpoint integration live in this repository. FastPath, the Fast
 - **CRD-first control**: durable per-sandbox intent lives in `sandbox.fast.io` resources; FastPath gRPC carries the mutation hot path. The Kubernetes scheduler, watch propagation, and kubelet leave the create path — the durable write does not.
 - **Fail-closed multi-tenant egress**: every subject denies traffic from registration until its data plane is ready — policy delivery can be late, never early-open.
 - **Authenticated routing**: sandbox routes are signed `f1.` scopes verified at ingress; endpoint issuance is decoupled from readiness.
-- **MicroVM-ready**: one integration serves container and Firecracker golden images, selected by template rather than by request.
+- **Firecracker by template**: golden images are built for Firecracker microVMs — the runtime shape is fixed at build time, not per request.
 
 ## Documentation
 
