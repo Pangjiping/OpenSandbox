@@ -801,3 +801,28 @@ func TestAddUpstreamProxyIPsFailureKeepsMirror(t *testing.T) {
 	require.NoError(t, a.ApplyReset(ctx))
 	assert.NotContains(t, runner.last(), "10.9.9.9", "failed update must not leak into the rebuild")
 }
+
+func TestPortFloorDropsInDispatchAndInputChains(t *testing.T) {
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{
+		MitmRedirectPort:    18081,
+		PortFloorDenyRanges: []policy.PortRange{{Lo: 1, Hi: 79}, {Lo: 81, Hi: 442}, {Lo: 444, Hi: 65535}},
+	})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+
+	script := runner.last()
+	floorDispatch := "add rule inet opensandbox-fast-sandbox dispatch tcp dport { 1-79, 81-442, 444-65535 } drop"
+	floorInput := "add rule inet opensandbox-fast-sandbox input tcp dport { 1-79, 81-442, 444-65535 } drop"
+	require.Contains(t, script, floorDispatch, "the floor must gate the forward path profile-wide")
+	require.Contains(t, script, floorInput, "the floor must gate MITM-DNATed traffic by its ORIGINAL port too")
+	// Both drops precede the fail-closed tail.
+	require.Less(t, strings.Index(script, floorDispatch), strings.Index(script, "meta mark &"))
+
+	// No floor configured: no floor rules at all.
+	plain := &fakeRunner{}
+	noFloor := NewApplier(plain.Run, Options{})
+	require.NoError(t, noFloor.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+	assert.NotContains(t, plain.last(), "tcp dport { 1-79")
+}

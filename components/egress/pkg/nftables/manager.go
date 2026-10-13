@@ -348,14 +348,20 @@ func writeElements(b *strings.Builder, setName string, elems []string) {
 // order-within-verb is all that matters here). A rule with no Target applies
 // to all destinations: emitting bare "tcp dport { ... }" with no daddr match
 // naturally covers both IPv4 and IPv6, so target-less rules need no v4/v6
-// split. Port-scoping is TCP-only for now; see docs/architecture/network/egress.md.
+// split. The dport set mixes individual ports and lo-hi intervals (the
+// platform port floor arrives as intervals; nftables accepts both forms in
+// one anonymous set). Port-scoping is TCP-only for now; see
+// docs/architecture/network/egress.md.
 func writePortScopedRules(b *strings.Builder, rules []policy.PortScopedRule, verb string) {
 	for _, r := range rules {
-		ports := make([]string, len(r.Ports))
-		for i, port := range r.Ports {
-			ports[i] = fmt.Sprintf("%d", port)
+		members := make([]string, 0, len(r.Ports)+len(r.Ranges))
+		for _, port := range r.Ports {
+			members = append(members, fmt.Sprintf("%d", port))
 		}
-		portsClause := strings.Join(ports, ", ")
+		for _, rg := range r.Ranges {
+			members = append(members, fmt.Sprintf("%d-%d", rg.Lo, rg.Hi))
+		}
+		portsClause := strings.Join(members, ", ")
 		if r.Target == "" {
 			fmt.Fprintf(b, "add rule inet %s %s tcp dport { %s } %s\n", tableName, chainName, portsClause, verb)
 			continue

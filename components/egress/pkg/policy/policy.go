@@ -39,6 +39,19 @@ const (
 	targetPortOnly
 )
 
+// PortRange is an inclusive TCP port interval; Lo and Hi are both 1-65535
+// and Lo must not exceed Hi. Used by the platform port floor
+// (allow.ports.always); the user-facing ports field stays a plain int list.
+type PortRange struct {
+	Lo int
+	Hi int
+}
+
+// Contains reports whether port falls inside the range.
+func (r PortRange) Contains(port int) bool {
+	return port >= r.Lo && port <= r.Hi
+}
+
 // DefaultDenyPolicy is deny-by-default with an empty egress list.
 func DefaultDenyPolicy() *NetworkPolicy {
 	return &NetworkPolicy{
@@ -65,6 +78,14 @@ type EgressRule struct {
 	// evaluation has no port dimension); normalizePolicy rejects that
 	// combination. See PortScopedRules for nftables enforcement.
 	Ports []int `json:"ports,omitempty"`
+	// PortRanges is the range form of Ports, used exclusively by the
+	// platform port floor (allow.ports.always): its complement is expressed
+	// as intervals because enumerating ~65k individual ports is neither
+	// practical nor bounded. Internal only — never serialized (the PATCH
+	// merge re-marshals user rules, which never carry ranges; the always
+	// overlay is re-read from its file on every reload). Rules carrying
+	// PortRanges are enforced exactly like Ports rules via PortScopedRules.
+	PortRanges []PortRange `json:"-"`
 
 	targetKind targetKind
 	ip         netip.Addr
@@ -248,7 +269,7 @@ func (p *NetworkPolicy) StaticIPSets() (allowV4, allowV6, denyV4, denyV6 []strin
 		return
 	}
 	for _, r := range p.Egress {
-		if len(r.Ports) > 0 {
+		if len(r.Ports) > 0 || len(r.PortRanges) > 0 {
 			// Port-scoped IP/CIDR rules are enforced separately via
 			// PortScopedRules; including them here would additionally
 			// allow/deny the target on every port, defeating the scoping.
@@ -302,6 +323,8 @@ type PortScopedRule struct {
 	Target string
 	IsV6   bool
 	Ports  []int
+	// Ranges is the interval form of Ports (platform port floor rules).
+	Ranges []PortRange
 }
 
 // PortScopedRules returns the policy's port-constrained rules split into deny
@@ -315,10 +338,10 @@ func (p *NetworkPolicy) PortScopedRules() (deny, allow []PortScopedRule) {
 		return nil, nil
 	}
 	for _, r := range p.Egress {
-		if len(r.Ports) == 0 {
+		if len(r.Ports) == 0 && len(r.PortRanges) == 0 {
 			continue
 		}
-		rule := PortScopedRule{Action: r.Action, Ports: r.Ports}
+		rule := PortScopedRule{Action: r.Action, Ports: r.Ports, Ranges: r.PortRanges}
 		switch r.targetKind {
 		case targetIP:
 			rule.Target = r.ip.String()

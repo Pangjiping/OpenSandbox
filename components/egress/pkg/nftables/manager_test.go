@@ -797,3 +797,28 @@ func TestManagerSerializesConcurrentTrackerUpdates(t *testing.T) {
 		require.NoError(t, err)
 	}
 }
+
+func TestApplyStatic_PortFloorRangesDenyBeforeAllows(t *testing.T) {
+	var rendered string
+	m := NewManagerWithRunner(func(_ context.Context, script string) ([]byte, error) {
+		rendered = script
+		return nil, nil
+	})
+	// Platform port floor arrives as an always-deny range rule; a user
+	// port-only allow must never open a floor port. The user policy is
+	// parsed (normalizing target kinds), then the floor is prepended the
+	// same way MergeAlwaysOverlay prepends always-deny rules.
+	p, err := policy.ParsePolicy(`{"defaultAction":"allow","egress":[{"action":"allow","ports":[22]}]}`)
+	require.NoError(t, err)
+	p.Egress = append([]policy.EgressRule{
+		policy.NewPortFloorDenyRule([]policy.PortRange{{Lo: 1, Hi: 79}, {Lo: 81, Hi: 442}, {Lo: 444, Hi: 65535}}),
+	}, p.Egress...)
+	require.NoError(t, m.ApplyStatic(context.Background(), p))
+
+	floorRule := "add rule inet opensandbox egress tcp dport { 1-79, 81-442, 444-65535 } drop"
+	userAllow := "add rule inet opensandbox egress tcp dport { 22 } accept"
+	expectContains(t, rendered, floorRule)
+	expectContains(t, rendered, userAllow)
+	require.Less(t, strings.Index(rendered, floorRule), strings.Index(rendered, userAllow),
+		"the platform floor must be evaluated before any user port allow")
+}

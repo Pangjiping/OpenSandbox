@@ -18,6 +18,8 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/alibaba/opensandbox/egress/pkg/log"
@@ -27,9 +29,17 @@ import (
 const (
 	alwaysDenyFilePath  = "/var/egress/rules/deny.always"
 	alwaysAllowFilePath = "/var/egress/rules/allow.always"
+	// allowPortsFilePath is the platform TCP port floor, whitelist-direction:
+	// each line is a port or inclusive range that may be reachable; the
+	// complement is enforced as always-deny so the floor holds no matter what
+	// the sandbox policy (defaultAction included) says.
+	allowPortsFilePath = "/var/egress/rules/allow.ports.always"
 )
 
 // LoadAlwaysRuleFiles loads optional /var/egress/rules/deny|allow.always (ignore if missing); errors on unreadable.
+// The optional allow.ports.always floor is loaded too and returned inside the
+// deny slice as port-range rules, so every consumer of the always overlay
+// (classic sidecar, fast-sandbox, revision runtime) enforces it uniformly.
 func LoadAlwaysRuleFiles() (deny, allow []EgressRule, err error) {
 	deny, err = loadAlwaysRuleFile(alwaysDenyFilePath, ActionDeny)
 	if err != nil {
@@ -39,9 +49,176 @@ func LoadAlwaysRuleFiles() (deny, allow []EgressRule, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	portFloor, err := loadPortFloorRules(allowPortsFilePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	deny = append(deny, portFloor...)
 	log.Infof("loaded %d always-deny rule(s) from %s", len(deny), alwaysDenyFilePath)
 	log.Infof("loaded %d always-allow rule(s) from %s", len(allow), alwaysAllowFilePath)
 	return deny, allow, nil
+}
+
+func loadAlwaysRuleFileWithAction(action string) func(path string) ([]EgressRule, error) {
+	return func(path string) ([]EgressRule, error) {
+		return loadAlwaysRuleFile(path, action)
+	}
+}
+
+// LoadAllowedPortsAlways reads allow.ports.always (whitelist lines: "80",
+// "443", "8000-9000") and returns the merged allowed ranges. A missing file
+// yields nil. Exported for the fast-sandbox profile, which enforces the
+// floor profile-wide via DenyRangesForAllowedPorts instead of through the
+// per-subject always overlay.
+func LoadAllowedPortsAlways() ([]PortRange, error) {
+	data, err := os.ReadFile(allowPortsFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return parseAllowedPortRanges(data, allowPortsFilePath)
+}
+
+// loadPortFloorRules reads allow.ports.always and returns its complement as
+// a single port-range always-deny rule. A missing file — or one that
+// declares no ports — yields nil: an empty whitelist would otherwise
+// silently deny every TCP connection in existing deployments the moment the
+// file is created by mistake; operators who want an explicit catch-all list
+// at least one line.
+func loadPortFloorRules(path string) ([]EgressRule, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	allowed, err := parseAllowedPortRanges(data, path)
+	if err != nil {
+		return nil, err
+	}
+	if len(allowed) == 0 {
+		log.Infof("%s declares no ports; no port floor enforced", path)
+		return nil, nil
+	}
+	denyRanges := complementRanges(allowed)
+	if len(denyRanges) == 0 {
+		return nil, nil
+	}
+	rule := EgressRule{
+		Action:     ActionDeny,
+		PortRanges: denyRanges,
+		targetKind: targetPortOnly,
+	}
+	log.Infof("loaded port floor from %s: %d allowed range(s), %d denied range(s)",
+		path, len(allowed), len(denyRanges))
+	return []EgressRule{rule}, nil
+}
+
+// NewPortFloorDenyRule builds the platform port-floor deny rule covering the
+// given deny ranges. Exported for the fast-sandbox profile, which enforces
+// the floor as a profile-wide master-chain rule instead of through the
+// merged per-subject policy; the classic sidecar derives it from
+// allow.ports.always via LoadAlwaysRuleFiles instead.
+func NewPortFloorDenyRule(denyRanges []PortRange) EgressRule {
+	return EgressRule{
+		Action:     ActionDeny,
+		PortRanges: denyRanges,
+		targetKind: targetPortOnly,
+	}
+}
+
+// DenyRangesForAllowedPorts returns 1-65535 minus the allowed ranges
+// (merged, sorted) — the drop intervals for a port floor.
+func DenyRangesForAllowedPorts(allowed []PortRange) []PortRange {
+	return complementRanges(allowed)
+}
+
+// parseAllowedPortRanges parses whitelist lines ("80", "443", "8000-9000";
+// '#' comments and blanks ignored) into merged, sorted, non-overlapping
+// ranges. Overlapping/adjacent lines are coalesced.
+func parseAllowedPortRanges(data []byte, pathForErr string) ([]PortRange, error) {
+	var out []PortRange
+	sc := bufio.NewScanner(strings.NewReader(string(data)))
+	lineNum := 0
+	for sc.Scan() {
+		lineNum++
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		r, err := parsePortRangeToken(line)
+		if err != nil {
+			return nil, fmt.Errorf("%s line %d: %w", pathForErr, lineNum, err)
+		}
+		out = append(out, r)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", pathForErr, err)
+	}
+	return mergeRanges(out), nil
+}
+
+// parsePortRangeToken parses "80" or "lo-hi" (inclusive, 1-65535, lo<=hi).
+func parsePortRangeToken(token string) (PortRange, error) {
+	loStr, hiStr, bound := strings.Cut(token, "-")
+	lo, err := strconv.Atoi(strings.TrimSpace(loStr))
+	if err != nil {
+		return PortRange{}, fmt.Errorf("invalid port %q", token)
+	}
+	hi := lo
+	if bound {
+		hi, err = strconv.Atoi(strings.TrimSpace(hiStr))
+		if err != nil {
+			return PortRange{}, fmt.Errorf("invalid port range %q", token)
+		}
+	}
+	if lo < 1 || hi > 65535 || lo > hi {
+		return PortRange{}, fmt.Errorf("port range %q out of 1-65535 or inverted", token)
+	}
+	return PortRange{Lo: lo, Hi: hi}, nil
+}
+
+// mergeRanges sorts and coalesces overlapping or adjacent ranges.
+func mergeRanges(ranges []PortRange) []PortRange {
+	if len(ranges) == 0 {
+		return nil
+	}
+	sorted := append([]PortRange(nil), ranges...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Lo < sorted[j].Lo })
+	merged := []PortRange{sorted[0]}
+	for _, r := range sorted[1:] {
+		last := &merged[len(merged)-1]
+		if r.Lo <= last.Hi+1 {
+			if r.Hi > last.Hi {
+				last.Hi = r.Hi
+			}
+			continue
+		}
+		merged = append(merged, r)
+	}
+	return merged
+}
+
+// complementRanges returns 1-65535 minus the allowed ranges, merged and
+// sorted. Allowed input must already be merged (see mergeRanges).
+func complementRanges(allowed []PortRange) []PortRange {
+	var out []PortRange
+	next := 1
+	for _, r := range allowed {
+		if r.Lo > next {
+			out = append(out, PortRange{Lo: next, Hi: r.Lo - 1})
+		}
+		if r.Hi >= next {
+			next = r.Hi + 1
+		}
+	}
+	if next <= 65535 {
+		out = append(out, PortRange{Lo: next, Hi: 65535})
+	}
+	return out
 }
 
 func loadAlwaysRuleFile(path, action string) ([]EgressRule, error) {

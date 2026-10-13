@@ -16,7 +16,7 @@ Egress is how a sandbox gets a network policy instead of open internet access. I
 | FQDN rules | Allow or deny by domain, wildcard (`*.pypi.org`), IP, or CIDR — optionally scoped to TCP destination ports |
 | DNS filtering (default) | Denied domains fail resolution; allowed ones resolve normally |
 | Network enforcement (`dns+nft`) | Strict default-deny at the packet layer, fed by DNS-resolved addresses with bounded leases |
-| Platform overlays | Operator-set `deny.always` / `allow.always` floors that user policy cannot override |
+| Platform overlays | Operator-set `deny.always` / `allow.always` floors that user policy cannot override, plus a TCP port floor (`allow.ports.always`) that caps which ports are reachable at all |
 | Credential Vault | Secrets stay in the sidecar; credentials are injected into matching outbound requests |
 | Transparent TLS interception (L7) | See, control, and authenticate outbound HTTPS — production-usable mechanism, experimental configuration surface |
 | Fail-closed startup | If enforcement cannot be installed, the sidecar exits — it never runs as a no-op |
@@ -29,11 +29,13 @@ Egress is how a sandbox gets a network policy instead of open internet access. I
 
 **Precedence.** First matching rule wins, in this order: platform `deny.always`, platform `allow.always`, then your policy — so the platform's deny always beats your allow. The overlays live in files inside the sidecar image and hot-reload every minute. A reload publishes the parsed pair only after the corresponding nftables static policy is accepted; the experimental revision runtime additionally requires exact receiver confirmation. Parse or apply failures keep the last accepted in-memory rules. Failures remain eligible for retry unless the experimental revision runtime requires recovery, as described below. Your policy is set per sandbox and can be mutated at runtime (add, replace, remove by target) through the API the SDKs expose.
 
+**Port floor.** Operators can also ship an `allow.ports.always` file next to the overlays: a whitelist of TCP ports (one port or `lo-hi` range per line) that are reachable **at all**. The sidecar derives the complement and enforces it as an always-deny ahead of every user rule — so regardless of what a sandbox's `defaultAction` or allow rules say, only the whitelisted ports pass (TCP only; the same fail-closed ordering that makes a deny rule win over any allow). A missing or empty file means no floor. Under transparent MITM, intercepted ports are governed by the interception config, so keep intercepted ports within the whitelist. Note established connections persist until their lease expires, as with any policy change.
+
 ### Port-scoped rules
 
 A rule's `target` may be omitted when `ports` is set, so a rule can scope by TCP destination port alone — `{"action": "deny", "ports": [25]}` blocks outbound SMTP regardless of destination. `target` and `ports` can also combine to scope an IP or CIDR rule to specific ports. Ports are enforced at the network layer (`dns+nft` mode) as `tcp dport` matches, and a deny rule — port-scoped or not — always wins over an allow rule.
 
-Current limits: TCP only (no UDP); at most 256 ports per rule; domain targets cannot combine with `ports` (domain rules are evaluated at the DNS layer, which has no port dimension) and are rejected at validation; `DELETE /policy` removes rules by `target`, so port-only rules are replaced via a full `POST`/`PUT` instead. The Fast Sandbox profile rejects `ports` with a 400 until its enforcement path supports them.
+Current limits: TCP only (no UDP); at most 256 ports per rule; domain targets cannot combine with `ports` (domain rules are evaluated at the DNS layer, which has no port dimension) and are rejected at validation; `DELETE /policy` removes rules by `target`, so port-only rules are replaced via a full `POST`/`PUT` instead. The Fast Sandbox profile rejects `ports` with a 400 until its enforcement path supports them. Independently of user rules, operators can cap reachable ports platform-wide with the `allow.ports.always` floor (see [Precedence](#precedence)).
 
 ## Design decisions
 

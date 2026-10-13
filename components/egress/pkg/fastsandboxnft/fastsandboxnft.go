@@ -153,6 +153,14 @@ type Options struct {
 	// needed; the drop is the source-IP-model equivalent of the sidecar
 	// profile's uid-scoped upstream rules.
 	UpstreamProxy *UpstreamProxyEndpoint
+	// PortFloorDenyRanges carries the platform port floor (from
+	// allow.ports.always) as the 1-65535 intervals that must stay closed
+	// for every subject, regardless of policy — the fast-path equivalent of
+	// the sidecar's always-deny port-range rule. The fast path enforces the
+	// floor profile-wide (one rule in the master dispatch/input chains)
+	// rather than per subject; user port-scoped rules never reach this
+	// profile because the server rejects ports on fast-sandbox routes.
+	PortFloorDenyRanges []policy.PortRange
 }
 
 // installedSubject tracks the enforcement state the applier owns in memory;
@@ -512,14 +520,36 @@ func (a *Applier) writeTableHeader(b *strings.Builder) error {
 		fmt.Fprintf(b, "add rule inet %s %s ct state established,related accept\n", TableName, inputChain)
 	}
 	if !a.opts.BlockDoH443 {
+		a.writePortFloorFragment(b)
 		writeFailClosedTail(b)
 		return nil
 	}
 	if err := a.writeDoHBlockFragment(b); err != nil {
 		return err
 	}
+	a.writePortFloorFragment(b)
 	writeFailClosedTail(b)
 	return nil
+}
+
+// writePortFloorFragment emits the platform port floor (allow.ports.always
+// complement) as one drop rule per master chain: forward for direct
+// traffic, input for MITM-DNATed traffic (whose conntrack ORIGINAL port the
+// input chain already recovers for policy evaluation). Position is with the
+// other profile-wide drops, ahead of the fail-closed tail; order relative
+// to the DoH drops is irrelevant — both drop.
+func (a *Applier) writePortFloorFragment(b *strings.Builder) {
+	if len(a.opts.PortFloorDenyRanges) == 0 {
+		return
+	}
+	members := make([]string, 0, len(a.opts.PortFloorDenyRanges))
+	for _, rg := range a.opts.PortFloorDenyRanges {
+		members = append(members, fmt.Sprintf("%d-%d", rg.Lo, rg.Hi))
+	}
+	fmt.Fprintf(b, "add rule inet %s %s tcp dport { %s } drop\n", TableName, dispatchChain, strings.Join(members, ", "))
+	if a.opts.MitmRedirectPort > 0 {
+		fmt.Fprintf(b, "add rule inet %s %s tcp dport { %s } drop\n", TableName, inputChain, strings.Join(members, ", "))
+	}
 }
 
 // writeFailClosedTail appends the master-chain rule that drops every

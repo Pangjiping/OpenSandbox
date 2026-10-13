@@ -255,7 +255,23 @@ func runFastSandboxProfile(ctx context.Context, upstreamSpec *mitmproxy.Upstream
 func fastSandboxNftOptions(upstreamSpec *mitmproxy.UpstreamProxySpec) fastsandboxnft.Options {
 	opts := fastSandboxDoHOptions()
 	opts.UpstreamProxy = fastSandboxUpstreamEndpoint(upstreamSpec)
+	opts.PortFloorDenyRanges = fastSandboxPortFloor()
 	return opts
+}
+
+// fastSandboxPortFloor reads allow.ports.always and returns its complement
+// as the profile-wide drop intervals. Load errors fail closed (the floor is
+// a platform control, not an optimization); a missing or empty file means
+// no floor.
+func fastSandboxPortFloor() []policy.PortRange {
+	allowed, err := policy.LoadAllowedPortsAlways()
+	if err != nil {
+		log.Fatalf("failed to load %s: %v", "allow.ports.always", err)
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	return policy.DenyRangesForAllowedPorts(allowed)
 }
 
 // fastSandboxUpstreamEndpoint translates the validated chained upstream
