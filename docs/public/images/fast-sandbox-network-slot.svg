@@ -25,7 +25,7 @@
 <rect x="420" y="176" width="330" height="128" rx="8" fill="#f1f6ff" stroke="#a9c7f3" stroke-width="1.5"/>
 <text x="436" y="206" class="heading">prerouting nat · per subject</text>
 <text x="436" y="239" class="body">tcp 80/443 → DNAT :18081 (MITM)</text>
-<text x="436" y="263" class="label">udp 53 → redirect :15353 (DNS)</text>
+<text x="436" y="263" class="label">tcp/udp 53 → DNS redirect :15353</text>
 <text x="436" y="287" class="label">one rule pair per slot, keyed by src IP</text>
 <rect x="798" y="176" width="310" height="128" rx="8" fill="#f1fbf5" stroke="#afdcc0" stroke-width="1.5"/>
 <text x="814" y="206" class="heading">Shared services</text>
@@ -53,7 +53,7 @@
 <rect x="48" y="570" width="640" height="180" rx="12" fill="#f7faff" stroke="#d6e1e9" stroke-width="1.5"/>
 <text x="72" y="600" class="heading">SET_BINDING envelope</text>
 <text x="72" y="633" class="body">sandbox.uid → subject identity</text>
-<text x="72" y="661" class="body">revision · runtimeInstanceId → identity fencing</text>
+<text x="72" y="661" class="body">revision · runtimeInstanceId · attachmentId → fencing</text>
 <text x="72" y="689" class="body">ip → dispatch key · gateway → DNS / MITM targets</text>
 <text x="72" y="713" class="label">privateCidr isolates siblings · the slot ships with the envelope</text>
 <rect x="712" y="570" width="468" height="180" rx="12" fill="#f4fbf8" stroke="#c6e4d7" stroke-width="1.5"/>

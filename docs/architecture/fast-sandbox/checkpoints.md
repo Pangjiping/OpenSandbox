@@ -57,4 +57,4 @@ Snapshot names are cluster-wide index keys with last-writer-wins semantics, so F
 
 ## Relationship to BatchSandbox pause/resume
 
-Fast Sandbox and the Kubernetes operator run **two independent checkpoint mechanisms**. `sandbox.fast.io` Sandbox records checkpoint microVM runtime state (rootfs + VM state + memory) for template-backed sandboxes; the operator's `SandboxSnapshot` (`sandbox.opensandbox.io`) commits container rootfs to an OCI registry (see [Pause and Resume](/guides/pause-resume)). They share the lifecycle API and 202 semantics, not the artifact format or the control plane.
+Fast Sandbox and the Kubernetes operator run **two independent checkpoint mechanisms**. `sandbox.fast.io` Sandbox records checkpoint microVM runtime state (rootfs + VM state + memory) for template-backed sandboxes; the operator's `SandboxSnapshot` (`sandbox.opensandbox.io`) commits container rootfs — and, for the QEMU contract, VM state — to an OCI registry (see [Pause and Resume](/guides/pause-resume)). They share the lifecycle API and 202 semantics, not the artifact format or the control plane.
