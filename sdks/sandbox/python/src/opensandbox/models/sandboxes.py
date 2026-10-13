@@ -162,8 +162,12 @@ class NetworkRule(BaseModel):
     @field_validator("target")
     @classmethod
     def target_must_not_be_empty(cls, v: str | None) -> str | None:
+        # A blank target normalizes to "omitted" (mirroring the server and
+        # the sidecar, which trims before classifying and emits "target": ""
+        # for port-only rules on read-back), so a policy containing them
+        # still parses instead of failing with a blank-target error.
         if v is not None and not v.strip():
-            raise ValueError("Network rule target cannot be blank")
+            return None
         return v
 
     @field_validator("ports")

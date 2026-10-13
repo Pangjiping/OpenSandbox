@@ -672,6 +672,15 @@ def test_network_rule_requires_target_or_ports() -> None:
         NetworkRule(action="allow")
 
 
+def test_network_rule_read_back_tolerates_sidecar_blank_target() -> None:
+    """The sidecar marshals target without omitempty, so a port-only rule
+    reads back as {"target": "", "ports": [25]}; the domain model must parse
+    it (blank => omitted) instead of raising a blank-target error."""
+    rule = NetworkRule.model_validate({"action": "deny", "target": "", "ports": [25]})
+    assert rule.target is None
+    assert rule.ports == [25]
+
+
 def test_network_rule_rejects_more_than_256_ports() -> None:
     with pytest.raises(ValidationError):
         NetworkRule(action="allow", ports=list(range(1, 258)))
