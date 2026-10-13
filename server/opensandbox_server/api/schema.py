@@ -51,6 +51,10 @@ def _is_ip_or_cidr(value: str) -> bool:
     # time instead of this validator rejecting it here.
     if "/" in value and not value.partition("/")[2].isdigit():
         return False
+    # netip.ParsePrefix also rejects scoped prefixes ("fe80::1%eth0/64") even
+    # though Python's ipaddress accepts them; classify those as domains too.
+    if "/" in value and "%" in value:
+        return False
     try:
         ipaddress.ip_network(value, strict=False)
         return True
@@ -127,9 +131,9 @@ class NetworkRule(BaseModel):
         None,
         description=(
             "FQDN, wildcard domain (e.g., 'example.com', '*.example.com'), IP address, or CIDR. "
-            "May be omitted when `ports` is set; otherwise required."
+            "May be omitted when `ports` is set; otherwise required. Blank normalizes to omitted "
+            "(the sidecar marshals port-only rules as \"target\": \"\" on read-back)."
         ),
-        min_length=1,
     )
     ports: Optional[List[int]] = Field(
         None,

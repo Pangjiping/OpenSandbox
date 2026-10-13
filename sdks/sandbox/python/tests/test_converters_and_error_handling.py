@@ -977,3 +977,12 @@ def test_sandbox_model_converter_supports_windows_platform_request() -> None:
     )
     dumped = req.to_dict()
     assert dumped["platform"] == {"os": "windows", "arch": "amd64"}
+
+
+def test_network_rule_trims_target_before_classification() -> None:
+    """The sidecar trims before classifying; " 10.0.0.5" with ports must be
+    an IP locally too, not a misleading domain+ports rejection."""
+    rule = NetworkRule(action="allow", target="  10.0.0.5  ", ports=[22])
+    assert rule.target == "10.0.0.5"
+    with pytest.raises(ValidationError):
+        NetworkRule(action="allow", target="  example.com  ", ports=[443])

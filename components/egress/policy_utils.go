@@ -88,22 +88,27 @@ func mergeEgressRules(base, additions []policy.EgressRule) []policy.EgressRule {
 
 // removeRulesByTarget returns a new slice with rules matching targets removed,
 // plus the removed rules. Domain targets are matched case-insensitively.
-// Targets not found are silently ignored.
+// Targets not found are silently ignored. An explicit empty entry ("")
+// addresses port-only rules (which have no target): listing it removes every
+// port-only rule; omitting it leaves them untouched.
 func removeRulesByTarget(rules []policy.EgressRule, targets []string) (kept, removed []policy.EgressRule) {
 	if len(targets) == 0 || len(rules) == 0 {
 		return rules, nil
 	}
 	removeSet := make(map[string]struct{}, len(targets))
+	removePortOnly := false
 	for _, t := range targets {
 		key := strings.ToLower(strings.TrimSpace(t))
 		if key == "" {
+			removePortOnly = true
 			continue
 		}
 		removeSet[key] = struct{}{}
 	}
 	kept = make([]policy.EgressRule, 0, len(rules))
 	for _, r := range rules {
-		if _, ok := removeSet[strings.ToLower(r.Target)]; ok {
+		_, targetListed := removeSet[strings.ToLower(r.Target)]
+		if targetListed || (removePortOnly && r.Target == "") {
 			removed = append(removed, r)
 		} else {
 			kept = append(kept, r)

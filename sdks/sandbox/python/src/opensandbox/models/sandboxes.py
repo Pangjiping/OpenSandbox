@@ -162,13 +162,14 @@ class NetworkRule(BaseModel):
     @field_validator("target")
     @classmethod
     def target_must_not_be_empty(cls, v: str | None) -> str | None:
-        # A blank target normalizes to "omitted" (mirroring the server and
-        # the sidecar, which trims before classifying and emits "target": ""
-        # for port-only rules on read-back), so a policy containing them
-        # still parses instead of failing with a blank-target error.
-        if v is not None and not v.strip():
+        # Normalize like the server: blank target means "omitted" (the
+        # sidecar marshals port-only rules as "target": "" on read-back),
+        # and surrounding whitespace is trimmed before storing so the
+        # serialized target matches what the sidecar will classify.
+        if v is None:
             return None
-        return v
+        v = v.strip()
+        return v or None
 
     @field_validator("ports")
     @classmethod
@@ -188,7 +189,9 @@ class NetworkRule(BaseModel):
     def target_or_ports_required(self) -> "NetworkRule":
         if self.target is None and not self.ports:
             raise ValueError("Network rule requires target, ports, or both")
-        if self.ports and self.target is not None and not _is_ip_or_cidr(self.target):
+        # Classify the trimmed target the way the sidecar does, so " 10.0.0.5"
+        # is an IP locally too instead of a misleading domain+ports error.
+        if self.ports and self.target is not None and not _is_ip_or_cidr(self.target.strip()):
             raise ValueError("Network rule ports are not supported for domain targets")
         return self
 

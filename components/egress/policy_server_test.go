@@ -1032,3 +1032,25 @@ type recoveryNoCurrentPolicyProxy struct{ stubProxy }
 func (*recoveryNoCurrentPolicyProxy) CurrentPolicy() *policy.NetworkPolicy {
 	panic("legacy nil-nft callback must not request CurrentPolicy")
 }
+
+func TestHandleDelete_PortOnlyRulesViaEmptyTarget(t *testing.T) {
+	// Port-only rules have no target; an explicit empty entry in the DELETE
+	// list addresses them (all of them), so they are not permanently stuck.
+	initial := &policy.NetworkPolicy{
+		DefaultAction: policy.ActionDeny,
+		Egress: []policy.EgressRule{
+			{Action: policy.ActionDeny, Ports: []int{25}},
+			{Action: policy.ActionAllow, Target: "example.com"},
+			{Action: policy.ActionAllow, Ports: []int{53}},
+		},
+	}
+	proxy := &stubProxy{updated: initial}
+	srv := &policyServer{proxy: proxy, nft: &stubNft{}, enforcementMode: "dns+nft"}
+
+	req := httptest.NewRequest(http.MethodDelete, "/policy", strings.NewReader(`["example.com", ""]`))
+	w := httptest.NewRecorder()
+	srv.handlePolicy(w, req)
+
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+	require.Len(t, proxy.updated.Egress, 0, "port-only rules go with the empty entry, domain rule with its target")
+}

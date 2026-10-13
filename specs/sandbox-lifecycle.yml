@@ -2182,7 +2182,6 @@ components:
           description: Whether to allow or deny matching targets.
         target:
           type: string
-          minLength: 1
           description: |
             FQDN, wildcard domain (e.g., "example.com", "*.example.com"), IP
             address, or CIDR. May be omitted when `ports` is set (see below);

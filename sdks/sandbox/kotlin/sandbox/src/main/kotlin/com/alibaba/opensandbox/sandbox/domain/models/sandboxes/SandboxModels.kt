@@ -309,7 +309,10 @@ class NetworkRule private constructor(
             for (port in ports) {
                 require(port in 1..65535) { "Port $port out of range 1-65535" }
             }
-            this.ports = ports
+            // Defensive copy at set time: mutating the caller's list between
+            // ports() and build() must not smuggle unvalidated values past
+            // the checks above.
+            this.ports = ports.toList()
             return this
         }
 
@@ -318,11 +321,36 @@ class NetworkRule private constructor(
             val targetValue = target
             val portsValue = ports
             require(targetValue != null || portsValue != null) { "Either target or ports must be specified" }
+            if (portsValue != null && targetValue != null && !isIpOrCidr(targetValue)) {
+                throw IllegalArgumentException(
+                    "Ports are not supported for domain targets: \"$targetValue\" " +
+                        "(domain rules are evaluated at the DNS layer, which has no port dimension)",
+                )
+            }
             return NetworkRule(
                 action = actionValue,
                 target = targetValue,
                 ports = portsValue?.toList(),
             )
+        }
+
+        /**
+         * Mirrors the sidecar's netip.ParseAddr/ParsePrefix classification
+         * closely enough for the domain+ports rejection: a target is
+         * IP/CIDR when it is a dotted-quad IPv4 literal, an IPv6 literal
+         * (colons; zones allowed without a prefix), or a prefix whose
+         * length is decimal digits. Netmask-style prefixes and scoped
+         * prefixes count as domains, matching the server validator.
+         */
+        private fun isIpOrCidr(target: String): Boolean {
+            if (target.count { it == '/' } > 1) return false
+            val prefix = target.substringAfter('/', missingDelimiterValue = "")
+            if (prefix.isNotEmpty() && (target.contains('%') || !prefix.all(Char::isDigit))) return false
+            val addr = target.substringBefore('/')
+            if (addr.contains(':')) return true
+            val octets = addr.split('.')
+            return octets.size == 4 &&
+                octets.all { it.isNotEmpty() && it.length <= 3 && it.all(Char::isDigit) && it.toInt() <= 255 }
         }
     }
 }

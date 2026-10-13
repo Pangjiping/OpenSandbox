@@ -53,9 +53,9 @@ func LoadAlwaysRuleFiles() (deny, allow []EgressRule, err error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	deny = append(deny, portFloor...)
 	log.Infof("loaded %d always-deny rule(s) from %s", len(deny), alwaysDenyFilePath)
 	log.Infof("loaded %d always-allow rule(s) from %s", len(allow), alwaysAllowFilePath)
+	deny = append(deny, portFloor...)
 	return deny, allow, nil
 }
 
@@ -118,10 +118,10 @@ func loadPortFloorRules(path string) ([]EgressRule, error) {
 }
 
 // NewPortFloorDenyRule builds the platform port-floor deny rule covering the
-// given deny ranges. Exported for the fast-sandbox profile, which enforces
-// the floor as a profile-wide master-chain rule instead of through the
-// merged per-subject policy; the classic sidecar derives it from
-// reachable.ports.cap via LoadAlwaysRuleFiles instead.
+// given deny ranges. Production paths derive the floor themselves
+// (loadPortFloorRules on the classic sidecar, LoadReachablePortsAlways +
+// DenyRangesForAllowedPorts on fast-sandbox); this constructor exists for
+// tests and for callers that already hold complement ranges.
 func NewPortFloorDenyRule(denyRanges []PortRange) EgressRule {
 	return EgressRule{
 		Action:     ActionDeny,

@@ -342,6 +342,16 @@ func (a *Applier) ApplyPolicy(ctx context.Context, s subject.Subject, pol *polic
 	if pol == nil {
 		pol = policy.DefaultDenyPolicy()
 	}
+	// The fast path enforces only static IP/CIDR sets per subject. A
+	// port-scoped rule in a subject policy would be silently dropped here —
+	// a deny rule that stops denying is fail-open — so refuse the apply and
+	// leave the subject deny-first. The server rejects ports on fast-sandbox
+	// routes (#2213); this guards older servers and direct Fastlet callers.
+	// The profile-wide platform floor (PortFloorDenyRanges) is enforced in
+	// the master chains and is unaffected.
+	if deny, allow := pol.PortScopedRules(); len(deny) > 0 || len(allow) > 0 {
+		return fmt.Errorf("fastsandboxnft: subject policy carries %d port-scoped rule(s), which the fast path cannot enforce", len(deny)+len(allow))
+	}
 	var b strings.Builder
 	if err := writeSubjectPolicySwapFragment(&b, s, pol, a.opts.MitmRedirectPort); err != nil {
 		return err
@@ -534,10 +544,13 @@ func (a *Applier) writeTableHeader(b *strings.Builder) error {
 
 // writePortFloorFragment emits the platform port floor (reachable.ports.cap
 // complement) as one drop rule per master chain: forward for direct
-// traffic, input for MITM-DNATed traffic (whose conntrack ORIGINAL port the
-// input chain already recovers for policy evaluation). Position is with the
-// other profile-wide drops, ahead of the fail-closed tail; order relative
-// to the DoH drops is irrelevant — both drop.
+// traffic, input for MITM-DNATed traffic. The input rule mirrors
+// writeDoHBlockFragment: gated on `ct status dnat` so pod-inbound traffic
+// (SET_BINDING on 18080, the mitm listener on 18081, loopback probes) is
+// never touched, and matching `ct original proto-dst` because DNATed
+// packets carry the redirect port, not the port the sandbox dialed.
+// Position is with the other profile-wide drops, ahead of the fail-closed
+// tail; order relative to the DoH drops is irrelevant — both drop.
 func (a *Applier) writePortFloorFragment(b *strings.Builder) {
 	if len(a.opts.PortFloorDenyRanges) == 0 {
 		return
@@ -548,7 +561,8 @@ func (a *Applier) writePortFloorFragment(b *strings.Builder) {
 	}
 	fmt.Fprintf(b, "add rule inet %s %s tcp dport { %s } drop\n", TableName, dispatchChain, strings.Join(members, ", "))
 	if a.opts.MitmRedirectPort > 0 {
-		fmt.Fprintf(b, "add rule inet %s %s tcp dport { %s } drop\n", TableName, inputChain, strings.Join(members, ", "))
+		fmt.Fprintf(b, "add rule inet %s %s ct status dnat ct original proto-dst { %s } drop\n",
+			TableName, inputChain, strings.Join(members, ", "))
 	}
 }
 

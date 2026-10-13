@@ -130,6 +130,52 @@ class NetworkRuleModelTest {
     }
 
     @Test
+    fun `mutating the list between ports and build does not change the rule`() {
+        // ports() snapshots a validated copy at set time, so caller-side
+        // mutation afterwards can neither smuggle unvalidated values into
+        // nor alter the built rule.
+        val ports = mutableListOf(22)
+        val builder =
+            NetworkRule
+                .builder()
+                .action(NetworkRule.Action.ALLOW)
+                .ports(ports)
+
+        ports.clear()
+        ports.addAll(listOf(1, 1, 70000))
+
+        assertEquals(listOf(22), builder.build().ports)
+    }
+
+    @Test
+    fun `builder rejects domain targets combined with ports`() {
+        for (target in listOf("example.com", "*.example.com", "10.0.0.0/255.0.0.0", "fe80::1%eth0/64")) {
+            assertThrows(IllegalArgumentException::class.java) {
+                NetworkRule
+                    .builder()
+                    .action(NetworkRule.Action.ALLOW)
+                    .target(target)
+                    .ports(listOf(443))
+                    .build()
+            }
+        }
+    }
+
+    @Test
+    fun `builder accepts ip and cidr targets combined with ports`() {
+        for (target in listOf("10.0.0.5", "10.0.0.0/8", "2001:db8::1", "fe80::1%eth0")) {
+            val rule =
+                NetworkRule
+                    .builder()
+                    .action(NetworkRule.Action.ALLOW)
+                    .target(target)
+                    .ports(listOf(443))
+                    .build()
+            assertEquals(target, rule.target)
+        }
+    }
+
+    @Test
     fun `read-back tolerates the sidecar wire shape for port-only rules`() {
         // The sidecar marshals target without omitempty, so a port-only rule
         // comes back as {"target": "", "ports": [25]}; parsing must not throw.

@@ -151,14 +151,10 @@ internal object SandboxModelConverter {
                 ApiNetworkRule.Action.allow -> NetworkRule.Action.ALLOW
                 ApiNetworkRule.Action.deny -> NetworkRule.Action.DENY
             }
-        val builder = NetworkRule.builder().action(action)
-        // Read-back must not be stricter than the server: the sidecar emits
-        // "target": "" for a port-only rule (Go marshals the field without
-        // omitempty), and an empty ports list is contract-invalid, so both are
-        // treated as absent instead of tripping the builder's validation.
-        this.target?.takeIf { it.isNotBlank() }?.let { builder.target(it) }
-        this.ports?.takeIf { it.isNotEmpty() }?.let { builder.ports(it.toList()) }
-        return builder.build()
+        return NetworkRule.builder()
+            .action(action)
+            .applyReadBackFields(this.target, this.ports)
+            .build()
     }
 
     fun ApiNetworkPolicy.toDomainNetworkPolicy(): NetworkPolicy {
@@ -180,10 +176,27 @@ internal object SandboxModelConverter {
                 ApiEgressNetworkRule.Action.allow -> NetworkRule.Action.ALLOW
                 ApiEgressNetworkRule.Action.deny -> NetworkRule.Action.DENY
             }
-        val builder = NetworkRule.builder().action(action)
-        this.target?.takeIf { it.isNotBlank() }?.let { builder.target(it) }
-        this.ports?.takeIf { it.isNotEmpty() }?.let { builder.ports(it.toList()) }
-        return builder.build()
+        return NetworkRule.builder()
+            .action(action)
+            .applyReadBackFields(this.target, this.ports)
+            .build()
+    }
+
+    /**
+     * Shared read-back normalization for both lifecycle and egress rules, so
+     * the two converters cannot drift apart: read-back must not be stricter
+     * than the server. The sidecar emits "target": "" for a port-only rule
+     * (Go marshals the field without omitempty), and an empty ports list is
+     * contract-invalid, so both are treated as absent instead of tripping
+     * the builder's validation.
+     */
+    private fun NetworkRule.Builder.applyReadBackFields(
+        target: String?,
+        ports: Set<Int>?,
+    ): NetworkRule.Builder {
+        target?.takeIf { it.isNotBlank() }?.let { target(it) }
+        ports?.takeIf { it.isNotEmpty() }?.let { ports(it.toList()) }
+        return this
     }
 
     fun ApiEgressNetworkPolicy.toDomainEgressNetworkPolicy(): NetworkPolicy {

@@ -814,7 +814,7 @@ func TestPortFloorDropsInDispatchAndInputChains(t *testing.T) {
 
 	script := runner.last()
 	floorDispatch := "add rule inet opensandbox-fast-sandbox dispatch tcp dport { 1-79, 81-442, 444-65535 } drop"
-	floorInput := "add rule inet opensandbox-fast-sandbox input tcp dport { 1-79, 81-442, 444-65535 } drop"
+	floorInput := "add rule inet opensandbox-fast-sandbox input ct status dnat ct original proto-dst { 1-79, 81-442, 444-65535 } drop"
 	require.Contains(t, script, floorDispatch, "the floor must gate the forward path profile-wide")
 	require.Contains(t, script, floorInput, "the floor must gate MITM-DNATed traffic by its ORIGINAL port too")
 	// Both drops precede the fail-closed tail.
@@ -825,4 +825,29 @@ func TestPortFloorDropsInDispatchAndInputChains(t *testing.T) {
 	noFloor := NewApplier(plain.Run, Options{})
 	require.NoError(t, noFloor.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
 	assert.NotContains(t, plain.last(), "tcp dport { 1-79")
+}
+
+func TestApplyPolicy_PortScopedRuleFailsClosed(t *testing.T) {
+	// Older servers and direct Fastlet callers can deliver port-scoped rules
+	// the fast path cannot enforce; the applier must refuse the apply (the
+	// subject stays deny-first) instead of silently dropping the rule.
+	runner := &fakeRunner{}
+	a := NewApplier(runner.Run, Options{})
+	s := subject.FromSandboxUID("u-1")
+	ctx := context.Background()
+	require.NoError(t, a.ApplyDenyFirst(ctx, s, testSlot("u-1", "10.0.0.5")))
+
+	p, err := policy.ParsePolicy(`{"defaultAction":"deny","egress":[
+		{"action":"deny","target":"10.0.0.0/8","ports":[22]}
+	]}`)
+	require.NoError(t, err)
+	err = a.ApplyPolicy(ctx, s, p)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "port-scoped")
+
+	// The deny-first subject was untouched: the failed apply must not have
+	// installed the rule's static set (10.0.0.0/8 appears in no script).
+	for _, script := range runner.scripts {
+		require.NotContains(t, script, "10.0.0.0/8")
+	}
 }

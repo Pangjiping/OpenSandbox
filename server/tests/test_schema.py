@@ -983,3 +983,34 @@ class TestNetworkRule:
         )
         dumped = policy.model_dump(by_alias=True, exclude_none=True)
         assert dumped["egress"] == [{"action": "deny", "ports": [25]}]
+
+
+class TestNetworkRuleReadModifyWriteAndClassification:
+    """Review follow-ups: the sidecar marshals port-only rules as
+    "target": "" (no omitempty), so the schema must accept blank targets on
+    input (GET → PUT round-trip), and its IP/CIDR classification must match
+    Go's netip for the shapes the sidecar will re-classify.
+    """
+
+    def test_blank_target_with_ports_round_trips(self):
+        rule = NetworkRule.model_validate({"action": "deny", "target": "", "ports": [25]})
+        assert rule.target is None
+        assert rule.ports == [25]
+        assert NetworkPolicy.model_validate(
+            {"defaultAction": "deny", "egress": [{"action": "deny", "target": "", "ports": [25]}]}
+        ).model_dump(by_alias=True, exclude_none=True)["egress"] == [{"action": "deny", "ports": [25]}]
+
+    def test_blank_target_without_ports_rejected(self):
+        with pytest.raises(ValidationError):
+            NetworkRule.model_validate({"action": "allow", "target": ""})
+
+    def test_zoned_ipv6_prefix_with_ports_rejected(self):
+        """netip.ParsePrefix rejects scoped prefixes; the sidecar would see a
+        domain and fail at provisioning with a confusing error."""
+        with pytest.raises(ValidationError):
+            NetworkRule.model_validate({"action": "allow", "target": "fe80::1%eth0/64", "ports": [22]})
+
+    def test_zoned_ipv6_address_with_ports_accepted(self):
+        """Bare zoned addresses parse in both netip.ParseAddr and ipaddress."""
+        rule = NetworkRule.model_validate({"action": "allow", "target": "fe80::1%eth0", "ports": [22]})
+        assert rule.target == "fe80::1%eth0"
