@@ -53,6 +53,7 @@ from opensandbox.models.sandboxes import (
     SandboxImageSpec,
     Volume,
 )
+from pydantic import ValidationError
 
 from tests.base_e2e_test import (
     TEST_API_KEY,
@@ -545,8 +546,9 @@ class TestSandboxE2E:
             assert ("pypi.org", ()) in scopes, "domain rule must survive the PATCH"
 
             # Domain + ports is rejected at validation time (the DNS layer
-            # has no port dimension), not silently scoped to the domain.
-            with pytest.raises(SandboxApiException):
+            # has no port dimension): the SDK's own model validation raises
+            # locally before any request, mirroring the server's 422.
+            with pytest.raises((ValidationError, SandboxApiException)):
                 await Sandbox.create(
                     image=SandboxImageSpec(get_sandbox_image()),
                     resource=get_e2e_sandbox_resource(),
