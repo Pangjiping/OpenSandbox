@@ -315,11 +315,8 @@ func buildRuleset(p *policy.NetworkPolicy, opts Options) (string, error) {
 		}
 	}
 	portDeny, portAllow := p.PortScopedRules()
-	// Port-scoped deny goes first so it wins over every allow, port-scoped or
-	// not (fail-closed, matching the precedence StaticIPSets already gives
-	// plain IP/CIDR rules). Port-scoped allow goes after the plain deny set
-	// for the same reason, but before the dynamic/plain allow sets since it
-	// is a more specific grant.
+	// Port-scoped deny before every allow; port-scoped allow after the
+	// plain deny set, before the dynamic/plain allow sets.
 	writePortScopedRules(&b, portDeny, "drop")
 	fmt.Fprintf(&b, "add rule inet %s %s ip daddr @%s drop\n", tableName, chainName, denyV4Set)
 	fmt.Fprintf(&b, "add rule inet %s %s ip6 daddr @%s drop\n", tableName, chainName, denyV6Set)
@@ -342,16 +339,10 @@ func writeElements(b *strings.Builder, setName string, elems []string) {
 	fmt.Fprintf(b, "add element inet %s %s { %s }\n", tableName, setName, strings.Join(elems, ", "))
 }
 
-// writePortScopedRules emits one "add rule" line per policy.PortScopedRule,
-// preserving declaration order (the caller passes either the deny or the
-// allow bucket from policy.NetworkPolicy.PortScopedRules, never both, so
-// order-within-verb is all that matters here). A rule with no Target applies
-// to all destinations: emitting bare "tcp dport { ... }" with no daddr match
-// naturally covers both IPv4 and IPv6, so target-less rules need no v4/v6
-// split. The dport set mixes individual ports and lo-hi intervals (the
-// platform port floor arrives as intervals; nftables accepts both forms in
-// one anonymous set). Port-scoping is TCP-only for now; see
-// docs/architecture/network/egress.md.
+// writePortScopedRules emits one "add rule" line per rule, preserving
+// declaration order. A rule with no Target applies to all destinations
+// (bare "tcp dport { ... }" covers both address families); the dport set
+// mixes ports and lo-hi intervals. TCP only.
 func writePortScopedRules(b *strings.Builder, rules []policy.PortScopedRule, verb string) {
 	for _, r := range rules {
 		members := make([]string, 0, len(r.Ports)+len(r.Ranges))

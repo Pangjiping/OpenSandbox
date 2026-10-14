@@ -73,9 +73,8 @@ internal static class NetworkPolicyCodec
 
     private static void ValidateRule(NetworkRule rule, int index, string? paramName)
     {
-        // An explicitly empty ports list is contract-invalid (minItems: 1).
-        // Silently treating it as "no ports" would widen a targeted rule to
-        // every port — the server 422s it, so do the same here.
+        // Empty ports is contract-invalid (minItems: 1); silently treating
+        // it as "no ports" would widen the rule.
         if (rule.Ports != null && rule.Ports.Count == 0)
         {
             throw new ArgumentException(
@@ -127,12 +126,9 @@ internal static class NetworkPolicyCodec
     {
         ValidateRule(r, index, paramName);
 
-        // target/ports are omitted (never null) when unset: a port-only rule
-        // must reach the sidecar as {"action":"deny","ports":[25]}. A blank
-        // target is omitted too — the server normalizes it to "omitted", so
-        // the rule degrades to a port-only rule exactly as it would there.
-        // The ports list is copied so a caller mutating it after validation
-        // cannot change what goes on the wire.
+        // Unset fields are omitted (never null); a blank target degrades to
+        // port-only, matching server normalization. Ports are copied so
+        // post-validation mutation cannot change the wire.
         var entry = new Dictionary<string, object?>
         {
             ["action"] = r.Action == NetworkRuleAction.Allow ? "allow" : "deny",
@@ -156,11 +152,8 @@ internal static class NetworkPolicyCodec
     private const int MaxPortsPerRule = 256;
 
     /// <summary>
-    /// Mirrors the sidecar's netip.ParseAddr/ParsePrefix classification for
-    /// the domain+ports rejection, on the trimmed target: dotted-quad IPv4
-    /// (no leading zeros), a well-formed IPv6 literal (zones allowed without
-    /// a prefix), or a prefix whose decimal length is in range. Netmask-style
-    /// prefixes, scoped prefixes, and anything else count as domains.
+    /// Mirrors the sidecar's netip-based IP-vs-domain classification, on the
+    /// trimmed target.
     /// </summary>
     private static bool IsIpOrCidr(string target)
     {
@@ -207,11 +200,9 @@ internal static class NetworkPolicyCodec
     {
         var actionText = element.GetProperty("action").GetString();
 
-        // The sidecar marshals target without omitempty, so a port-only rule
-        // arrives as "target": "" rather than an absent key — treat blank
-        // the same as absent so reads stay symmetric with writes. A
-        // non-string target (other than null) is contract-invalid, symmetric
-        // with the ports parsing above.
+        // The sidecar marshals target without omitempty: a port-only rule
+        // arrives as "target": "". Treat blank the same as absent; a
+        // non-string, non-null target is contract-invalid.
         string? target = null;
         if (element.TryGetProperty("target", out var targetElement))
         {

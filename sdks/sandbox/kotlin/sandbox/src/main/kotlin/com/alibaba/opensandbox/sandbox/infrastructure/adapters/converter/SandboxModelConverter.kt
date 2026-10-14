@@ -177,14 +177,11 @@ internal object SandboxModelConverter {
     }
 
     /**
-     * Shared read-back normalization for both lifecycle and egress rules, so
-     * the two converters cannot drift apart: read-back must not be stricter
-     * than the server. The sidecar emits "target": "" for a port-only rule
-     * (Go marshals the field without omitempty), and an empty ports list is
-     * contract-invalid, so both are treated as absent. The rule is then built
-     * through the lenient wire factory — write-path validation here would
-     * turn any future contract drift into an uncaught error on every policy
-     * read.
+     * Shared read-back normalization for both lifecycle and egress rules:
+     * the sidecar emits "target": "" for port-only rules and an empty ports
+     * list is contract-invalid, so both are treated as absent. Builds via
+     * the lenient [NetworkRule.fromWire] — read-back must not run write-path
+     * validation.
      */
     private fun toDomainRule(
         action: NetworkRule.Action,

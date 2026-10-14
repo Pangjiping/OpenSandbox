@@ -24,11 +24,9 @@ using Xunit;
 namespace OpenSandbox.Tests;
 
 /// <summary>
-/// Port-scoped egress rule coverage for the codec: the sidecar marshals
-/// target without omitempty, so a port-only rule always arrives as
-/// "target": "" (never an absent key); PATCH payloads omit unset fields
-/// rather than sending nulls; reads are lenient on port ranges while writes
-/// validate them, and that asymmetry is pinned here on purpose.
+/// Port-scoped egress rule coverage: sidecar read shape ("target": ""),
+/// PATCH omits unset fields, and the read-lenient / write-strict port-range
+/// asymmetry is pinned on purpose.
 /// </summary>
 public class EgressAdapterNetworkPolicyTests
 {

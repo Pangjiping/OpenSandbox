@@ -354,9 +354,7 @@ class SandboxModelConverter:
             api_egress = [
                 ApiNetworkRule(
                     action=NetworkRuleAction(rule.action),
-                    # rule.target/.ports use None for "unset"; the generated
-                    # client instead uses its own UNSET sentinel to omit a
-                    # field from the JSON body entirely.
+                    # None here means UNSET (omit the field) in the client.
                     target=rule.target if rule.target is not None else UNSET,
                     ports=rule.ports if rule.ports is not None else UNSET,
                 )
@@ -485,8 +483,8 @@ class SandboxModelConverter:
                         Literal["allow", "deny"],
                         getattr(rule.action, "value", rule.action),
                     ),
-                    # The generated model's UNSET sentinel means "field absent
-                    # from the JSON body"; the domain model spells that as None.
+                    # UNSET means "absent from the JSON body"; the domain
+                    # model spells that as None.
                     target=rule.target if not isinstance(rule.target, Unset) else None,
                     ports=rule.ports if not isinstance(rule.ports, Unset) else None,
                 )

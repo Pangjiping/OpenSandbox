@@ -32,9 +32,7 @@ if TYPE_CHECKING:
 
 
 def _is_ip_or_cidr(value: str) -> bool:
-    """Mirror the sidecar's target classification (Go netip.ParseAddr/ParsePrefix):
-    netmask-style prefixes (e.g. "10.0.0.0/255.0.0.0") count as domains, matching
-    the server validator, so domain+ports rules fail locally instead of remotely."""
+    """Mirror the sidecar's netip-based target classification."""
     try:
         ipaddress.ip_address(value)
         return True
@@ -166,10 +164,8 @@ class NetworkRule(BaseModel):
     @field_validator("target")
     @classmethod
     def target_must_not_be_empty(cls, v: str | None) -> str | None:
-        # Normalize like the server: blank target means "omitted" (the
-        # sidecar marshals port-only rules as "target": "" on read-back),
-        # and surrounding whitespace is trimmed before storing so the
-        # serialized target matches what the sidecar will classify.
+        # Blank = omitted (sidecar read-back emits "target": ""); trim like
+        # the server does.
         if v is None:
             return None
         v = v.strip()

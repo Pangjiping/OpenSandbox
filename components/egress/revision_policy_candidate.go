@@ -171,10 +171,8 @@ func freezeEffectivePolicyInputs(inputs effectivePolicyInputs) (effectivePolicyI
 		out := make([]policy.EgressRule, len(rules))
 		for i, rule := range rules {
 			if len(rule.PortRanges) > 0 {
-				// Platform port-floor rules (reachable.ports.cap) are
-				// derived, already-validated intervals with no target
-				// string: ParseValidatedEgressRule cannot represent them
-				// (it classifies by target alone), so freeze them as-is.
+				// Floor rules: already-validated intervals with no target
+				// string to re-parse; freeze as-is.
 				if rule.Action != action {
 					return nil, fmt.Errorf("%w: %s rule %d: action %q, want %q", errInvalidEffectivePolicyCandidate, name, i, rule.Action, action)
 				}

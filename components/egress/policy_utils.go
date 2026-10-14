@@ -86,11 +86,9 @@ func mergeEgressRules(base, additions []policy.EgressRule) []policy.EgressRule {
 	return out
 }
 
-// removeRulesByTarget returns a new slice with rules matching targets removed,
-// plus the removed rules. Domain targets are matched case-insensitively.
-// Targets not found are silently ignored. An explicit empty entry ("")
-// addresses port-only rules (which have no target): listing it removes every
-// port-only rule; omitting it leaves them untouched.
+// removeRulesByTarget removes rules matching targets (domains
+// case-insensitively, misses ignored). An explicit empty entry addresses
+// port-only rules: listing "" removes all of them.
 func removeRulesByTarget(rules []policy.EgressRule, targets []string) (kept, removed []policy.EgressRule) {
 	if len(targets) == 0 || len(rules) == 0 {
 		return rules, nil
@@ -117,11 +115,8 @@ func removeRulesByTarget(rules []policy.EgressRule, targets []string) (kept, rem
 	return kept, removed
 }
 
-// mergeKey: domain targets lowercased for dedupe; IP/CIDR left as-is. Rules
-// with Ports also fold their sorted port list into the key: without this, two
-// port-only rules (empty Target) or two same-target rules scoped to different
-// ports would all collapse to one merge-key slot and silently evict each
-// other in mergeEgressRules, even though they are meant to coexist.
+// mergeKey: (lowercased target, sorted ports) — differently-scoped rules
+// must not evict each other.
 func mergeKey(r policy.EgressRule) string {
 	key := strings.ToLower(r.Target)
 	if len(r.Ports) == 0 {

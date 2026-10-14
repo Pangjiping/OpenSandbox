@@ -29,17 +29,14 @@ import (
 const (
 	alwaysDenyFilePath  = "/var/egress/rules/deny.always"
 	alwaysAllowFilePath = "/var/egress/rules/allow.always"
-	// reachablePortsFilePath is the platform TCP port floor, whitelist-direction:
-	// each line is a port or inclusive range that may be reachable; the
-	// complement is enforced as always-deny so the floor holds no matter what
-	// the sandbox policy (defaultAction included) says.
+	// reachablePortsFilePath is the platform TCP port cap: whitelist lines
+	// enforced as their complement, ahead of every sandbox rule.
 	reachablePortsFilePath = "/var/egress/rules/reachable.ports.cap"
 )
 
 // LoadAlwaysRuleFiles loads optional /var/egress/rules/deny|allow.always (ignore if missing); errors on unreadable.
-// The optional reachable.ports.cap floor is loaded too and returned inside the
-// deny slice as port-range rules, so every consumer of the always overlay
-// (classic sidecar, fast-sandbox, revision runtime) enforces it uniformly.
+// The reachable.ports.cap floor rides inside the deny slice so every
+// consumer of the overlay enforces it uniformly.
 func LoadAlwaysRuleFiles() (deny, allow []EgressRule, err error) {
 	deny, err = loadAlwaysRuleFile(alwaysDenyFilePath, ActionDeny)
 	if err != nil {
@@ -66,10 +63,8 @@ func loadAlwaysRuleFileWithAction(action string) func(path string) ([]EgressRule
 }
 
 // LoadReachablePortsCap reads reachable.ports.cap (whitelist lines: "80",
-// "443", "8000-9000") and returns the merged allowed ranges. A missing file
-// yields nil. Exported for the fast-sandbox profile, which enforces the
-// floor profile-wide via DenyRangesForAllowedPorts instead of through the
-// per-subject always overlay.
+// "443", "8000-9000") and returns the merged allowed ranges; missing file
+// yields nil. Exported for the fast-sandbox profile.
 func LoadReachablePortsCap() ([]PortRange, error) {
 	data, err := os.ReadFile(reachablePortsFilePath)
 	if err != nil {
@@ -81,12 +76,9 @@ func LoadReachablePortsCap() ([]PortRange, error) {
 	return parseAllowedPortRanges(data, reachablePortsFilePath)
 }
 
-// loadPortFloorRules reads reachable.ports.cap and returns its complement as
-// a single port-range always-deny rule. A missing file — or one that
-// declares no ports — yields nil: an empty whitelist would otherwise
-// silently deny every TCP connection in existing deployments the moment the
-// file is created by mistake; operators who want an explicit catch-all list
-// at least one line.
+// loadPortFloorRules returns reachable.ports.cap's complement as a single
+// always-deny rule; a missing or empty file yields nil (an accidentally
+// empty whitelist must not deny every connection).
 func loadPortFloorRules(path string) ([]EgressRule, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -117,11 +109,8 @@ func loadPortFloorRules(path string) ([]EgressRule, error) {
 	return []EgressRule{rule}, nil
 }
 
-// NewPortFloorDenyRule builds the platform port-floor deny rule covering the
-// given deny ranges. Production paths derive the floor themselves
-// (loadPortFloorRules on the classic sidecar, LoadReachablePortsAlways +
-// DenyRangesForAllowedPorts on fast-sandbox); this constructor exists for
-// tests and for callers that already hold complement ranges.
+// NewPortFloorDenyRule builds the port-floor deny rule for callers that
+// already hold complement ranges (tests).
 func NewPortFloorDenyRule(denyRanges []PortRange) EgressRule {
 	return EgressRule{
 		Action:     ActionDeny,
@@ -136,9 +125,8 @@ func DenyRangesForAllowedPorts(allowed []PortRange) []PortRange {
 	return complementRanges(allowed)
 }
 
-// parseAllowedPortRanges parses whitelist lines ("80", "443", "8000-9000";
-// '#' comments and blanks ignored) into merged, sorted, non-overlapping
-// ranges. Overlapping/adjacent lines are coalesced.
+// parseAllowedPortRanges parses whitelist lines into merged, sorted,
+// non-overlapping ranges; '#' comments and blanks are ignored.
 func parseAllowedPortRanges(data []byte, pathForErr string) ([]PortRange, error) {
 	var out []PortRange
 	sc := bufio.NewScanner(strings.NewReader(string(data)))
@@ -285,13 +273,9 @@ func MergeAlwaysOverlay(user *NetworkPolicy, alwaysDeny, alwaysAllow []EgressRul
 	return ensureDefaults(&out)
 }
 
-// warnPortAllowRulesBlockedByCap logs a warning for every user port-allow
-// rule whose ports are entirely covered by the reachable-ports cap: the rule
-// is accepted and stored, but the cap's complement drop evaluates ahead of
-// every allow, so no connection it opens can pass. Behavior is unchanged;
-// the log only tells operators a blocked allow apart from a misconfigured
-// destination. Partially blocked rules (some ports inside the cap) are not
-// logged — they behave exactly as written for the ports that matter.
+// warnPortAllowRulesBlockedByCap flags user port-allow rules whose ports
+// are entirely covered by the cap (the rule is stored but can never pass).
+// Partially blocked rules are not logged.
 func warnPortAllowRulesBlockedByCap(user []EgressRule, alwaysDeny []EgressRule) {
 	var capDenyRanges []PortRange
 	for _, r := range alwaysDeny {

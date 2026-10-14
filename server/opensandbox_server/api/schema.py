@@ -45,15 +45,9 @@ def _is_ip_or_cidr(value: str) -> bool:
         return True
     except ValueError:
         pass
-    # netip.ParsePrefix only accepts a decimal prefix length after the slash;
-    # netmask notation (e.g. "10.0.0.0/255.0.0.0") must not classify as CIDR,
-    # or the sidecar would reject the rule as a domain target at provisioning
-    # time instead of this validator rejecting it here.
-    if "/" in value and not value.partition("/")[2].isdigit():
-        return False
-    # netip.ParsePrefix also rejects scoped prefixes ("fe80::1%eth0/64") even
-    # though Python's ipaddress accepts them; classify those as domains too.
-    if "/" in value and "%" in value:
+    # netip.ParsePrefix rejects netmask notation and scoped prefixes; the
+    # sidecar would classify both as domains, so mirror it.
+    if "/" in value and (not value.partition("/")[2].isdigit() or "%" in value):
         return False
     try:
         ipaddress.ip_network(value, strict=False)
@@ -149,9 +143,7 @@ class NetworkRule(BaseModel):
     @field_validator("target")
     @classmethod
     def normalize_target(cls, target: Optional[str]) -> Optional[str]:
-        # policy.go trims the target before classifying; mirror that so both
-        # layers agree at the boundary: a whitespace-only target counts as
-        # omitted, and " 10.0.0.5" classifies as an IP, not a domain.
+        # Mirror policy.go: trim before classifying.
         if target is None:
             return None
         target = target.strip()
@@ -160,9 +152,7 @@ class NetworkRule(BaseModel):
     @field_validator("ports")
     @classmethod
     def validate_ports(cls, ports: Optional[List[int]]) -> Optional[List[int]]:
-        # Mirrors policy.go's normalizePorts: range + duplicate checks, so an
-        # invalid list is rejected here instead of surfacing as an egress
-        # sidecar startup failure during Docker/Kubernetes provisioning.
+        # Mirrors policy.go's normalizePorts.
         if ports is None:
             return ports
         seen: set[int] = set()

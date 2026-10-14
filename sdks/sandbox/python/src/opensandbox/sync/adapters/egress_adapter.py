@@ -335,9 +335,7 @@ class EgressAdapterSync(EgressSync):
                 body=[
                     ApiNetworkRule(
                         action=NetworkRuleAction(rule.action),
-                        # The domain model allows target=None for a port-only rule;
-                        # the generated client instead uses its own UNSET sentinel
-                        # to mean "field omitted from the JSON body".
+                        # None here means UNSET (omit the field) in the client.
                         target=rule.target if rule.target is not None else UNSET,
                         ports=rule.ports if rule.ports is not None else UNSET,
                     )

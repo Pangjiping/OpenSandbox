@@ -38,10 +38,8 @@ type AlwaysRuleLoader struct {
 	lastCheck       time.Time
 	denyState       alwaysRuleFileState
 	allowState      alwaysRuleFileState
-	// portsState owns the platform port floor exclusively: its derived
-	// port-range rules are appended to the published deny set, and
-	// SetCurrentRules strips range rules from its input so a floor seeded
-	// from a previous loader output is never duplicated.
+	// portsState owns the floor rules: appended to the published deny set,
+	// and stripped from SetCurrentRules input so reseeding never duplicates.
 	portsState alwaysRuleFileState
 }
 
@@ -125,9 +123,8 @@ func (l *AlwaysRuleLoader) SetCurrentRules(deny, allow []EgressRule) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Seed the ports state with the floor rules the input carries: stripping
-	// them from the deny state without seeding would momentarily publish a
-	// policy without the platform floor (until the next refresh).
+	// Re-seed the floor here, or a reseed racing startup would briefly
+	// publish without it.
 	l.portsState.rules = cloneRulesKeepingPortRanges(deny)
 	l.denyState.rules = cloneRulesWithoutPortRanges(deny)
 	l.allowState.rules = cloneRules(allow)
@@ -175,8 +172,7 @@ func cloneRules(in []EgressRule) []EgressRule {
 	return out
 }
 
-// cloneRulesWithoutPortRanges drops port-range (floor) rules: they are owned
-// by the ports file state, never by the deny-file state.
+// cloneRulesWithoutPortRanges drops floor rules (owned by the ports state).
 func cloneRulesWithoutPortRanges(in []EgressRule) []EgressRule {
 	out := cloneRules(in)
 	kept := out[:0]
@@ -188,8 +184,7 @@ func cloneRulesWithoutPortRanges(in []EgressRule) []EgressRule {
 	return kept
 }
 
-// cloneRulesKeepingPortRanges keeps only the port-range (floor) rules — the
-// complement of cloneRulesWithoutPortRanges, used to seed the ports state.
+// cloneRulesKeepingPortRanges keeps only floor rules (seeds the ports state).
 func cloneRulesKeepingPortRanges(in []EgressRule) []EgressRule {
 	var out []EgressRule
 	for _, r := range cloneRules(in) {

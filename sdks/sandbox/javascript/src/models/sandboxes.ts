@@ -51,25 +51,17 @@ export type ResourceLimits = Record<string, string>;
 export type NetworkRuleAction = "allow" | "deny";
 
 /**
- * A port-scoped or target-scoped egress rule. The union encodes the API
- * invariant at compile time: a rule must carry `target`, `ports`, or both.
+ * An egress rule: `target`, `ports`, or both. The union encodes that
+ * invariant at compile time (`target` used to be required).
  *
- * - `target` is a FQDN, wildcard domain ("*.example.com"), IP, or CIDR.
- * - `ports` restricts the rule to TCP destination ports (each 1-65535, at
- *   most 256 per rule, at least one — enforced server-side). Omitted target
- *   with ports set applies across all IPv4/IPv6 destinations. Under
- *   `defaultAction: deny`, the DNS proxy still denies hostname lookups for
- *   targetless allow rules (it matches domain rules only), so this shape
- *   serves direct-IP clients; hostname access requires explicit domain rules
- *   or stable IPs.
- * - A domain target combined with ports is rejected by the server/sidecar
- *   (domain rules are evaluated at the DNS layer, which has no port
- *   dimension).
- *
- * Migration note: `target` used to be required. Rules that always set
- * `target` keep compiling; only code that constructs a rule with neither
- * field (or that reads `rule.target` without handling `undefined`) needs
- * updating.
+ * - `target`: FQDN, wildcard domain ("*.example.com"), IP, or CIDR.
+ * - `ports`: TCP destination ports (each 1-65535, at least one, at most 256
+ *   per rule — enforced server-side). Without a target the rule applies
+ *   across all IPv4/IPv6 destinations, but under `defaultAction: deny` the
+ *   DNS proxy only matches domain rules, so hostname lookups still fail —
+ *   this shape serves direct-IP clients.
+ * - A domain `target` combined with `ports` is rejected (domain rules have
+ *   no port dimension).
  */
 export type NetworkRule = (
   | { action: NetworkRuleAction; target: string; ports?: number[] }

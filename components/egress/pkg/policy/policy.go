@@ -34,14 +34,11 @@ const (
 	targetDomain
 	targetIP
 	targetCIDR
-	// targetPortOnly marks a rule with no Target: it scopes by destination
-	// TCP port(s) across all IPv4/IPv6 destinations instead of a specific host.
+	// targetPortOnly: no Target, scopes by TCP port(s) across all destinations.
 	targetPortOnly
 )
 
-// PortRange is an inclusive TCP port interval; Lo and Hi are both 1-65535
-// and Lo must not exceed Hi. Used by the platform port floor
-// (reachable.ports.cap); the user-facing ports field stays a plain int list.
+// PortRange is an inclusive TCP port interval (platform port floor only).
 type PortRange struct {
 	Lo int
 	Hi int
@@ -71,20 +68,13 @@ type NetworkPolicy struct {
 type EgressRule struct {
 	Action string `json:"action"`
 	Target string `json:"target"`
-	// Ports restricts this rule to specific TCP destination ports (1-65535).
-	// Empty means the rule is not port-scoped and behaves as before. When
-	// Target is also empty, the rule applies to these ports across all
-	// IPv4/IPv6 destinations. Domain targets do not support Ports (DNS-layer
-	// evaluation has no port dimension); normalizePolicy rejects that
-	// combination. See PortScopedRules for nftables enforcement.
+	// Ports restricts the rule to TCP destination ports (1-65535); empty
+	// with an empty Target means all destinations. Domain targets with
+	// Ports are rejected by normalizePolicy.
 	Ports []int `json:"ports,omitempty"`
-	// PortRanges is the range form of Ports, used exclusively by the
-	// platform port floor (reachable.ports.cap): its complement is expressed
-	// as intervals because enumerating ~65k individual ports is neither
-	// practical nor bounded. Internal only — never serialized (the PATCH
-	// merge re-marshals user rules, which never carry ranges; the always
-	// overlay is re-read from its file on every reload). Rules carrying
-	// PortRanges are enforced exactly like Ports rules via PortScopedRules.
+	// PortRanges is the interval form of Ports, set only by the platform
+	// port floor (never serialized: the always overlay is re-read from file
+	// on every reload). Enforced like Ports via PortScopedRules.
 	PortRanges []PortRange `json:"-"`
 
 	targetKind targetKind
@@ -208,11 +198,7 @@ func normalizePolicy(p *NetworkPolicy) error {
 	return nil
 }
 
-// maxPortsPerRule bounds how many ports one rule may list. nftables itself
-// has no hard limit here (unlike the iptables multiport module's 15-port
-// cap elsewhere in this codebase), but an unbounded list still lets one rule
-// generate an arbitrarily large inline nft set; 256 comfortably covers real
-// allow/deny lists while keeping worst-case ruleset size bounded.
+// maxPortsPerRule bounds one rule's inline nft dport set size.
 const maxPortsPerRule = 256
 
 // normalizePorts validates a rule's Ports list in place: each value must be a

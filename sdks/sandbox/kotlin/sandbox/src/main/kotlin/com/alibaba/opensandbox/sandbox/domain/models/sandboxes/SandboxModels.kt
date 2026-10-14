@@ -323,8 +323,7 @@ class NetworkRule private constructor(
             for (port in ports) {
                 require(port in 1..65535) { "Port $port out of range 1-65535" }
             }
-            // Defensive copy at set time: mutating the caller's list between
-            // ports() and build() must not smuggle unvalidated values past
+            // Snapshot at set time: later caller mutation must not bypass
             // the checks above.
             this.ports = ports.toList()
             return this
@@ -349,13 +348,8 @@ class NetworkRule private constructor(
         }
 
         /**
-         * Mirrors the sidecar's netip.ParseAddr/ParsePrefix classification
-         * for the domain+ports rejection, on the trimmed target: a target
-         * is IP/CIDR when it is a dotted-quad IPv4 literal (no leading
-         * zeros), a well-formed IPv6 literal (zones allowed without a
-         * prefix), or a prefix whose decimal length is in range (0-32 /
-         * 0-128). Netmask-style prefixes, scoped prefixes, and anything
-         * else count as domains, matching the server validator.
+         * Mirrors the sidecar's netip-based IP-vs-domain classification,
+         * on the trimmed target.
          */
         private fun isIpOrCidr(target: String): Boolean {
             val t = target.trim()
@@ -375,9 +369,7 @@ class NetworkRule private constructor(
             val octets = addr.split('.')
             return octets.size == 4 &&
                 octets.all { octet ->
-                    // Leading zeros are rejected: netip parses them as decimal
-                    // while servers/clients disagree on the octal reading, and
-                    // Python's ipaddress rejects them outright.
+                    // Leading zeros are rejected (server-side too).
                     octet.length in 1..3 && octet.all { it in '0'..'9' } &&
                         (octet.length == 1 || octet[0] != '0') && octet.toInt() <= 255
                 }
