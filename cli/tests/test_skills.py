@@ -251,6 +251,54 @@ class TestSkillsCommands:
         assert result.exit_code == 0
         assert (tmp_path / "home" / ".codex" / "skills" / "sandbox-troubleshooting" / "SKILL.md").exists()
 
+    def test_install_to_global_cline_uses_documented_rules_directory(
+        self,
+        runner: CliRunner,
+        isolated_skill_targets: None,
+        tmp_path: Path,
+    ) -> None:
+        user_rule = tmp_path / "home" / ".cline" / "rules" / "network-egress.md"
+        user_rule.parent.mkdir(parents=True, exist_ok=True)
+        user_rule.write_text("user-owned egress rule\n", encoding="utf-8")
+
+        result = runner.invoke(
+            skills_group,
+            ["install", "network-egress", "--target", "cline", "--scope", "global"],
+        )
+
+        assert result.exit_code == 0
+        dest = tmp_path / "home" / ".cline" / "rules" / "opensandbox-network-egress.md"
+        assert dest.exists()
+        assert dest.read_text(encoding="utf-8").startswith("# OpenSandbox Network Egress")
+        assert user_rule.read_text(encoding="utf-8") == "user-owned egress rule\n"
+        assert not (tmp_path / "home" / ".clinerules").exists()
+
+        uninstall = runner.invoke(
+            skills_group,
+            ["uninstall", "network-egress", "--target", "cline", "--scope", "global"],
+        )
+
+        assert uninstall.exit_code == 0
+        assert not dest.exists()
+        assert user_rule.read_text(encoding="utf-8") == "user-owned egress rule\n"
+
+    def test_install_to_global_copilot_uses_documented_user_file(
+        self,
+        runner: CliRunner,
+        isolated_skill_targets: None,
+        tmp_path: Path,
+    ) -> None:
+        result = runner.invoke(
+            skills_group,
+            ["install", "network-egress", "--target", "copilot", "--scope", "global"],
+        )
+
+        assert result.exit_code == 0
+        dest = tmp_path / "home" / ".copilot" / "copilot-instructions.md"
+        assert dest.exists()
+        assert "# OpenSandbox Network Egress" in dest.read_text(encoding="utf-8")
+        assert not (tmp_path / "home" / ".github" / "copilot-instructions.md").exists()
+
     def test_install_to_project_opencode_creates_skill_directory(
         self,
         runner: CliRunner,
@@ -488,6 +536,8 @@ class TestSkillContentQuality:
     def test_lifecycle_skill_keeps_json_shapes_and_health_guidance(self) -> None:
         content = _read_builtin_skill("opensandbox-sandbox-lifecycle.md")
 
+        assert "`kill` returns `deletion_requested` when accepted" in content
+        assert "Pool `Noop` preserves processes" in content
         assert "## JSON Shapes" in content
         assert '"defaultAction": "deny"' in content
         assert '"mountPath": "/workspace/data"' in content

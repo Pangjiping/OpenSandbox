@@ -49,6 +49,7 @@ class RevisionPublicationTest(unittest.TestCase):
             active._aborted.copy(), owner._pending_view, registry._view,
             registry._generation, registry._request_fenced.copy(),
             registry._connection_deadlines.copy(), registry._request_deadlines.copy(),
+            registry._max_admitted_stream_ids.copy(), registry._frozen_last_stream_ids.copy(),
         )
 
     def test_prepare_is_inert_and_commit_publishes_both_views(self):

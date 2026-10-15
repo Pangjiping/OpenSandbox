@@ -58,6 +58,16 @@ because it is the only part of the pool that is gated by a distributed lock:
 During graceful operation, each pool instance moves through
 `NOT_STARTED → STARTING → RUNNING → DRAINING → STOPPED`. A failed start or
 non-graceful shutdown can transition directly to `STOPPED`.
+If awaiting Python's `SandboxPoolAsync.start()` is cancelled, it waits for
+startup-owned resource cleanup, even if the caller cancels repeatedly during
+cleanup. Successful cleanup returns the pool to `STOPPED` before propagating
+`CancelledError`, so the same instance can then be started again.
+If cleanup itself fails after a further caller cancellation, `CancelledError`
+takes precedence and retains the cleanup error as its cause. Without a further
+cancellation, the cleanup error propagates normally. In either case the
+lifecycle state is `STOPPED`, allowing another `start()` attempt instead of
+silently returning in `STARTING`. Resource cleanup may still be incomplete
+when closing fails.
 Health is tracked separately as `HEALTHY | DEGRADED | DRAINING | STOPPED`; after
 `degraded_threshold` consecutive warmup or reconcile failures the pool enters
 `DEGRADED`. Go applies exponential replenish backoff while degraded. Python,

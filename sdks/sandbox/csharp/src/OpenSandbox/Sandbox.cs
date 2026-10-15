@@ -190,6 +190,7 @@ public sealed class Sandbox : IAsyncDisposable
         {
             throw new InvalidArgumentException("Entrypoint must be omitted when SnapshotId is provided.");
         }
+        options.Lifecycle?.IdlePolicy?.Validate();
         ValidateHostPaths(options.Volumes);
         var startupSource = options.Image ?? options.SnapshotId;
 
@@ -250,11 +251,12 @@ public sealed class Sandbox : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// Template mode fixes the workload shape on the server: the entrypoint,
-    /// env, resources, volumes, platform and lifecycle of the sandbox come
-    /// from the template's golden image and cannot be overridden here. Only
-    /// metadata, network policy and extensions may accompany the template id,
-    /// and the timeout is required. The created sandbox routes egress policy
-    /// operations through the lifecycle control plane.
+    /// env, resources, volumes, platform and lifecycle hooks of the sandbox
+    /// come from the template's golden image and cannot be overridden here.
+    /// Only metadata, network policy, extensions and the OSEP-0024 idle policy
+    /// (control-plane state, not workload shape) may accompany the template
+    /// id, and the timeout is required. The created sandbox routes egress
+    /// policy operations through the lifecycle control plane.
     /// </remarks>
     /// <param name="options">The template creation options.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
@@ -271,6 +273,7 @@ public sealed class Sandbox : IAsyncDisposable
         {
             throw new InvalidArgumentException("TemplateId must be specified.");
         }
+        options.IdlePolicy?.Validate();
 
         var connectionConfig = options.ConnectionConfig ?? new ConnectionConfig();
         if (options.NetworkPolicy?.Egress is { Count: > 0 })
@@ -290,7 +293,10 @@ public sealed class Sandbox : IAsyncDisposable
                     Egress = options.NetworkPolicy.Egress
                 }
                 : null,
-            Extensions = options.Extensions?.ToDictionary(kv => kv.Key, kv => (object)kv.Value)
+            Extensions = options.Extensions?.ToDictionary(kv => kv.Key, kv => (object)kv.Value),
+            Lifecycle = options.IdlePolicy != null
+                ? new SandboxLifecycle { IdlePolicy = options.IdlePolicy }
+                : null
         };
 
         return await LaunchAsync(
@@ -782,7 +788,8 @@ public sealed class Sandbox : IAsyncDisposable
     }
 
     /// <summary>
-    /// Terminates the sandbox.
+    /// Requests irreversible sandbox termination.
+    /// Completes when deletion is accepted; runtime cleanup may continue afterward.
     /// </summary>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <exception cref="SandboxApiException">Thrown when the sandbox API returns an error.</exception>

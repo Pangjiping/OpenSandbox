@@ -591,7 +591,13 @@ uncovering `docs.example.com`.
 - Atomically activate the new snapshot so no new request can receive a
   credential from the retired revision.
 - Stop accepting new HTTP/1.1 requests or HTTP/2 streams on decrypted
-  connections for removed hosts; send connection close or HTTP/2 GOAWAY.
+  connections for removed hosts. In the approved experimental H2 integration,
+  valid post-fence requests receive REFUSED_STREAM without origin processing;
+  ordinary GOAWAY is delayed until admitted streams and local downstream and
+  upstream output obligations finish. Then send one NO_ERROR GOAWAY and close.
+  Deadline or invariant failure instead takes the abnormal-close path. See the
+  [H2 integration contract](../docs/architecture/network/osep-0023-h2-integration.md)
+  for scope, the narrow exceptional child-exit fallback and acceptance status.
 - A request is admitted when the system addon's `requestheaders` hook binds it
   to an immutable revision. For HTTP/2 this is per stream; for pipelined
   HTTP/1.1 it is per parsed request. Requests admitted before the cutover may

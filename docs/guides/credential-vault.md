@@ -560,8 +560,10 @@ authenticated IPC channel and admits traffic per connection and per request:
   A rendered snapshot exceeding the IPC size limit is rejected with HTTP 400
   before transmission; the current vault and sidecar remain available.
   In-flight requests finish on their admitted revision; new requests on a
-  connection whose host was removed are fenced immediately (403), and the
-  retired transport is force-closed at the drain deadline. Deleting the vault
+  connection whose host was removed are fenced immediately: HTTP/1 receives
+  403; valid HTTP/2 requests refused at `requestheaders` receive
+  `REFUSED_STREAM` without reaching the origin. The retired transport is
+  force-closed at the drain deadline. Deleting the vault
   affects new requests and new connections; a retired connection can never be
   revived by re-adding the host. Already-admitted requests may finish only
   inside the bounded drain window — deletion does not recall requests the
@@ -608,27 +610,39 @@ authenticated IPC channel and admits traffic per connection and per request:
   A still-covered idle connection with no old request is not retired solely
   because the Policy epoch changes. Sweep scheduling and failed-close retries
   can delay actual closure; this is not a deadline for opaque or direct-IP
-  connections outside the registry.
+  connections outside the registry. HTTP/2 normal retirement delays the single
+  `NO_ERROR` GOAWAY with its frozen admitted-stream upper bound until old
+  streams and their downstream/upstream output obligations are terminal.
+  Deadline expiry is abnormal closure, not graceful completion.
 - **ECH is opaque pass-through.** A ClientHello carrying the
   `encrypted_client_hello` extension (0xfe0d), including GREASE forms, is
   forwarded untouched as an opaque tunnel without decryption;
   uninspectable ClientHello data denies. The implementation does
   not decrypt the inner ClientHello and does not guarantee that an
   ECH-enabled origin handshake succeeds.
-- **HTTP/1 authority gate.** On a decrypted connection every request must
+- **HTTP/1 authority gate.** On a decrypted HTTP/1 connection every request must
   carry exactly one syntactically strict `Host` header equal to the
   intercepted SNI and the admission binding (port omitted or 443). A
   conflicting absolute-form target, a CONNECT authority-form inside the
-  stream, missing/duplicate/malformed Host values, and HTTP/2 requests are
+  stream and missing/duplicate/malformed Host values are
   rejected before any credential can be injected.
+- **HTTP/2 authority gate.** The fixed-version direct/lazy adapter validates
+  original HTTPS pseudo-headers, authority, actual port 443 and SNI association
+  before credential injection; invalid or missing identity fails closed.
 - **`ssl_insecure` is refused in live mode.** The launcher and the addon
   reject an insecure-upstream configuration when the live admission bundle is
   active; the legacy installation-only receiver keeps its existing behavior.
 - **Scope.** This mode is scoped to the internal sidecar profile:
   Docker DNS + nft enforcement, exact-host HTTPS on port 443, HTTP/1.1
   origin-form or matching absolute-form requests, and inline credentials
-  injected as headers. HTTP/2, the fast-sandbox profile and recovery across a
-  complete sidecar replacement remain out of scope. Dynamic DNS learning and
+  injected as headers. Experimental HTTP/2 admission and bounded drain wiring
+  additionally cover only the fixed-dependency direct/lazy path; configured
+  chained upstream proxies remain rejected for this live HTTP/2 path. Long-held
+  responses can still cause Go retries to time out; full client migration and
+  Linux acceptance remain follow-up work. See the
+  [HTTP/2 integration boundary](/architecture/network/osep-0023-h2-integration).
+  The fast-sandbox profile and recovery across a complete sidecar replacement
+  remain out of scope. Dynamic DNS learning and
   Kubernetes deployments are not covered by this experiment's evidence.
   Policy participation is part of this implementation; its acceptance evidence
   is recorded separately from the earlier live-Vault checks below.

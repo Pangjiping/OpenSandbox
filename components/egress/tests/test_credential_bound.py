@@ -56,6 +56,35 @@ CONTROL = "control-live-a"
 SUBJECT = "subject-live-a"
 TOKEN = "a" * 43
 
+_SYSTEM_MODULES = (
+    "mitmproxy",
+    "mitmproxy.tls",
+    "credential_bound",
+    "revision_ipc",
+    "revision_publication",
+    "revision_receiver",
+    "tls_registry",
+    "tls_decision",
+    "decision_snapshot",
+    "host_selectors",
+)
+
+
+def _isolate_system_modules(test: unittest.TestCase) -> None:
+    # Discovery may already have loaded the real mitmproxy-backed H2 runtime.
+    # Give this fake-context harness a fresh, consistent dependency graph, then
+    # restore the exact cached objects so other tests retain their class identity.
+    saved = {name: sys.modules[name] for name in _SYSTEM_MODULES if name in sys.modules}
+
+    def restore() -> None:
+        for name in _SYSTEM_MODULES:
+            sys.modules.pop(name, None)
+        sys.modules.update(saved)
+
+    test.addCleanup(restore)
+    for name in _SYSTEM_MODULES:
+        sys.modules.pop(name, None)
+
 
 class _Log:
     def __init__(self) -> None:
@@ -272,20 +301,13 @@ def _system_with_live_runtime() -> tuple[Any, Any, Any]:
 
 class CredentialBoundTLSTest(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_system_modules(self)
         sys.path.insert(0, str(MITMSCRIPTS))
         self.system, self.receiver, self.runtime = _system_with_live_runtime()
         self._epoch = 0
 
     def tearDown(self) -> None:
         sys.path.remove(str(MITMSCRIPTS))
-        sys.modules.pop("credential_bound", None)
-        sys.modules.pop("revision_ipc", None)
-        sys.modules.pop("revision_publication", None)
-        sys.modules.pop("revision_receiver", None)
-        sys.modules.pop("tls_registry", None)
-        sys.modules.pop("tls_decision", None)
-        sys.modules.pop("decision_snapshot", None)
-        sys.modules.pop("host_selectors", None)
 
     def _install(self, bindings: list[dict[str, Any]], redactions: list[str], revision: int) -> None:
         self._epoch += 1
@@ -381,6 +403,7 @@ class CredentialBoundTLSTest(unittest.TestCase):
 
 class CredentialBoundRequestTest(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_system_modules(self)
         sys.path.insert(0, str(MITMSCRIPTS))
         self.system, self.receiver, self.runtime = _system_with_live_runtime()
         self._epoch = 0
@@ -388,17 +411,6 @@ class CredentialBoundRequestTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         sys.path.remove(str(MITMSCRIPTS))
-        for module in (
-            "credential_bound",
-            "revision_ipc",
-            "revision_publication",
-            "revision_receiver",
-            "tls_registry",
-            "tls_decision",
-            "decision_snapshot",
-            "host_selectors",
-        ):
-            sys.modules.pop(module, None)
 
     def install_revision(self, revision_value: int, token: str) -> None:
         self._epoch += 1
@@ -517,6 +529,7 @@ class CredentialBoundRequestTest(unittest.TestCase):
 
 class CredentialBoundRemovalTest(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_system_modules(self)
         sys.path.insert(0, str(MITMSCRIPTS))
         self.system, self.receiver, self.runtime = _system_with_live_runtime()
         self._epoch = 0
@@ -524,17 +537,6 @@ class CredentialBoundRemovalTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         sys.path.remove(str(MITMSCRIPTS))
-        for module in (
-            "credential_bound",
-            "revision_ipc",
-            "revision_publication",
-            "revision_receiver",
-            "tls_registry",
-            "tls_decision",
-            "decision_snapshot",
-            "host_selectors",
-        ):
-            sys.modules.pop(module, None)
 
     def install_revision(self, revision_value: int, token: str, hosts: list[str]) -> None:
         self._epoch += 1
@@ -625,6 +627,7 @@ def time_time() -> float:
 
 class CredentialBoundSnapshotValidationTest(unittest.TestCase):
     def setUp(self) -> None:
+        _isolate_system_modules(self)
         sys.path.insert(0, str(MITMSCRIPTS))
         self.system, self.receiver, self.runtime = _system_with_live_runtime()
         self.conn = _ClientConn(sni="api.example.com")
@@ -633,17 +636,6 @@ class CredentialBoundSnapshotValidationTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         sys.path.remove(str(MITMSCRIPTS))
-        for module in (
-            "credential_bound",
-            "revision_ipc",
-            "revision_publication",
-            "revision_receiver",
-            "tls_registry",
-            "tls_decision",
-            "decision_snapshot",
-            "host_selectors",
-        ):
-            sys.modules.pop(module, None)
 
     def test_revision_disagreement_fails_closed(self) -> None:
         payload = _decision_payload(
@@ -699,6 +691,7 @@ class CredentialBoundSnapshotMemoTest(unittest.TestCase):
     """Pure synthetic snapshots and fake hooks; no receiver or IPC startup."""
 
     def setUp(self) -> None:
+        _isolate_system_modules(self)
         sys.path.insert(0, str(MITMSCRIPTS))
         self.system = _load_system_module()
         self.conn = _ClientConn(sni="api.example.com")
@@ -709,7 +702,6 @@ class CredentialBoundSnapshotMemoTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.system.done()
         sys.path.remove(str(MITMSCRIPTS))
-        sys.modules.pop("revision_receiver", None)
 
     def _snapshot(self, revision: int = 1, *, empty: bool = False) -> Any:
         from revision_receiver import Snapshot
@@ -893,6 +885,7 @@ class CredentialBoundEnvTest(unittest.TestCase):
     """configure() validation through the real IPC server path."""
 
     def setUp(self) -> None:
+        _isolate_system_modules(self)
         import tempfile
 
         self.directory = tempfile.TemporaryDirectory(prefix="oscb-", dir="/tmp")
@@ -971,23 +964,13 @@ class CredentialBoundSslInsecureTest(unittest.TestCase):
     """ssl_insecure must never combine with the live admission receiver."""
 
     def setUp(self) -> None:
+        _isolate_system_modules(self)
         sys.path.insert(0, str(MITMSCRIPTS))
         self.system, self.receiver, self.runtime = _system_with_live_runtime()
         self._epoch = 0
 
     def tearDown(self) -> None:
         sys.path.remove(str(MITMSCRIPTS))
-        for module in (
-            "credential_bound",
-            "revision_ipc",
-            "revision_publication",
-            "revision_receiver",
-            "tls_registry",
-            "tls_decision",
-            "decision_snapshot",
-            "host_selectors",
-        ):
-            sys.modules.pop(module, None)
         self.system.ctx.options.ssl_insecure = False
 
     def _install_bound(self) -> None:
@@ -1045,6 +1028,7 @@ class CredentialBoundECHTest(unittest.TestCase):
     """ECH extension handling at hook level (real-wire cases in test_ech_wire)."""
 
     def setUp(self) -> None:
+        _isolate_system_modules(self)
         sys.path.insert(0, str(MITMSCRIPTS))
         self.system, self.receiver, self.runtime = _system_with_live_runtime()
         self._epoch = 0
@@ -1052,17 +1036,6 @@ class CredentialBoundECHTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         sys.path.remove(str(MITMSCRIPTS))
-        for module in (
-            "credential_bound",
-            "revision_ipc",
-            "revision_publication",
-            "revision_receiver",
-            "tls_registry",
-            "tls_decision",
-            "decision_snapshot",
-            "host_selectors",
-        ):
-            sys.modules.pop(module, None)
 
     def install_bound(self) -> None:
         self._epoch += 1
@@ -1112,6 +1085,7 @@ class CredentialBoundH1AuthorityTest(unittest.TestCase):
     """Strict HTTP/1 authority validation before binding selection."""
 
     def setUp(self) -> None:
+        _isolate_system_modules(self)
         sys.path.insert(0, str(MITMSCRIPTS))
         self.system, self.receiver, self.runtime = _system_with_live_runtime()
         self._epoch = 0
@@ -1119,17 +1093,6 @@ class CredentialBoundH1AuthorityTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         sys.path.remove(str(MITMSCRIPTS))
-        for module in (
-            "credential_bound",
-            "revision_ipc",
-            "revision_publication",
-            "revision_receiver",
-            "tls_registry",
-            "tls_decision",
-            "decision_snapshot",
-            "host_selectors",
-        ):
-            sys.modules.pop(module, None)
 
     def install_bound(self) -> None:
         self._epoch += 1
@@ -1252,9 +1215,9 @@ class CredentialBoundH1AuthorityTest(unittest.TestCase):
         )
         self.assertNotIn("Authorization", flow.request.headers)
 
-    def test_http2_denies_in_live_mode(self) -> None:
-        # H2 is outside this phase's scope: the request is denied (killed,
-        # since an H2 body can stream past the local-response size limit).
+    def test_http2_without_instance_adapter_denies_in_live_mode(self) -> None:
+        # H2 cannot acquire a request without the exact raw-identity adapter.
+        # Existing H1 fixtures deliberately do not attach one.
         flow = self._admitted_flow()
         flow.request.http_version = "HTTP/2.0"
         self.system.requestheaders(flow)
@@ -1279,6 +1242,7 @@ class CredentialBoundDrainPagingTest(unittest.TestCase):
     """Drain sweeps page past _DRAIN_PAGE_LIMIT and retry failed closes."""
 
     def setUp(self) -> None:
+        _isolate_system_modules(self)
         sys.path.insert(0, str(MITMSCRIPTS))
         self.system = _load_system_module()
         from credential_bound import LiveRuntime
@@ -1295,17 +1259,6 @@ class CredentialBoundDrainPagingTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         sys.path.remove(str(MITMSCRIPTS))
-        for module in (
-            "credential_bound",
-            "revision_ipc",
-            "revision_publication",
-            "revision_receiver",
-            "tls_registry",
-            "tls_decision",
-            "decision_snapshot",
-            "host_selectors",
-        ):
-            sys.modules.pop(module, None)
 
     def install_bound(self) -> None:
         self._epoch += 1
@@ -1453,6 +1406,38 @@ class CredentialBoundDrainPagingTest(unittest.TestCase):
         self.assertEqual(4, self.runtime.registry.count)
         self.system.client_disconnected(pairs[0][1])
         self.assertEqual(3, self.runtime.registry.count)
+
+
+class CredentialBoundModuleIsolationTest(unittest.TestCase):
+    def test_restores_preloaded_modules_even_when_setup_fails(self) -> None:
+        saved = {name: types.ModuleType(name) for name in _SYSTEM_MODULES}
+        with mock.patch.dict(sys.modules, saved):
+            case = unittest.TestCase()
+            try:
+                with self.assertRaisesRegex(RuntimeError, "synthetic setup failure"):
+                    _isolate_system_modules(case)
+                    for name in _SYSTEM_MODULES:
+                        self.assertNotIn(name, sys.modules)
+                        sys.modules[name] = types.ModuleType(name)
+                    raise RuntimeError("synthetic setup failure")
+            finally:
+                case.doCleanups()
+            for name, module in saved.items():
+                self.assertIs(sys.modules[name], module)
+
+    def test_removes_modules_that_were_not_preloaded(self) -> None:
+        with mock.patch.dict(sys.modules):
+            for name in _SYSTEM_MODULES:
+                sys.modules.pop(name, None)
+            case = unittest.TestCase()
+            try:
+                _isolate_system_modules(case)
+                for name in _SYSTEM_MODULES:
+                    sys.modules[name] = types.ModuleType(name)
+            finally:
+                case.doCleanups()
+            for name in _SYSTEM_MODULES:
+                self.assertNotIn(name, sys.modules)
 
 
 if __name__ == "__main__":

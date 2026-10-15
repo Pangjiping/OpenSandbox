@@ -471,9 +471,9 @@ Supported targets:
 | `claude` | `./.claude/skills/<name>/SKILL.md` or `~/.claude/skills/<name>/SKILL.md` |
 | `cursor` | `./.cursor/rules/` or `~/.cursor/rules/` |
 | `codex` | `./.codex/skills/<name>/SKILL.md` or `~/.codex/skills/<name>/SKILL.md` |
-| `copilot` | `./.github/copilot-instructions.md` or `~/.github/copilot-instructions.md` |
+| `copilot` | `./.github/copilot-instructions.md` or `~/.copilot/copilot-instructions.md` |
 | `windsurf` | `./.windsurfrules` or `~/.windsurfrules` |
-| `cline` | `./.clinerules` or `~/.clinerules` |
+| `cline` | `./.clinerules` or `~/.cline/rules/opensandbox-<name>.md` |
 | `opencode` | `./.agents/skills/<name>/SKILL.md` or `~/.agents/skills/<name>/SKILL.md` |
 
 Common flows:

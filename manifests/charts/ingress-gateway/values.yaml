@@ -62,6 +62,17 @@ gateway:
   # ignored otherwise. Example: fast-sandbox-fastpath.opensandbox-system.svc:9090
   fastpathEndpoint: ""
 
+  # OSEP-0024 activity tracking (per-sandbox last-activity in Redis).
+  activity:
+    # -- Enable activity recording.
+    enabled: false
+    # -- Redis DSN; must match the server's [automation.idle_pause] redis.dsn.
+    redisDsn: "redis://127.0.0.1:6379/0"
+    # -- Min interval between activity writes for the same sandbox.
+    minInterval: "5s"
+    # -- TTL for activity keys; keep equal to the server's activity_ttl_seconds.
+    ttlSeconds: 1800
+
   # OSEP-0024 wake-on-access: requests routed to paused fast sandboxes park
   # while a resume flight restores them. Wake is per-sandbox opt-in — only
   # sandboxes declaring lifecycle.idlePolicy are ever woken — but the

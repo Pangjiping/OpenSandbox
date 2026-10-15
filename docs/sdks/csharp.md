@@ -103,6 +103,53 @@ await using var sandbox = await Sandbox.CreateAsync(new SandboxCreateOptions
 
 The Server validates `TimeoutSeconds`; `PreStart` accepts 1–10800 seconds, while `Periodic` accepts 1–300 seconds. Both default to 60 seconds when omitted. See [Lifecycle Hooks](/guides/lifecycle-hooks) for timing, failure behavior, and provider limitations.
 
+### Idle policy (auto-pause and wake-on-access)
+
+`SandboxLifecycle.IdlePolicy` (OSEP-0024, fast-sandbox only) tells the control
+plane to auto-pause the sandbox after `IdleTimeoutSeconds` (30–86400) of
+continuously idle ingress-observed traffic, and to wake it on the next request.
+It is control-plane state: it never reaches the guest, is accepted in template
+mode (`SandboxCreateFromTemplateOptions.IdlePolicy`), and is rejected by
+non-fast-sandbox backends. Omitting it preserves non-automated behavior exactly.
+
+```csharp
+var sandbox = await Sandbox.CreateAsync(new SandboxCreateOptions
+{
+    ConnectionConfig = config,
+    Image = "ubuntu:24.04",
+    Lifecycle = new SandboxLifecycle
+    {
+        IdlePolicy = new IdlePolicy
+        {
+            IdleTimeoutSeconds = 300,
+            OnIdle = OnIdleAction.Pause,
+            WakeOnAccess = true
+        }
+    }
+});
+```
+
+`ActiveProbe` lets the application veto a pause while real work runs without
+producing ingress traffic: declare an endpoint answering
+`{"active": bool, "message"?: string}` and the server polls it when the sandbox
+is otherwise idle; a busy answer resets the idle clock. Invalid policies fail
+fast client-side through `IdlePolicy.Validate()`.
+
+### Wake retry
+
+A request to a paused sandbox may arrive while its restore is still in
+progress. The gateway answers `503` with the `OpenSandbox-Wake: expired`
+header; the HTTP transport recognizes it and resends the original request
+after the `Retry-After` delay (safe for any method — the marker proves the
+request was never forwarded). The wake budget defaults to 5 attempts / 60
+seconds across all wake cycles; when it is exhausted the SDK throws
+`SandboxWakeTimeoutException` (carrying `Attempts` and `Waited`) while the
+server-side resume continues in the background. Bare `503` responses follow
+the existing rules untouched. Tune it on the connection config:
+`WakeRetryEnabled` (default true), `WakeMaxAttempts` (5),
+`WakeOverallDeadlineSeconds` (60, non-positive for unbounded). SSE and file
+stream transports bypass wake retry.
+
 ## Usage Examples
 
 The snippets below use `config` and a live `sandbox` from the quick start. Run
@@ -477,6 +524,14 @@ await sandbox.PatchMetadataAsync(new Dictionary<string, string?>
 
 The `ConnectionConfig` class manages API server connection settings.
 
+::: info Transfer timeouts
+`RequestTimeoutSeconds` bounds the wait for response headers, not the whole transfer. The deadline starts with the request (so the connect phase is bounded too), is cleared while the request body is written, and is re-armed once the body of the current hop has been sent: a healthy upload or download that keeps making progress is never cut off by it. A download that gets no response headers, or an upload that gets none within the timeout after its body has been sent, fails with a `TaskCanceledException` carrying a `TimeoutException` instead of hanging (the Go SDK's `ResponseHeaderTimeout` contract); a caller cancellation still surfaces as an `OperationCanceledException` with the caller's token. All non-transfer calls keep the whole-call request timeout.
+
+A request body that never finishes being sent, and a response body that stops making progress after the headers have arrived, are bounded only by the `CancellationToken` you pass to the call, so pass one when a transfer needs an end-to-end cap. The upload guarantee assumes the HTTP handler streams the request body (for example `SocketsHttpHandler` on .NET 5+): the default `HttpClientHandler` on .NET Framework buffers the request body before sending it, so a slow but progressing upload can still count against the header timeout there.
+
+A 307/308 redirect resends the request body once per hop. A seekable upload source (`FileStream`, `MemoryStream`, ...) is rewound and resent in full; a non-seekable source cannot be replayed without buffering it, so the upload fails with a clear error instead of sending an empty file part to the redirected endpoint.
+:::
+
 | Parameter | Description | Default | Environment Variable |
 | --- | --- | --- | --- |
 | `ApiKey` | API key for authentication | Optional | `OPEN_SANDBOX_API_KEY` |
@@ -684,7 +739,7 @@ guidance, and Git/curl examples.
 
 ### 6. Timeout and Retry Behavior
 
-- `ConnectionConfig.RequestTimeoutSeconds` controls timeout for SDK HTTP calls.
+- `ConnectionConfig.RequestTimeoutSeconds` controls timeout for SDK HTTP calls. File uploads and downloads are exempt while they keep making progress; the timeout still bounds the connect phase and how long a transfer waits for response headers before failing.
 - `RunCommandOptions.TimeoutSeconds` controls command execution timeout for command runs.
 - `RunInSessionOptions.TimeoutSeconds` controls command execution timeout for session runs.
 - `SandboxCreateOptions.TimeoutSeconds` controls sandbox server-side TTL.
