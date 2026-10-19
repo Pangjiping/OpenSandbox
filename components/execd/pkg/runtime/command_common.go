@@ -124,6 +124,15 @@ func removeCommandOutputFiles(paths ...string) {
 			continue
 		}
 		seen[path] = struct{}{}
+		// Truncate before unlinking: forked children may outlive the command
+		// while still holding the output fd, so the unlinked inode's data
+		// blocks would stay allocated (invisible "(deleted)" growth) until the
+		// last holder exits. Truncation releases them immediately, without
+		// needing to track or kill grandchildren.
+		// See opensandbox-group/OpenSandbox#2291.
+		if err := os.Truncate(path, 0); err != nil && !os.IsNotExist(err) {
+			log.Warn("command output: truncate %s: %v", path, err)
+		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			log.Warn("command output: remove %s: %v", path, err)
 		}
