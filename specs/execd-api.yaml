@@ -2978,7 +2978,9 @@ components:
             (which mounts source==destination read-write), each entry may map
             a distinct destination path and be mounted read-only. The source
             path of every entry must fall within the configured writable
-            allowlist.
+            allowlist. The session files API also serves paths under each
+            dest from the host source directory: reads and writes are live
+            in both directions, and writes are rejected for readonly binds.
           items:
             $ref: "#/components/schemas/BindMount"
         share_net:

@@ -279,7 +279,7 @@ A session can carry **several independent overlay mounts** via the `overlays` re
 - Each entry has its own mount semantics, so workspace files, system-level changes (`apt install` → `/usr`, config → `/etc`), and additional project directories get **independent copy-on-write uppers**.
 - Mounts are applied shallow-first; a nested overlay (e.g. `/workspace` on top of a `/` root overlay) shadows its ancestors within its own subtree. Paths must be absolute and unique.
 - `persist` (overlay mode only, default `true`): `true` allocates a host upper directory under `upper_root`; `false` uses an ephemeral tmpfs upper whose writes are discarded when the session ends. `rw`/`ro` entries must not set `persist`. An ephemeral upper lives inside the namespace only, so the files API serves `persist=false` overlays from their host-side content: in-session writes under such an overlay are not observable through the files API and files-API writes into it are rejected.
-- The files API routes each request to the overlay whose mount path is the longest prefix of the requested path; relative paths resolve against the first overlay.
+- The files API routes each request to the session mount (overlay or bind) whose mount path is the longest prefix of the requested path; relative paths resolve against the first overlay.
 - Background runs use the **first** overlay for their log location: it must be `rw`, or `overlay` with `persist: true`; otherwise background runs are rejected.
 
 ---
@@ -301,6 +301,8 @@ A session can carry **several independent overlay mounts** via the `overlays` re
 ```
 
 Every `source` is checked against the operator-configured `allowed_writable` allowlist **after** symlink resolution, so symlinks cannot escape it. Default allowlist: `/workspace`, `/mnt`, `/media`, `/data` (subpaths allowed). Empty allowlist rejects all extra binds.
+
+Bind destinations are also served by the session files API: paths under `dest` resolve to the host `source` directory, so `session.files` and `session.run` see the same data in both directions (a bind is a live mount, unlike the overlay-mode upper). Writes through the files API are rejected for `readonly` binds, matching `--ro-bind` inside the namespace. When a bind shares a `dest` with an overlay, the bind shadows it in both the namespace and the files view.
 
 ---
 
@@ -332,7 +334,7 @@ Private Sessions are not recoverable across an execd restart. Deployments that e
 
 ## Filesystem Proxy
 
-Reads and writes the session's **merged** workspace view from outside the namespace — this is how SDKs `upload`, `download`, and `list` without spawning a shell. All paths are per session under `/v1/isolated/session/{id}/`:
+Reads and writes the session's **merged** mount view — the workspace overlays plus every `binds` destination — from outside the namespace. This is how SDKs `upload`, `download`, and `list` without spawning a shell, including against bind-mounted persistent data. All paths are per session under `/v1/isolated/session/{id}/`:
 
 | Method | Path |
 |---|---|
@@ -348,7 +350,7 @@ Reads and writes the session's **merged** workspace view from outside the namesp
 | `POST` | `directories` |
 | `DELETE` | `directories?path=...` |
 
-Writes on a `ro` workspace fail; writes on `overlay` land in the upper dir and vanish on `DELETE`.
+Writes on a `ro` workspace fail; writes on `overlay` land in the upper dir and vanish on `DELETE`; writes on a `readonly` bind fail.
 
 ---
 

@@ -906,15 +906,35 @@ func newMergedView(s *isolatedSession) vfs.FS {
 		return isolation.NewMergedView(ov.path, upper, ov.mode, uid, gid)
 	}
 
-	// Empty overlays yield an empty router rather than a panic.
-	if len(s.overlays) <= 1 {
-		if len(s.overlays) == 0 {
-			return isolation.NewMultiMergedView(nil)
+	// bindView serves a bind's namespace dest paths from its host source
+	// directory. A bind is a 1:1 live mount, so lower==upper keeps every
+	// operation on the real directory and rw mode needs no whiteouts; ro
+	// mode rejects writes, matching --ro-bind.
+	bindView := func(b isolation.BindMount) isolation.OverlayView {
+		dest := b.Dest
+		if dest == "" {
+			dest = b.Source
 		}
-		return overlayView(s.overlays[0])
+		mode := isolation.WorkspaceRW
+		if b.ReadOnly {
+			mode = isolation.WorkspaceRO
+		}
+		return isolation.OverlayView{
+			Path: dest,
+			Root: b.Source,
+			FS:   isolation.NewMergedView(b.Source, b.Source, mode, uid, gid),
+		}
 	}
 
-	views := make([]isolation.OverlayView, 0, len(s.overlays))
+	// Register bind views before overlay views: bwrap applies caller mounts
+	// in argv order (overlay segments first, binds last) and a later mount
+	// shadows earlier ones sharing a destination, so binds must win
+	// equal-prefix ties here too.
+	views := make([]isolation.OverlayView, 0, len(s.overlays)+len(s.opts.Binds))
+	for _, b := range s.opts.Binds {
+		views = append(views, bindView(b))
+	}
+
 	relativeBase := 0
 	for i, ov := range s.overlays {
 		if ov.path != "/" && s.overlays[relativeBase].path == "/" {
@@ -922,12 +942,23 @@ func newMergedView(s *isolatedSession) vfs.FS {
 			relativeBase = i
 		}
 		views = append(views, isolation.OverlayView{
-			Path:         ov.path,
-			FS:           overlayView(ov),
-			RelativeBase: false,
+			Path: ov.path,
+			FS:   overlayView(ov),
 		})
 	}
-	views[relativeBase].RelativeBase = true
+
+	// Without binds, preserve the historical view shapes (a bare MergedView
+	// for the single-overlay session).
+	if len(s.opts.Binds) == 0 {
+		switch len(views) {
+		case 0:
+			return isolation.NewMultiMergedView(nil)
+		case 1:
+			return overlayView(s.overlays[0])
+		}
+	}
+
+	views[relativeBase+len(s.opts.Binds)].RelativeBase = true
 	return isolation.NewMultiMergedView(views)
 }
 

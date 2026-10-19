@@ -269,7 +269,147 @@ func TestMultiMergedView_RenameRouting(t *testing.T) {
 	t.Run("cross_overlay_rename_rejected", func(t *testing.T) {
 		err := router.Rename("/workspace/a", "/data/b")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "rename across overlays is not supported")
+		assert.Contains(t, err.Error(), "rename across mounts is not supported")
 		assert.Empty(t, dataFS.renameArgs, "the destination view must not receive a cross-overlay rename")
 	})
+}
+
+// newBindRouterFixture builds a workspace overlay at <tmp>/ws plus two binds
+// whose view roots differ from their mount paths:
+//
+//	<tmp>/ws        → overlay (lower + upper), routed by /ws
+//	<tmp>/bind-rw   → rw bind source, routed by /data
+//	<tmp>/bind-ro   → ro bind source, routed by /configs
+func newBindRouterFixture(t *testing.T) (*MultiMergedView, string) {
+	t.Helper()
+
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	wsLower := filepath.Join(base, "ws")
+	wsUpper := filepath.Join(base, "upper-ws")
+	rwSrc := filepath.Join(base, "bind-rw")
+	roSrc := filepath.Join(base, "bind-ro")
+
+	for _, d := range []string{wsLower, wsUpper, rwSrc, roSrc} {
+		require.NoError(t, os.MkdirAll(d, 0o755))
+	}
+
+	uid := uint32(os.Getuid())
+	gid := uint32(os.Getgid())
+	router := NewMultiMergedView([]OverlayView{
+		{
+			Path: "/data",
+			Root: rwSrc,
+			FS:   NewMergedView(rwSrc, rwSrc, WorkspaceRW, uid, gid),
+		},
+		{
+			Path: "/configs",
+			Root: roSrc,
+			FS:   NewMergedView(roSrc, roSrc, WorkspaceRO, uid, gid),
+		},
+		{
+			Path:         wsLower,
+			FS:           NewMergedView(wsLower, wsUpper, WorkspaceOverlay, uid, gid),
+			RelativeBase: true,
+		},
+	})
+	return router, base
+}
+
+func TestMultiMergedView_RewrittenRootRouting(t *testing.T) {
+	router, base := newBindRouterFixture(t)
+	rwSrc := filepath.Join(base, "bind-rw")
+	roSrc := filepath.Join(base, "bind-ro")
+
+	require.NoError(t, os.WriteFile(filepath.Join(rwSrc, "seed.txt"), []byte("seed"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(roSrc, "ro.txt"), []byte("ro"), 0o644))
+
+	t.Run("read_via_mount_path_serves_view_root", func(t *testing.T) {
+		data, err := router.ReadFile("/data/seed.txt")
+		require.NoError(t, err)
+		assert.Equal(t, "seed", string(data))
+	})
+
+	t.Run("write_via_mount_path_lands_in_view_root", func(t *testing.T) {
+		require.NoError(t, router.WriteFile("/data/api.txt", []byte("api"), 0o644))
+		data, err := os.ReadFile(filepath.Join(rwSrc, "api.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, "api", string(data))
+	})
+
+	t.Run("stat_and_readdir_follow_rewrite", func(t *testing.T) {
+		info, err := router.Stat("/data/seed.txt")
+		require.NoError(t, err)
+		assert.False(t, info.IsDir())
+
+		entries, err := router.ReadDir("/configs")
+		require.NoError(t, err)
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		assert.Contains(t, names, "ro.txt")
+	})
+
+	t.Run("ro_mode_semantics_survive_rewrite", func(t *testing.T) {
+		data, err := router.ReadFile("/configs/ro.txt")
+		require.NoError(t, err)
+		assert.Equal(t, "ro", string(data))
+
+		err = router.WriteFile("/configs/denied.txt", []byte("x"), 0o644)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read-only")
+	})
+
+	t.Run("nested_mount_prefix_wins_over_broader", func(t *testing.T) {
+		// A bind dest nested under the workspace prefix routes to the bind,
+		// not the workspace overlay (longest prefix, rewritten root or not).
+		wsFS := &stubFS{name: "workspace"}
+		nestedFS := &stubFS{name: "nested-bind"}
+		nestedRouter := NewMultiMergedView([]OverlayView{
+			{Path: "/ws/nested-bind", Root: "/bind-src", FS: nestedFS},
+			{Path: "/ws", FS: wsFS},
+		})
+		data, err := nestedRouter.ReadFile("/ws/nested-bind/n.txt")
+		require.NoError(t, err)
+		assert.Equal(t, "nested-bind", string(data))
+
+		data, err = nestedRouter.ReadFile("/ws/other.txt")
+		require.NoError(t, err)
+		assert.Equal(t, "workspace", string(data))
+	})
+
+	t.Run("path_outside_all_mounts_rejected", func(t *testing.T) {
+		_, err := router.ReadFile("/etc/passwd")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrPathOutsideOverlays))
+
+		require.Error(t, router.WriteFile("/etc/evil", []byte("x"), 0o644))
+	})
+
+	t.Run("search_routes_rewrite", func(t *testing.T) {
+		results, err := router.Search("/data", "**.txt")
+		require.NoError(t, err)
+		assert.NotEmpty(t, results)
+	})
+
+	t.Run("rewrite_preserves_relative_base", func(t *testing.T) {
+		require.NoError(t, router.WriteFile("relative.txt", []byte("R"), 0o644))
+		_, err := os.Stat(filepath.Join(base, "upper-ws", "relative.txt"))
+		require.NoError(t, err, "relative write must resolve against the workspace overlay, not a bind root")
+	})
+}
+
+func TestMultiMergedView_EqualPrefixInsertionOrderWins(t *testing.T) {
+	// Binds register before overlays so equal-prefix ties mirror bwrap's
+	// later-mount-wins shadowing.
+	bindFS := &stubFS{name: "bind"}
+	overlayFS := &stubFS{name: "overlay"}
+	router := NewMultiMergedView([]OverlayView{
+		{Path: "/shared", Root: "/bind-src", FS: bindFS},
+		{Path: "/shared", FS: overlayFS},
+	})
+	data, err := router.ReadFile("/shared/x")
+	require.NoError(t, err)
+	assert.Equal(t, "bind", string(data))
 }
