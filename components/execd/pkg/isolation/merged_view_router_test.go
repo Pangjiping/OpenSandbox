@@ -300,12 +300,12 @@ func newBindRouterFixture(t *testing.T) (*MultiMergedView, string) {
 		{
 			Path: "/data",
 			Root: rwSrc,
-			FS:   NewMergedView(rwSrc, rwSrc, WorkspaceRW, uid, gid),
+			FS:   NewBindView(rwSrc, false, uid, gid),
 		},
 		{
 			Path: "/configs",
 			Root: roSrc,
-			FS:   NewMergedView(roSrc, roSrc, WorkspaceRO, uid, gid),
+			FS:   NewBindView(roSrc, true, uid, gid),
 		},
 		{
 			Path:         wsLower,
@@ -361,6 +361,51 @@ func TestMultiMergedView_RewrittenRootRouting(t *testing.T) {
 		assert.Contains(t, err.Error(), "read-only")
 	})
 
+	t.Run("search_results_rebase_onto_mount_path", func(t *testing.T) {
+		require.NoError(t, os.MkdirAll(filepath.Join(rwSrc, "sub"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(rwSrc, "sub", "deep.txt"), []byte("D"), 0o644))
+
+		results, err := router.Search("/data", "**.txt")
+		require.NoError(t, err)
+		assert.Contains(t, results, "/data/seed.txt")
+		assert.Contains(t, results, "/data/sub/deep.txt")
+
+		// The rebased paths must Stat back onto the same view — this is what
+		// the SearchFiles handler does per result.
+		for _, p := range results {
+			_, err := router.Stat(p)
+			require.NoError(t, err, "rebased search result %s must stat", p)
+		}
+	})
+
+	t.Run("bind_follows_symlinks_like_the_namespace", func(t *testing.T) {
+		// A symlink inside the bind source resolves on the host, exactly as
+		// the kernel resolves it for processes inside the namespace.
+		target := filepath.Join(rwSrc, "real.txt")
+		require.NoError(t, os.WriteFile(target, []byte("via-link"), 0o644))
+		link := filepath.Join(rwSrc, "alias.txt")
+		require.NoError(t, os.Symlink(target, link))
+
+		data, err := router.ReadFile("/data/alias.txt")
+		require.NoError(t, err)
+		assert.Equal(t, "via-link", string(data))
+	})
+
+	t.Run("bind_has_no_whiteout_semantics", func(t *testing.T) {
+		// ".wh."-prefixed files are real host files in a bind, not overlay
+		// whiteout markers.
+		require.NoError(t, os.WriteFile(filepath.Join(rwSrc, "plain.txt"), []byte("P"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(rwSrc, ".wh.plain.txt"), []byte(""), 0o644))
+
+		data, err := router.ReadFile("/data/plain.txt")
+		require.NoError(t, err)
+		assert.Equal(t, "P", string(data))
+
+		data, err = router.ReadFile("/data/.wh.plain.txt")
+		require.NoError(t, err, "whiteout-style names must stay readable in a bind")
+		assert.Empty(t, string(data))
+	})
+
 	t.Run("nested_mount_prefix_wins_over_broader", func(t *testing.T) {
 		// A bind dest nested under the workspace prefix routes to the bind,
 		// not the workspace overlay (longest prefix, rewritten root or not).
@@ -385,12 +430,6 @@ func TestMultiMergedView_RewrittenRootRouting(t *testing.T) {
 		assert.True(t, errors.Is(err, ErrPathOutsideOverlays))
 
 		require.Error(t, router.WriteFile("/etc/evil", []byte("x"), 0o644))
-	})
-
-	t.Run("search_routes_rewrite", func(t *testing.T) {
-		results, err := router.Search("/data", "**.txt")
-		require.NoError(t, err)
-		assert.NotEmpty(t, results)
 	})
 
 	t.Run("rewrite_preserves_relative_base", func(t *testing.T) {

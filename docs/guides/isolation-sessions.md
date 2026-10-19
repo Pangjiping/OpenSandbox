@@ -302,7 +302,13 @@ A session can carry **several independent overlay mounts** via the `overlays` re
 
 Every `source` is checked against the operator-configured `allowed_writable` allowlist **after** symlink resolution, so symlinks cannot escape it. Default allowlist: `/workspace`, `/mnt`, `/media`, `/data` (subpaths allowed). Empty allowlist rejects all extra binds.
 
-Bind destinations are also served by the session files API: paths under `dest` resolve to the host `source` directory, so `session.files` and `session.run` see the same data in both directions (a bind is a live mount, unlike the overlay-mode upper). Writes through the files API are rejected for `readonly` binds, matching `--ro-bind` inside the namespace. When a bind shares a `dest` with an overlay, the bind shadows it in both the namespace and the files view.
+Bind destinations are also served by the session files API: paths under `dest` resolve to the host `source` directory, so `session.files` and `session.run` see the same data in both directions (a bind is a live mount, unlike the overlay-mode upper). The bind view mirrors the namespace exactly: symlinked entries are followed (bubblewrap binds do not redirect symlink traversal) and `.wh.`-prefixed names are ordinary files, not overlay whiteouts. Writes through the files API are rejected for `readonly` binds, matching `--ro-bind` inside the namespace. When a bind shares a `dest` with an overlay or `extra_writable` path, the bind shadows it in both the namespace and the files view.
+
+Destination constraints keep the two views in agreement; session creation rejects otherwise-valid-looking configs:
+
+- **No duplicate `dest`** across `binds` entries (bwrap would expose only the last).
+- **A `dest` must not be a strict ancestor** of another mount destination (`binds`, `overlays`, or `extra_writable`) — the later parent mount would hide that subtree in the namespace while the files API would still route into it.
+- **A `dest` must not be `/run`, `/dev`, or `/proc`** (or nested under them) — the trusted base mounts are applied after every caller mount and always win.
 
 ---
 

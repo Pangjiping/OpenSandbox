@@ -54,7 +54,11 @@ class CreateIsolatedSessionRequest:
             binds (list[BindMount] | Unset): Additional host paths bind-mounted into the namespace with an explicit source-
                 to-destination mapping. Unlike extra_writable (which mounts source==destination read-write), each entry may map
                 a distinct destination path and be mounted read-only. The source path of every entry must fall within the
-                configured writable allowlist.
+                configured writable allowlist. The session files API also serves paths under each dest from the host source
+                directory: reads and writes are live in both directions, symlinked entries are followed like the namespace view,
+                and writes are rejected for readonly binds. Destinations must be unique across entries and must not be a strict
+                ancestor of another mount destination (binds, overlays, extra_writable) or fall under /run, /dev, or /proc; such
+                overlapping configurations are rejected at session creation.
             share_net (bool | Unset):
             env_passthrough (EnvPassthroughSpec | Unset):
             uid (int | Unset):

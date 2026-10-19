@@ -141,7 +141,7 @@ func prefixDepth(p string) int {
 // route resolves the view serving path and returns the path rewritten to
 // the view's own root. Relative paths go to the view marked RelativeBase,
 // or the shallowest registered mount when none is.
-func (m *MultiMergedView) route(path string) (vfs.FS, string, error) {
+func (m *MultiMergedView) route(path string) (*overlayRoute, string, error) {
 	cleaned := filepath.Clean(path)
 	if !filepath.IsAbs(cleaned) {
 		if m.relativeBase == nil {
@@ -149,133 +149,151 @@ func (m *MultiMergedView) route(path string) (vfs.FS, string, error) {
 		}
 		// Relative paths only ever reach non-rewritten workspace views;
 		// bind views are never marked RelativeBase.
-		return m.relativeBase, cleaned, nil
+		for i := range m.routes {
+			if m.routes[i].fs == m.relativeBase {
+				return &m.routes[i], cleaned, nil
+			}
+		}
+		return &overlayRoute{fs: m.relativeBase}, cleaned, nil
 	}
-	for _, r := range m.routes {
+	for i := range m.routes {
+		r := &m.routes[i]
 		// r.prefix+"/" would be "//" for a "/" prefix, which no cleaned
 		// absolute path starts with; match the root view directly.
 		if cleaned == r.prefix || r.prefix == "/" ||
 			strings.HasPrefix(cleaned, r.prefix+"/") {
 			if r.root == "" || r.root == r.prefix {
-				return r.fs, cleaned, nil
+				return r, cleaned, nil
 			}
 			rel := strings.TrimPrefix(cleaned, r.prefix) // "" or "/suffix"
-			return r.fs, filepath.Join(r.root, rel), nil
+			return r, filepath.Join(r.root, rel), nil
 		}
 	}
 	return nil, "", fmt.Errorf("%w: %s", ErrPathOutsideOverlays, path)
 }
 
 func (m *MultiMergedView) Stat(path string) (os.FileInfo, error) {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return nil, err
 	}
-	return fs.Stat(p)
+	return rt.fs.Stat(p)
 }
 
 func (m *MultiMergedView) ReadFile(path string) ([]byte, error) {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return nil, err
 	}
-	return fs.ReadFile(p)
+	return rt.fs.ReadFile(p)
 }
 
 func (m *MultiMergedView) WriteFile(path string, data []byte, perm os.FileMode) error {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return err
 	}
-	return fs.WriteFile(p, data, perm)
+	return rt.fs.WriteFile(p, data, perm)
 }
 
 func (m *MultiMergedView) WriteFileReader(path string, r io.Reader, perm os.FileMode) (int64, error) {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return 0, err
 	}
-	return fs.WriteFileReader(p, r, perm)
+	return rt.fs.WriteFileReader(p, r, perm)
 }
 
 func (m *MultiMergedView) Remove(path string) error {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return err
 	}
-	return fs.Remove(p)
+	return rt.fs.Remove(p)
 }
 
 func (m *MultiMergedView) RemoveAll(path string) error {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return err
 	}
-	return fs.RemoveAll(p)
+	return rt.fs.RemoveAll(p)
 }
 
 func (m *MultiMergedView) MkdirAll(path string, perm os.FileMode) error {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return err
 	}
-	return fs.MkdirAll(p, perm)
+	return rt.fs.MkdirAll(p, perm)
 }
 
 // Rename routes both paths and rejects a rename whose source and
 // destination resolve to different mounts: delegating to the source view
 // would silently place the destination inside that view's upper.
 func (m *MultiMergedView) Rename(oldPath, newPath string) error {
-	fs, oldP, err := m.route(oldPath)
+	rt, oldP, err := m.route(oldPath)
 	if err != nil {
 		return err
 	}
-	dstFS, newP, err := m.route(newPath)
+	dstRT, newP, err := m.route(newPath)
 	if err != nil {
 		return err
 	}
-	if dstFS != fs {
+	if dstRT.fs != rt.fs {
 		return fmt.Errorf("rename across mounts is not supported: %s -> %s", oldPath, newPath)
 	}
-	return fs.Rename(oldP, newP)
+	return rt.fs.Rename(oldP, newP)
 }
 
 func (m *MultiMergedView) Chmod(path string, mode os.FileMode) error {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return err
 	}
-	return fs.Chmod(p, mode)
+	return rt.fs.Chmod(p, mode)
 }
 
 func (m *MultiMergedView) ReadDir(path string) ([]os.DirEntry, error) {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return nil, err
 	}
-	return fs.ReadDir(p)
+	return rt.fs.ReadDir(p)
 }
 
 func (m *MultiMergedView) Open(path string) (*os.File, error) {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return nil, err
 	}
-	return fs.Open(p)
+	return rt.fs.Open(p)
 }
 
+// Search routes by the search root. Views with a rewritten root (binds)
+// return paths relative to that root, so results are rebased onto the
+// namespace mount path and follow-up Stat/Open calls route back to the
+// same view instead of falling to the workspace relative base.
 func (m *MultiMergedView) Search(root, pattern string) ([]string, error) {
-	fs, p, err := m.route(root)
+	rt, p, err := m.route(root)
 	if err != nil {
 		return nil, err
 	}
-	return fs.Search(p, pattern)
+	results, err := rt.fs.Search(p, pattern)
+	if err != nil || rt.root == "" || rt.root == rt.prefix {
+		return results, err
+	}
+	rebased := make([]string, 0, len(results))
+	for _, rel := range results {
+		rebased = append(rebased, filepath.Join(rt.prefix, rel))
+	}
+	return rebased, nil
 }
 
 func (m *MultiMergedView) ReplaceContent(path, old, newStr string) error {
-	fs, p, err := m.route(path)
+	rt, p, err := m.route(path)
 	if err != nil {
 		return err
 	}
-	return fs.ReplaceContent(p, old, newStr)
+	return rt.fs.ReplaceContent(p, old, newStr)
 }

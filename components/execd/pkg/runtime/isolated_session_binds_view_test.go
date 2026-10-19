@@ -227,3 +227,188 @@ func TestNewMergedView_BindDestDefaultsToSource(t *testing.T) {
 		t.Fatalf("source==dest bind write broken: %v, %q", err, got)
 	}
 }
+
+// TestNewMergedView_BindViewPassthroughSemantics pins the no-overlay
+// semantics of bind views: symlinks resolve like the namespace, ".wh."
+// names stay real files, and search results are rebased onto the dest.
+func TestNewMergedView_BindViewPassthroughSemantics(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsLower := filepath.Join(base, "ws")
+	rwSrc := filepath.Join(base, "bind-src")
+	for _, dir := range []string{wsLower, rwSrc} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rwSrc, "plain.txt"), []byte("P"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rwSrc, ".wh.plain.txt"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(rwSrc, "plain.txt"), filepath.Join(rwSrc, "alias.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	persist := true
+	s := newBindsViewSession(t,
+		[]IsolatedOverlayOptions{{Path: wsLower, Mode: "overlay", Persist: &persist}},
+		nil,
+		[]isolation.BindMount{{Source: rwSrc, Dest: "/data"}},
+	)
+	view := newMergedView(s)
+
+	// Symlinked entries read through, like `cat` inside the namespace.
+	got, err := view.ReadFile("/data/alias.txt")
+	if err != nil || string(got) != "P" {
+		t.Fatalf("ReadFile through bind symlink = %q, %v", got, err)
+	}
+
+	// ".wh."-prefixed names are real files in a bind, not whiteouts.
+	if got, err = view.ReadFile("/data/.wh.plain.txt"); err != nil {
+		t.Fatalf("whiteout-style file must stay readable in a bind: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("unexpected content in .wh. file: %q", got)
+	}
+
+	// Search results must come back in namespace space so follow-up Stats
+	// (as the SearchFiles handler performs) route to the bind, not the
+	// workspace relative base.
+	results, err := view.Search("/data", "**.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, p := range results {
+		if p == "/data/plain.txt" {
+			found = true
+		}
+		if _, err := view.Stat(p); err != nil {
+			t.Fatalf("search result %s does not stat: %v", p, err)
+		}
+	}
+	if !found {
+		t.Fatalf("search results missing rebased /data/plain.txt: %v", results)
+	}
+}
+
+// TestNewMergedView_BindsWithoutOverlaysDoesNotPanic guards the defensive
+// branch: the RelativeBase index must not go out of range when a session
+// somehow carries binds but no overlays (Create rejects this today).
+func TestNewMergedView_BindsWithoutOverlaysDoesNotPanic(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(base, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newBindsViewSession(t, nil, nil,
+		[]isolation.BindMount{{Source: src, Dest: "/data"}},
+	)
+	view := newMergedView(s)
+
+	if err := view.WriteFile("/data/x.txt", []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(src, "x.txt")); err != nil {
+		t.Fatalf("bind write missing in source: %v", err)
+	}
+}
+
+// TestValidateBindMountStack pins the mount-stack collisions the files view
+// cannot represent: duplicates, ancestor binds, and trusted-base shadowing.
+// Bind == overlay/extra_writable dest is allowed (the later bind shadows in
+// both views).
+func TestValidateBindMountStack(t *testing.T) {
+	cases := []struct {
+		name        string
+		overlays    []IsolatedOverlayOptions
+		extra       []string
+		binds       []BindMountSpec
+		wantFailure string
+	}{
+		{
+			name:     "bind equal to overlay dest is allowed",
+			overlays: []IsolatedOverlayOptions{{Path: "/data"}},
+			binds:    []BindMountSpec{{source: "/a", dest: "/data"}},
+		},
+		{
+			name:     "bind inside overlay dest is allowed",
+			overlays: []IsolatedOverlayOptions{{Path: "/data"}},
+			binds:    []BindMountSpec{{source: "/a", dest: "/data/proj"}},
+		},
+		{
+			name:  "bind equal to extra_writable is allowed",
+			extra: []string{"/mnt/scratch"},
+			binds: []BindMountSpec{{source: "/a", dest: "/mnt/scratch"}},
+		},
+		{
+			name:        "duplicate bind dests rejected",
+			binds:       []BindMountSpec{{source: "/a", dest: "/mnt/x"}, {source: "/b", dest: "/mnt/x"}},
+			wantFailure: "duplicate bind destination",
+		},
+		{
+			name:        "bind ancestor of overlay rejected",
+			overlays:    []IsolatedOverlayOptions{{Path: "/data/proj"}},
+			binds:       []BindMountSpec{{source: "/a", dest: "/data"}},
+			wantFailure: "shadows mount",
+		},
+		{
+			name:        "bind ancestor of extra_writable rejected",
+			extra:       []string{"/mnt/scratch/sub"},
+			binds:       []BindMountSpec{{source: "/a", dest: "/mnt/scratch"}},
+			wantFailure: "shadows mount",
+		},
+		{
+			name:        "bind ancestor of another bind rejected",
+			binds:       []BindMountSpec{{source: "/a", dest: "/data"}, {source: "/b", dest: "/data/proj"}},
+			wantFailure: "nested bind destinations",
+		},
+		{
+			name:        "bind under /run rejected",
+			binds:       []BindMountSpec{{source: "/a", dest: "/run/secrets"}},
+			wantFailure: "trusted base mount",
+		},
+		{
+			name:        "bind at /dev rejected",
+			binds:       []BindMountSpec{{source: "/a", dest: "/dev"}},
+			wantFailure: "trusted base mount",
+		},
+		{
+			name:     "unrelated bind and overlay allowed",
+			overlays: []IsolatedOverlayOptions{{Path: "/workspace"}},
+			binds:    []BindMountSpec{{source: "/a", dest: "/mnt/data"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			binds := make([]isolation.BindMount, 0, len(tc.binds))
+			for _, b := range tc.binds {
+				binds = append(binds, isolation.BindMount{Source: b.source, Dest: b.dest})
+			}
+			err := validateBindMountStack(tc.overlays, tc.extra, binds)
+			if tc.wantFailure == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantFailure) {
+				t.Fatalf("error %v, want containing %q", err, tc.wantFailure)
+			}
+		})
+	}
+}
+
+type BindMountSpec struct {
+	source string
+	dest   string
+}

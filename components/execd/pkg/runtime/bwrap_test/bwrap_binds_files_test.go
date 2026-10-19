@@ -185,3 +185,86 @@ func TestBindsFiles_ReplaceAndDelete(t *testing.T) {
 	_, err = os.Stat(filepath.Join(srcDir, "f.txt"))
 	assert.True(t, os.IsNotExist(err), "files-API delete must remove the bind source file")
 }
+
+// TestBindsFiles_PassthroughSemantics: the bind view mirrors the namespace —
+// symlinks resolve on the host and ".wh." names are real files, and search
+// results come back in namespace space.
+func TestBindsFiles_PassthroughSemantics(t *testing.T) {
+	r, id, srcDir, destDir := newBindsSession(t, false)
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "plain.txt"), []byte("P"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, ".wh.plain.txt"), []byte(""), 0o644))
+	require.NoError(t, os.Symlink(filepath.Join(srcDir, "plain.txt"), filepath.Join(srcDir, "alias.txt")))
+
+	mv, err := r.GetMergedView(id)
+	require.NoError(t, err)
+
+	// The namespace follows the symlink; so must the files API.
+	var lines []string
+	runInSession(t, r, id, "cat "+destDir+"/alias.txt", func(line string) { lines = append(lines, line) })
+	require.Equal(t, []string{"P"}, lines)
+	data, err := mv.ReadFile(filepath.Join(destDir, "alias.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "P", string(data))
+
+	// ".wh."-prefixed names are plain files through both views.
+	runInSession(t, r, id, "cat "+destDir+"/.wh.plain.txt", nil)
+	_, err = mv.ReadFile(filepath.Join(destDir, ".wh.plain.txt"))
+	require.NoError(t, err)
+
+	// Search rebases results onto the dest so follow-up stats route back.
+	results, err := mv.Search(destDir, "**.txt")
+	require.NoError(t, err)
+	assert.Contains(t, results, filepath.Join(destDir, "plain.txt"))
+	for _, p := range results {
+		_, err := mv.Stat(p)
+		require.NoError(t, err, "rebased search result %s must stat", p)
+	}
+}
+
+// TestBindsFiles_OverlappingMountsRejected: create-time validation keeps the
+// files view and the namespace in agreement for configs the router cannot
+// represent.
+func TestBindsFiles_OverlappingMountsRejected(t *testing.T) {
+	r := newRunner(t)
+
+	srcDir := t.TempDir()
+	destDir := t.TempDir()
+	wsDir := t.TempDir()
+	_ = destDir
+
+	t.Run("duplicate_bind_dests", func(t *testing.T) {
+		_, err := r.CreateIsolatedSession(&runtime.IsolatedSessionOptions{
+			Profile:       "balanced",
+			WorkspacePath: wsDir,
+			WorkspaceMode: "rw",
+			Binds: []isolation.BindMount{
+				{Source: srcDir, Dest: "/mnt/x"},
+				{Source: t.TempDir(), Dest: "/mnt/x"},
+			},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duplicate bind destination")
+	})
+
+	t.Run("bind_ancestor_of_workspace_rejected", func(t *testing.T) {
+		_, err := r.CreateIsolatedSession(&runtime.IsolatedSessionOptions{
+			Profile:       "balanced",
+			WorkspacePath: "/tmp/bwrap-ancestor-ws",
+			WorkspaceMode: "rw",
+			Binds:         []isolation.BindMount{{Source: srcDir, Dest: "/tmp"}},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "shadows mount")
+	})
+
+	t.Run("bind_under_trusted_base_rejected", func(t *testing.T) {
+		_, err := r.CreateIsolatedSession(&runtime.IsolatedSessionOptions{
+			Profile:       "balanced",
+			WorkspacePath: wsDir,
+			WorkspaceMode: "rw",
+			Binds:         []isolation.BindMount{{Source: srcDir, Dest: "/run/secrets"}},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "trusted base mount")
+	})
+}
