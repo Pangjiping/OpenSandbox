@@ -388,15 +388,7 @@ func (r *IsolatedRunner) CreateIsolatedSession(opts *IsolatedSessionOptions) (st
 	// behavior.
 	normalizeIsolatedOptions(opts)
 
-	if len(opts.Overlays) == 0 {
-		return "", fmt.Errorf("at least one overlay is required")
-	}
-
-	// Keep the files view and the namespace in agreement: a bind whose
-	// destination shadows (or is shadowed by) another caller mount would be
-	// served by different host directories through session.run and
-	// session.files, so reject the overlap up front.
-	if err := validateBindMountStack(opts.Overlays, opts.ExtraWritable, opts.Binds); err != nil {
+	if err := validateNormalizedCreate(opts); err != nil {
 		return "", err
 	}
 
@@ -1115,6 +1107,19 @@ func (r *IsolatedRunner) pathAllowedResolved(resolved string) bool {
 // under one of them is shadowed inside the namespace, so the files view
 // must not serve it either.
 var trustedBaseMounts = []string{"/run", "/dev", "/proc"}
+
+// validateNormalizedCreate checks the invariants that depend on the
+// normalized options shape.
+func validateNormalizedCreate(opts *IsolatedSessionOptions) error {
+	if len(opts.Overlays) == 0 {
+		return fmt.Errorf("at least one overlay is required")
+	}
+	// Keep the files view and the namespace in agreement: a bind whose
+	// destination shadows (or is shadowed by) another caller mount would be
+	// served by different host directories through session.run and
+	// session.files, so reject the overlap up front.
+	return validateBindMountStack(opts.Overlays, opts.ExtraWritable, opts.Binds)
+}
 
 // validateBindMountStack rejects bind destinations whose mount-stack
 // visibility would disagree with the files view's longest-prefix routing:
