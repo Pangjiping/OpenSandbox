@@ -17,6 +17,7 @@
 package runtime
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -44,4 +45,23 @@ func TestRemoveCommandOutputFilesSkipsFifo(t *testing.T) {
 		t.Fatal("removeCommandOutputFiles blocked on a FIFO entry")
 	}
 	require.NoFileExists(t, fifo)
+}
+
+// TestRemoveCommandOutputFilesKeepsHardLinkContent verifies a hard-linked
+// entry is only unlinked: with Nlink > 1 the inode's content must stay
+// reachable through the other name instead of being truncated through the
+// shared inode.
+func TestRemoveCommandOutputFilesKeepsHardLinkContent(t *testing.T) {
+	tempDir := t.TempDir()
+	kept := filepath.Join(tempDir, "kept")
+	entry := filepath.Join(tempDir, "dddddddddddddddddddddddddddddddd.output")
+	require.NoError(t, os.WriteFile(entry, []byte("shared-inode-content"), 0o600))
+	require.NoError(t, os.Link(entry, kept))
+
+	removeCommandOutputFiles(entry)
+
+	require.NoFileExists(t, entry)
+	content, err := os.ReadFile(kept)
+	require.NoError(t, err)
+	require.Equal(t, "shared-inode-content", string(content))
 }
