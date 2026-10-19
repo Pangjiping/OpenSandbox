@@ -67,16 +67,26 @@ func openNewCommandOutput(path string) (*os.File, error) {
 // descriptor opened without following symlinks: cleanup runs on paths a
 // sandbox workload can race with, and a truncate that follows a symlink swap
 // would zero an arbitrary file where os.Remove alone would only remove the
-// link. A symlink at the path is skipped (unlink removes the link itself).
+// link. O_NONBLOCK keeps a FIFO swap from blocking the open, and the
+// descriptor is verified to be a regular file before truncating; anything
+// else (symlink, FIFO, socket) is skipped, leaving the entry to the unlink.
 func truncateCommandOutputFile(path string) error {
-	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
-		if errors.Is(err, unix.ELOOP) {
+		if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENXIO) {
 			return nil
 		}
 		return err
 	}
 	defer unix.Close(fd) //nolint:errcheck
+
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil
+	}
 	return unix.Ftruncate(fd, 0)
 }
 
