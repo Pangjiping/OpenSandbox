@@ -216,3 +216,25 @@ func TestRemoveCommandOutputFilesTruncatesBeforeUnlink(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, info.Size(), "data blocks must be released while another fd still holds the file")
 }
+
+// TestRemoveCommandOutputFilesDoesNotFollowSymlink verifies the cleanup-time
+// truncation cannot be redirected at an arbitrary file by swapping the entry
+// for a symlink: the link is unlinked, the target's content is untouched.
+func TestRemoveCommandOutputFilesDoesNotFollowSymlink(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("symlink creation requires additional privileges on Windows")
+	}
+
+	tempDir := t.TempDir()
+	victim := filepath.Join(tempDir, "victim")
+	require.NoError(t, os.WriteFile(victim, []byte("must-not-be-truncated"), 0o600))
+	link := filepath.Join(tempDir, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.output")
+	require.NoError(t, os.Symlink(victim, link))
+
+	removeCommandOutputFiles(link)
+
+	require.NoFileExists(t, link)
+	content, err := os.ReadFile(victim)
+	require.NoError(t, err)
+	require.Equal(t, "must-not-be-truncated", string(content))
+}

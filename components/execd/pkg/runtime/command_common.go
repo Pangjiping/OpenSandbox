@@ -128,9 +128,12 @@ func removeCommandOutputFiles(paths ...string) {
 		// while still holding the output fd, so the unlinked inode's data
 		// blocks would stay allocated (invisible "(deleted)" growth) until the
 		// last holder exits. Truncation releases them immediately, without
-		// needing to track or kill grandchildren.
+		// needing to track or kill grandchildren. The helper never follows
+		// symlinks: a workload can swap the entry between a directory scan and
+		// this call, and a following truncate would zero an arbitrary file
+		// where the remove below would only unlink the link.
 		// See opensandbox-group/OpenSandbox#2291.
-		if err := os.Truncate(path, 0); err != nil && !os.IsNotExist(err) {
+		if err := truncateCommandOutputFile(path); err != nil && !os.IsNotExist(err) {
 			log.Warn("command output: truncate %s: %v", path, err)
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

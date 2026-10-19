@@ -17,6 +17,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,6 +61,23 @@ func openNewCommandOutput(path string) (*os.File, error) {
 		return nil, fmt.Errorf("create command output file %s: %w", path, err)
 	}
 	return file, nil
+}
+
+// truncateCommandOutputFile releases the file's data blocks through a
+// descriptor opened without following symlinks: cleanup runs on paths a
+// sandbox workload can race with, and a truncate that follows a symlink swap
+// would zero an arbitrary file where os.Remove alone would only remove the
+// link. A symlink at the path is skipped (unlink removes the link itself).
+func truncateCommandOutputFile(path string) error {
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil
+		}
+		return err
+	}
+	defer unix.Close(fd) //nolint:errcheck
+	return unix.Ftruncate(fd, 0)
 }
 
 func openCommandOutputForRead(path string) (*os.File, error) {

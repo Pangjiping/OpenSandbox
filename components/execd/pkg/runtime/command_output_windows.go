@@ -43,6 +43,18 @@ func openNewCommandOutput(path string) (*os.File, error) {
 	return file, nil
 }
 
+// truncateCommandOutputFile releases the file's data blocks through a write
+// handle instead of a path-based truncate, so a path swapped mid-cleanup is
+// never truncated after being re-resolved.
+func truncateCommandOutputFile(path string) error {
+	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return file.Truncate(0)
+}
+
 func openCommandOutputForRead(path string) (*os.File, error) {
 	file, err := os.Open(path)
 	if err != nil {
