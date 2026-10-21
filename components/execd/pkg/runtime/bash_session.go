@@ -402,7 +402,7 @@ func scanLineFragments(r io.Reader, onFragment func(string)) error {
 	var pending []byte
 	for {
 		n, readErr := r.Read(buf)
-		for i := 0; i < n; i++ {
+		for i := range n {
 			b := buf[i]
 			pending = append(pending, b)
 			if b == '\n' || b == '\r' {

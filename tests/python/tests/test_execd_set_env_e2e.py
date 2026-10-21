@@ -168,7 +168,7 @@ class TestExecdSetEnvE2E:
             assert result.error is None, result.error
             assert result.exit_code == 0
             out = _stdout(result)
-            assert out == "[from-set-env]\n", (
+            assert out == "[from-set-env]", (
                 "set_env variable missing from a session created after the write, "
                 f"got: {out!r}"
             )
