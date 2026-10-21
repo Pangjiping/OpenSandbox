@@ -82,7 +82,7 @@ func TestBashSession_NonZeroExitEmitsError(t *testing.T) {
 	require.NotNil(t, gotErr.ExitCode, "expected exit_code for a command that ran")
 	require.Equal(t, 7, *gotErr.ExitCode)
 	require.NotEmpty(t, sessionID, "expected session id to be set")
-	require.Equal(t, "before", stdoutLine)
+	require.Equal(t, "before\n", stdoutLine)
 
 	select {
 	case <-completeCh:
@@ -140,7 +140,7 @@ func TestBashSession_FallsBackToSh(t *testing.T) {
 			OnExecuteStdout: func(line string) { stdoutLines = append(stdoutLines, line) },
 		},
 	}))
-	require.Contains(t, stdoutLines, "hello world")
+	require.Contains(t, stdoutLines, "hello world\n")
 }
 
 // Round-trip a value containing a single quote under sh to guard against
@@ -166,7 +166,7 @@ func TestBashSession_FallsBackToSh_PersistsSingleQuotedValue(t *testing.T) {
 			OnExecuteStdout: func(line string) { stdoutLines = append(stdoutLines, line) },
 		},
 	}))
-	require.Contains(t, stdoutLines, want)
+	require.Contains(t, stdoutLines, want+"\n")
 }
 
 func TestParseExportLine_BashAndShFormats(t *testing.T) {
@@ -817,7 +817,7 @@ func TestBashSession_ExecdEnvsFileAppliedToSession(t *testing.T) {
 			OnExecuteStdout: func(line string) { stdoutLines = append(stdoutLines, line) },
 		},
 	}))
-	require.Contains(t, stdoutLines, "bar")
+	require.Contains(t, stdoutLines, "bar\n")
 }
 
 func TestBashSession_ExecdEnvsFileExpandsSessionCwd(t *testing.T) {
@@ -841,7 +841,77 @@ func TestBashSession_ExecdEnvsFileExpandsSessionCwd(t *testing.T) {
 			OnExecuteStdout: func(line string) { stdoutLines = append(stdoutLines, line) },
 		},
 	}))
-	require.Contains(t, stdoutLines, workspace)
+	require.Contains(t, stdoutLines, workspace+"\n")
+}
+
+// Session stdout events must carry their original line endings so that
+// concatenating event text per run reconstructs the exact output bytes,
+// matching the foreground command stream contract. The wrapper's protocol
+// separator newline before the env dump must not leak as a trailing blank.
+func TestBashSession_PreservesLineEndings(t *testing.T) {
+	requireBash(t)
+
+	tests := []struct {
+		name string
+		code string
+		want []string
+	}{
+		{
+			name: "plain lines",
+			code: `echo hi`,
+			want: []string{"hi\n"},
+		},
+		{
+			name: "blank lines",
+			code: `printf 'a\n\nb\n'`,
+			want: []string{"a\n", "\n", "b\n"},
+		},
+		{
+			name: "carriage returns",
+			code: `printf 'x\r\ny\rz\n'`,
+			want: []string{"x\r", "\n", "y\r", "z\n"},
+		},
+		{
+			name: "unterminated output",
+			code: `printf 'partial'`,
+			want: []string{"partial\n"},
+		},
+		{
+			name: "bare blank line",
+			code: `echo`,
+			want: []string{"\n"},
+		},
+		{
+			name: "no output",
+			code: `true`,
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := newBashSession("", nil)
+			t.Cleanup(func() { _ = session.close() })
+			require.NoError(t, session.start())
+
+			var got []string
+			require.NoError(t, session.run(context.Background(), &ExecuteCodeRequest{
+				Code:    tt.code,
+				Timeout: 5 * time.Second,
+				Hooks: ExecuteResultHook{
+					OnExecuteStdout: func(fragment string) { got = append(got, fragment) },
+				},
+			}))
+
+			require.Equal(t, tt.want, got)
+			for _, fragment := range got {
+				require.NotContains(t, fragment, envDumpStartMarker)
+				require.NotContains(t, fragment, exitMarkerPrefix)
+				require.NotContains(t, fragment, pwdMarkerPrefix)
+				require.NotContains(t, fragment, "declare -x")
+			}
+		})
+	}
 }
 
 func TestNewBashSessionEnvOverlaysFileAndKeepsBlacklist(t *testing.T) {

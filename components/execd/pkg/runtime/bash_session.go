@@ -18,10 +18,10 @@
 package runtime
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -290,9 +290,6 @@ func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) erro
 	stopGroupKill := killProcessGroupOnDone(ctx, cmd.Process.Pid)
 	defer stopGroupKill()
 
-	scanner := bufio.NewScanner(stdoutR)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-
 	var (
 		envLines []string
 		pwdLine  string
@@ -300,31 +297,62 @@ func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) erro
 		inEnv    bool
 	)
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		switch {
-		case line == envDumpStartMarker:
-			inEnv = true
-		case line == envDumpEndMarker:
-			inEnv = false
-		case strings.HasPrefix(line, exitMarkerPrefix):
-			if code, err := strconv.Atoi(strings.TrimPrefix(line, exitMarkerPrefix)); err == nil {
-				exitCode = &code //nolint:ineffassign
-			}
-		case strings.HasPrefix(line, pwdMarkerPrefix):
-			pwdLine = strings.TrimPrefix(line, pwdMarkerPrefix)
-		default:
-			if inEnv {
-				envLines = append(envLines, line)
-				continue
-			}
-			if request.Hooks.OnExecuteStdout != nil {
-				request.Hooks.OnExecuteStdout(line)
-			}
+	emit := func(fragment string) {
+		if request.Hooks.OnExecuteStdout != nil {
+			request.Hooks.OnExecuteStdout(fragment)
 		}
 	}
 
-	scanErr := scanner.Err()
+	// handleFragment forwards user output while intercepting the wrapper's
+	// protocol lines. A blank-line fragment (a bare "\n" or "\r") is held
+	// back until the next fragment arrives: the wrapper prints a separator
+	// newline before the env-dump marker, and that separator is protocol
+	// noise rather than user output, while a blank line the user printed is
+	// emitted as soon as the following blank (the separator) is classified.
+	heldBlank := ""
+	hasHeldBlank := false
+	handleFragment := func(fragment string) {
+		content := lineContent(fragment)
+		switch {
+		case content == envDumpStartMarker:
+			hasHeldBlank = false
+			heldBlank = ""
+			inEnv = true
+			return
+		case content == envDumpEndMarker:
+			inEnv = false
+			return
+		case strings.HasPrefix(content, exitMarkerPrefix):
+			if code, err := strconv.Atoi(strings.TrimPrefix(content, exitMarkerPrefix)); err == nil {
+				exitCode = &code //nolint:ineffassign
+			}
+			return
+		case strings.HasPrefix(content, pwdMarkerPrefix):
+			pwdLine = strings.TrimPrefix(content, pwdMarkerPrefix)
+			return
+		}
+		if inEnv {
+			envLines = append(envLines, content)
+			return
+		}
+		if hasHeldBlank {
+			emit(heldBlank)
+			hasHeldBlank = false
+			heldBlank = ""
+		}
+		if fragment == "\n" || fragment == "\r" {
+			heldBlank = fragment
+			hasHeldBlank = true
+			return
+		}
+		emit(fragment)
+	}
+
+	scanErr := scanLineFragments(stdoutR, handleFragment)
+	if hasHeldBlank {
+		emit(heldBlank)
+	}
+
 	waitErr := mp.Wait()
 
 	if scanErr != nil {
@@ -353,6 +381,47 @@ func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) erro
 	s.mu.Unlock()
 
 	return reportRunResult(request, waitErr, exitCode, startAt)
+}
+
+// scanLineFragments reads r and calls onFragment for each fragment terminated
+// by \n or \r, passing the terminator through; a final unterminated fragment
+// is flushed at EOF. Concatenating the fragments reproduces the exact byte
+// stream, including blank lines and \r-only progress output.
+func scanLineFragments(r io.Reader, onFragment func(string)) error {
+	buf := make([]byte, 64*1024)
+	var pending []byte
+	for {
+		n, readErr := r.Read(buf)
+		for i := 0; i < n; i++ {
+			b := buf[i]
+			pending = append(pending, b)
+			if b == '\n' || b == '\r' {
+				onFragment(string(pending))
+				pending = pending[:0]
+			}
+		}
+		if readErr != nil {
+			if len(pending) > 0 {
+				onFragment(string(pending))
+			}
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			return readErr
+		}
+	}
+}
+
+// lineContent strips the single line-ending byte from a fragment produced by
+// scanLineFragments; unterminated fragments are returned unchanged.
+func lineContent(fragment string) string {
+	if fragment == "" {
+		return ""
+	}
+	if c := fragment[len(fragment)-1]; c == '\n' || c == '\r' {
+		return fragment[:len(fragment)-1]
+	}
+	return fragment
 }
 
 // reportRunResult maps the shell's wait result and parsed exit code onto the
