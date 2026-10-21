@@ -91,11 +91,15 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: RunInSessionRequest,
 ) -> Response[ErrorResponse | ServerStreamEvent]:
-    """Run command in bash session (run_in_session)
+    r"""Run command in bash session (run_in_session)
 
      Executes a shell command in an existing bash session and streams the output in real-time via SSE
     (Server-Sent Events). The session must have been created by create_session. Supports
     optional working directory override and timeout (milliseconds).
+    The run streams a single merged `stdout` event stream (session stderr is merged into it).
+    Stdout event text preserves the original line endings (`\n`, `\r`, or `\r\n`). Concatenate
+    text from the stdout events to recover the run's output; blank lines appear as events
+    containing only the line ending.
 
     Args:
         session_id (str):
@@ -127,11 +131,15 @@ def sync(
     client: AuthenticatedClient | Client,
     body: RunInSessionRequest,
 ) -> ErrorResponse | ServerStreamEvent | None:
-    """Run command in bash session (run_in_session)
+    r"""Run command in bash session (run_in_session)
 
      Executes a shell command in an existing bash session and streams the output in real-time via SSE
     (Server-Sent Events). The session must have been created by create_session. Supports
     optional working directory override and timeout (milliseconds).
+    The run streams a single merged `stdout` event stream (session stderr is merged into it).
+    Stdout event text preserves the original line endings (`\n`, `\r`, or `\r\n`). Concatenate
+    text from the stdout events to recover the run's output; blank lines appear as events
+    containing only the line ending.
 
     Args:
         session_id (str):
@@ -158,11 +166,15 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: RunInSessionRequest,
 ) -> Response[ErrorResponse | ServerStreamEvent]:
-    """Run command in bash session (run_in_session)
+    r"""Run command in bash session (run_in_session)
 
      Executes a shell command in an existing bash session and streams the output in real-time via SSE
     (Server-Sent Events). The session must have been created by create_session. Supports
     optional working directory override and timeout (milliseconds).
+    The run streams a single merged `stdout` event stream (session stderr is merged into it).
+    Stdout event text preserves the original line endings (`\n`, `\r`, or `\r\n`). Concatenate
+    text from the stdout events to recover the run's output; blank lines appear as events
+    containing only the line ending.
 
     Args:
         session_id (str):
@@ -192,11 +204,15 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: RunInSessionRequest,
 ) -> ErrorResponse | ServerStreamEvent | None:
-    """Run command in bash session (run_in_session)
+    r"""Run command in bash session (run_in_session)
 
      Executes a shell command in an existing bash session and streams the output in real-time via SSE
     (Server-Sent Events). The session must have been created by create_session. Supports
     optional working directory override and timeout (milliseconds).
+    The run streams a single merged `stdout` event stream (session stderr is merged into it).
+    Stdout event text preserves the original line endings (`\n`, `\r`, or `\r\n`). Concatenate
+    text from the stdout events to recover the run's output; blank lines appear as events
+    containing only the line ending.
 
     Args:
         session_id (str):
