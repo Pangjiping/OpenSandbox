@@ -296,6 +296,18 @@ func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) erro
 		exitCode *int
 		inEnv    bool
 	)
+	// Env-dump records are reassembled from raw fragment bytes and only
+	// finalized on LF: values may contain literal CR bytes (dash quotes them
+	// verbatim), so CR-split fragments must be joined before parseExportLine
+	// sees a record.
+	var envRecord strings.Builder
+	flushEnvRecord := func() {
+		if envRecord.Len() == 0 {
+			return
+		}
+		envLines = append(envLines, strings.TrimSuffix(envRecord.String(), "\n"))
+		envRecord.Reset()
+	}
 
 	emit := func(fragment string) {
 		if request.Hooks.OnExecuteStdout != nil {
@@ -304,20 +316,20 @@ func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) erro
 	}
 
 	// handleFragment forwards user output while intercepting the wrapper's
-	// protocol lines. A blank-line fragment (a bare "\n" or "\r") is held
-	// back until the next fragment arrives: the wrapper prints a separator
-	// newline before the env-dump marker, and that separator is protocol
-	// noise rather than user output, while a blank line the user printed is
-	// emitted as soon as the following blank (the separator) is classified.
-	heldBlank := ""
-	hasHeldBlank := false
+	// protocol lines. The wrapper prints the env-dump marker on its own line,
+	// so user output that lacks a trailing newline merges with the marker
+	// line; stripping the marker suffix keeps that output byte-exact.
 	handleFragment := func(fragment string) {
 		content := lineContent(fragment)
 		switch {
 		case content == envDumpStartMarker:
-			hasHeldBlank = false
-			heldBlank = ""
 			inEnv = true
+			return
+		case strings.HasSuffix(content, envDumpStartMarker):
+			inEnv = true
+			if prefix := strings.TrimSuffix(content, envDumpStartMarker); prefix != "" {
+				emit(prefix)
+			}
 			return
 		case content == envDumpEndMarker:
 			inEnv = false
@@ -332,25 +344,18 @@ func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) erro
 			return
 		}
 		if inEnv {
-			envLines = append(envLines, content)
-			return
-		}
-		if hasHeldBlank {
-			emit(heldBlank)
-			hasHeldBlank = false
-			heldBlank = ""
-		}
-		if fragment == "\n" || fragment == "\r" {
-			heldBlank = fragment
-			hasHeldBlank = true
+			envRecord.WriteString(fragment)
+			if strings.HasSuffix(fragment, "\n") {
+				flushEnvRecord()
+			}
 			return
 		}
 		emit(fragment)
 	}
 
 	scanErr := scanLineFragments(stdoutR, handleFragment)
-	if hasHeldBlank {
-		emit(heldBlank)
+	if inEnv {
+		flushEnvRecord()
 	}
 
 	waitErr := mp.Wait()
@@ -383,6 +388,11 @@ func (s *bashSession) run(ctx context.Context, request *ExecuteCodeRequest) erro
 	return reportRunResult(request, waitErr, exitCode, startAt)
 }
 
+// maxScanLineBytes bounds the buffer for a single output fragment without a
+// line ending, matching the former bufio.Scanner cap; exceeding it fails the
+// run instead of buffering without limit.
+const maxScanLineBytes = 16 * 1024 * 1024
+
 // scanLineFragments reads r and calls onFragment for each fragment terminated
 // by \n or \r, passing the terminator through; a final unterminated fragment
 // is flushed at EOF. Concatenating the fragments reproduces the exact byte
@@ -398,6 +408,8 @@ func scanLineFragments(r io.Reader, onFragment func(string)) error {
 			if b == '\n' || b == '\r' {
 				onFragment(string(pending))
 				pending = pending[:0]
+			} else if len(pending) >= maxScanLineBytes {
+				return fmt.Errorf("output line exceeds %d bytes", maxScanLineBytes)
 			}
 		}
 		if readErr != nil {
@@ -524,7 +536,7 @@ func buildWrappedScript(command string, env map[string]string, cwd string) strin
 	}
 
 	b.WriteString("__USER_EXIT_CODE__=$?\n")
-	b.WriteString("printf \"\\n%s\\n\" \"" + envDumpStartMarker + "\"\n")
+	b.WriteString("printf \"%s\\n\" \"" + envDumpStartMarker + "\"\n")
 	b.WriteString("export -p\n")
 	b.WriteString("printf \"%s\\n\" \"" + envDumpEndMarker + "\"\n")
 	b.WriteString("printf \"" + pwdMarkerPrefix + "%s\\n\" \"$(pwd)\"\n")

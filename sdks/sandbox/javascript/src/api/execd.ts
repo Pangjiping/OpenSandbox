@@ -189,7 +189,7 @@ export interface paths {
          *     The run streams a single merged `stdout` event stream (session stderr is merged into it).
          *     Stdout event text preserves the original line endings (`\n`, `\r`, or `\r\n`). Concatenate
          *     text from the stdout events to recover the run's output; blank lines appear as events
-         *     containing only the line ending.
+         *     containing only the line ending, and the final event may be an unterminated fragment.
          */
         post: operations["runInSession"];
         delete?: never;

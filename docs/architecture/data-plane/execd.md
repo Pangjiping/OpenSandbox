@@ -58,7 +58,7 @@ Execution modes:
 
 Foreground `stdout` and `stderr` event text preserves the command's line endings (`\n`, `\r`, or `\r\n`). Concatenate event text for each stream to reconstruct its output; the last event may be an unterminated fragment.
 
-Bash-session runs stream one merged `stdout` event stream (session stderr is merged into it) with the same line-ending contract: event text preserves `\n`, `\r`, or `\r\n`, and concatenating event text reconstructs the run's output. Blank lines are preserved as events containing only the line ending.
+Bash-session runs stream one merged `stdout` event stream (session stderr is merged into it) with the same line-ending contract: event text preserves `\n`, `\r`, or `\r\n`, and concatenating event text reconstructs the run's output. Blank lines are preserved as events containing only the line ending, and the final event may be an unterminated fragment.
 
 Sessions use Bash when the image provides it and fall back to POSIX `sh` on minimal images — commands sent to a fallback session must be `sh`-compatible. Windows sandboxes are supported (environment names are case-insensitive; batch files require shell syntax).
 

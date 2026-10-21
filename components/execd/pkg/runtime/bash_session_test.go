@@ -846,8 +846,8 @@ func TestBashSession_ExecdEnvsFileExpandsSessionCwd(t *testing.T) {
 
 // Session stdout events must carry their original line endings so that
 // concatenating event text per run reconstructs the exact output bytes,
-// matching the foreground command stream contract. The wrapper's protocol
-// separator newline before the env dump must not leak as a trailing blank.
+// matching the foreground command stream contract. Unterminated output ends
+// without a terminator, and the wrapper's protocol lines never leak into it.
 func TestBashSession_PreservesLineEndings(t *testing.T) {
 	requireBash(t)
 
@@ -874,7 +874,12 @@ func TestBashSession_PreservesLineEndings(t *testing.T) {
 		{
 			name: "unterminated output",
 			code: `printf 'partial'`,
-			want: []string{"partial\n"},
+			want: []string{"partial"},
+		},
+		{
+			name: "unterminated output ending before carriage return",
+			code: `printf 'a\rb'`,
+			want: []string{"a\r", "b"},
 		},
 		{
 			name: "bare blank line",
@@ -912,6 +917,77 @@ func TestBashSession_PreservesLineEndings(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A blank line must be delivered immediately, not held back until the next
+// fragment or process exit.
+func TestBashSession_FlushesBlankLineImmediately(t *testing.T) {
+	requireBash(t)
+
+	session := newBashSession("", nil)
+	t.Cleanup(func() { _ = session.close() })
+	require.NoError(t, session.start())
+
+	var blankAt time.Duration
+	gotBlank := false
+	start := time.Now()
+	require.NoError(t, session.run(context.Background(), &ExecuteCodeRequest{
+		Code:    `echo; sleep 2`,
+		Timeout: 10 * time.Second,
+		Hooks: ExecuteResultHook{
+			OnExecuteStdout: func(fragment string) {
+				if fragment == "\n" && !gotBlank {
+					gotBlank = true
+					blankAt = time.Since(start)
+				}
+			},
+		},
+	}))
+
+	require.True(t, gotBlank, "blank line event was never delivered")
+	require.Less(t, blankAt, 1500*time.Millisecond, "blank line was held back until the run finished")
+}
+
+// Output without any line ending must fail the run at the fragment cap
+// instead of buffering without limit, mirroring the former 16 MiB scanner cap.
+func TestBashSession_OutputLineCapErrors(t *testing.T) {
+	requireBash(t)
+
+	session := newBashSession("", nil)
+	t.Cleanup(func() { _ = session.close() })
+	require.NoError(t, session.start())
+
+	err := session.run(context.Background(), &ExecuteCodeRequest{
+		Code:    `head -c 17000000 /dev/zero | tr '\0' 'x'`,
+		Timeout: 30 * time.Second,
+	})
+	require.ErrorContains(t, err, "output line exceeds")
+}
+
+// Env values may carry a literal CR byte (dash quotes export -p values
+// verbatim); the record must survive session persistence byte-exact.
+func TestBashSession_EnvValueWithCRPersists(t *testing.T) {
+	requireBash(t)
+	useShOnlyPath(t)
+
+	session := newBashSession("", nil)
+	t.Cleanup(func() { _ = session.close() })
+	require.NoError(t, session.start())
+
+	require.NoError(t, session.run(context.Background(), &ExecuteCodeRequest{
+		Code:    `export CR_VALUE="$(printf 'a\rb')"`,
+		Timeout: 5 * time.Second,
+	}))
+
+	var got []string
+	require.NoError(t, session.run(context.Background(), &ExecuteCodeRequest{
+		Code:    `printf '%s' "$CR_VALUE"`,
+		Timeout: 5 * time.Second,
+		Hooks: ExecuteResultHook{
+			OnExecuteStdout: func(fragment string) { got = append(got, fragment) },
+		},
+	}))
+	require.Equal(t, []string{"a\r", "b"}, got, "CR inside the persisted env value was lost")
 }
 
 func TestNewBashSessionEnvOverlaysFileAndKeepsBlacklist(t *testing.T) {
