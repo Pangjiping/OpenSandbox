@@ -1075,6 +1075,14 @@ class TestSandboxE2ESync:
         assert fail.complete is None
         logger.info("✓ run_in_session failure propagated exit_code=7")
 
+        logger.info("Step 3d: Session stdout events preserve line endings (incl. blank lines)")
+        out_lines = sandbox.commands.run_in_session(sid, "printf 'a\\n\\nb\\n'")
+        assert out_lines.error is None
+        assert out_lines.exit_code == 0
+        joined = "".join(m.text for m in out_lines.logs.stdout)
+        assert joined == "a\n\nb\n", f"session stdout should reconstruct exactly, got: {joined!r}"
+        logger.info("✓ session stdout line endings preserved: %r", joined)
+
         logger.info("Step 4: New session with working_directory=/var — verify create_session working directory again")
         sid2 = sandbox.commands.create_session(working_directory="/var")
         assert sid2 is not None
