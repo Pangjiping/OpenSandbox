@@ -76,6 +76,32 @@ jobs:
           sed -i "s/^commit:.*/commit: $FSB_COMMIT_OVERRIDE/" manifests/third-party/fast-sandbox.commit
           manifests/release/build-fast-sandbox.sh --no-build --sync-crds
 
+      # Report progress back to the tested fast-sandbox PR as a commit status
+      # (context: opensandbox-integration) so the result can gate merges.
+      - name: Mint fast-sandbox status token
+        if: env.FSB_COMMIT_OVERRIDE != ''
+        continue-on-error: true
+        id: fsb-pending-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FSB_APP_ID }}
+          private-key: ${{ secrets.FSB_APP_PRIVATE_KEY }}
+          owner: opensandbox-group
+          repositories: fast-sandbox
+
+      - name: Report pending status to fast-sandbox PR
+        if: env.FSB_COMMIT_OVERRIDE != ''
+        continue-on-error: true
+        env:
+          FSB_TOKEN: ${{ steps.fsb-pending-token.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sSf -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $FSB_TOKEN" \
+            https://api.github.com/repos/opensandbox-group/fast-sandbox/statuses/$FSB_COMMIT_OVERRIDE \
+            -d '{"state":"pending","context":"opensandbox-integration","target_url":"'"$RUN_URL"'","description":"OpenSandbox KVM integration running"}'
+
       - name: Run integration tests
         run: sudo -E env "PATH=$PATH" ./scripts/fast-sandbox-env/integration-env.sh up --auto-clean
 
@@ -112,3 +138,35 @@ jobs:
       - name: Teardown
         if: always()
         run: sudo -E env "PATH=$PATH" ./scripts/fast-sandbox-env/integration-env.sh down
+
+      - name: Mint fast-sandbox status token (final)
+        if: always() && env.FSB_COMMIT_OVERRIDE != ''
+        continue-on-error: true
+        id: fsb-final-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FSB_APP_ID }}
+          private-key: ${{ secrets.FSB_APP_PRIVATE_KEY }}
+          owner: opensandbox-group
+          repositories: fast-sandbox
+
+      - name: Report final status to fast-sandbox PR
+        if: always() && env.FSB_COMMIT_OVERRIDE != ''
+        continue-on-error: true
+        env:
+          FSB_TOKEN: ${{ steps.fsb-final-token.outputs.token }}
+          JOB_STATUS: ${{ job.status }}
+          PR_NUMBER: ${{ github.event.client_payload.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$JOB_STATUS" in
+            success) state=success; desc="OpenSandbox KVM integration passed" ;;
+            cancelled) state=error; desc="OpenSandbox KVM integration cancelled" ;;
+            *) state=failure; desc="OpenSandbox KVM integration failed" ;;
+          esac
+          [[ -n "$PR_NUMBER" ]] && desc="$desc (fast-sandbox#$PR_NUMBER)"
+          curl -sSf -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $FSB_TOKEN" \
+            https://api.github.com/repos/opensandbox-group/fast-sandbox/statuses/$FSB_COMMIT_OVERRIDE \
+            -d '{"state":"'"$state"'","context":"opensandbox-integration","target_url":"'"$RUN_URL"'","description":"'"$desc"'"}'
