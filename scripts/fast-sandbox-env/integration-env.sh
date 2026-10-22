@@ -141,6 +141,9 @@ IMG_FASTLET="${IMAGE_FASTLET:-opensandbox/fsb-fastlet:dev}"
 IMG_FASTLET_PROXY="${IMAGE_FASTLET_PROXY:-opensandbox/fsb-fastlet-proxy:dev}"
 IMG_JANITOR="${IMAGE_JANITOR:-opensandbox/fsb-janitor:dev}"
 IMG_BUILDER="${IMAGE_BUILDER:-opensandbox/fsb-sandboxtemplate-builder:dev}"
+# Shared build base for the builder image (built by build-fast-sandbox.sh
+# during build_images; rebuilt here only if missing).
+IMG_OCI_TOOLS="${IMAGE_OCI_TOOLS:-opensandbox/oci-tools:dev}"
 IMG_RUNTIME="${IMAGE_RUNTIME:-opensandbox/fsb-firecracker-runtime:dev}"
 IMG_EGRESS="${EGRESS_IMAGE:-docker.io/opensandbox/egress:latest}"
 
@@ -1089,8 +1092,16 @@ template_failed() {
 
 template_up() {
 	log "building the sandboxtemplate-builder image"
+	if ! docker image inspect "$IMG_OCI_TOOLS" >/dev/null 2>&1; then
+		log "building shared oci build base ($IMG_OCI_TOOLS)"
+		# shellcheck disable=SC2086
+		docker build ${DOCKER_BUILD_FLAGS:-} --quiet -t "$IMG_OCI_TOOLS" \
+			-f "$FSB_DIR/build/Dockerfile.oci-tools" "$FSB_DIR" >/dev/null \
+			|| die "oci-tools image build failed"
+	fi
 	# shellcheck disable=SC2086
-	docker build ${DOCKER_BUILD_FLAGS:-} --quiet -t "$IMG_BUILDER" \
+	docker build ${DOCKER_BUILD_FLAGS:-} --quiet \
+		--build-arg OCI_TOOLS_IMAGE="$IMG_OCI_TOOLS" -t "$IMG_BUILDER" \
 		-f "$FSB_DIR/build/Dockerfile.sandboxtemplate-builder" "$FSB_DIR" >/dev/null \
 		|| die "sandboxtemplate-builder image build failed"
 	kind load docker-image "$IMG_BUILDER" --name "$KIND_CLUSTER" >/dev/null
