@@ -409,30 +409,8 @@ func (r *IsolatedRunner) CreateIsolatedSession(opts *IsolatedSessionOptions) (st
 	id := uuid.New().String()
 	session := newIsolatedSession(id, opts, r.isolator, r.namespacePinner)
 
-	// Persist overlays get host upper/work pairs; ephemeral overlays use
-	// the bwrap tmpfs upper and need no allocation.
-	persistCount := 0
-	for _, ov := range session.overlays {
-		if ov.mode == isolation.WorkspaceOverlay && ov.persist {
-			persistCount++
-		}
-	}
-	if persistCount > 0 {
-		upperID, pairs, err := r.upperMgr.AllocateN(persistCount)
-		if err != nil {
-			return "", fmt.Errorf("allocate upper: %w", err)
-		}
-		session.upperID = upperID
-		next := 0
-		for i := range session.overlays {
-			ov := &session.overlays[i]
-			if ov.mode != isolation.WorkspaceOverlay || !ov.persist {
-				continue
-			}
-			ov.upperDir = pairs[next].UpperDir
-			ov.workDir = pairs[next].WorkDir
-			next++
-		}
+	if err := r.allocateSessionUppers(session); err != nil {
+		return "", err
 	}
 
 	if err := session.start(); err != nil {
@@ -465,6 +443,37 @@ func (r *IsolatedRunner) CreateIsolatedSession(opts *IsolatedSessionOptions) (st
 		overlaySummary(session.overlays),
 	)
 	return id, nil
+}
+
+// allocateSessionUppers assigns host upper/work pairs to a session's
+// persistent overlays. Ephemeral overlays use the bwrap tmpfs upper and need
+// no allocation.
+func (r *IsolatedRunner) allocateSessionUppers(session *isolatedSession) error {
+	persistCount := 0
+	for _, ov := range session.overlays {
+		if ov.mode == isolation.WorkspaceOverlay && ov.persist {
+			persistCount++
+		}
+	}
+	if persistCount == 0 {
+		return nil
+	}
+	upperID, pairs, err := r.upperMgr.AllocateN(persistCount)
+	if err != nil {
+		return fmt.Errorf("allocate upper: %w", err)
+	}
+	session.upperID = upperID
+	next := 0
+	for i := range session.overlays {
+		ov := &session.overlays[i]
+		if ov.mode != isolation.WorkspaceOverlay || !ov.persist {
+			continue
+		}
+		ov.upperDir = pairs[next].UpperDir
+		ov.workDir = pairs[next].WorkDir
+		next++
+	}
+	return nil
 }
 
 // overlaySummary renders resolved overlays for log lines.
