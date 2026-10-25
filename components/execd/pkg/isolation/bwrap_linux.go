@@ -121,7 +121,11 @@ func (b *bwrapImpl) Available() bool {
 
 func (b *bwrapImpl) Capabilities() Capabilities {
 	return Capabilities{
-		Available:              b.probe.Available,
+		// Available reuses the live check so the capabilities report can
+		// never disagree with the create path's probed() gate: Available()
+		// also validates the session gate file, which the probe alone does
+		// not cover.
+		Available:              b.Available(),
 		Isolator:               b.probe.Isolator,
 		Version:                b.probe.Version,
 		Message:                b.probe.Message,

@@ -123,6 +123,24 @@ func TestSetBwrapModeAvailability(t *testing.T) {
 	}
 }
 
+func TestSmokeLabel(t *testing.T) {
+	tests := []struct {
+		mode       UidMode
+		privateNet bool
+		want       string
+	}{
+		{UidModeSetpriv, false, "setpriv"},
+		{UidModeSetpriv, true, "setpriv+private-net"},
+		{UidModeUserns, false, "userns"},
+		{UidModeUserns, true, "userns+private-net"},
+	}
+	for _, tt := range tests {
+		if got := smokeLabel(tt.mode, tt.privateNet); got != tt.want {
+			t.Errorf("smokeLabel(%q, %v) = %q, want %q", tt.mode, tt.privateNet, got, tt.want)
+		}
+	}
+}
+
 func TestSetprivSmokeTargetIDs(t *testing.T) {
 	uid, gid := setprivSmokeTargetIDs(65534, 65534)
 	if uid == 0 || uid == 65534 || gid == 0 || gid == 65534 {

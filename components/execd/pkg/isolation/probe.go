@@ -16,6 +16,7 @@ package isolation
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -23,9 +24,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alibaba/opensandbox/execd/pkg/log"
 )
+
+// bwrapSmokeTimeout bounds each smoke-test child so a bwrap wedged behind a
+// restrictive LSM/seccomp policy cannot stall execd startup indefinitely.
+const bwrapSmokeTimeout = 10 * time.Second
 
 // ProbeResult holds the result of startup isolation probing.
 type ProbeResult struct {
@@ -95,11 +101,15 @@ func Probe(cfg ProbeConfig) ProbeResult {
 	setprivNetErr := setprivErr
 	if setprivErr == nil {
 		setprivNetErr = probeBwrapSetprivNetSmoke()
+	} else {
+		setprivNetErr = fmt.Errorf("setpriv uid mode unavailable entirely: %w", setprivErr)
 	}
 	usernsErr := probeBwrapUsernsSmoke()
 	usernsNetErr := usernsErr
 	if usernsErr == nil {
 		usernsNetErr = probeBwrapUsernsNetSmoke()
+	} else {
+		usernsNetErr = fmt.Errorf("userns uid mode unavailable entirely: %w", usernsErr)
 	}
 	setBwrapModeAvailability(
 		&result,
@@ -122,11 +132,13 @@ func Probe(cfg ProbeConfig) ProbeResult {
 	} else if usernsNetErr != nil {
 		log.Warn("isolation probe: userns uid mode cannot create a private network namespace (share_net=false): %v", usernsNetErr)
 	}
-	if !result.SetprivNetAvailable && !result.UsernsNetAvailable {
-		// Isolation itself still works for share_net=true sessions, but the
-		// standard private-network session posture cannot run here. Surface
-		// the reason so capabilities consumers and create failures explain
-		// themselves instead of dying inside bwrap.
+	// Isolation is up but private networking is broken in every mode: share_net=true
+	// sessions still work, but the standard private-network session posture cannot
+	// run here. Surface the reason so capabilities consumers and create failures
+	// explain themselves instead of dying inside bwrap. The result.Available guard
+	// keeps this degraded message from masking a total failure, which the
+	// !result.Available branch below owns.
+	if result.Available && !result.SetprivNetAvailable && !result.UsernsNetAvailable {
 		result.Message = fmt.Sprintf(
 			"private network namespace (share_net=false) is unavailable in every uid mode: setpriv: %v; userns: %v",
 			setprivNetErr, usernsNetErr,
@@ -241,15 +253,20 @@ func probeBwrapSmoke(mode UidMode, privateNet bool, uid, gid uint32) error {
 		return fmt.Errorf("bwrap not found")
 	}
 
-	cmd := exec.Command(p, bwrapSmokeArgs(mode, isSetuidBinary(p), privateNet, uid, gid)...)
+	ctx, cancel := context.WithTimeout(context.Background(), bwrapSmokeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, p, bwrapSmokeArgs(mode, isSetuidBinary(p), privateNet, uid, gid)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		err = fmt.Errorf("bwrap %s smoke test failed: %w (stderr: %s)", smokeLabel(mode, privateNet), err, strings.TrimSpace(stderr.String()))
 		// bwrap dies on "loopback: Failed RTM_NEWADDR" when it cannot
 		// configure 127.0.0.1 inside the new network namespace; name the
-		// missing capability instead of leaving the raw stderr.
-		if strings.Contains(stderr.String(), "loopback") {
+		// missing capability instead of leaving the raw stderr. Only the
+		// setpriv mode needs CAP_NET_ADMIN in the execd container — in
+		// userns mode the loopback setup runs with the namespace's own
+		// capabilities, so this remediation would be wrong there.
+		if mode == UidModeSetpriv && strings.Contains(stderr.String(), "loopback") {
 			err = fmt.Errorf("%w (loopback setup requires CAP_NET_ADMIN in the execd container)", err)
 		}
 		return err

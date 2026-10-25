@@ -1851,12 +1851,16 @@ export interface components {
             available?: boolean;
             isolator?: string;
             version?: string;
-            /** @description Diagnostic message when isolation is unavailable */
+            /** @description Diagnostic message when isolation is unavailable or degraded (for example, share_net=true sessions work but no uid mode can create the private network namespace required by share_net=false) */
             message?: string;
             /** @description Whether sessions using uid_mode setpriv can be created with execd's default UID/GID. Requests that select different UID/GID values may still return 503 NOT_SUPPORTED when identity switching is unavailable. */
             setpriv_available?: boolean;
             /** @description Whether sessions using uid_mode userns can be created */
             userns_available?: boolean;
+            /** @description Whether sessions using uid_mode setpriv can also create the private network namespace required by share_net=false (bwrap --unshare-net; its loopback setup needs CAP_NET_ADMIN in the execd container). Create rejects share_net=false requests with 503 NOT_SUPPORTED when the requested mode's flag is false. */
+            setpriv_net_available?: boolean;
+            /** @description Whether sessions using uid_mode userns can also create the private network namespace required by share_net=false. */
+            userns_net_available?: boolean;
             commit_supported?: boolean;
             diff_supported?: boolean;
             /** @description execd init-mode and workload-hardening state (OSEP-0018): whether execd is the sandbox init and which of its controls are in effect. Not an isolation capability; reported here so operators see enforcement state in one place. */

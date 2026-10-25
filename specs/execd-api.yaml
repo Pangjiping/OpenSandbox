@@ -3336,7 +3336,10 @@ components:
           type: string
         message:
           type: string
-          description: Diagnostic message when isolation is unavailable
+          description: >-
+            Diagnostic message when isolation is unavailable or degraded (for
+            example, share_net=true sessions work but no uid mode can create
+            the private network namespace required by share_net=false)
         setpriv_available:
           type: boolean
           description: >-

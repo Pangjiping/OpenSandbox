@@ -190,7 +190,7 @@ func TestFailStartupAttachesBwrapEvidence(t *testing.T) {
 	if !strings.Contains(err.Error(), "bwrap exit code 1") {
 		t.Errorf("error %q does not carry the bwrap exit code", err)
 	}
-	if !strings.Contains(err.Error(), "bwrap stderr: bwrap: loopback: Failed RTM_NEWADDR") {
+	if !strings.Contains(err.Error(), "session output tail (bwrap stderr merged): bwrap: loopback: Failed RTM_NEWADDR") {
 		t.Errorf("error %q does not carry the bwrap stderr tail", err)
 	}
 }
@@ -217,8 +217,30 @@ func TestFailStartupWithoutExitCodeKeepsStderrEvidence(t *testing.T) {
 	if strings.Contains(err.Error(), "bwrap exit code") {
 		t.Errorf("error %q unexpectedly carries an exit code", err)
 	}
-	if !strings.Contains(err.Error(), "bwrap stderr: bwrap: Can't mount proc") {
+	if !strings.Contains(err.Error(), "session output tail (bwrap stderr merged): bwrap: Can't mount proc") {
 		t.Errorf("error %q does not carry the bwrap stderr tail", err)
+	}
+}
+
+func TestFailStartupKeepsOutputTailWhenLarge(t *testing.T) {
+	// A gate-released workload may write more than the tail window before
+	// dying; the evidence must keep the END of the stream (the root cause)
+	// and drop the head instead of stopping at the first few kilobytes.
+	lifecycle := newClosedLifecycleStub(0, false)
+	headMarker := "first-line-must-be-dropped\n"
+	rootCause := "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n"
+	session := newEvidenceTestSession(t, []byte(headMarker+strings.Repeat("A", 4000)+"\n"+rootCause), true, lifecycle)
+
+	err := session.failStartup(errors.New("start bwrap: wait for isolated workload identity: EOF"))
+
+	if !strings.Contains(err.Error(), "session output tail (bwrap stderr merged)") {
+		t.Errorf("error %q does not carry the session output tail", err)
+	}
+	if !strings.Contains(err.Error(), strings.TrimSpace(rootCause)) {
+		t.Errorf("error %q does not keep the end of the output stream", err)
+	}
+	if strings.Contains(err.Error(), "first-line-must-be-dropped") {
+		t.Errorf("error %q kept evicted head output instead of the tail", err)
 	}
 }
 

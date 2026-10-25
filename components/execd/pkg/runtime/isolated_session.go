@@ -28,6 +28,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alibaba/opensandbox/execd/pkg/isolation"
 	"github.com/alibaba/opensandbox/execd/pkg/log"
@@ -710,7 +711,7 @@ func (s *isolatedSession) attachStartupEvidence(startErr error) error {
 		evidence = append(evidence, fmt.Errorf("bwrap exit code %d", code))
 	}
 	if tail := s.readStartupStderrTail(); tail != "" {
-		evidence = append(evidence, fmt.Errorf("bwrap stderr: %s", tail))
+		evidence = append(evidence, fmt.Errorf("session output tail (bwrap stderr merged): %s", tail))
 	}
 	if len(evidence) == 0 {
 		return startErr
@@ -751,18 +752,23 @@ func (s *isolatedSession) readStartupStderrTail() string {
 	}
 	var collected []byte
 	buf := make([]byte, 512)
-	for len(collected) < startupStderrTailBytes {
+	for {
 		n, err := file.Read(buf)
 		collected = append(collected, buf[:n]...)
+		// Keep only the tail so early output cannot evict the root-cause
+		// lines at the end of the stream. Advance the head cut to a rune
+		// boundary so truncation cannot split a multi-byte character.
+		if excess := len(collected) - startupStderrTailBytes; excess > 0 {
+			for excess < len(collected) && !utf8.RuneStart(collected[excess]) {
+				excess++
+			}
+			collected = collected[excess:]
+		}
 		if err != nil {
 			break
 		}
 	}
-	tail := strings.TrimSpace(string(collected))
-	if len(tail) > startupStderrTailBytes {
-		tail = tail[len(tail)-startupStderrTailBytes:]
-	}
-	return tail
+	return strings.TrimSpace(string(collected))
 }
 
 func closeCommandExtraFiles(cmd *exec.Cmd) {
