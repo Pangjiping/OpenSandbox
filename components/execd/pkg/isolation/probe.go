@@ -98,18 +98,14 @@ func Probe(cfg ProbeConfig) ProbeResult {
 	if setprivErr == nil {
 		setprivIdentitySwitchErr = probeBwrapSetprivIdentitySwitchSmoke()
 	}
-	setprivNetErr := setprivErr
+	setprivNetErr := fmt.Errorf("setpriv uid mode unavailable entirely: %w", setprivErr)
 	if setprivErr == nil {
 		setprivNetErr = probeBwrapSetprivNetSmoke()
-	} else {
-		setprivNetErr = fmt.Errorf("setpriv uid mode unavailable entirely: %w", setprivErr)
 	}
 	usernsErr := probeBwrapUsernsSmoke()
-	usernsNetErr := usernsErr
+	usernsNetErr := fmt.Errorf("userns uid mode unavailable entirely: %w", usernsErr)
 	if usernsErr == nil {
 		usernsNetErr = probeBwrapUsernsNetSmoke()
-	} else {
-		usernsNetErr = fmt.Errorf("userns uid mode unavailable entirely: %w", usernsErr)
 	}
 	setBwrapModeAvailability(
 		&result,
