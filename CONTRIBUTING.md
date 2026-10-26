@@ -541,9 +541,11 @@ When creating a PR, fill out the template:
 
 ### Pull Request Guidelines
 
+Source code changes exceeding **2000 lines cannot be reviewed**. PRs above this limit will not be reviewed; please split them before submitting. Plan your development pace accordingly: break large features into a series of small, focused PRs (for example, by module, layer, or feature increment) and land them incrementally instead of accumulating a long-running branch. Refactors should be separated from behavior changes whenever possible.
+
 **Do:**
 
-- Keep PRs focused and reasonably sized (< 500 lines if possible)
+- Keep PRs focused and reasonably sized (< 500 lines if possible; hard limit 2000 lines, see above)
 - Write clear PR descriptions with motivation and context
 - Link related issues
 - Respond to review comments promptly
